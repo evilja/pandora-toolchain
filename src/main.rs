@@ -1,3 +1,5 @@
+use pandora_toolchain::libpnmpeg::probe::ffprobe;
+
 fn main() {
-    println!("Hello, world!");
+    println!("{:?}", ffprobe("a.mkv", "jpn"));
 }
