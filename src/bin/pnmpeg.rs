@@ -40,6 +40,9 @@ struct Args {
     /// Language to search in input file
     #[arg(short, long)]
     lang: Option<String>,
+
+    #[arg(short, long)]
+    concat: Option<String>,
 }
 #[inline]
 fn wrap(a: &str) -> String { return String::from(a) }
@@ -61,20 +64,19 @@ const CPU_SANE_DEFAULTS: [FfmpegParams; 14] =
     FfmpegParams::Movflags,
     FfmpegParams::Output(Cow::Borrowed("'OUTFILEV'")),
 ]; 
-const GPU_SANE_DEFAULTS: [FfmpegParams; 16] =
+const GPU_SANE_DEFAULTS: [FfmpegParams; 15] =
 [
     FfmpegParams::Input(Cow::Borrowed("'INPUTFILEV'")),
-    FfmpegParams::BasicFilter(Cow::Borrowed("ass='INPUTFILEASS',format=yuv420p,scale='min(1920,iw)'")),
-    FfmpegParams::Cv(Cow::Borrowed("h264_nvenc")),
+    FfmpegParams::BasicFilter(Cow::Borrowed("ass='INPUTFILEASS',format=yuv420p")),
+    FfmpegParams::Cv(Cow::Borrowed("h264_amf")),
     FfmpegParams::Profile(Cow::Borrowed("high")),
     FfmpegParams::Level(Cow::Borrowed("4.1")),
     FfmpegParams::Map(Cow::Borrowed("0:v")),
     FfmpegParams::Map(Cow::Borrowed("0:JPN_INDEX")),
-    FfmpegParams::Maxrate(Cow::Borrowed("4000k")),
-    FfmpegParams::Bufsize(Cow::Borrowed("5000k")),
+    FfmpegParams::QpI(Cow::Borrowed("15")),
+    FfmpegParams::QpP(Cow::Borrowed("15")),
+    FfmpegParams::Rc(Cow::Borrowed("cqp")),
     FfmpegParams::R(Cow::Borrowed("23.976")),
-    FfmpegParams::Crf(17),
-    FfmpegParams::Preset(Cow::Borrowed("fast")),
     FfmpegParams::Ca(Cow::Borrowed("aac")),
     FfmpegParams::Ba(Cow::Borrowed("192k")),
     FfmpegParams::Movflags,

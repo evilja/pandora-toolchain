@@ -4,3 +4,4 @@ pub mod libpncurl;
 pub mod libpnfontconfig;
 pub mod libpnp2p;
 pub mod libpnstrip;
+pub mod libpnupload;
