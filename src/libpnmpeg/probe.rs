@@ -18,7 +18,7 @@ struct Tags {
 }
 
 
-pub fn ffprobe(path: &str, f_lang: &str) -> Option<u32> {
+pub fn ffprobe_lang(path: &str, f_lang: &str) -> Option<u32> {
     let output = Command::new("ffprobe")
         .args([
             "-v", "error",
@@ -43,3 +43,22 @@ pub fn ffprobe(path: &str, f_lang: &str) -> Option<u32> {
     }
     return None;
 }
+/*
+ * ffprobe -v error -select_streams v:0 -count_packets
+ *   -show_entries stream=nb_read_packets -of csv=p=0 input.mp4
+ */
+pub fn ffprobe_frame(path: &str) -> Option<u64> {
+     let output = Command::new("ffprobe")
+         .args([
+             "-v", "error",
+             "-select_streams", "v:0",
+             "-count_packets",
+             "-show_entries", "stream=nb_read_packets",
+             "-of", "csv=p=0",
+             path,
+         ])
+         .output().ok()?;
+
+     let stdout = String::from_utf8(output.stdout).ok()?;
+     stdout.trim().parse::<u64>().ok()
+ }

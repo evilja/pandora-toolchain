@@ -1,0 +1,81 @@
+use crate::libpnmpeg::core::FfmpegParams;
+use std::borrow::Cow;
+
+pub const CPU_PSEUDOLOSSLESS: [FfmpegParams; 17] =
+[
+    FfmpegParams::Input(Cow::Borrowed("INPUTFILEV")),
+    FfmpegParams::X264Params(Cow::Borrowed("me=umh:subme=8:merange=24:trellis=2:psy-rd=1:aq-strength=1.1:aq-mode=3:deblock=0,0")),
+    FfmpegParams::BasicFilter(Cow::Borrowed("ass=INPUTFILEASS,format=yuv420p")),
+    FfmpegParams::Cv(Cow::Borrowed("libx264")),
+    FfmpegParams::Profile(Cow::Borrowed("high")),
+    FfmpegParams::Level(Cow::Borrowed("4.1")),
+    FfmpegParams::Map(Cow::Borrowed("0:v")),
+    FfmpegParams::Map(Cow::Borrowed("0:JPN_INDEX")),
+    FfmpegParams::Crf(17),
+    FfmpegParams::Preset(Cow::Borrowed("fast")),
+    FfmpegParams::Ca(Cow::Borrowed("aac")),
+    FfmpegParams::Ba(Cow::Borrowed("192k")),
+    FfmpegParams::Movflags,
+    FfmpegParams::NoStats,
+    FfmpegParams::Progress(Cow::Borrowed("pipe:2")),
+    FfmpegParams::Overwrite,
+    FfmpegParams::Output(Cow::Borrowed("OUTFILEV")),
+];
+pub const CPU_SANE_DEFAULTS: [FfmpegParams; 16] =
+[
+    FfmpegParams::Input(Cow::Borrowed("INPUTFILEV")),
+    FfmpegParams::BasicFilter(Cow::Borrowed("ass=INPUTFILEASS,format=yuv420p")),
+    FfmpegParams::Cv(Cow::Borrowed("libx264")),
+    FfmpegParams::Profile(Cow::Borrowed("high")),
+    FfmpegParams::Level(Cow::Borrowed("4.1")),
+    FfmpegParams::Map(Cow::Borrowed("0:v")),
+    FfmpegParams::Map(Cow::Borrowed("0:JPN_INDEX")),
+    FfmpegParams::Crf(17),
+    FfmpegParams::Preset(Cow::Borrowed("fast")),
+    FfmpegParams::Ca(Cow::Borrowed("aac")),
+    FfmpegParams::Ba(Cow::Borrowed("192k")),
+    FfmpegParams::Movflags,
+    FfmpegParams::NoStats,
+    FfmpegParams::Progress(Cow::Borrowed("pipe:2")),
+    FfmpegParams::Overwrite,
+    FfmpegParams::Output(Cow::Borrowed("OUTFILEV")),
+];
+pub const GPU_SANE_DEFAULTS: [FfmpegParams; 18] =
+[
+    FfmpegParams::Input(Cow::Borrowed("INPUTFILEV")),
+    FfmpegParams::BasicFilter(Cow::Borrowed("ass=INPUTFILEASS,format=yuv420p")),
+    FfmpegParams::Cv(Cow::Borrowed("h264_amf")),
+    FfmpegParams::Profile(Cow::Borrowed("high")),
+    FfmpegParams::Level(Cow::Borrowed("4.1")),
+    FfmpegParams::Map(Cow::Borrowed("0:v")),
+    FfmpegParams::Map(Cow::Borrowed("0:JPN_INDEX")),
+    FfmpegParams::QpI(Cow::Borrowed("15")),
+    FfmpegParams::QpP(Cow::Borrowed("15")),
+    FfmpegParams::Rc(Cow::Borrowed("cqp")),
+    FfmpegParams::R(Cow::Borrowed("23.976")),
+    FfmpegParams::Ca(Cow::Borrowed("aac")),
+    FfmpegParams::Ba(Cow::Borrowed("192k")),
+    FfmpegParams::Movflags,
+    FfmpegParams::NoStats,
+    FfmpegParams::Progress(Cow::Borrowed("pipe:2")),
+    FfmpegParams::Overwrite,
+    FfmpegParams::Output(Cow::Borrowed("OUTFILEV")),
+];
+pub const CONCAT: [FfmpegParams; 15] =
+[
+    FfmpegParams::Input(Cow::Borrowed("CONCATFILEV")),
+    FfmpegParams::Input(Cow::Borrowed("INPUTFILEV")),
+    FfmpegParams::ComplexFilter(Cow::Borrowed("[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a]")),
+    FfmpegParams::Map(Cow::Borrowed("[v]")),
+    FfmpegParams::Map(Cow::Borrowed("[a]")),
+    FfmpegParams::Cv(Cow::Borrowed("libx264")),
+    FfmpegParams::Crf(17),
+    FfmpegParams::Preset(Cow::Borrowed("fast")),
+    FfmpegParams::Ca(Cow::Borrowed("aac")),
+    FfmpegParams::Ba(Cow::Borrowed("192k")),
+    FfmpegParams::Movflags,
+    FfmpegParams::NoStats,
+    FfmpegParams::Progress(Cow::Borrowed("pipe:2")),
+    FfmpegParams::Overwrite,
+    FfmpegParams::Output(Cow::Borrowed("OUTFILEV"))
+];

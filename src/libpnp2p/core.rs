@@ -5,6 +5,9 @@ use qbit_rs::model::{
 use std::io::{self, Write};
 use tokio::time::{sleep, Duration};
 use tokio::fs;
+use crate::{lib_pn_data, lib_pn_emit, lib_pn_schema};
+use crate::libpnprotocol::core::{Protocol, Schema, ToolInfo};
+
 
 pub struct P2p {
     api: Qbit,
@@ -23,9 +26,10 @@ impl P2p {
         &self,
         torrent_path: &str,
         save_path: &str,
+        proto: Protocol,
+        neg: String,
     ) -> Result<(), Box<dyn std::error::Error>> {
 
-        // 1️⃣ Read .torrent file into memory
         let torrent_bytes = fs::read(torrent_path).await?;
 
         let add_args = AddTorrentArg::builder()
@@ -40,7 +44,6 @@ impl P2p {
 
         self.api.add_torrent(add_args).await?;
 
-        // 2️⃣ Find the torrent hash
         sleep(Duration::from_secs(1)).await;
 
         let torrents = self.api
@@ -54,33 +57,50 @@ impl P2p {
 
         let hash = torrent.hash.clone().unwrap();
 
-        // 3️⃣ Progress loop
         let mut last_printed = -1.0;
 
+        let mut percent: f32;
+        let mut downloaded: f32;
+        let mut total: f32;
         loop {
             let props = self.api.get_torrent_properties(&hash).await?;
-            let percent = props.total_downloaded.unwrap() as f32
-                / props.total_size.unwrap() as f32 * 100.0;
+            downloaded = props.total_downloaded.unwrap() as f32;
+            total = props.total_size.unwrap() as f32;
+            percent = downloaded / total * 100.0;
 
-
-            if (percent - last_printed).abs() >= 0.1 {
-                print!("%{:.1}\n", percent);
-                io::stdout().flush().ok();
-                last_printed = percent;
-            }
 
             if percent >= 100 as f32 {
                 break;
             }
 
-            sleep(Duration::from_secs(1)).await;
+            if (percent - last_printed).abs() >= 0.1 {
+                let hpercent = percent.floor();
+                println!("{}",
+                    lib_pn_emit!(
+                        protocol = proto,
+                        negkey = &neg,
+                        schema = [leaf, [leaf, leaf, leaf]],
+                        data   = ["0", [hpercent, downloaded, total]]
+                    ).unwrap()
+                );
+                last_printed = percent;
+            }
+
+
+            sleep(Duration::from_secs(5)).await;
         }
 
-        println!("%DONE");
+        println!("{}",
+            lib_pn_emit!(
+                protocol = proto,
+                negkey = &neg,
+                schema = [leaf, leaf],
+                data   = ["1", "DONE"]
+            ).unwrap()
+        );
 
         self.api.delete_torrents(vec![hash], false).await?;
 
         Ok(())
     }
 }
-
