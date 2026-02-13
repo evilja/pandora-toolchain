@@ -1,7 +1,10 @@
+use std::alloc::System;
 use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
+use serenity::all::UserId;
 use tokio::io::{BufReader, AsyncBufReadExt};
 use tokio::sync::mpsc::{Receiver, Sender, channel};
+use tokio::time::sleep;
 use tokio::time::Duration;
 use crate::libpnprotocol::core::{Protocol, TypeC};
 use crate::pnworker::messages::{self, CTORRENT_DONE, CTORRENT_FAIL, ENCODE_DONE, ENCODE_FAIL, ENCODE_PROG, TORRENT_DONE, TORRENT_FAIL, TORRENT_PROG};
@@ -12,7 +15,7 @@ use std::env;
 use tokio::process::Command;
 use serenity::{
     prelude::*,
-    all::{Message, Context, EditMessage},
+    all::{Message, Context, EditMessage, Ready},
 };
 // all data types have job id as their last value.
 // directory, link
@@ -39,7 +42,7 @@ pub async fn pn_dloadworker(mut rx: Receiver<DownloadData>, tx: Sender<CommData>
     'll: loop {
         if let Some((directory, link, job_id)) = rx.recv().await {
             let mut negotiated: bool = false;
-            let mut pncurl = Command::new("pncurl");
+            let mut pncurl = Command::new("./pncurl");
             pncurl.args(
                 ["--link", &link, "--opcode", &directory.join("contents").join("fetch.torrent").to_string_lossy().to_string(),
                  "--negkey", &format!("PNcurlT{}", job_id), "--negotiator", "PNdloadworker", "--negver", "1"]
@@ -51,6 +54,7 @@ pub async fn pn_dloadworker(mut rx: Receiver<DownloadData>, tx: Sender<CommData>
             let reader = BufReader::new(stdout);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
+                println!("{}", line);
                 if !negotiated {
                     if let Ok(_) = proto.negotiate(&line) {
                         negotiated = true;
@@ -87,7 +91,7 @@ pub async fn pn_dloadworker(mut rx: Receiver<DownloadData>, tx: Sender<CommData>
                 continue 'll;
             }
 
-            let mut pnp2p = Command::new("pnp2p");
+            let mut pnp2p = Command::new("./pnp2p");
             pnp2p.args(
                 ["--opcode", &directory.join("contents").join("fetch.torrent").to_string_lossy().to_string(),
                  "--save", &directory.join("contents").join("torrent").to_string_lossy().to_string(),
@@ -101,6 +105,7 @@ pub async fn pn_dloadworker(mut rx: Receiver<DownloadData>, tx: Sender<CommData>
             let mut lines = reader.lines();
             negotiated = false;
             while let Ok(Some(line)) = lines.next_line().await {
+                println!("{}", line);
                 if !negotiated {
                     if let Ok(_) = proto.negotiate(&line) {
                         negotiated = true;
@@ -114,6 +119,25 @@ pub async fn pn_dloadworker(mut rx: Receiver<DownloadData>, tx: Sender<CommData>
                                     if let TypeC::Single(sd) = val {
                                         if i == 0 {
                                             out = sd.value.parse::<u16>().unwrap();
+                                        } else if out == 1 { // [percent, downloaded, total]
+                                            println!("torrdone");
+                                            // Read the directory
+                                            let torrent_dir = directory.join("contents").join("torrent");
+                                            let mut entries = read_dir(&torrent_dir).await.unwrap();
+
+                                            // Find the first file (or iterate to find specific one)
+                                            if let Some(entry) = entries.next_entry().await.unwrap() {
+                                                let old_path = entry.path();
+                                                let new_path = torrent_dir.join("input.mkv");
+
+                                                // Rename/move the file
+                                                rename(old_path, new_path).await.unwrap();
+                                            };
+                                            println!("torrdone");
+                                            tx.send((job_id, TORRENT_DONE.to_string(), Some(Stage::Downloaded))).await.unwrap();
+                                            continue 'll;
+                                        } else if out == 2 {
+                                            tx.send((job_id, TORRENT_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
                                         }
                                     } else if let TypeC::Multi(sd) = val {
                                         if i == 1 {
@@ -137,24 +161,6 @@ pub async fn pn_dloadworker(mut rx: Receiver<DownloadData>, tx: Sender<CommData>
                                                     }
                                                 }
                                                 tx.send((job_id, format!("{} {}% {} {}", TORRENT_PROG, percent, progmb, totlmb), None)).await.unwrap();
-                                            } else if out == 1 { // [percent, downloaded, total]
-
-                                                // Read the directory
-                                                let torrent_dir = directory.join("contents").join("torrent");
-                                                let mut entries = read_dir(&torrent_dir).await.unwrap();
-
-                                                // Find the first file (or iterate to find specific one)
-                                                if let Some(entry) = entries.next_entry().await.unwrap() {
-                                                    let old_path = entry.path();
-                                                    let new_path = torrent_dir.join("input.mkv");
-
-                                                    // Rename/move the file
-                                                    rename(old_path, new_path).await.unwrap();
-                                                };
-                                                tx.send((job_id, TORRENT_DONE.to_string(), Some(Stage::Downloaded))).await.unwrap();
-                                                continue 'll;
-                                            } else if out == 2 {
-                                                tx.send((job_id, TORRENT_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
                                             }
                                         }
                                     }
@@ -187,13 +193,13 @@ pub async fn pn_encdeworker(mut rx: Receiver<EncodeData>, tx: Sender<CommData>) 
             };
 
             let mut negotiated: bool = false;
-            let mut pnmpeg = Command::new("pnmpeg");
+            let mut pnmpeg = Command::new("./pnmpeg");
             pnmpeg.args(
                 ["--input", &directory.join("contents").join("torrent").join("input.mkv").to_string_lossy().to_string(),
                  "--output", &directory.join("work").join("output_noconcat.mp4").to_string_lossy().to_string(),
                  "--ass", &directory.join("contents").join("subtitle.ass").to_string_lossy().to_string(),
                  &format!("--{}", insert),
-                 "--negkey", &format!("PNmpeg{}", job_id), "--negotiator", "PNdloadworker", "--negver", "1"]
+                 "--negkey", &format!("PNmpeg{}", job_id), "--negotiator", "PNencdeworker", "--negver", "1"]
             );
             pnmpeg.stderr(Stdio::null());
             pnmpeg.stdout(Stdio::piped());
@@ -202,6 +208,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<EncodeData>, tx: Sender<CommData>) 
             let reader = BufReader::new(stdout);
             let mut lines = reader.lines();
             'enc: while let Ok(Some(line)) = lines.next_line().await {
+                println!("{}", line);
                 if !negotiated {
                     if let Ok(_) = proto.negotiate(&line) {
                         negotiated = true;
@@ -263,7 +270,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<EncodeData>, tx: Sender<CommData>) 
             }
             if let Some(_) = concat_value {
                 let mut negotiated: bool = false;
-                let mut pnmpeg = Command::new("pnmpeg");
+                let mut pnmpeg = Command::new("./pnmpeg");
                 pnmpeg.args(
                     ["--input", &directory.join("work").join("output_noconcat.mp4").to_string_lossy().to_string(),
                      "--output", &directory.join("work").join("output.mp4").to_string_lossy().to_string(),
@@ -278,6 +285,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<EncodeData>, tx: Sender<CommData>) 
                 let reader = BufReader::new(stdout);
                 let mut lines = reader.lines();
                 'enc_concat: while let Ok(Some(line)) = lines.next_line().await {
+                    println!("{}", line);
                     if !negotiated {
                         if let Ok(_) = proto.negotiate(&line) {
                             negotiated = true;
@@ -294,7 +302,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<EncodeData>, tx: Sender<CommData>) 
                                                 if out == 1 {
                                                     tx.send((job_id, ENCODE_DONE.to_string(), Some(Stage::Encoded))).await.unwrap();
                                                 } else if out == 2 {
-                                                    tx.send((job_id, ENCODE_FAIL.to_string(), Some(Stage::Encoded))).await.unwrap();
+                                                    tx.send((job_id, ENCODE_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
                                                     continue 'll;
                                                 }
                                             }
@@ -342,7 +350,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<EncodeData>, tx: Sender<CommData>) 
                 tx.send((job_id, ENCODE_DONE.to_string(), Some(Stage::Encoded))).await.unwrap();
                 continue 'll;
             }
-            tx.send((job_id, ENCODE_FAIL.to_string(), Some(Stage::Encoded))).await.unwrap();
+            tx.send((job_id, ENCODE_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
             // TODO: Encode logic here
             // tx.send((job_id, "Encoded".to_string(), Some(Stage::Encoded))).await.unwrap();
         }
@@ -363,7 +371,7 @@ const STRUCT: [&str; 2] = [
 ];
 
 pub async fn pn_worker(mut rx: Receiver<Job>) {
-    let db = JobDb::new("host=localhost user=postgres password=secret dbname=pandora").await.unwrap();
+    let db = JobDb::new("host=localhost port=5432 user=postgres password=secret dbname=pandora").await.unwrap();
     db.init_schema().await.unwrap();
 
     let mut queue: Vec<Job> = vec![];
@@ -375,18 +383,30 @@ pub async fn pn_worker(mut rx: Receiver<Job>) {
     tokio::spawn(pn_uloadworker(rx_u, tx_c.clone()));
     tokio::spawn(pn_encdeworker(rx_e, tx_c.clone()));
     loop {
+        sleep(Duration::from_millis(200)).await;
         if let Ok(mut job) = rx.try_recv() {
             if queue.len() > 4 {
-                job.context.1 = job.context.1.reply(job.context.0, messages::QUEUE_TOO_LONG).await.unwrap();
+                match job.context.1.reply(&job.context.0, messages::QUEUE_TOO_LONG).await {
+                    _ => ()
+                }
                 continue;
             }
             match job.job_type {
                 JobType::Encode => { // type DownloadData = (PathBuf, String); directory, link
+                    let attachments = job.context.1.attachments.get(0).unwrap().download().await;
+                    match job.context.1.reply(&job.context.0, messages::QUEUED).await {
+                        Ok(msg) => {
+                            job.context.1 = msg;
+                        }
+                        _ => {continue;}
+                    };
+
                     for i in STRUCT {
                         create_dir_all(job.directory.join(i)).await.unwrap();
                     }
+
                     write(job.directory.join("contents").join("subtitle.ass"),
-                        job.context.1.attachments.get(0).unwrap().download().await.unwrap()).await.unwrap();
+                        attachments.unwrap()).await.unwrap();
                     tx_d.send((job.directory.clone(), job.link.clone(), job.job_id)).await.unwrap();
                     job.ready = Stage::Downloading;
                 }
@@ -406,17 +426,17 @@ pub async fn pn_worker(mut rx: Receiver<Job>) {
                 db.update_stage(job.job_id, Stage::Uploading).await.unwrap();
             } else {
                 if let Ok(commdata) = rx_c.try_recv() {
-                    if let Some(a) = commdata.2 {
-                        for i in queue.iter_mut() {
-                            if i.job_id == commdata.0 {
-                                i.context.1.edit(&i.context.0, EditMessage::new().content(commdata.1.clone())).await.unwrap();
+                    for i in queue.iter_mut() {
+                        if i.job_id == commdata.0 {
+                            i.context.1.edit(&i.context.0, EditMessage::new().content(commdata.1.clone())).await.unwrap();
+                            if let Some(a) = commdata.2 {
                                 i.ready = a;
                                 db.update_stage(i.job_id, i.ready).await.unwrap();
                                 if i.ready == Stage::Uploaded || i.ready == Stage::Failed {
                                     db.archive_job(i.job_id).await.unwrap();
                                 }
-                                break;
                             }
+                            break;
                         }
                     }
                 }
@@ -473,6 +493,7 @@ impl Job {
         let dir_name = format!("{}-{}-{}", author, job_id, requested_at.as_secs());
         let directory = env::current_dir()
             .unwrap_or_else(|_| PathBuf::from("."))
+            .join("DB")
             .join(&dir_name);
 
         Self {
@@ -493,11 +514,35 @@ pub struct Handler {
     pub tx: Sender<Job>
 }
 
+
+/*
+ * pub struct Job {
+     pub author: String,
+     pub requested_at: Duration,
+     pub job_type: JobType,
+     pub job_id: u64,
+     pub preset: Preset,
+     pub link: String,
+     pub context: (Context, Message),
+     pub directory: PathBuf,
+     pub ready: Stage,
+ }
+ */
 #[serenity::async_trait]
 impl EventHandler for Handler {
     async fn message(&self, context: Context, msg: Message) {
-        if msg.content == "!ping" {
-            let _ = msg.channel_id.say(&context, "Pong!");
+        if msg.author.id.get() != 944246988575215627 {
+            return;
         }
+        if msg.content.starts_with("!enc") {
+            self.tx.send(
+                Job::new(msg.author.id.get().to_string(), JobType::Encode, msg.id.get(), Preset::PseudoLossless(None), "https://nyaa.si/download/2075988.torrent".to_string(), (context, msg))
+            ).await.unwrap();
+        }
+    }
+    async fn ready(&self, _ctx: Context, ready: Ready) {
+        println!("{} is connected!", ready.user.name);
+        println!("Bot ID: {}", ready.user.id);
+        println!("Serving {} guilds", ready.guilds.len());
     }
 }

@@ -34,13 +34,21 @@ use pandora_toolchain::libpncurl::core::{
 };
 use pandora_toolchain::libpnp2p::core::P2p;
 use pandora_toolchain::pnworker::core::{Job, Handler};
+use pandora_toolchain::pnworker::core::pn_worker;
 
 
 #[tokio::main]
 async fn main () {
     let env = get_env("env.pandora".into());
     let (tx, rx): (Sender<Job>, Receiver<Job>) = channel(5);
-    let mut discord = Client::builder(env[TOKEN].clone(), GatewayIntents::all()).event_handler(Handler { tx: tx }).await.unwrap();
+
+    tokio::spawn(pn_worker(rx));
+
+    let mut discord = Client::builder(env[TOKEN].clone(), GatewayIntents::all())
+        .event_handler(Handler { tx: tx })
+        .await
+        .unwrap();
+
     if let Err(why) = discord.start().await {
         println!("{}", why);
     }

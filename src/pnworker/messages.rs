@@ -1,3 +1,4 @@
+pub const QUEUED: &str = "\n\nMerhaba, isteğiniz alındı.";
 pub const HEADER_JOBID: &str = "İşlem numarası: ";
 pub const HEADER_AUTID: &str = "\nİşlem sahibi  : ";
 pub const HEADER_TORRN: &str = "\nTorrent linki : ";
