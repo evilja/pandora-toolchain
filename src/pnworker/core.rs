@@ -343,6 +343,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<EncodeData>, tx: Sender<CommData>) 
                                                 out = sd.value.parse::<u16>().unwrap();
                                                 if out == 1 {
                                                     tx.send((job_id, ENCODE_DONE.to_string(), Some(Stage::Encoded))).await.unwrap();
+                                                    continue 'll;
                                                 } else if out == 2 {
                                                     tx.send((job_id, ENCODE_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
                                                     continue 'll;
