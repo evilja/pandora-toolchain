@@ -1,4 +1,4 @@
-use pandora_toolchain::libpnprotocol::core::{Protocol, TypeC};
+use pandora_toolchain::libpnprotocol::core::{Protocol};
 
 fn main(){
     let mut proto = Protocol::new(vec![1]);

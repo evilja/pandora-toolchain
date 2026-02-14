@@ -1,7 +1,7 @@
 use std::string::String;
 use std::borrow::Cow;
 use std::process::{Command, Stdio};
-use std::io::{BufRead, BufReader, stderr};
+use std::io::{BufRead, BufReader};
 use regex::Regex;
 
 use std::sync::mpsc::Sender;

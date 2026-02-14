@@ -1,17 +1,14 @@
 use crate::libpnenv::{
     core::get_env,
     standard::{
-        CLIENT_ID,
-        CLIENT_SECRET,
-        REFRESH_TOKEN,
-        TOKEN_URL,
+        CLIENT_ID, CLIENT_SECRET, PARENTID, REFRESH_TOKEN, TOKEN_URL
     }
 };
 use reqwest::blocking::{Client, multipart};
 use serde::Deserialize;
 use std::fs::File;
 use std::io::Read;
-use std::io::{self, Write};
+use std::io::{Write};
 use std::path::Path;
 use std::sync::mpsc::Sender;
 
@@ -22,7 +19,6 @@ struct ProgressReader<R: Read> {
     sent: u64,
     total: u64,
     tx: Sender<RpbData>,
-    last_progress: u16,
 }
 
 impl<R: Read> ProgressReader<R> {
@@ -32,7 +28,6 @@ impl<R: Read> ProgressReader<R> {
             sent: 0,
             total,
             tx,
-            last_progress: 0,
         }
     }
 }
@@ -58,7 +53,7 @@ struct TokenResponse {
 
 fn get_access_token(
     // CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN, TOKEN_URL
-    env: Vec<String>,
+    env: &Vec<String>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let client = Client::new();
 
@@ -117,13 +112,14 @@ impl Req {
         &self,
         envpath: String,
         outfile: Option<String>,
-        parent_id: &str,
         tx: Sender<RpbData>,
     ) -> bool {
-        let access_token = match get_access_token(get_env(envpath)) {
+        let env = get_env(envpath);
+        let access_token = match get_access_token(&env) {
             Ok(token) => token,
             Err(_) => return false,
         };
+        let parent_id = env[PARENTID].clone();
 
         let client = Client::new();
 

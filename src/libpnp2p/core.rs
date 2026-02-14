@@ -2,11 +2,10 @@ use qbit_rs::Qbit;
 use qbit_rs::model::{
     AddTorrentArg, Credential, GetTorrentListArg, TorrentFile, TorrentSource
 };
-use std::io::{self, Write};
 use tokio::time::{sleep, Duration};
 use tokio::fs;
 use crate::{lib_pn_data, lib_pn_emit, lib_pn_schema};
-use crate::libpnprotocol::core::{Protocol, Schema, ToolInfo};
+use crate::libpnprotocol::core::{Protocol, Schema};
 
 
 pub struct P2p {

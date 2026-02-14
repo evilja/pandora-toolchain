@@ -7,3 +7,7 @@ pub const REFRESH_TOKEN: usize = 2; // Gdrive
 pub const TOKEN_URL: usize = 3; // Gdrive
 pub const TOKEN: usize = 4; // Discord
 pub const UPLOAD_URL: usize = 5; // Gdrive
+pub const PNMPEG: usize = 6;
+pub const PNP2P: usize = 7;
+pub const PNCURL: usize = 8;
+pub const PARENTID: usize = 9;

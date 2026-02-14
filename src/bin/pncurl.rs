@@ -3,7 +3,8 @@ use pandora_toolchain::{libpncurl::core::{
         RpbData
     },
 };
-use std::thread::{self};
+use tokio::time::Instant;
+use std::{thread::{self}, time::Duration};
 use clap::Parser;
 use std::sync::mpsc::{Sender, Receiver, self};
 use pandora_toolchain::{pn_data, pn_emit, pn_schema};
@@ -76,12 +77,16 @@ fn main() {
         };
         let (tx, rx): (Sender<RpbData>, Receiver<RpbData>) = mpsc::channel();
         let _thr = thread::spawn(move || {
-            request.gdupload(a, Some(args.opcode), "1QBkY2JUV63lfD0c12SxE-eHmpWy3JPkD", tx)
+            request.gdupload(a, Some(args.opcode), tx)
         });
-
+        let mut last = Instant::now();
         while let Ok(val) = rx.recv() {
             match val {
                 RpbData::Progress(done, total) => {
+                    if last.elapsed() < Duration::from_secs(5) {
+                        continue;
+                    }
+                    last = Instant::now();
                     println!("{}",
                         pn_emit!(
                             protocol = proto,
@@ -91,7 +96,10 @@ fn main() {
                         ).unwrap()
                     )
                 }
-                RpbData::Done(a) => {
+                RpbData::Done(mut a) => {
+                    a = a.replace("/", "?PNslash?")
+                        .replace(":", "?PNcolon?")
+                        .replace("%", "?PNpercent?");
                     println!("{}",
                         pn_emit!(
                             protocol = proto,
