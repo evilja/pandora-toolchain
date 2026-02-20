@@ -12,6 +12,12 @@ use clap::Parser;
 )]
 struct Args {
     #[arg(long)]
+    magnet: bool,
+    
+    #[arg(long)]
+    nomagnet: bool,
+
+    #[arg(long)]
     opcode: String,
 
     #[arg(long)]
@@ -25,6 +31,9 @@ struct Args {
 
     #[arg(long)]
     negver: Option<String>,
+
+    #[arg(long)]
+    cancelfile: Option<String>,
 }
 
 #[tokio::main]
@@ -44,8 +53,8 @@ async fn main() {
                       None => "PNp2pCLI".to_string(),
                   });
 
-    let p2pcp = P2p::new("admin", "adminadmin").await;
+    let p2pcp = P2p::new("admin", "adminadmin", args.cancelfile).await;
 
-    p2pcp.download_and_remove(&args.opcode, &args.save, proto, neg).await.unwrap();
+    p2pcp.download_and_remove(&args.opcode, &args.save, proto, neg, if args.nomagnet { false } else if args.magnet { true } else { false }).await.unwrap();
 
 }

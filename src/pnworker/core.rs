@@ -8,20 +8,22 @@ use tokio::time::sleep;
 use tokio::time::Duration;
 use crate::libpnenv::core::get_env;
 use crate::libpnenv::standard::{PNCURL, PNMPEG, PNP2P};
+use crate::libpnp2p::nyaaise::TorrentType;
 use crate::libpnprotocol::core::{Protocol, TypeC};
-use crate::pnworker::messages::{CTORRENT_DONE, CTORRENT_FAIL, ENCODE_DONE, ENCODE_FAIL, ENCODE_PROG, QUEUE_TOO_LONG,
-                    QUEUED, TORRENT_DONE, TORRENT_FAIL, TORRENT_PROG, UPLOAD_DONE, UPLOAD_FAIL, UPLOAD_PROG, headerize, create_job_embed};
+use crate::pnworker::messages::{CTORRENT_DONE, CTORRENT_FAIL, ENCODE_CONCAT_PROG, ENCODE_DONE,
+    ENCODE_FAIL, ENCODE_PROG, JOB_CANCELLED, QUEUE_TOO_LONG, QUEUED, TORRENT_DONE, TORRENT_FAIL,
+    TORRENT_PROG, UPLOAD_DONE, UPLOAD_FAIL, UPLOAD_PROG, create_job_embed};
 use crate::libpndb::core::JobDb;
-use tokio::fs::{copy, create_dir_all, read_dir, rename, write};
+use tokio::fs::{copy, create_dir_all, read_dir, rename, write, File, try_exists};
 use std::path::PathBuf;
 use std::{env};
 use tokio::process::Command;
 use serenity::{
-    all::{Message, Context, EditMessage, CreateMessage},
+    all::{Message, Context, EditMessage},
 };
 // all data types have job id as their last value.
 // directory, link
-type DownloadData = (PathBuf, String, u64);
+type DownloadData = (PathBuf, TorrentType, u64);
 // directory, out name, release or gdrive only
 type UploadData = (PathBuf, String, bool, u64);
 // directory, preset
@@ -44,63 +46,76 @@ pub async fn pn_dloadworker(mut rx: Receiver<DownloadData>, tx: Sender<CommData>
     let pncurl_path = get_env("env.pandora".to_string())[PNCURL].clone();
     let pnp2p_path = get_env("env.pandora".to_string())[PNP2P].clone();
     'll: loop {
-        if let Some((directory, link, job_id)) = rx.recv().await {
-            let mut negotiated: bool = false;
-            let mut pncurl = Command::new(&pncurl_path);
-            pncurl.args(
-                ["--link", &link, "--opcode", &directory.join("contents").join("fetch.torrent").display().to_string(),
-                 "--negkey", &format!("PNcurlT{}", job_id), "--negotiator", "PNdloadworker", "--negver", "1"]
-            );
-            pncurl.stderr(Stdio::null());
-            pncurl.stdout(Stdio::piped());
-            let mut child = pncurl.spawn().expect("Failed to spawn PNcurl");
-            let stdout = child.stdout.take().expect("No stdout");
-            let reader = BufReader::new(stdout);
-            let mut lines = reader.lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                println!("{}", line);
-                if !negotiated {
-                    if let Ok(_) = proto.negotiate(&line) {
-                        negotiated = true;
-                    }
-                } else {
-                    if let Ok(data) = proto.extract_data(&line) {
-                        match data {
-                            TypeC::Multi(indm) => {
-                                let mut out = 0;
-                                for (i, val) in indm.iter().enumerate() {
-                                    if let TypeC::Single(sd) = val {
-                                        if i == 0 {
-                                            out = sd.value.parse::<u16>().unwrap();
-                                        } else {
-                                             if out == 1 { // jobid, message, opt stage
-                                                 tx.send((job_id, CTORRENT_DONE.to_string(), None)).await.unwrap();
-                                             } else if out == 2 {
-                                                 tx.send((job_id, CTORRENT_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
-                                                 continue 'll;
-                                             }
+        if let Some((directory, torrent, job_id)) = rx.recv().await {
+            let arg_opcode: String;
+            match torrent {
+                TorrentType::Link(ref link) => {
+                    let mut negotiated: bool = false;
+                    let mut pncurl = Command::new(&pncurl_path);
+                    pncurl.args(
+                        ["--link", &link, "--opcode", &directory.join("contents").join("fetch.torrent").display().to_string(),
+                         "--negkey", &format!("PNcurlT{}", job_id), "--negotiator", "PNdloadworker", "--negver", "1"]
+                    );
+                    pncurl.stderr(Stdio::null());
+                    pncurl.stdout(Stdio::piped());
+                    let mut child = pncurl.spawn().expect("Failed to spawn PNcurl");
+                    let stdout = child.stdout.take().expect("No stdout");
+                    let reader = BufReader::new(stdout);
+                    let mut lines = reader.lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        println!("{}", line);
+                        if try_exists(directory.join("CANCEL")).await.unwrap_or(false) {
+                            child.kill().await.ok();
+                            tx.send((job_id, format!("{}", JOB_CANCELLED), Some(Stage::Cancelled))).await.unwrap();
+                            continue 'll;
+                        }
+                        if !negotiated {
+                            if let Ok(_) = proto.negotiate(&line) {
+                                negotiated = true;
+                            }
+                        } else {
+                            if let Ok(data) = proto.extract_data(&line) {
+                                match data {
+                                    TypeC::Multi(indm) => {
+                                        let mut out = 0;
+                                        for (i, val) in indm.iter().enumerate() {
+                                            if let TypeC::Single(sd) = val {
+                                                if i == 0 {
+                                                    out = sd.value.parse::<u16>().unwrap();
+                                                } else {
+                                                     if out == 1 { // jobid, message, opt stage
+                                                         tx.send((job_id, CTORRENT_DONE.to_string(), None)).await.unwrap();
+                                                     } else if out == 2 {
+                                                         tx.send((job_id, CTORRENT_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
+                                                         continue 'll;
+                                                     }
+                                                }
+                                            }
                                         }
+                                    }
+                                    TypeC::Single(_) => {
+                                        ()
                                     }
                                 }
                             }
-                            TypeC::Single(_) => {
-                                ()
-                            }
                         }
                     }
+
+                    if !child.wait().await.expect("Failed to wait on child").success() {
+                        tx.send((job_id, CTORRENT_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
+                        continue 'll;
+                    }
+                    arg_opcode = directory.join("contents").join("fetch.torrent").display().to_string();
+                }
+                TorrentType::Magnet(ref magnet) => {
+                    arg_opcode = magnet.clone();
                 }
             }
-
-            if !child.wait().await.expect("Failed to wait on child").success() {
-                tx.send((job_id, CTORRENT_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
-                continue 'll;
-            }
-
             let mut pnp2p = Command::new(&pnp2p_path);
             pnp2p.args(
-                ["--opcode", &directory.join("contents").join("fetch.torrent").display().to_string(),
-                 "--save", &directory.join("contents").join("torrent").display().to_string(),
-                 "--negkey", &format!("PNp2pT{}", job_id), "--negotiator", "PNdloadworker", "--negver", "1"]
+                ["--opcode", &arg_opcode, &format!("--{}", torrent.get_arg()), "--save", &directory.join("contents").join("torrent").display().to_string(),
+                "--negkey", &format!("PNp2pT{}", job_id), "--negotiator", "PNdloadworker", "--negver", "1",
+                "--cancelfile", &directory.join("CANCEL").display().to_string()]
             );
             pnp2p.stderr(Stdio::null());
             pnp2p.stdout(Stdio::piped());
@@ -108,7 +123,7 @@ pub async fn pn_dloadworker(mut rx: Receiver<DownloadData>, tx: Sender<CommData>
             let stdout = child.stdout.take().expect("No stdout");
             let reader = BufReader::new(stdout);
             let mut lines = reader.lines();
-            negotiated = false;
+            let mut negotiated = false;
             while let Ok(Some(line)) = lines.next_line().await {
                 println!("{}", line);
                 if !negotiated {
@@ -142,6 +157,10 @@ pub async fn pn_dloadworker(mut rx: Receiver<DownloadData>, tx: Sender<CommData>
                                             continue 'll;
                                         } else if out == 2 {
                                             tx.send((job_id, TORRENT_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
+                                            continue 'll;
+                                        } else if out == 3 {
+                                            tx.send((job_id, format!("{}", JOB_CANCELLED), Some(Stage::Cancelled))).await.unwrap();
+                                            continue 'll;
                                         }
                                     } else if let TypeC::Multi(sd) = val {
                                         if i == 1 {
@@ -193,6 +212,7 @@ fn path_to_ffmpeg(path: &Path) -> String {
     let relative = absolute_to_relative(path);
     relative.display().to_string().replace('\\', "/")
 }
+#[cfg(target_os = "windows")]
 fn absolute_to_relative(path: &Path) -> PathBuf {
     let current_dir = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
@@ -247,6 +267,11 @@ pub async fn pn_encdeworker(mut rx: Receiver<EncodeData>, tx: Sender<CommData>) 
             };
             'enc: while let Ok(Some(line)) = lines.next_line().await {
                 println!("{}", line);
+                if try_exists(directory.join("CANCEL")).await.unwrap_or(false) {
+                    child.kill().await.ok();
+                    tx.send((job_id, format!("{}", JOB_CANCELLED), Some(Stage::Cancelled))).await.unwrap();
+                    continue 'll;
+                }
                 if !negotiated {
                     if let Ok(_) = proto.negotiate(&line) {
                         negotiated = true;
@@ -326,8 +351,13 @@ pub async fn pn_encdeworker(mut rx: Receiver<EncodeData>, tx: Sender<CommData>) 
                 let stdout = child.stdout.take().expect("No stdout");
                 let reader = BufReader::new(stdout);
                 let mut lines = reader.lines();
-                'enc_concat: while let Ok(Some(line)) = lines.next_line().await {
+                '_enc_concat: while let Ok(Some(line)) = lines.next_line().await {
                     println!("{}", line);
+                    if try_exists(directory.join("CANCEL")).await.unwrap_or(false) {
+                        child.kill().await.ok();
+                        tx.send((job_id, format!("{}", JOB_CANCELLED), Some(Stage::Cancelled))).await.unwrap();
+                        continue 'll;
+                    }
                     if !negotiated {
                         if let Ok(_) = proto.negotiate(&line) {
                             negotiated = true;
@@ -375,7 +405,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<EncodeData>, tx: Sender<CommData>) 
                                                              }
                                                         }
                                                     }
-                                                    tx.send((job_id, format!("{}\nAşama: 2/2\nİşlenen kare: {}/{}\nSaniye başına işlenen kare: {} \nSaniye başına ortalama veri: {}kbit/s", ENCODE_PROG, frame, totlframe, fps, bitrate), None)).await.unwrap();
+                                                    tx.send((job_id, format!("{}\nAşama: 2/2\nİşlenen kare: {}/{}\nSaniye başına işlenen kare: {} \nSaniye başına ortalama veri: {}kbit/s", ENCODE_CONCAT_PROG, frame, totlframe, fps, bitrate), None)).await.unwrap();
                                                 }
                                             }
                                         }
@@ -406,18 +436,11 @@ fn string_byte_to_mb(str: &String) -> u16 {
     return (bytes / 1024 / 1024) as u16;
 }
 
-#[inline]
-fn normalize(str: &String) -> String {
-    str.replace("?PNslash?", "/")
-        .replace("?PNcolon?", ":")
-        .replace("?PNpercent?", "%")
-}
-
 pub async fn pn_uloadworker(mut rx: Receiver<UploadData>, tx: Sender<CommData>) {
     let mut proto = Protocol::new(vec![1]);
     let pncurl_path = get_env("env.pandora".to_string())[PNCURL].clone();
     'll: loop {
-        if let Some((directory, out_name, release, job_id)) = rx.recv().await {
+        if let Some((directory, out_name, _release, job_id)) = rx.recv().await {
             let mut negotiated: bool = false;
             let mut pncurl = Command::new(&pncurl_path);
             // &directory.join("work").join("output.mp4")
@@ -434,6 +457,11 @@ pub async fn pn_uloadworker(mut rx: Receiver<UploadData>, tx: Sender<CommData>) 
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 println!("{}", line);
+                if try_exists(directory.join("CANCEL")).await.unwrap_or(false) {
+                    child.kill().await.ok();
+                    tx.send((job_id, format!("{}", JOB_CANCELLED), Some(Stage::Cancelled))).await.unwrap();
+                    continue 'll;
+                }
                 if !negotiated {
                     if let Ok(_) = proto.negotiate(&line) {
                         negotiated = true;
@@ -449,7 +477,7 @@ pub async fn pn_uloadworker(mut rx: Receiver<UploadData>, tx: Sender<CommData>) 
                                             out = sd.value.parse::<u16>().unwrap();
                                         } else { // schema = [leaf, [leaf, leaf]]
                                             if out == 1 { // jobid, message, opt stage
-                                                tx.send((job_id, format!("{} {}", UPLOAD_DONE, normalize(&sd.value)), Some(Stage::Uploaded))).await.unwrap();
+                                                tx.send((job_id, format!("{} {}", UPLOAD_DONE, &sd.value), Some(Stage::Uploaded))).await.unwrap();
                                             } else if out == 2 {
                                                 tx.send((job_id, format!("{} {}", UPLOAD_FAIL, &directory.join("work").join("output.mp4").display().to_string()),
                                                     Some(Stage::Failed))).await.unwrap();
@@ -493,14 +521,15 @@ pub async fn pn_uloadworker(mut rx: Receiver<UploadData>, tx: Sender<CommData>) 
     }
 }
 
-const STRUCT: [&str; 2] = [
+pub const STRUCT: [&str; 2] = [
     "contents",
     "work",
 ];
 
-pub async fn pn_worker(mut rx: Receiver<Job>) {
+pub async fn pn_worker(mut rx: Receiver<JobClass>) {
     let db = JobDb::new().await.unwrap(); // pwd/DB/DATA.db
     db.init_schema().await.unwrap();
+    db.migrate().await.unwrap();
 
     let mut queue: Vec<Job> = vec![];
     let (tx_d, rx_d): (Sender<DownloadData>, Receiver<DownloadData>) = channel(5);
@@ -512,52 +541,71 @@ pub async fn pn_worker(mut rx: Receiver<Job>) {
     tokio::spawn(pn_encdeworker(rx_e, tx_c.clone()));
     loop {
         sleep(Duration::from_millis(200)).await;
-        if let Ok(mut job) = rx.try_recv() {
-            if queue.len() > 4 {
-                job.ready = Stage::Declined;
-                job.context.1.channel_id.send_message(
-                    &*job.context.0,
-                    CreateMessage::new()
-                        .embed(create_job_embed(&job, QUEUE_TOO_LONG))
-                ).await.unwrap();
-                continue;
-            }
-            match job.job_type {
-                JobType::Encode => { // type DownloadData = (PathBuf, String); directory, link
-                    let attachments = job.context.1.attachments.get(0).unwrap().download().await;
-                    job.context.1 = job.context.1.channel_id.send_message(
-                        &*job.context.0,
-                        CreateMessage::new()
-                            .embed(create_job_embed(&job, QUEUED))
-                    ).await.unwrap();
-
-                    for i in STRUCT {
-                        create_dir_all(job.directory.join(i)).await.unwrap();
+        if let Ok(jobclass) = rx.try_recv() {
+            match jobclass {
+                JobClass::Job(mut job) => {
+                    if queue.len() > 4 {
+                        job.ready = Stage::Declined;
+                        job.context.1.edit(
+                            &job.context.0,
+                            EditMessage::new()
+                                .content("")
+                                .embed(create_job_embed(&job, QUEUE_TOO_LONG))
+                        ).await.unwrap();
+                        continue;
                     }
+                    match job.job_type {
+                        JobType::Encode => { // type DownloadData = (PathBuf, String); directory, link
+                            job.context.1.edit(
+                                &job.context.0,
+                                EditMessage::new()
+                                    .content("")
+                                    .embed(create_job_embed(&job, QUEUED))
+                            ).await.unwrap();
 
-                    write(job.directory.join("contents").join("subtitle.ass"),
-                        attachments.unwrap()).await.unwrap();
-                    match job.preset {
-                        Preset::PseudoLossless(a) | Preset::Gpu(a) | Preset::Standard(a) => {
-                            match a {
-                                None => {}
-                                Some(a) => {
-                                    match preset_i16_f(a) {
-                                        None => (),
-                                        Some(string) => {
-                                            copy(env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join("DB").join("concat").join(string).as_os_str(), job.directory.join("contents").join("concat.mp4")).await.unwrap();
+                            for i in STRUCT {
+                                create_dir_all(job.directory.join(i)).await.unwrap();
+                            }
+
+                            write(job.directory.join("contents").join("subtitle.ass"), &job.attachment).await.unwrap();
+                            match job.preset {
+                                Preset::PseudoLossless(a) | Preset::Gpu(a) | Preset::Standard(a) => {
+                                    match a {
+                                        None => {}
+                                        Some(a) => {
+                                            match preset_i16_f(a) {
+                                                None => (),
+                                                Some(string) => {
+                                                    copy(env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join("DB").join("concat").join(string).as_os_str(), job.directory.join("contents").join("concat.mp4")).await.unwrap();
+                                                }
+                                            };
                                         }
                                     };
                                 }
                             };
+                            tx_d.send((job.directory.clone(), job.torrent.clone(), job.job_id)).await.unwrap();
+                            job.ready = Stage::Downloading;
+                        }
+                        _ => {
+
                         }
                     };
-                    tx_d.send((job.directory.clone(), job.link.clone(), job.job_id)).await.unwrap();
-                    job.ready = Stage::Downloading;
+                    db.insert_job(&job).await.unwrap();
+                    queue.push(job);
                 }
-            };
-            db.insert_job(&job).await.unwrap();
-            queue.push(job);
+                JobClass::HalfJob(halfjob) => {
+                    match halfjob.job_type {
+                        JobType::Cancel => {
+                            for i in &queue {
+                                if halfjob.job_id == i.job_id && halfjob.author == i.author {
+                                    File::create(i.directory.join("CANCEL")).await.unwrap();
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
         }
         if queue.len() > 0 {
             let job = &mut queue[0];
@@ -573,19 +621,19 @@ pub async fn pn_worker(mut rx: Receiver<Job>) {
                 if let Ok(commdata) = rx_c.try_recv() {
                     for i in queue.iter_mut() {
                         if i.job_id == commdata.0 {
+                            if let Some(a) = commdata.2 {
+                                i.ready = a;
+                                db.update_stage(i.job_id, i.ready).await.unwrap();
+                            }
                             i.context.1.edit(
                                 &*i.context.0,
                                 EditMessage::new()
                                     .content("")
                                     .embed(create_job_embed(&i, &commdata.1))
                             ).await.unwrap();
-                            if let Some(a) = commdata.2 {
-                                i.ready = a;
-                                db.update_stage(i.job_id, i.ready).await.unwrap();
-                                if i.ready == Stage::Uploaded || i.ready == Stage::Failed {
-                                    db.archive_job(i.job_id).await.unwrap();
-                                    queue.remove(0);
-                                }
+                            if i.ready == Stage::Uploaded || i.ready == Stage::Failed || i.ready == Stage::Cancelled {
+                                db.archive_job(i.job_id).await.unwrap();
+                                queue.remove(0);
                             }
                             break;
                         }
@@ -612,7 +660,8 @@ fn preset_i16_f(preset: i16) -> Option<String> {
 #[derive(Copy, Clone, Debug)]
 #[repr(u16)]
 pub enum JobType {
-    Encode = 001
+    Encode = 001,
+    Cancel = 002,
 }
 #[derive(Copy, Clone, Debug)]
 #[derive(PartialEq)]
@@ -626,24 +675,53 @@ pub enum Stage {
     Uploaded,
     Failed,
     Declined,
+    Cancelled,
+}
+
+pub enum JobClass {
+    Job(Job),
+    HalfJob(HalfJob),
+}
+
+#[derive(Clone)]
+pub struct HalfJob {
+    pub author: u64,
+    pub channel_id: u64,
+    pub requested_at: Duration,
+    pub job_id: u64,
+    pub job_type: JobType,
+}
+impl HalfJob {
+    pub fn new_cancel(author: u64, channel_id: u64, job_id: u64) -> Self {
+        let requested_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_secs(0));
+        Self {
+            author,
+            channel_id,
+            job_id,
+            requested_at,
+            job_type: JobType::Cancel,
+        }
+    }
 }
 
 #[derive(Clone)]
 pub struct Job {
     pub author: u64,
     pub channel_id: u64,
+    pub response_id: u64,
     pub requested_at: Duration,
     pub job_type: JobType,
     pub job_id: u64,
     pub preset: Preset,
-    pub link: String,
+    pub torrent: TorrentType,
+    pub attachment: Vec<u8>,
     pub context: (Arc<Context>, Message),
     pub directory: PathBuf,
     pub ready: Stage,
 }
 impl Job {
-    pub fn new(author: u64, channel_id: u64, job_type: JobType, job_id: u64,
-            preset: Preset, link: String, context: Context, msg: Message) -> Self {
+    pub fn new(author: u64, channel_id: u64, response_id: u64, job_type: JobType, job_id: u64,
+            preset: Preset, torrent: TorrentType, attachment: Vec<u8>, context: Context, msg: Message) -> Self {
         let requested_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_secs(0));
         let dir_name = format!("{}-{}-{}", author, job_id, requested_at.as_secs());
         let directory = env::current_dir()
@@ -654,10 +732,12 @@ impl Job {
         Self {
             author,
             channel_id,
+            response_id,
             job_type,
             job_id,
             preset,
-            link,
+            torrent,
+            attachment,
             context: (Arc::new(context), msg),
             directory,
             requested_at,

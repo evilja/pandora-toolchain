@@ -96,10 +96,7 @@ fn main() {
                         ).unwrap()
                     )
                 }
-                RpbData::Done(mut a) => {
-                    a = a.replace("/", "?PNslash?")
-                        .replace(":", "?PNcolon?")
-                        .replace("%", "?PNpercent?");
+                RpbData::Done(a) => {
                     println!("{}",
                         pn_emit!(
                             protocol = proto,
