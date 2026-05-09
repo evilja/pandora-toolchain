@@ -38,15 +38,22 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     };
                     match out {
                         0 => {
-                            let payload = data.get(1).and_then(|v| v.as_multi())?;
-                            let sent = payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
-                            let totl = payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
-                            tx.try_send((job_id, format!("{} {}/{}MB",
-                                UPLOAD_PROG, string_byte_to_mb(sent), string_byte_to_mb(totl)), None)).ok();
+                            let gd_payload = data.get(1).and_then(|v| v.as_multi())?;
+                            let dood_payload = data.get(2).and_then(|v| v.as_multi())?;
+                            let gd_sent = gd_payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
+                            let gd_totl = gd_payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
+                            let dood_sent = dood_payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
+                            let dood_totl = dood_payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
+                            tx.try_send((job_id, format!("{} \nGoogle Drive: {}/{} \nDoodstream: {}/{}",
+                                UPLOAD_PROG,
+                                string_byte_to_mb(gd_sent), string_byte_to_mb(gd_totl),
+                                string_byte_to_mb(dood_sent), string_byte_to_mb(dood_totl),
+                            ), None)).ok();
                         }
                         1 => {
-                            let link = data.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            tx.try_send((job_id, format!("{} {}", UPLOAD_DONE, link), Some(Stage::Uploaded))).ok();
+                            let gd_link = data.get(1).and_then(|v| v.as_str()).unwrap_or("Başarısız").to_string();
+                            let dood_link = data.get(2).and_then(|v| v.as_str()).unwrap_or("Başarısız").to_string();
+                            tx.try_send((job_id, format!("{} Google Drive: {} Doodstream: {}", UPLOAD_DONE, gd_link, dood_link), Some(Stage::Uploaded))).ok();
                             return Some(ToolResult::Success);
                         }
                         2 => return Some(ToolResult::Fail),
@@ -59,7 +66,7 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             match result {
                 ToolResult::Fail | ToolResult::Success => {
                     if matches!(result, ToolResult::Fail) {
-                        tx.send((job_id, format!("{} {}", UPLOAD_FAIL, output_path), Some(Stage::Failed))).await.unwrap();
+                        tx.send((job_id, format!("{}", UPLOAD_FAIL), Some(Stage::Failed))).await.unwrap();
                     }
                 }
                 ToolResult::Cancel => {
