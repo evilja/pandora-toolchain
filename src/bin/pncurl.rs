@@ -62,7 +62,7 @@ async fn main() {
                       None => "PNcurlCLI".to_string(),
                   });
     let request = Req {
-        target: args.link,
+        target: args.link.clone(),
         log: args.logfile.map(PathBuf::from),
     };
     if !args.drive {
@@ -80,7 +80,7 @@ async fn main() {
 
         let tx2 = tx.clone();
         let env2 = a.clone();
-        let opcode2 = args.opcode.clone();
+        let opcode2 = args.link.clone();
         let log2 = request.log.clone();
 
         // spawn both concurrently
@@ -88,7 +88,7 @@ async fn main() {
             request.gdupload(a, Some(args.opcode), tx).await;
         });
         tokio::spawn(async move {
-            let req2 = Req { target: opcode2.clone(), log: log2 };
+            let req2 = Req { target: args.link, log: log2 };
             // wait — target should be the file path
             // adjust as needed for your Req construction
             req2.doodupload(env2, Some(opcode2), tx2).await;
