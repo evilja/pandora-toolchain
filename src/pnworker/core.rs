@@ -107,15 +107,16 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                             }
                         }
                         JobType::GitSync => {
-                            println!("T");
                             if let Some(mut ctx) = halfjob.context {
                                 shrine.kill().await;
-                                let repo_path = std::env::current_exe()
-                                    .unwrap().parent().unwrap().parent().unwrap().to_str().unwrap().to_owned();
+                                let repo_path = std::env::current_dir().unwrap().to_str().unwrap().to_owned();
                                 println!("{}", repo_path);
                                 match git_pull(&repo_path) {
                                     Ok(_) => ctx.1.edit(&ctx.0, EditMessage::new().content("Kaynak kodlar git ile güncellendi.\nBot yeniden başlatılıyor.")).await.unwrap(),
-                                    Err(e) => ctx.1.edit(&ctx.0, EditMessage::new().content("Git güncellemesi başarısız oldu.\nBot yine de yeniden başlatılıyor.")).await.unwrap(),
+                                    Err(e) => {
+                                        println!("{}", e);
+                                        ctx.1.edit(&ctx.0, EditMessage::new().content("Git güncellemesi başarısız oldu.\nBot yine de yeniden başlatılıyor.")).await.unwrap()
+                                    },
                                 }
                                 std::process::exit(0);
                             }

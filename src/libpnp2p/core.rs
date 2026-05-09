@@ -96,7 +96,7 @@ impl P2p {
                 }
                 _ => {}
             }
-            let percent = torrent.progress.unwrap_or(0.0) * 100.0;
+            let percent = (torrent.progress.unwrap_or(0.0) * 100.0).ceil();
             if (percent - last_printed).abs() >= 0.1 {
                 let props = self.api.get_torrent_properties(&hash).await?;
                 let downloaded = (props.total_downloaded.unwrap_or(0) as f32).abs();
