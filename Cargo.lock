@@ -1611,7 +1611,7 @@ dependencies = [
 
 [[package]]
 name = "pandora-toolchain"
-version = "1.2.2-shrine"
+version = "1.2.3-gitsync"
 dependencies = [
  "clap",
  "git2",
