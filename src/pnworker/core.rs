@@ -27,19 +27,6 @@ pub enum WorkerMsg {
 
 pub const STRUCT: [&str; 3] = ["contents", "work", "log"];
 
-// shrine.send(&Worker::Download, WorkerMsg::Download(data)).await?;
-//
-// while let Some((worker, (job_id, msg, stage))) = shrine.receive(500).await {
-//     println!("[{:?}] job={} msg={} stage={:?}", worker, job_id, msg, stage);
-// }
-//
-// // Discord /hearts handler:
-// for status in shrine.hearts() {
-//     println!("{:?}: alive={} last_beat={}s reboots={}",
-//         status.worker, status.alive, status.last_beat_secs, status.reboot_count);
-// }
-
-
 pub async fn pn_worker(mut rx: Receiver<JobClass>) {
     let db = JobDb::new().await.unwrap();
     db.init_schema().await.unwrap();
