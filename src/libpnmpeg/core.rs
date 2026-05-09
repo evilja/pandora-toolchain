@@ -1,0 +1,241 @@
+use std::str::FromStr;
+use std::string::String;
+use std::borrow::Cow;
+use crate::libpnlogging::core::LoggingHandle;
+use crate::log;
+use std::process::{Command, Stdio};
+use std::io::{BufRead, BufReader};
+use std::path::PathBuf;
+use regex::Regex;
+use std::sync::mpsc::Sender;
+
+pub enum RpbData {
+    Progress(u64, u64, u64, u64),
+    Done(String),
+    Fail,
+    CancelFile,
+}
+
+pub struct FFmpeg {
+    out: Command
+}
+
+pub trait Decode {
+    fn decode(&self) -> Vec<String>;
+}
+
+pub enum FfmpegParams {
+    Input(Cow<'static, str>),
+    X264Params(Cow<'static, str>),
+    BasicFilter(Cow<'static, str>),
+    ComplexFilter(Cow<'static, str>),
+    Cv(Cow<'static, str>),
+    Profile(Cow<'static, str>),
+    Level(Cow<'static, str>),
+    Map(Cow<'static, str>),
+    R(Cow<'static, str>),
+    Quality(Cow<'static, str>),
+    Qp(Cow<'static, str>),
+    QpI(Cow<'static, str>),
+    QpP(Cow<'static, str>),
+    Tune(Cow<'static, str>),
+    Rc(Cow<'static, str>),
+    Bufsize(Cow<'static, str>),
+    Maxrate(Cow<'static, str>),
+    Crf(u8),
+    Preset(Cow<'static, str>),
+    Ca(Cow<'static, str>),
+    Ba(Cow<'static, str>),
+    Format(Cow<'static, str>),
+    Safe(Cow<'static, str>),
+    Keyframe(Cow<'static, str>),
+    Movflags,
+    Stats,
+    NoStats,
+    Overwrite,
+    NoOverwrite,
+    Progress(Cow<'static, str>),
+    Output(Cow<'static, str>),
+}
+
+impl Decode for FfmpegParams {
+    fn decode(&self) -> Vec<String> {
+        match self {
+            Self::Input(a) => vec!["-i".to_string(), a.to_string()],
+            Self::X264Params(a) => vec!["-x264-params".to_string(), a.to_string()],
+            Self::BasicFilter(a) => vec!["-vf".to_string(), a.to_string()],
+            Self::ComplexFilter(a) => vec!["-filter_complex".to_string(), a.to_string()],
+            Self::Cv(a) => vec!["-c:v".to_string(), a.to_string()],
+            Self::Profile(a) => vec!["-profile:v".to_string(), a.to_string()],
+            Self::Level(a) => vec!["-level:v".to_string(), a.to_string()],
+            Self::Map(a) => vec!["-map".to_string(), a.to_string()],
+            Self::R(a) => vec!["-r".to_string(), a.to_string()],
+            Self::Quality(a) => vec!["-quality".to_string(), a.to_string()],
+            Self::Qp(a) => vec!["-qp".to_string(), a.to_string()],
+            Self::QpI(a) => vec!["-qp_i".to_string(), a.to_string()],
+            Self::QpP(a) => vec!["-qp_p".to_string(), a.to_string()],
+            Self::Tune(a) => vec!["-tune".to_string(), a.to_string()],
+            Self::Rc(a) => vec!["-rc".to_string(), a.to_string()],
+            Self::Bufsize(a) => vec!["-bufsize".to_string(), a.to_string()],
+            Self::Maxrate(a) => vec!["-maxrate".to_string(), a.to_string()],
+            Self::Crf(a) => vec!["-crf".to_string(), a.to_string()],
+            Self::Preset(a) => vec!["-preset".to_string(), a.to_string()],
+            Self::Ca(a) => vec!["-c:a".to_string(), a.to_string()],
+            Self::Ba(a) => vec!["-b:a".to_string(), a.to_string()],
+            Self::Format(a) => vec!["-f".to_string(), a.to_string()],
+            Self::Safe(a) => vec!["-safe".to_string(), a.to_string()],
+            Self::Keyframe(a) => vec!["-g".to_string(), a.to_string()],
+            Self::Movflags => vec!["-movflags".to_string(), "+faststart".to_string()],
+            Self::Stats => vec!["-stats".to_string()],
+            Self::NoStats => vec!["-nostats".to_string()],
+            Self::Overwrite => vec!["-y".to_string()],
+            Self::NoOverwrite => vec!["-n".to_string()],
+            Self::Progress(a) => vec!["-progress".to_string(), a.to_string()],
+            Self::Output(a) => vec![a.to_string()],
+        }
+    }
+}
+
+pub trait Encode<T> {
+    fn insert_param(&mut self, param: T);
+    fn run(&mut self) -> bool;
+}
+
+impl<T> Encode<T> for FFmpeg
+where T: Decode
+{
+    fn insert_param(&mut self, param: T) {
+        for i in param.decode() {
+            self.out.arg(i);
+        }
+    }
+    fn run(&mut self) -> bool {
+        self.out.status().unwrap();
+        true
+    }
+}
+
+impl AsMut<FFmpeg> for FFmpeg {
+    fn as_mut(&mut self) -> &mut FFmpeg {
+        self
+    }
+}
+
+impl FFmpeg {
+    pub fn new() -> Self {
+        Self {
+            out: Command::new("ffmpeg")
+        }
+    }
+}
+
+pub fn do_encode<T, I>(encoder: &mut T, params: Vec::<I>)
+where T: Encode<I>, I: Decode
+{
+    for i in params {
+        encoder.insert_param(i);
+    }
+
+    encoder.run();
+
+}
+
+pub async fn do_comm_encode_ffmpeg<T, I>(
+    encoder: &mut T,
+    params: Vec<I>,
+    tx: Sender<RpbData>,
+    totalframe: Option<u64>,
+    cancelfile: Option<String>,
+    logfile: Option<String>
+)
+where
+    T: Encode<I> + AsMut<FFmpeg>,
+    I: Decode,
+{
+    let cfile: Option<PathBuf> = match cancelfile {
+        Some(str) => {
+            Some(PathBuf::from(str))
+        }
+        None => { None }
+    };
+    let mut handle: Option<LoggingHandle> = match logfile {
+        Some(pb) => {
+            Some(LoggingHandle::get_handle(&PathBuf::from_str(&pb).unwrap()).await.unwrap())
+        }
+        None => None,
+    };
+    let mut l = String::new();
+    for p in params {
+        l.push_str(&p.decode().join(" "));
+        l.push(' ');
+        encoder.insert_param(p);
+    }
+    l.push('\n');
+    log!(handle, &l);
+    let ffmpeg = encoder.as_mut();
+    ffmpeg.out.stderr(Stdio::piped());
+    ffmpeg.out.stdout(Stdio::null());
+    let mut child = ffmpeg.out.spawn().expect("Failed to spawn ffmpeg");
+    log!(handle, "FFmpeg spawned\n");
+    let stderr = child.stderr.take().expect("No stderr");
+    log!(handle, "stderr taken\n");
+
+    let reader = BufReader::new(stderr);
+
+    let frame_re   = Regex::new(r"frame=\s*(\d+)").unwrap();
+    let fps_re     = Regex::new(r"fps=\s*([\d\.]+)").unwrap();
+    let bitrate_re = Regex::new(r"bitrate=\s*([\d\.]+)").unwrap();
+
+    let mut last_fps: u64 = 0;
+    let mut last_frame: u64 = 0;
+    let mut last_bitrate: u64 = 0;
+    let total_frame: u64 = totalframe.unwrap_or(0);
+
+    for line in reader.lines().flatten() {
+        log!(handle, &(line.clone() + "\n"));
+        if let Some(ref cancelfile) = cfile {
+            if cancelfile.try_exists().unwrap_or(false) {
+                child.kill().unwrap();
+                tx.send(RpbData::CancelFile).unwrap();
+                return;
+            }
+        }
+        if let Some(cap) = frame_re.captures(&line) {
+            last_frame = cap[1].parse::<u64>().unwrap_or(0);
+        }
+
+        if let Some(cap) = fps_re.captures(&line) {
+            last_fps = cap[1]
+                .parse::<f64>()
+                .unwrap_or(0.0) as u64;
+        }
+
+        if let Some(cap) = bitrate_re.captures(&line) {
+            last_bitrate = cap[1]
+                .parse::<f64>()
+                .unwrap_or(0.0) as u64;
+        }
+
+        // Only emit when we actually got frame info
+        if line.contains("frame=") {
+            let _ = tx.send(
+                RpbData::Progress(
+                    last_fps,
+                    last_frame,
+                    total_frame,
+                    last_bitrate
+                )
+            );
+        }
+    }
+    if let Some(mut a) = handle {
+        a.flush().await;
+    }
+    let status = child.wait().expect("Failed to wait ffmpeg");
+
+    if status.success() {
+        let _ = tx.send(RpbData::Done("DONE".into()));
+    } else {
+        let _ = tx.send(RpbData::Fail);
+    }
+}

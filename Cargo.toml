@@ -1,0 +1,18 @@
+[package]
+name = "pandora-toolchain"
+version = "1.2.2-shrine"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+qbit-rs = "0.4.7"
+reqwest = { version = "0.12", features = ["blocking", "json", "multipart", "cookies"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "time", "process"] }
+serenity = "0.12"
+regex = "1.12.3"
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite"] }
+tokio-util = { version = "0.7.18", features = ["io"] }
+toml = "0.8"
+git2 = "0.19"
