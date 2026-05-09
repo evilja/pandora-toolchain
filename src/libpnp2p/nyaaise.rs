@@ -71,11 +71,15 @@ impl Pattern {
     }
 }
 
-const PATTERNS: [Pattern; 4] = [
+const PATTERNS: [Pattern; 8] = [
     Pattern { startswith: Some("https://nyaa.si/download/"), endswith: Some(".torrent"), method: Method::DoNothing },
     Pattern { startswith: Some("https://nyaa.si/view/"), endswith: Some("/torrent"), method: Method::Eliminate },
     Pattern { startswith: Some("https://nyaa.si/download/"), endswith: None, method: Method::Eliminate },
     Pattern { startswith: Some("https://nyaa.si/view/"), endswith: None, method: Method::Eliminate },
+    Pattern { startswith: Some("https://nyaa.land/download/"), endswith: Some(".torrent"), method: Method::DoNothing },
+    Pattern { startswith: Some("https://nyaa.land/view/"), endswith: Some("/torrent"), method: Method::Eliminate },
+    Pattern { startswith: Some("https://nyaa.land/download/"), endswith: None, method: Method::Eliminate },
+    Pattern { startswith: Some("https://nyaa.land/view/"), endswith: None, method: Method::Eliminate },
 ];
 
 pub fn nyaaise(str: &str) -> TorrentType {

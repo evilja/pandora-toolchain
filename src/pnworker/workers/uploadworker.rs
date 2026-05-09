@@ -53,7 +53,7 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                         1 => {
                             let gd_link = data.get(1).and_then(|v| v.as_str()).unwrap_or("Başarısız").to_string();
                             let dood_link = data.get(2).and_then(|v| v.as_str()).unwrap_or("Başarısız").to_string();
-                            tx.try_send((job_id, format!("{} Google Drive: {} Doodstream: {}", UPLOAD_DONE, gd_link, dood_link), Some(Stage::Uploaded))).ok();
+                            tx.try_send((job_id, format!("{} \nGoogle Drive: {} \nDoodstream: {}", UPLOAD_DONE, gd_link, dood_link), Some(Stage::Uploaded))).ok();
                             return Some(ToolResult::Success);
                         }
                         2 => return Some(ToolResult::Fail),

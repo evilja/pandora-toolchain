@@ -223,11 +223,12 @@ impl Req {
             .mime_str("video/mp4")
             .unwrap();
 
+
         let form = multipart::Form::new()
             .text("api_key", api_key.clone())
             .part("file", file_part);
 
-        let upload_url = format!("{server_url}?{api_key}");
+        let upload_url = format!("{server_url}?");
 
         let resp = match client.post(&upload_url).multipart(form).send().await {
             Ok(r) => r,
