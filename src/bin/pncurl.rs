@@ -134,7 +134,6 @@ async fn main() {
         let mut lulu_result: Option<Result<String, ()>> = None;
         let mut voesx_result: Option<Result<String, ()>> = None;
         let mut abyss_result: Option<Result<String, ()>> = None;
-        abyss_result = Some(Err(()));
 
         while let Ok(val) = rx.recv() {
             match val {
