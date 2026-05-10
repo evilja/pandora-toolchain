@@ -370,7 +370,7 @@ impl Req {
             "https://doodapi.co/api/upload/server".to_string(),
             "api_key",
             |text| {
-                // JSON response
+                println!("[dood] upload response: {text}");
                 serde_json::from_str::<serde_json::Value>(text).ok()
                     .and_then(|j| j["result"][0]["download_url"].as_str().map(|s| s.to_string()))
                     .unwrap_or_default()
