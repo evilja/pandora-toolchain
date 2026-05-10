@@ -271,7 +271,9 @@ impl Req {
     }
 
     pub async fn abyssupload(&self, envpath: String, outfile: Option<String>, tx: Sender<RpbData>) -> bool {
+        println!("[abyss] abyssupload started");
         let env = get_env(&envpath);
+        println!("[abyss] env len: {}, ABYSS idx: {}, value: {:?}", env.len(), ABYSS, env.get(ABYSS));
         let api_key = env[ABYSS].clone();
 
         let client = Client::builder()
