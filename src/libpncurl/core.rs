@@ -2,7 +2,7 @@ use crate::{libpnenv::{
     core::get_env,
     standard::{
         CLIENT_ID, CLIENT_SECRET, PARENTID, REFRESH_TOKEN, TOKEN_URL, DOODSTREAM,
-        UQLOAD, LULU, VOESX,
+        UQLOAD, LULU, VOESX, ABYSS,
     }
 }, libpnlogging::core::LoggingHandle, log};
 use reqwest::{Client, multipart};
@@ -87,6 +87,7 @@ pub enum Host {
     Uqload,
     Lulu,
     VoeSx,
+    Abyss,
 }
 
 pub enum RpbData {
@@ -269,6 +270,76 @@ impl Req {
         result
     }
 
+    pub async fn abyssupload(&self, envpath: String, outfile: Option<String>, tx: Sender<RpbData>) -> bool {
+        let env = get_env(&envpath);
+        let api_key = env[ABYSS].clone();
+
+        let client = Client::builder()
+            .timeout(Duration::from_secs(360))
+            .build().unwrap();
+
+        let upload_name = outfile.unwrap_or(self.target.clone());
+        println!("[abyss] upload_name: {upload_name}, target: {}", self.target);
+
+        let file = match tokio::fs::File::open(&self.target).await {
+            Ok(f) => { println!("[abyss] file opened"); f },
+            Err(a) => {
+                println!("[abyss] failed to open file: {a}");
+                tx.send(RpbData::Fail(Host::Abyss)).ok();
+                return false;
+            }
+        };
+
+        let total_size = file.metadata().await.unwrap().len();
+        println!("[abyss] total_size: {total_size} bytes ({:.2}MB)", total_size as f64 / 1_048_576.0);
+
+        let reader = ProgressReader::new(file, total_size, tx.clone(), Host::Abyss);
+        let stream = ReaderStream::new(reader);
+        let body = reqwest::Body::wrap_stream(stream);
+
+        let file_part = multipart::Part::stream_with_length(body, total_size)
+            .file_name(upload_name.clone())
+            .mime_str("video/mp4")
+            .unwrap();
+
+        let form = multipart::Form::new()
+            .part("file", file_part);
+
+        let upload_url = format!("https://up.abyss.to/{api_key}");
+        println!("[abyss] uploading to {upload_url}...");
+
+        let resp = match client.post(&upload_url).multipart(form).send().await {
+            Ok(r) => { println!("[abyss] response status: {}", r.status()); r },
+            Err(a) => {
+                println!("[abyss] request failed: {a}");
+                tx.send(RpbData::Fail(Host::Abyss)).ok();
+                return false;
+            }
+        };
+
+        let json: serde_json::Value = match resp.json().await {
+            Ok(j) => { println!("[abyss] response: {j}"); j },
+            Err(a) => {
+                println!("[abyss] failed to parse response: {a}");
+                tx.send(RpbData::Fail(Host::Abyss)).ok();
+                return false;
+            }
+        };
+
+        let link = json["urlIframe"].as_str()
+            .map(|s| s.to_string())
+            .or_else(|| json["slug"].as_str().map(|s| format!("https://abyss.to/r/{s}")))
+            .unwrap_or_default();
+
+        if link.is_empty() {
+            println!("[abyss] no link in response: {json}");
+            tx.send(RpbData::Fail(Host::Abyss)).ok();
+            return false;
+        }
+        tx.send(RpbData::Done(link, Host::Abyss)).ok();
+        true
+    }
+
     pub async fn luluwrapupload(&self, envpath: String, outfile: Option<String>, tx: Sender<RpbData>) -> bool {
         let env = get_env(&envpath);
         let api_key = env[LULU].clone();
@@ -328,162 +399,6 @@ impl Req {
         ).await
     }
 
-    pub async fn doodupload(
-        &self,
-        envpath: String,
-        outfile: Option<String>,
-        tx: Sender<RpbData>,
-    ) -> bool {
-        println!("[dood] doodupload started");
-        let mut handle: Option<LoggingHandle> = match self.log {
-            Some(ref pb) => Some(LoggingHandle::get_handle(pb).await.unwrap()),
-            None => None,
-        };
-        println!("[dood] log handle acquired: {}", self.log.is_some());
-
-        let env = get_env(&envpath);
-        let api_key = env[DOODSTREAM].clone();
-        println!("[dood] api_key: {api_key}");
-
-        println!("[dood] fetching upload server...");
-        let server_url = {
-            let resp = match reqwest::get(
-                format!("https://doodapi.co/api/upload/server?key={api_key}")
-            ).await {
-                Ok(r) => {
-                    println!("[dood] upload server response status: {}", r.status());
-                    r
-                },
-                Err(a) => {
-                    println!("[dood] failed to get upload server: {a}");
-                    log!(handle, &format!("Failed to get upload server: {a}\n"));
-                    tx.send(RpbData::Fail(Host::Doodstream)).ok();
-                    return false;
-                }
-            };
-
-            let json: serde_json::Value = match resp.json().await {
-                Ok(j) => {
-                    println!("[dood] server response json: {j}");
-                    j
-                },
-                Err(a) => {
-                    println!("[dood] failed to parse server response: {a}");
-                    log!(handle, &format!("Failed to parse server response: {a}\n"));
-                    tx.send(RpbData::Fail(Host::Doodstream)).ok();
-                    return false;
-                }
-            };
-
-            match json["result"].as_str() {
-                Some(url) => {
-                    println!("[dood] upload server url: {url}");
-                    url.to_string()
-                },
-                None => {
-                    println!("[dood] no upload server url in response");
-                    log!(handle, "No upload server URL in response\n");
-                    tx.send(RpbData::Fail(Host::Doodstream)).ok();
-                    return false;
-                }
-            }
-        };
-        log!(handle, &format!("Upload server: {server_url}\n"));
-
-        println!("[dood] building http client...");
-        let client = Client::builder()
-            .timeout(Duration::from_secs(360))
-            .build().unwrap();
-
-        let upload_name = outfile.unwrap_or(self.target.clone());
-        println!("[dood] upload_name: {upload_name}");
-        println!("[dood] target file: {}", self.target);
-
-        println!("[dood] opening file...");
-        let file = match tokio::fs::File::open(&self.target).await {
-            Ok(f) => {
-                println!("[dood] file opened successfully");
-                log!(handle, &format!("Opened file: {}\n", &self.target));
-                f
-            }
-            Err(a) => {
-                println!("[dood] failed to open file: {a}");
-                log!(handle, &format!("Failed to open file: {a}\n"));
-                tx.send(RpbData::Fail(Host::Doodstream)).ok();
-                return false;
-            }
-        };
-
-        let total_size = file.metadata().await.unwrap().len();
-        println!("[dood] total_size: {total_size} bytes ({:.2}MB)", total_size as f64 / 1_048_576.0);
-
-        println!("[dood] setting up progress reader and stream...");
-        let reader = ProgressReader::new(file, total_size, tx.clone(), Host::Doodstream);
-        let stream = ReaderStream::new(reader);
-        let body = reqwest::Body::wrap_stream(stream);
-
-        println!("[dood] building multipart form...");
-        let file_part = multipart::Part::stream_with_length(body, total_size)
-            .file_name(upload_name)
-            .mime_str("video/mp4")
-            .unwrap();
-        let form = multipart::Form::new()
-            .text("api_key", api_key.clone())
-            .part("file", file_part);
-
-        let upload_url = format!("{server_url}");
-        println!("[dood] upload_url: {upload_url}");
-
-        println!("[dood] sending upload request...");
-        let resp = match client.post(&upload_url).multipart(form).send().await {
-            Ok(r) => {
-                println!("[dood] upload response status: {}", r.status());
-                r
-            },
-            Err(a) => {
-                println!("[dood] upload request failed: {a}");
-                log!(handle, &format!("Upload request failed: {a}\n"));
-                tx.send(RpbData::Fail(Host::Doodstream)).ok();
-                return false;
-            }
-        };
-
-        println!("[dood] parsing upload response json...");
-        let json: serde_json::Value = match resp.json().await {
-            Ok(j) => {
-                println!("[dood] upload response json: {j}");
-                j
-            },
-            Err(a) => {
-                println!("[dood] failed to parse upload response: {a}");
-                log!(handle, &format!("Failed to parse upload response: {a}\n"));
-                tx.send(RpbData::Fail(Host::Doodstream)).ok();
-                return false;
-            }
-        };
-
-        let download_url = match json["result"][0]["download_url"].as_str() {
-            Some(url) => {
-                println!("[dood] download_url: {url}");
-                url.to_string()
-            },
-            None => {
-                println!("[dood] no download_url in response: {json}");
-                log!(handle, &format!("No download_url in response: {json}\n"));
-                tx.send(RpbData::Fail(Host::Doodstream)).ok();
-                return false;
-            }
-        };
-
-        println!("[dood] upload complete, sending Done");
-        log!(handle, &(download_url.clone() + "\n"));
-        if let Some(mut a) = handle {
-            a.flush().await;
-        }
-        tx.send(RpbData::Done(download_url, Host::Doodstream)).ok();
-        println!("[dood] doodupload finished successfully");
-        true
-    }
 
     pub async fn gdupload(
         &self,

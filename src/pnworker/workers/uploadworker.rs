@@ -43,6 +43,7 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                             let uq_payload = data.get(3).and_then(|v| v.as_multi())?;
                             let lulu_payload = data.get(4).and_then(|v| v.as_multi())?;
                             let voesx_payload = data.get(5).and_then(|v| v.as_multi())?;
+                            let abyss_payload = data.get(6).and_then(|v| v.as_multi())?;
                             let gd_sent = gd_payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
                             let gd_totl = gd_payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
                             let dood_sent = dood_payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
@@ -53,13 +54,16 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                             let lulu_totl = lulu_payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
                             let voesx_sent = voesx_payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
                             let voesx_totl = voesx_payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
-                            tx.try_send((job_id, format!("{} \nGoogle Drive: {}/{} \nDoodstream: {}/{} \nUqload: {}/{} \nLulustream: {}/{} \nVoeSX: {}/{}",
+                            let abyss_sent = voesx_payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
+                            let abyss_totl = voesx_payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
+                            tx.try_send((job_id, format!("{} \nGoogle Drive: {}/{} \nDoodstream: {}/{} \nUqload: {}/{} \nLulustream: {}/{} \nVoeSX: {}/{} \nAbyss {}/{}",
                                 UPLOAD_PROG,
                                 string_byte_to_mb(gd_sent), string_byte_to_mb(gd_totl),
                                 string_byte_to_mb(dood_sent), string_byte_to_mb(dood_totl),
                                 string_byte_to_mb(uq_sent), string_byte_to_mb(uq_totl),
                                 string_byte_to_mb(lulu_sent), string_byte_to_mb(lulu_totl),
                                 string_byte_to_mb(voesx_sent), string_byte_to_mb(voesx_totl),
+                                string_byte_to_mb(abyss_sent), string_byte_to_mb(abyss_totl),
                             ), None)).ok();
                         }
                         1 => {
@@ -68,7 +72,8 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                             let uq_link = data.get(3).and_then(|v| v.as_str()).unwrap_or("Başarısız").to_string();
                             let lulu_link = data.get(4).and_then(|v| v.as_str()).unwrap_or("Başarısız").to_string();
                             let voesx_link = data.get(5).and_then(|v| v.as_str()).unwrap_or("Başarısız").to_string();
-                            tx.try_send((job_id, format!("{} \nGoogle Drive: {} \nDoodstream: {} \nUqload: {} \nLulustream: {} \nVoeSX: {}", UPLOAD_DONE, gd_link, dood_link, uq_link, lulu_link, voesx_link), Some(Stage::Uploaded))).ok();
+                            let abyss_link = data.get(6).and_then(|v| v.as_str()).unwrap_or("Başarısız").to_string();
+                            tx.try_send((job_id, format!("{} \nGoogle Drive: {} \nDoodstream: {} \nUqload: {} \nLulustream: {} \nVoeSX: {} \nAbyss: {}", UPLOAD_DONE, gd_link, dood_link, uq_link, lulu_link, voesx_link, abyss_link), Some(Stage::Uploaded))).ok();
                             return Some(ToolResult::Success);
                         }
                         2 => return Some(ToolResult::Fail),

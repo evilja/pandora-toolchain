@@ -15,3 +15,4 @@ pub const DOODSTREAM: usize = 10; // Doodstream
 pub const UQLOAD: usize = 11;
 pub const LULU: usize = 12;
 pub const VOESX: usize = 13;
+pub const ABYSS: usize = 14;
