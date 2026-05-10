@@ -109,10 +109,10 @@ async fn main() {
             let req5 = Req { target: link5, log: log5 };
             req5.voewrapupload(env5, Some(opcode5), tx5).await;
         });
-        tokio::spawn(async move {
+        /*tokio::spawn(async move {
             let req6 = Req { target: link6, log: log6 };
             req6.abyssupload(env6, Some(opcode6), tx6).await;
-        });
+        });*/
 
         let mut gd_done = 0u64;
         let mut gd_all = 0u64;
@@ -134,6 +134,7 @@ async fn main() {
         let mut lulu_result: Option<Result<String, ()>> = None;
         let mut voesx_result: Option<Result<String, ()>> = None;
         let mut abyss_result: Option<Result<String, ()>> = None;
+        abyss_result = Some(Err(()));
 
         while let Ok(val) = rx.recv() {
             match val {
