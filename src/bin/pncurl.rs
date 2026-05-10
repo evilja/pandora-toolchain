@@ -229,7 +229,7 @@ async fn main() {
                 RpbData::Fail(Host::Abyss) => { abyss_result = Some(Err(())); }
             }
 
-            if gd_result.is_some() && dood_result.is_some() && uq_result.is_some() && lulu_result.is_some() {
+            if gd_result.is_some() && dood_result.is_some() && uq_result.is_some() && lulu_result.is_some() && abyss_result.is_some() {
                 let gd_str = match &gd_result { Some(Ok(url)) => url.as_str(), _ => "Başarısız" };
                 let dood_str = match &dood_result { Some(Ok(url)) => url.as_str(), _ => "Başarısız" };
                 let uq_str = match &uq_result { Some(Ok(url)) => url.as_str(), _ => "Başarısız" };

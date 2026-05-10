@@ -54,8 +54,8 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                             let lulu_totl = lulu_payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
                             let voesx_sent = voesx_payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
                             let voesx_totl = voesx_payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
-                            let abyss_sent = voesx_payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
-                            let abyss_totl = voesx_payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
+                            let abyss_sent = abyss_payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
+                            let abyss_totl = abyss_payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
                             tx.try_send((job_id, format!("{} \nGoogle Drive: {}/{} \nDoodstream: {}/{} \nUqload: {}/{} \nLulustream: {}/{} \nVoeSX: {}/{} \nAbyss {}/{}",
                                 UPLOAD_PROG,
                                 string_byte_to_mb(gd_sent), string_byte_to_mb(gd_totl),
