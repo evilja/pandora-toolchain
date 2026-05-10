@@ -41,24 +41,29 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                             let gd_payload = data.get(1).and_then(|v| v.as_multi())?;
                             let dood_payload = data.get(2).and_then(|v| v.as_multi())?;
                             let uq_payload = data.get(3).and_then(|v| v.as_multi())?;
+                            let lulu_payload = data.get(4).and_then(|v| v.as_multi())?;
                             let gd_sent = gd_payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
                             let gd_totl = gd_payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
                             let dood_sent = dood_payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
                             let dood_totl = dood_payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
                             let uq_sent = uq_payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
                             let uq_totl = uq_payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
-                            tx.try_send((job_id, format!("{} \nGoogle Drive: {}/{} \nDoodstream: {}/{} \nUqload: {}/{}",
+                            let lulu_sent = lulu_payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
+                            let lulu_totl = lulu_payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
+                            tx.try_send((job_id, format!("{} \nGoogle Drive: {}/{} \nDoodstream: {}/{} \nUqload: {}/{} \nLulustream: {}/{}",
                                 UPLOAD_PROG,
                                 string_byte_to_mb(gd_sent), string_byte_to_mb(gd_totl),
                                 string_byte_to_mb(dood_sent), string_byte_to_mb(dood_totl),
                                 string_byte_to_mb(uq_sent), string_byte_to_mb(uq_totl),
+                                string_byte_to_mb(lulu_sent), string_byte_to_mb(lulu_totl),
                             ), None)).ok();
                         }
                         1 => {
                             let gd_link = data.get(1).and_then(|v| v.as_str()).unwrap_or("Başarısız").to_string();
                             let dood_link = data.get(2).and_then(|v| v.as_str()).unwrap_or("Başarısız").to_string();
                             let uq_link = data.get(3).and_then(|v| v.as_str()).unwrap_or("Başarısız").to_string();
-                            tx.try_send((job_id, format!("{} \nGoogle Drive: {} \nDoodstream: {} \nUqload: {}", UPLOAD_DONE, gd_link, dood_link, uq_link), Some(Stage::Uploaded))).ok();
+                            let lulu_link = data.get(4).and_then(|v| v.as_str()).unwrap_or("Başarısız").to_string();
+                            tx.try_send((job_id, format!("{} \nGoogle Drive: {} \nDoodstream: {} \nUqload: {} \nLulustream: {}", UPLOAD_DONE, gd_link, dood_link, uq_link, lulu_link), Some(Stage::Uploaded))).ok();
                             return Some(ToolResult::Success);
                         }
                         2 => return Some(ToolResult::Fail),

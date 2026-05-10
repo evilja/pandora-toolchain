@@ -80,14 +80,15 @@ async fn main() {
 
         let tx2 = tx.clone();
         let tx3 = tx.clone();
+        let tx4 = tx.clone();
         let env2 = a.clone();
-        let env3 = a.clone();
+        let env3 = a.clone(); let env4 = a.clone();
         let opcode2 = args.opcode.clone();
-        let opcode3 = args.opcode.clone();
+        let opcode3 = args.opcode.clone(); let opcode4 = args.opcode.clone();
         let link2 = args.link.clone();
-        let link3 = args.link.clone();
+        let link3 = args.link.clone(); let link4 = args.link.clone();
         let log2 = request.log.clone();
-        let log3 = request.log.clone();
+        let log3 = request.log.clone(); let log4 = request.log.clone();
 
         tokio::spawn(async move {
             request.gdupload(a, Some(args.opcode), tx).await;
@@ -100,6 +101,10 @@ async fn main() {
             let req3 = Req { target: link3, log: log3 };
             req3.uqwrapupload(env3, Some(opcode3), tx3).await;
         });
+        tokio::spawn(async move {
+            let req3 = Req { target: link4, log: log4 };
+            req3.luluwrapupload(env4, Some(opcode4), tx4).await;
+        });
 
         let mut gd_done = 0u64;
         let mut gd_all = 0u64;
@@ -107,11 +112,14 @@ async fn main() {
         let mut dood_all = 0u64;
         let mut uq_done = 0u64;
         let mut uq_all = 0u64;
+        let mut lulu_done = 0u64;
+        let mut lulu_all = 0u64;
         let mut last = Instant::now();
 
         let mut gd_result: Option<Result<String, ()>> = None;
         let mut dood_result: Option<Result<String, ()>> = None;
         let mut uq_result: Option<Result<String, ()>> = None;
+        let mut lulu_result: Option<Result<String, ()>> = None;
 
         while let Ok(val) = rx.recv() {
             match val {
@@ -123,8 +131,8 @@ async fn main() {
                         pn_emit!(
                             protocol = proto,
                             negkey = &neg,
-                            schema = [leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf]],
-                            data   = ["0", [gd_done, gd_all], [dood_done, dood_all], [uq_done, uq_all]]
+                            schema = [leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
+                            data   = ["0", [gd_done, gd_all], [dood_done, dood_all], [uq_done, uq_all], [lulu_done, lulu_all]]
                         ).unwrap()
                     );
                 }
@@ -136,8 +144,8 @@ async fn main() {
                         pn_emit!(
                             protocol = proto,
                             negkey = &neg,
-                            schema = [leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf]],
-                            data   = ["0", [gd_done, gd_all], [dood_done, dood_all], [uq_done, uq_all]]
+                            schema = [leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
+                            data   = ["0", [gd_done, gd_all], [dood_done, dood_all], [uq_done, uq_all], [lulu_done, lulu_all]]
                         ).unwrap()
                     );
                 }
@@ -149,29 +157,45 @@ async fn main() {
                         pn_emit!(
                             protocol = proto,
                             negkey = &neg,
-                            schema = [leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf]],
-                            data   = ["0", [gd_done, gd_all], [dood_done, dood_all], [uq_done, uq_all]]
+                            schema = [leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
+                            data   = ["0", [gd_done, gd_all], [dood_done, dood_all], [uq_done, uq_all], [lulu_done, lulu_all]]
+                        ).unwrap()
+                    );
+                }
+                RpbData::Progress(done, total, Host::Lulu) => {
+                    lulu_done = done; lulu_all = total;
+                    if last.elapsed() < Duration::from_secs(5) { continue; }
+                    last = Instant::now();
+                    println!("{}",
+                        pn_emit!(
+                            protocol = proto,
+                            negkey = &neg,
+                            schema = [leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
+                            data   = ["0", [gd_done, gd_all], [dood_done, dood_all], [uq_done, uq_all], [lulu_done, lulu_all]]
                         ).unwrap()
                     );
                 }
                 RpbData::Done(url, Host::Drive) => { gd_result = Some(Ok(url)); }
                 RpbData::Done(url, Host::Doodstream) => { dood_result = Some(Ok(url)); }
                 RpbData::Done(url, Host::Uqload) => { uq_result = Some(Ok(url)); }
+                RpbData::Done(url, Host::Lulu) => { lulu_result = Some(Ok(url)); }
                 RpbData::Fail(Host::Drive) => { gd_result = Some(Err(())); }
                 RpbData::Fail(Host::Doodstream) => { dood_result = Some(Err(())); }
                 RpbData::Fail(Host::Uqload) => { uq_result = Some(Err(())); }
+                RpbData::Fail(Host::Lulu) => { lulu_result = Some(Err(())); }
             }
 
-            if gd_result.is_some() && dood_result.is_some() && uq_result.is_some() {
+            if gd_result.is_some() && dood_result.is_some() && uq_result.is_some() && lulu_result.is_some() {
                 let gd_str = match &gd_result { Some(Ok(url)) => url.as_str(), _ => "Başarısız" };
                 let dood_str = match &dood_result { Some(Ok(url)) => url.as_str(), _ => "Başarısız" };
                 let uq_str = match &uq_result { Some(Ok(url)) => url.as_str(), _ => "Başarısız" };
+                let lulu_str = match &lulu_result { Some(Ok(url)) => url.as_str(), _ => "Başarısız" };
                 println!("{}",
                     pn_emit!(
                         protocol = proto,
                         negkey = &neg,
-                        schema = [leaf, leaf, leaf, leaf],
-                        data   = ["1", gd_str, dood_str, uq_str]
+                        schema = [leaf, leaf, leaf, leaf, leaf],
+                        data   = ["1", gd_str, dood_str, uq_str, lulu_str]
                     ).unwrap()
                 );
                 break;

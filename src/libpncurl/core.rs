@@ -2,7 +2,7 @@ use crate::{libpnenv::{
     core::get_env,
     standard::{
         CLIENT_ID, CLIENT_SECRET, PARENTID, REFRESH_TOKEN, TOKEN_URL, DOODSTREAM,
-        UQLOAD,
+        UQLOAD, LULU,
     }
 }, libpnlogging::core::LoggingHandle, log};
 use reqwest::{Client, multipart};
@@ -85,6 +85,7 @@ pub enum Host {
     Drive,
     Doodstream,
     Uqload,
+    Lulu,
 }
 
 pub enum RpbData {
@@ -153,6 +154,7 @@ impl Req {
         &self,
         api_key: String,
         server_endpoint: String,
+        key_field: &str,        // "api_key" for dood/uq, "key" for lulu
         link_fn: impl Fn(&str) -> String,
         host: Host,
         outfile: Option<String>,
@@ -219,7 +221,7 @@ impl Req {
             .unwrap();
 
         let form = multipart::Form::new()
-            .text("api_key", api_key.clone())
+            .text(key_field.to_string(), api_key.clone())
             .part("file", file_part);
 
         println!("[upload] sending to {server_url}...");
@@ -247,6 +249,24 @@ impl Req {
         true
     }
 
+    pub async fn luluwrapupload(&self, envpath: String, outfile: Option<String>, tx: Sender<RpbData>) -> bool {
+        let env = get_env(&envpath);
+        let api_key = env[LULU].clone();
+        let result = self.filehost_upload(
+            api_key,
+            "https://lulustream.com/api/upload/server".to_string(),
+            "key",
+            |text| {
+                serde_json::from_str::<serde_json::Value>(text).ok()
+                    .and_then(|j| j["files"][0]["filecode"].as_str().map(|s| format!("https://lulustream.com/v/{s}")))
+                    .unwrap_or_default()
+            },
+            Host::Lulu,
+            outfile,
+            tx,
+        ).await;
+        result
+    }
 
     pub async fn doodwrapupload(&self, envpath: String, outfile: Option<String>, tx: Sender<RpbData>) -> bool {
         let env = get_env(&envpath);
@@ -254,6 +274,7 @@ impl Req {
         self.filehost_upload(
             api_key,
             "https://doodapi.co/api/upload/server".to_string(),
+            "api_key",
             |text| {
                 // JSON response
                 serde_json::from_str::<serde_json::Value>(text).ok()
@@ -272,6 +293,7 @@ impl Req {
         self.filehost_upload(
             api_key,
             "https://uqload.is/api/upload/server".to_string(),
+            "api_key",
             |text| {
                 // HTML response
                 text.split(r#"name="fn">"#)
