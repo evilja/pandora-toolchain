@@ -2,7 +2,7 @@ use crate::{libpnenv::{
     core::get_env,
     standard::{
         CLIENT_ID, CLIENT_SECRET, PARENTID, REFRESH_TOKEN, TOKEN_URL, DOODSTREAM,
-        UQLOAD, LULU,
+        UQLOAD, LULU, VOESX,
     }
 }, libpnlogging::core::LoggingHandle, log};
 use reqwest::{Client, multipart};
@@ -86,6 +86,7 @@ pub enum Host {
     Doodstream,
     Uqload,
     Lulu,
+    VoeSx,
 }
 
 pub enum RpbData {
@@ -249,6 +250,25 @@ impl Req {
         true
     }
 
+    pub async fn voewrapupload(&self, envpath: String, outfile: Option<String>, tx: Sender<RpbData>) -> bool {
+        let env = get_env(&envpath);
+        let api_key = env[VOESX].clone();
+        let result = self.filehost_upload(
+            api_key,
+            "https://voe.sx/api/upload/server".to_string(),
+            "key",
+            |text| {
+                serde_json::from_str::<serde_json::Value>(text).ok()
+                    .and_then(|j| j["file"]["file_code"].as_str().map(|s| format!("https://voe.sx/e/{s}")))
+                    .unwrap_or_default()
+            },
+            Host::VoeSx,
+            outfile,
+            tx,
+        ).await;
+        result
+    }
+
     pub async fn luluwrapupload(&self, envpath: String, outfile: Option<String>, tx: Sender<RpbData>) -> bool {
         let env = get_env(&envpath);
         let api_key = env[LULU].clone();
@@ -258,7 +278,7 @@ impl Req {
             "key",
             |text| {
                 serde_json::from_str::<serde_json::Value>(text).ok()
-                    .and_then(|j| j["files"][0]["filecode"].as_str().map(|s| format!("https://lulustream.com/v/{s}")))
+                    .and_then(|j| j["files"][0]["filecode"].as_str().map(|s| format!("https://lulustream.com/e/{s}")))
                     .unwrap_or_default()
             },
             Host::Lulu,
