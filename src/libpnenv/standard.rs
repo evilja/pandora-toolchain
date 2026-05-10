@@ -12,3 +12,4 @@ pub const PNP2P: usize = 7;
 pub const PNCURL: usize = 8;
 pub const PARENTID: usize = 9; // Gdrive
 pub const DOODSTREAM: usize = 10; // Doodstream
+pub const UQLOAD: usize = 11;

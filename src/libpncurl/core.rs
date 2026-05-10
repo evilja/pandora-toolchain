@@ -1,7 +1,8 @@
 use crate::{libpnenv::{
     core::get_env,
     standard::{
-        CLIENT_ID, CLIENT_SECRET, PARENTID, REFRESH_TOKEN, TOKEN_URL, DOODSTREAM
+        CLIENT_ID, CLIENT_SECRET, PARENTID, REFRESH_TOKEN, TOKEN_URL, DOODSTREAM,
+        UQLOAD,
     }
 }, libpnlogging::core::LoggingHandle, log};
 use reqwest::{Client, multipart};
@@ -83,6 +84,7 @@ async fn get_access_token(
 pub enum Host {
     Drive,
     Doodstream,
+    Uqload,
 }
 
 pub enum RpbData {
@@ -145,6 +147,143 @@ impl Req {
             a.flush().await;
         }
         Ok(())
+    }
+
+    async fn filehost_upload(
+        &self,
+        api_key: String,
+        server_endpoint: String,
+        link_fn: impl Fn(&str) -> String,
+        host: Host,
+        outfile: Option<String>,
+        tx: Sender<RpbData>,
+    ) -> bool {
+        // Step 1: get upload server
+        let server_url = {
+            let resp = match reqwest::get(
+                format!("{server_endpoint}?key={api_key}")
+            ).await {
+                Ok(r) => r,
+                Err(a) => {
+                    println!("[upload] failed to get upload server: {a}");
+                    tx.send(RpbData::Fail(host)).ok();
+                    return false;
+                }
+            };
+
+            let json: serde_json::Value = match resp.json().await {
+                Ok(j) => { println!("[upload] server response: {j}"); j },
+                Err(a) => {
+                    println!("[upload] failed to parse server response: {a}");
+                    tx.send(RpbData::Fail(host)).ok();
+                    return false;
+                }
+            };
+
+            match json["result"].as_str() {
+                Some(url) => { println!("[upload] upload server url: {url}"); url.to_string() },
+                None => {
+                    println!("[upload] no upload server url in response");
+                    tx.send(RpbData::Fail(host)).ok();
+                    return false;
+                }
+            }
+        };
+
+        let client = Client::builder()
+            .timeout(Duration::from_secs(360))
+            .build().unwrap();
+
+        let upload_name = outfile.unwrap_or(self.target.clone());
+        println!("[upload] upload_name: {upload_name}, target: {}", self.target);
+
+        let file = match tokio::fs::File::open(&self.target).await {
+            Ok(f) => { println!("[upload] file opened"); f },
+            Err(a) => {
+                println!("[upload] failed to open file: {a}");
+                tx.send(RpbData::Fail(host.clone())).ok();
+                return false;
+            }
+        };
+
+        let total_size = file.metadata().await.unwrap().len();
+        println!("[upload] total_size: {total_size} bytes ({:.2}MB)", total_size as f64 / 1_048_576.0);
+
+        let reader = ProgressReader::new(file, total_size, tx.clone(), host.clone());
+        let stream = ReaderStream::new(reader);
+        let body = reqwest::Body::wrap_stream(stream);
+
+        let file_part = multipart::Part::stream_with_length(body, total_size)
+            .file_name(upload_name.clone())
+            .mime_str("video/mp4")
+            .unwrap();
+
+        let form = multipart::Form::new()
+            .text("api_key", api_key.clone())
+            .part("file", file_part);
+
+        println!("[upload] sending to {server_url}...");
+        let resp = match client.post(&server_url).multipart(form).send().await {
+            Ok(r) => { println!("[upload] response status: {}", r.status()); r },
+            Err(a) => {
+                println!("[upload] request failed: {a}");
+                tx.send(RpbData::Fail(host)).ok();
+                return false;
+            }
+        };
+
+        // each host parses response differently, use closure
+        let link = match link_fn(&resp.text().await.unwrap_or_default()) {
+            s if s.is_empty() => {
+                println!("[upload] failed to extract link");
+                tx.send(RpbData::Fail(host)).ok();
+                return false;
+            },
+            s => s,
+        };
+
+        println!("[upload] link: {link}");
+        tx.send(RpbData::Done(link, host)).ok();
+        true
+    }
+
+
+    pub async fn doodwrapupload(&self, envpath: String, outfile: Option<String>, tx: Sender<RpbData>) -> bool {
+        let env = get_env(&envpath);
+        let api_key = env[DOODSTREAM].clone();
+        self.filehost_upload(
+            api_key,
+            "https://doodapi.co/api/upload/server".to_string(),
+            |text| {
+                // JSON response
+                serde_json::from_str::<serde_json::Value>(text).ok()
+                    .and_then(|j| j["result"][0]["download_url"].as_str().map(|s| s.to_string()))
+                    .unwrap_or_default()
+            },
+            Host::Doodstream,
+            outfile,
+            tx,
+        ).await
+    }
+
+    pub async fn uqwrapupload(&self, envpath: String, outfile: Option<String>, tx: Sender<RpbData>) -> bool {
+        let env = get_env(&envpath);
+        let api_key = env[UQLOAD].clone();
+        self.filehost_upload(
+            api_key,
+            "https://uqload.is/api/upload/server".to_string(),
+            |text| {
+                // HTML response
+                text.split(r#"name="fn">"#)
+                    .nth(1)
+                    .and_then(|s| s.split("</textarea>").next())
+                    .map(|code| format!("https://uqload.is/{code}"))
+                    .unwrap_or_default()
+            },
+            Host::Uqload,
+            outfile,
+            tx,
+        ).await
     }
 
     pub async fn doodupload(

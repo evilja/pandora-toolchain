@@ -79,91 +79,99 @@ async fn main() {
         let (tx, rx): (Sender<RpbData>, Receiver<RpbData>) = mpsc::channel();
 
         let tx2 = tx.clone();
+        let tx3 = tx.clone();
         let env2 = a.clone();
-        let opcode2 = args.link.clone();
+        let env3 = a.clone();
+        let opcode2 = args.opcode.clone();
+        let opcode3 = args.opcode.clone();
+        let link2 = args.link.clone();
+        let link3 = args.link.clone();
         let log2 = request.log.clone();
+        let log3 = request.log.clone();
 
-        // spawn both concurrently
         tokio::spawn(async move {
             request.gdupload(a, Some(args.opcode), tx).await;
         });
         tokio::spawn(async move {
-            let req2 = Req { target: args.link, log: log2 };
-            // wait — target should be the file path
-            // adjust as needed for your Req construction
-            req2.doodupload(env2, Some(opcode2), tx2).await;
+            let req2 = Req { target: link2, log: log2 };
+            req2.doodwrapupload(env2, Some(opcode2), tx2).await;
+        });
+        tokio::spawn(async move {
+            let req3 = Req { target: link3, log: log3 };
+            req3.uqwrapupload(env3, Some(opcode3), tx3).await;
         });
 
-        let mut gd_done = 0;
-        let mut gd_all = 0;
-        let mut dood_done = 0;
-        let mut dood_all = 0;
+        let mut gd_done = 0u64;
+        let mut gd_all = 0u64;
+        let mut dood_done = 0u64;
+        let mut dood_all = 0u64;
+        let mut uq_done = 0u64;
+        let mut uq_all = 0u64;
         let mut last = Instant::now();
-
 
         let mut gd_result: Option<Result<String, ()>> = None;
         let mut dood_result: Option<Result<String, ()>> = None;
+        let mut uq_result: Option<Result<String, ()>> = None;
 
         while let Ok(val) = rx.recv() {
             match val {
                 RpbData::Progress(done, total, Host::Drive) => {
                     gd_done = done; gd_all = total;
-                    if last.elapsed() < Duration::from_secs(5) {
-                        continue;
-                    }
+                    if last.elapsed() < Duration::from_secs(5) { continue; }
                     last = Instant::now();
                     println!("{}",
                         pn_emit!(
                             protocol = proto,
                             negkey = &neg,
-                            schema = [leaf, [leaf, leaf], [leaf, leaf]],
-                            data   = ["0", [gd_done, gd_all], [dood_done, dood_all]]
+                            schema = [leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf]],
+                            data   = ["0", [gd_done, gd_all], [dood_done, dood_all], [uq_done, uq_all]]
                         ).unwrap()
                     );
                 }
                 RpbData::Progress(done, total, Host::Doodstream) => {
                     dood_done = done; dood_all = total;
-                    if last.elapsed() < Duration::from_secs(5) {
-                        continue;
-                    }
+                    if last.elapsed() < Duration::from_secs(5) { continue; }
                     last = Instant::now();
                     println!("{}",
                         pn_emit!(
                             protocol = proto,
                             negkey = &neg,
-                            schema = [leaf, [leaf, leaf], [leaf, leaf]],
-                            data   = ["0", [gd_done, gd_all], [dood_done, dood_all]]
+                            schema = [leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf]],
+                            data   = ["0", [gd_done, gd_all], [dood_done, dood_all], [uq_done, uq_all]]
                         ).unwrap()
                     );
                 }
-                RpbData::Done(url, Host::Drive) => {
-                    gd_result = Some(Ok(url));
+                RpbData::Progress(done, total, Host::Uqload) => {
+                    uq_done = done; uq_all = total;
+                    if last.elapsed() < Duration::from_secs(5) { continue; }
+                    last = Instant::now();
+                    println!("{}",
+                        pn_emit!(
+                            protocol = proto,
+                            negkey = &neg,
+                            schema = [leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf]],
+                            data   = ["0", [gd_done, gd_all], [dood_done, dood_all], [uq_done, uq_all]]
+                        ).unwrap()
+                    );
                 }
-                RpbData::Done(url, Host::Doodstream) => {
-                    dood_result = Some(Ok(url));
-                }
-                RpbData::Fail(Host::Drive) => {
-                    gd_result = Some(Err(()));
-                }
-                RpbData::Fail(Host::Doodstream) => {
-                    dood_result = Some(Err(()));
-                }
+                RpbData::Done(url, Host::Drive) => { gd_result = Some(Ok(url)); }
+                RpbData::Done(url, Host::Doodstream) => { dood_result = Some(Ok(url)); }
+                RpbData::Done(url, Host::Uqload) => { uq_result = Some(Ok(url)); }
+                RpbData::Fail(Host::Drive) => { gd_result = Some(Err(())); }
+                RpbData::Fail(Host::Doodstream) => { dood_result = Some(Err(())); }
+                RpbData::Fail(Host::Uqload) => { uq_result = Some(Err(())); }
             }
-            if gd_result.is_some() && dood_result.is_some() {
-                let gd_str = match &gd_result {
-                    Some(Ok(url)) => url.as_str(),
-                    _ => "Başarısız",
-                };
-                let dood_str = match &dood_result {
-                    Some(Ok(url)) => url.as_str(),
-                    _ => "Başarısız",
-                };
+
+            if gd_result.is_some() && dood_result.is_some() && uq_result.is_some() {
+                let gd_str = match &gd_result { Some(Ok(url)) => url.as_str(), _ => "Başarısız" };
+                let dood_str = match &dood_result { Some(Ok(url)) => url.as_str(), _ => "Başarısız" };
+                let uq_str = match &uq_result { Some(Ok(url)) => url.as_str(), _ => "Başarısız" };
                 println!("{}",
                     pn_emit!(
                         protocol = proto,
                         negkey = &neg,
-                        schema = [leaf, leaf, leaf],
-                        data   = ["1", gd_str, dood_str]
+                        schema = [leaf, leaf, leaf, leaf],
+                        data   = ["1", gd_str, dood_str, uq_str]
                     ).unwrap()
                 );
                 break;
