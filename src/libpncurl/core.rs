@@ -350,6 +350,7 @@ impl Req {
             "https://lulustream.com/api/upload/server".to_string(),
             "key",
             |text| {
+                println!("[lulu] upload response: {text}");
                 serde_json::from_str::<serde_json::Value>(text).ok()
                     .and_then(|j| j["files"][0]["filecode"].as_str().map(|s| format!("https://lulustream.com/e/{s}")))
                     .unwrap_or_default()
