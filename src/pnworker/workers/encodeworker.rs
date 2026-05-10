@@ -147,6 +147,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 ).await.unwrap();
                 tx.send((job_id, ENCODE_DONE.to_string(), Some(Stage::Encoded))).await.unwrap();
             }
+            println!("[Pandora Encoder] End of Session");
             continue 'll;
         }
         sleep(Duration::from_secs(5)).await;

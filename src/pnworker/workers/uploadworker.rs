@@ -136,6 +136,7 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     tx.send((job_id, JOB_CANCELLED.to_string(), Some(Stage::Cancelled))).await.unwrap();
                 }
             }
+            println!("[Pandora Uploader] End of Session");
             continue 'll;
         }
         sleep(Duration::from_secs(5)).await;
