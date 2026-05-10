@@ -215,12 +215,36 @@ async fn main() {
                         ).unwrap()
                     );
                 }
-                RpbData::Done(url, Host::Drive) => { gd_result = Some(Ok(url)); }
-                RpbData::Done(url, Host::Doodstream) => { dood_result = Some(Ok(url)); }
-                RpbData::Done(url, Host::Uqload) => { uq_result = Some(Ok(url)); }
-                RpbData::Done(url, Host::Lulu) => { lulu_result = Some(Ok(url)); }
-                RpbData::Done(url, Host::VoeSx) => { voesx_result = Some(Ok(url)); }
-                RpbData::Done(url, Host::Abyss) => { abyss_result = Some(Ok(url)); }
+                RpbData::Done(url, Host::Drive) => {
+                    gd_result = Some(Ok(url.clone()));
+                    println!("{}", pn_emit!(protocol = proto, negkey = &neg,
+                        schema = [leaf, leaf, leaf], data = ["1", "1", url]).unwrap());
+                }
+                RpbData::Done(url, Host::Doodstream) => {
+                    dood_result = Some(Ok(url.clone()));
+                    println!("{}", pn_emit!(protocol = proto, negkey = &neg,
+                        schema = [leaf, leaf, leaf], data = ["1", "2", url]).unwrap());
+                }
+                RpbData::Done(url, Host::Uqload) => {
+                    uq_result = Some(Ok(url.clone()));
+                    println!("{}", pn_emit!(protocol = proto, negkey = &neg,
+                        schema = [leaf, leaf, leaf], data = ["1", "3", url]).unwrap());
+                }
+                RpbData::Done(url, Host::Lulu) => {
+                    lulu_result = Some(Ok(url.clone()));
+                    println!("{}", pn_emit!(protocol = proto, negkey = &neg,
+                        schema = [leaf, leaf, leaf], data = ["1", "4", url]).unwrap());
+                }
+                RpbData::Done(url, Host::VoeSx) => {
+                    voesx_result = Some(Ok(url.clone()));
+                    println!("{}", pn_emit!(protocol = proto, negkey = &neg,
+                        schema = [leaf, leaf, leaf], data = ["1", "5", url]).unwrap());
+                }
+                RpbData::Done(url, Host::Abyss) => {
+                    abyss_result = Some(Ok(url.clone()));
+                    println!("{}", pn_emit!(protocol = proto, negkey = &neg,
+                        schema = [leaf, leaf, leaf], data = ["1", "6", url]).unwrap());
+                }
                 RpbData::Fail(Host::Drive) => { gd_result = Some(Err(())); }
                 RpbData::Fail(Host::Doodstream) => { dood_result = Some(Err(())); }
                 RpbData::Fail(Host::Uqload) => { uq_result = Some(Err(())); }
@@ -229,21 +253,7 @@ async fn main() {
                 RpbData::Fail(Host::Abyss) => { abyss_result = Some(Err(())); }
             }
 
-            if gd_result.is_some() && dood_result.is_some() && uq_result.is_some() && lulu_result.is_some() && abyss_result.is_some() {
-                let gd_str = match &gd_result { Some(Ok(url)) => url.as_str(), _ => "Başarısız" };
-                let dood_str = match &dood_result { Some(Ok(url)) => url.as_str(), _ => "Başarısız" };
-                let uq_str = match &uq_result { Some(Ok(url)) => url.as_str(), _ => "Başarısız" };
-                let lulu_str = match &lulu_result { Some(Ok(url)) => url.as_str(), _ => "Başarısız" };
-                let voesx_str = match &voesx_result { Some(Ok(url)) => url.as_str(), _ => "Başarısız" };
-                let abyss_str = match &abyss_result { Some(Ok(url)) => url.as_str(), _ => "Başarısız" };
-                println!("{}",
-                    pn_emit!(
-                        protocol = proto,
-                        negkey = &neg,
-                        schema = [leaf, leaf, leaf, leaf, leaf, leaf, leaf],
-                        data   = ["1", gd_str, dood_str, uq_str, lulu_str, voesx_str, abyss_str]
-                    ).unwrap()
-                );
+            if gd_result.is_some() && dood_result.is_some() && uq_result.is_some() &&  voesx_result.is_some() && lulu_result.is_some() && abyss_result.is_some() {
                 break;
             }
         }
