@@ -261,7 +261,10 @@ impl EventHandler for Handler {
                         .find(|opt| opt.name == "job_id")
                         .and_then(|opt| opt.value.as_str())
                     {
-                        Some(id) => id.parse::<u64>(),
+                        Some(id) => match id.parse::<u64>() {
+                            Ok(x) => x,
+                            Err(_) => {return;}
+                        },
                         None => {
                             command.create_response(&ctx, CreateInteractionResponse::Message(
                                 CreateInteractionResponseMessage::new()
