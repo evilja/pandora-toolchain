@@ -180,19 +180,19 @@ impl P2p {
         println!("[pnp2p] download_selected: setting file priorities");
         for file in &files {
             let priority = if file_indices.contains(&file.index) {
+                let name = file.name.clone();
+                println!("{}", lib_pn_emit!(
+                    protocol = proto,
+                    negkey = &neg,
+                    schema = [leaf, leaf],
+                    data = ["4", name]
+                ).unwrap());
                 Priority::Normal
             } else {
                 Priority::DoNotDownload
             };
             println!("[pnp2p] download_selected: file index={} name={} priority={:?}", 
                      file.index, file.name, priority);
-            let name = file.name.clone();
-            println!("{}", lib_pn_emit!(
-                protocol = proto,
-                negkey = &neg,
-                schema = [leaf, leaf],
-                data = ["4", name]
-            ).unwrap());
             self.api
                 .set_file_priority(&hash, Sep::from_str(&file.index.to_string())?, priority)
                 .await?;

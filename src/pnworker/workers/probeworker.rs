@@ -93,7 +93,11 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                                 .unwrap_or(&name)
                                 .trim()
                                 .to_string();
-                            probe_rows.push(format!("`{}` — {} ({}MB)", idx, short_name, string_byte_to_mb(size)));
+                            let l_i = short_name.char_indices().rev().nth(15).map(|(i, _)| i);
+                            match l_i {
+                                Some(index) => probe_rows.push(format!("`{}` — {} ({}MB)", idx, &short_name[index..], string_byte_to_mb(size))),
+                                None => probe_rows.push(format!("`{}` — {} ({}MB)", idx, short_name, string_byte_to_mb(size))),
+                            }
                         }
                         1 => return Some(ToolResult::Success),
                         2 => return Some(ToolResult::Fail),
