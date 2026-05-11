@@ -9,6 +9,7 @@ use tokio::time::{sleep, Duration};
 use tokio::fs::{self, try_exists};
 use crate::{lib_pn_data, lib_pn_emit, lib_pn_schema};
 use crate::libpnprotocol::core::{Protocol, Schema};
+use tokio::fs::create_dir_all;
 
 pub struct P2p {
     api: Qbit,
@@ -41,10 +42,14 @@ impl P2p {
             }
         };
 
+        let temp_dir = std::env::temp_dir().join(format!("qb_probe_{}", std::process::id()));
+        tokio::fs::create_dir_all(&temp_dir).await?;
+
+        
         let add_args = AddTorrentArg::builder()
             .source(source)
-            .paused("true".to_string())   // String, not bool
-            .savepath("/dev/null".to_string())
+            .paused("true".to_string())
+            .savepath(temp_dir.to_str().unwrap().to_string())
             .build();
 
         self.api.add_torrent(add_args).await?;
@@ -85,6 +90,7 @@ impl P2p {
             .collect();
 
         self.api.delete_torrents(vec![hash], true).await?;
+        tokio::fs::remove_dir_all(&temp_dir).await.ok();
         Ok(mkv_files)
     }
 
