@@ -96,8 +96,8 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                             let l_i = short_name.char_indices().nth(15).map(|(i, _)| i);
                             match l_i {
                                 Some(index) => {
-                                    println!("[Pandora Prober] {}", &short_name[index..]);
-                                    probe_rows.push(format!("`{}` — {} ({}MB)", idx, &short_name[index..], string_byte_to_mb(size)));
+                                    println!("[Pandora Prober] {}", &short_name[..index]);
+                                    probe_rows.push(format!("`{}` — {} ({}MB)", idx, &short_name[..index], string_byte_to_mb(size)));
                                 },
                                 None => {
                                     println!("[Pandora Prober] {}", short_name);
