@@ -393,7 +393,7 @@ impl Req {
                 text.split(r#"name="fn">"#)
                     .nth(1)
                     .and_then(|s| s.split("</textarea>").next())
-                    .map(|code| format!("https://uqload.is/{code}"))
+                    .map(|code| format!("https://uqload.is/{code}.html"))
                     .unwrap_or_default()
             },
             Host::Uqload,
