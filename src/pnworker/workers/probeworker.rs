@@ -4,7 +4,7 @@ use crate::libpnenv::core::get_env;
 use crate::libpnenv::standard::{PNCURL, PNP2P};
 use crate::libpnp2p::nyaaise::TorrentType;
 use crate::libpnprotocol::core::Protocol;
-use crate::pnworker::messages::{CTORRENT_DONE, CTORRENT_FAIL, PROBE_DONE, PROBE_FAIL, PROBE_ROW};
+use crate::pnworker::messages::{CTORRENT_DONE, CTORRENT_FAIL, PROBE_FAIL, PROBE_ROW};
 use crate::pnworker::util::{ToolResult, run_tool, string_byte_to_mb};
 use crate::pnworker::tools::{PNCURL_TORRENT, PNP2P_PROBE};
 use std::path::PathBuf;
@@ -95,8 +95,14 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                                 .to_string();
                             let l_i = short_name.char_indices().rev().nth(15).map(|(i, _)| i);
                             match l_i {
-                                Some(index) => probe_rows.push(format!("`{}` — {} ({}MB)", idx, &short_name[index..], string_byte_to_mb(size))),
-                                None => probe_rows.push(format!("`{}` — {} ({}MB)", idx, short_name, string_byte_to_mb(size))),
+                                Some(index) => {
+                                    println!("[Pandora Prober] {}", &short_name[index..]);
+                                    probe_rows.push(format!("`{}` — {} ({}MB)", idx, &short_name[index..], string_byte_to_mb(size)));
+                                },
+                                None => {
+                                    println!("[Pandora Prober] {}", short_name);
+                                    probe_rows.push(format!("`{}` — {} ({}MB)", idx, short_name, string_byte_to_mb(size)));
+                                },
                             }
                         }
                         1 => return Some(ToolResult::Success),

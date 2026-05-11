@@ -7,7 +7,7 @@ use crate::libpnprotocol::core::Protocol;
 use crate::pnworker::messages::{CTORRENT_DONE, CTORRENT_FAIL, JOB_CANCELLED, TORRENT_DONE, TORRENT_FAIL, TORRENT_PROG};
 use crate::pnworker::util::{ToolResult, run_tool};
 use crate::pnworker::tools::{PNCURL_TORRENT, PNP2P_TORRENT, PNP2P_SELECT};
-use tokio::fs::{read_dir, rename};
+use tokio::fs::{rename};
 use std::path::PathBuf;
 use std::collections::HashMap;
 use crate::pnworker::core::Stage;
@@ -128,9 +128,8 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                                     let payload = data.get(1).and_then(|v| v.as_multi())?;
                                     let percent = payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
                                     let progmb  = payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
-                                    let totlmb  = payload.get(2).and_then(|v| v.as_str()).unwrap_or("0");
-                                    tx.try_send((job_id, format!("{} {}% {}MB/{}MB", TORRENT_PROG, percent,
-                                        string_byte_to_mb(progmb), string_byte_to_mb(totlmb)), None)).ok();
+                                    tx.try_send((job_id, format!("{} {}% {}MB", TORRENT_PROG, percent,
+                                        string_byte_to_mb(progmb)), None)).ok();
                                 }
                                 1 => return Some(ToolResult::Success),
                                 2 => return Some(ToolResult::Fail),

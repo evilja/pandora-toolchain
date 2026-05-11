@@ -9,7 +9,6 @@ use tokio::time::{sleep, Duration};
 use tokio::fs::{self, try_exists};
 use crate::{lib_pn_data, lib_pn_emit, lib_pn_schema};
 use crate::libpnprotocol::core::{Protocol, Schema};
-use tokio::fs::create_dir_all;
 
 pub struct P2p {
     api: Qbit,

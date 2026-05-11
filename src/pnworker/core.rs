@@ -83,7 +83,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                             let torrent_src = probe_dir.join("contents").join("fetch.torrent");
                             let torrent_dst = job.directory.join("contents").join("fetch.torrent");
                             match tokio::fs::copy(&torrent_src, &torrent_dst).await {
-                                Ok(o) => {
+                                Ok(_) => {
                                     ();
                                 }
                                 Err(_) => {
