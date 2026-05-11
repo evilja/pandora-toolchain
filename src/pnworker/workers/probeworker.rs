@@ -87,7 +87,13 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                             let idx  = payload.get(0).and_then(|v| v.as_str()).unwrap_or("?");
                             let name = payload.get(1).and_then(|v| v.as_str()).unwrap_or("?");
                             let size = payload.get(2).and_then(|v| v.as_str()).unwrap_or("?");
-                            probe_rows.push(format!("`{}` — {} ({}MB)", idx, name, string_byte_to_mb(size)));
+                            // Remove bracketed tags like [1080p], [HEVC], [SubGroup] etc
+                            let short_name = name
+                                .split('-').last()          // everything before first bracket
+                                .unwrap_or(&name)
+                                .trim()
+                                .to_string();
+                            probe_rows.push(format!("`{}` — {} ({}MB)", idx, short_name, string_byte_to_mb(size)));
                         }
                         1 => return Some(ToolResult::Success),
                         2 => return Some(ToolResult::Fail),
