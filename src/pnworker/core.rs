@@ -200,7 +200,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                         i.ready = a;
                         db.update_stage(i.job_id, i.ready).await.unwrap();
                     }
-                    i.context.1.edit(&*i.context.0, EditMessage::new().content("").embed(create_job_embed(&i, &commdata.1))).await.unwrap();
+                    let _ = i.context.1.edit(&*i.context.0, EditMessage::new().content("").embed(create_job_embed(&i, &commdata.1))).await;
 
                     let finished = matches!(i.ready, Stage::Uploaded | Stage::Failed | Stage::Cancelled);
                     let probe_job_id = i.probe_job_id;
