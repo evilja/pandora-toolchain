@@ -392,7 +392,7 @@ impl EventHandler for Handler {
             CreateCommand::new("pancode")
                 .description("Encode using a previously probed torrent")
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::Integer, "job_id", "Job ID from /probe result")
+                    CreateCommandOption::new(CommandOptionType::String, "job_id", "Job ID from /probe result")
                         .required(true)
                 )
                 .add_option(
