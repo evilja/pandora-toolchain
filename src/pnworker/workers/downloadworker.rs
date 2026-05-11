@@ -203,6 +203,7 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                         }
                     };
 
+                    println!("[Pandora Downloader] Selected file: {}", &final_source.to_string_lossy().to_string());
                     rename(&final_source, &target).await.unwrap();
                     
                     // Optionally clean up empty source directory
