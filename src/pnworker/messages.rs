@@ -27,6 +27,8 @@ pub fn create_job_embed(job: &Job, status_message: &str) -> CreateEmbed {
     // Choose color based on stage
     let color = match job.ready {
         Stage::Queued => Colour::LIGHT_GREY,
+        Stage::Probing => Colour::BLUE,
+        Stage::Probed => Colour::DARK_BLUE,
         Stage::Downloading => Colour::BLUE,
         Stage::Downloaded => Colour::DARK_BLUE,
         Stage::Encoding => Colour::ORANGE,
@@ -54,6 +56,8 @@ pub fn create_job_embed(job: &Job, status_message: &str) -> CreateEmbed {
 fn get_stage_emoji(stage: Stage) -> &'static str {
     match stage {
         Stage::Queued => "Sırada",
+        Stage::Probing => "İnceleniyor",
+        Stage::Probed => "İncelendi",
         Stage::Downloading => "İndiriliyor",
         Stage::Downloaded => "İndirildi",
         Stage::Encoding => "Encode Ediliyor",
@@ -75,15 +79,19 @@ pub const HEADER_PREST: &str = "\nEncode preset: ";
 
 pub const JOB_CANCELLED: &str = "\nİşlem iptal edildi.";
 
-pub const CTORRENT_DONE: &str = "\n\nTorrent metadatası indirildi.\nTorrentin kendisini indiriliyor.\nİlerleme: Torrent başlatılıyor.";
-pub const CTORRENT_FAIL: &str = "\n\nTorrent metadatası indirilemedi.\nÇıkılıyor.";
-pub const TORRENT_PROG: &str = "\n\nTorrent metadatası indirildi.\nTorrentin kendisini indiriliyor.\nİlerleme:";
-pub const TORRENT_DONE: &str = "\n\nTorrentin kendisi indirildi.\nUygun olunduğunda encode işlemine geçilecek.";
-pub const TORRENT_FAIL: &str = "\n\nTorrentin kendisi indirilemedi. \nÇıkılıyor.";
+pub const CTORRENT_DONE: &str = "\n\nTorrent kısa süre içinde indirilmeye başlanacak.";
+pub const CTORRENT_FAIL: &str = "\n\nTorrent metadatası indirilemedi.";
+pub const TORRENT_PROG: &str = "\n\nTorrent ilerlemesi:";
+pub const TORRENT_DONE: &str = "\n\nEncode kısa süre içinde başlayacak.";
+pub const TORRENT_FAIL: &str = "\n\nTorrent indirilemedi.";
 pub const ENCODE_PROG: &str = "\n\nDosya encode ediliyor.\n";
 pub const ENCODE_CONCAT_PROG: &str = "\n\nDosyaya intro ekleniyor.\n";
-pub const ENCODE_DONE: &str = "\n\nDosya encode edildi.\nSunuculara yükleniyor.";
-pub const ENCODE_FAIL: &str = "\n\nDosya encode edilemedi. \nÇıkılıyor.";
-pub const UPLOAD_PROG: &str = "\n\nDosya yükleniyor.\nİlerleme:";
-pub const UPLOAD_DONE: &str = "\n\nDosya yüklendi. \nLink:";
+pub const ENCODE_DONE: &str = "\n\nÇıktı sunuculara yükleniyor.";
+pub const ENCODE_FAIL: &str = "\n\nDosya encode edilemedi.";
+pub const UPLOAD_PROG: &str = "\n\nYükleme ilerlemesi:";
+pub const UPLOAD_DONE: &str = "\n\nDosya yüklendi.";
 pub const UPLOAD_FAIL: &str = "\n\nDosya yüklenemedi. \nBir yetkiliden botu yeniden başlatmasını isteyebilirsiniz.";
+// PROBE_DONE, PROBE_FAIL, PROBE_ROW
+pub const PROBE_DONE: &str = "\n\nBatch torrent incelendi.";
+pub const PROBE_FAIL: &str = "\n\nBatch torrent incelenemedi.";
+pub const PROBE_ROW: &str = "\n\nDosya numaraları:";

@@ -52,3 +52,21 @@ pub const PNCURL_UPLOAD: &[CliParam] = &[
     CliParam::Literal("--negotiator"),  CliParam::Literal("PNuloadworker"),
     CliParam::Literal("--negver"),      CliParam::NegVer("1"),
 ];
+
+pub const PNP2P_PROBE: &[CliParam] = &[
+    CliParam::Literal("--opcode"),      CliParam::Path("OPCODE"),
+    CliParam::Literal("--negkey"),      CliParam::JobId("PNp2pP"),
+    CliParam::Literal("--negotiator"),  CliParam::Literal("PNprobeworker"),
+    CliParam::Literal("--negver"),      CliParam::NegVer("1"),
+    CliParam::Literal("--probe"),
+];
+
+pub const PNP2P_SELECT: &[CliParam] = &[
+    CliParam::Literal("--opcode"),      CliParam::Path("OPCODE"),
+    CliParam::Literal("--save"),        CliParam::Path("SAVE"),
+    CliParam::Literal("--select"),      CliParam::Path("INDEX"),
+    CliParam::Literal("--negkey"),      CliParam::JobId("PNp2pS"),
+    CliParam::Literal("--negotiator"),  CliParam::Literal("PNdloadworker"),
+    CliParam::Literal("--negver"),      CliParam::NegVer("1"),
+    CliParam::Literal("--cancelfile"),  CliParam::Path("CANCELFILE"),
+];

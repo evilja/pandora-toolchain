@@ -236,5 +236,7 @@ fn stage_to_int(stage: Stage) -> i64 {
         Stage::Failed      => 7,
         Stage::Declined    => 8,
         Stage::Cancelled   => 9,
+        Stage::Probing     => 20,
+        Stage::Probed      => 21,
     }
 }

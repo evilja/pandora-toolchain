@@ -25,8 +25,9 @@ fn is_authorized(part: &str, id: u64) -> bool {
         "!enc" | "!encode" => "authorize.pandora",
         "!authorize" | "!auth" => "admin.pandora",
         // slash commands — must match command.data.name exactly
-        "encode" => "authorize.pandora",
-        "gitsync" | "hearts" | "probe" => "admin.pandora",
+        "encode" | "pancode" | "probe" => "authorize.pandora",
+        "gitsync" | "hearts" => "admin.pandora",
+
         _ => return false,
     };
     let allowed = get_perm(class.to_string());
@@ -73,6 +74,34 @@ pub async fn handle_message(
         nyaaise(&torrent_url),
         attachment_bytes,
         context.clone(),
+        response_msg,
+    ))
+}
+
+pub async fn handle_probe(
+    ctx: &Context,
+    command: &serenity::all::CommandInteraction,
+    torrent_url: String,
+) -> Option<Job> {
+    command.create_response(ctx, CreateInteractionResponse::Message(
+        CreateInteractionResponseMessage::new().content("🔍 Probing torrent...")
+    )).await.ok();
+
+    let response_msg = match command.get_response(&ctx.http).await {
+        Ok(m) => m,
+        Err(_) => return None,
+    };
+
+    Some(Job::new(
+        command.user.id.get(),
+        command.channel_id.get(),
+        response_msg.id.get(),
+        JobType::Probe,
+        response_msg.id.get(),
+        Preset::Dummy(None),   // irrelevant for probe
+        nyaaise(&torrent_url),
+        vec![],                // no attachment
+        ctx.clone(),
         response_msg,
     ))
 }
@@ -205,6 +234,81 @@ impl EventHandler for Handler {
                         self.tx.send(JobClass::Job(job)).await.unwrap();
                     }
                 }
+                "probe" => {
+                    let torrent_url = match command.data.options.iter()
+                        .find(|opt| opt.name == "torrent")
+                        .and_then(|opt| opt.value.as_str())
+                    {
+                        Some(url) if !url.is_empty() => url.to_string(),
+                        _ => {
+                            command.create_response(&ctx, CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content("Error: Torrent URL is required")
+                                    .ephemeral(true)
+                            )).await.ok();
+                            return;
+                        }
+                    };
+
+                    if let Some(job) = handle_probe(&ctx, &command, torrent_url).await {
+                        self.tx.send(JobClass::Job(job)).await.unwrap();
+                    }
+                }
+                "pancode" => {
+                    let probe_job_id = match command.data.options.iter()
+                        .find(|opt| opt.name == "job_id")
+                        .and_then(|opt| opt.value.as_i64())
+                    {
+                        Some(id) => id as u64,
+                        None => {
+                            command.create_response(&ctx, CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content("Error: job_id is required")
+                                    .ephemeral(true)
+                            )).await.ok();
+                            return;
+                        }
+                    };
+
+                    let file_index = match command.data.options.iter()
+                        .find(|opt| opt.name == "index")
+                        .and_then(|opt| opt.value.as_i64())
+                    {
+                        Some(i) => i as u64,
+                        None => {
+                            command.create_response(&ctx, CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content("Error: file index is required")
+                                    .ephemeral(true)
+                            )).await.ok();
+                            return;
+                        }
+                    };
+
+                    let candidates = command.data.options.iter()
+                        .find(|opt| opt.name == "concat")
+                        .and_then(|opt| opt.value.as_str())
+                        .and_then(|group| self.intros.resolve(group));
+
+                    let preset = match command.data.options.iter()
+                        .find(|opt| opt.name == "preset")
+                        .and_then(|opt| opt.value.as_str())
+                        .unwrap_or("standard")
+                    {
+                        "gpu"      => Preset::Standard(candidates),
+                        "standard" => Preset::Standard(candidates),
+                        "dummy"    => Preset::Dummy(candidates),
+                        _          => Preset::PseudoLossless(candidates),
+                    };
+
+                    if let Some(mut job) = handle_interaction(&ctx, &command, String::new(), preset).await {
+                        // Override job type and carry the probe linkage via job_id
+                        job.job_type = JobType::Pancode;
+                        job.probe_job_id = Some(probe_job_id);
+                        job.probe_file_index = Some(file_index);
+                        self.tx.send(JobClass::Job(job)).await.unwrap();
+                    }
+                }
                 "hearts" => {
                     command.create_response(&ctx, CreateInteractionResponse::Message(
                         CreateInteractionResponseMessage::new().content("...")
@@ -276,7 +380,7 @@ impl EventHandler for Handler {
                         .add_string_choice("GPU", "gpu")
                         .add_string_choice("DEV", "dummy")
                 )
-                .add_option(concat_option),
+                .add_option(concat_option.clone()),
             CreateCommand::new("hearts")
                 .description("Check the health of all worker threads"),
             CreateCommand::new("probe")
@@ -285,6 +389,29 @@ impl EventHandler for Handler {
                     CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent URL or magnet link")
                         .required(true)
                 ),
+            CreateCommand::new("pancode")
+                .description("Encode using a previously probed torrent")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "job_id", "Job ID from /probe result")
+                        .required(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "index", "File index from probe results")
+                        .required(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "ASS subtitle file")
+                        .required(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "preset", "Encoding preset")
+                        .required(false)
+                        .add_string_choice("Pseudo Lossless", "pseudolossless")
+                        .add_string_choice("Standard x264", "standard")
+                        .add_string_choice("GPU", "gpu")
+                        .add_string_choice("DEV", "dummy")
+                )
+                .add_option(concat_option.clone()),
             CreateCommand::new("gitsync")
                 .description("Sync with the git repo"),
         ];

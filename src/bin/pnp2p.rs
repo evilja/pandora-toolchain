@@ -1,5 +1,7 @@
 use pandora_toolchain::libpnp2p::{core::*};
 use pandora_toolchain::libpnprotocol::core::{Protocol, ToolInfo};
+use pandora_toolchain::{pn_emit, pn_data, pn_schema};
+use pandora_toolchain::libpnprotocol::core::*;
 
 use clap::Parser;
 
@@ -13,7 +15,7 @@ use clap::Parser;
 struct Args {
     #[arg(long)]
     magnet: bool,
-    
+
     #[arg(long)]
     nomagnet: bool,
 
@@ -21,7 +23,7 @@ struct Args {
     opcode: String,
 
     #[arg(long)]
-    save: String,
+    save: Option<String>,
 
     #[arg(long)]
     negkey: Option<String>,
@@ -34,6 +36,12 @@ struct Args {
 
     #[arg(long)]
     cancelfile: Option<String>,
+
+    #[arg(long)]
+    probe: bool,
+
+    #[arg(long)]
+    select: Option<u64>,  // file index chosen by user
 }
 
 #[tokio::main]
@@ -55,6 +63,34 @@ async fn main() {
 
     let p2pcp = P2p::new("admin", "adminadmin", args.cancelfile).await;
 
-    p2pcp.download_and_remove(&args.opcode, &args.save, proto, neg, if args.nomagnet { false } else if args.magnet { true } else { false }).await.unwrap();
+    if args.probe {
+        // probe mode: list mkv files, emit them as protocol output
+        let files = p2pcp.probe_torrent(&args.opcode, !args.nomagnet && args.magnet).await.unwrap();
+        for (idx, name, size) in files {
+            println!("{}", pn_emit!(
+                protocol = proto,
+                negkey = &neg,
+                schema = [leaf, [leaf, leaf, leaf]],
+                data = ["4", [idx, name, size]]   // opcode 4 = probe result row
+            ).unwrap());
+        }
+        println!("{}", pn_emit!(
+            protocol = proto,
+            negkey = &neg,
+            schema = [leaf, leaf],
+            data = ["1", "DONE"]
+        ).unwrap());
+        return;
+    }
+    
+    if let Some(index) = args.select {
+        p2pcp.download_selected(
+            &args.opcode, &args.save.unwrap(),
+            vec![index], proto, neg, !args.nomagnet && args.magnet
+        ).await.unwrap();
+        return;
+    }
+    
+    p2pcp.download_and_remove(&args.opcode, &args.save.unwrap(), proto, neg, if args.nomagnet { false } else if args.magnet { true } else { false }).await.unwrap();
 
 }

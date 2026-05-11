@@ -17,6 +17,7 @@ pub enum Worker {
     Download,
     Encode,
     Upload,
+    Probe,
 }
 
 // HeartStatus is returned by /hearts command.
