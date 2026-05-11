@@ -1,3 +1,5 @@
+use std::u64;
+
 use serenity::{
     Client,
     all::{CommandOptionType, CreateMessage, Context, GatewayIntents, Interaction, Message, Ready},
@@ -257,9 +259,9 @@ impl EventHandler for Handler {
                 "pancode" => {
                     let probe_job_id = match command.data.options.iter()
                         .find(|opt| opt.name == "job_id")
-                        .and_then(|opt| opt.value.as_i64())
+                        .and_then(|opt| opt.value.as_str())
                     {
-                        Some(id) => id as u64,
+                        Some(id) => id.parse::<u64>(),
                         None => {
                             command.create_response(&ctx, CreateInteractionResponse::Message(
                                 CreateInteractionResponseMessage::new()

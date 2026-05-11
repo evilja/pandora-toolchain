@@ -136,7 +136,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                                         ctx.1.edit(&ctx.0, EditMessage::new().content("Git güncellemesi başarısız oldu.\nBot yine de yeniden başlatılıyor.")).await.unwrap()
                                     },
                                 }
-                                remove_dir_all(PathBuf::from("DB").join("work")).await.unwrap();
+                                let _ = remove_dir_all(PathBuf::from("DB").join("work")).await;
                                 std::process::exit(0);
                             }
                         }
