@@ -93,7 +93,7 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                                 .unwrap_or(&name)
                                 .trim()
                                 .to_string();
-                            let l_i = short_name.char_indices().rev().nth(15).map(|(i, _)| i);
+                            let l_i = short_name.char_indices().nth(15).map(|(i, _)| i);
                             match l_i {
                                 Some(index) => {
                                     println!("[Pandora Prober] {}", &short_name[index..]);
