@@ -109,7 +109,7 @@ impl P2p {
             }
         };
 
-        // Add torrent paused
+        // Add torrent PAUSED (not auto-starting)
         let add_args = AddTorrentArg::builder()
             .source(source)
             .paused("true".to_string())
@@ -117,10 +117,9 @@ impl P2p {
             .build();
 
         self.api.add_torrent(add_args).await?;
-        sleep(Duration::from_secs(1)).await;
-
+        
         // Get hash (most recent)
-        let torrents = self.api
+        let mut torrents = self.api
             .get_torrent_list(GetTorrentListArg::builder().build())
             .await?;
         let hash = torrents
@@ -139,46 +138,38 @@ impl P2p {
                 break;
             }
         }
+        
         if files.is_empty() {
-            self.api.delete_torrents(vec![hash.clone()], Some(true)).await?;
+            self.api.delete_torrents(vec![hash.clone()], true).await?;
             return Err("Could not retrieve file list for priority setting".into());
         }
 
-        // Build pipe‑separated indices for all files
-        let all_indices: Vec<i64> = (0..files.len() as i64).collect();
-        let indices_str = all_indices
-            .iter()
-            .map(|i| i.to_string())
-            .collect::<Vec<_>>()
-            .join("|");
-
-        // We'll set priorities in two steps because set_file_priority applies the same priority
-        // to all given indices. So we first set all files to DoNotDownload, then set selected to Normal.
-        self.api
-            .set_file_priority(&hash, Sep::from_str(&indices_str)?, Priority::DoNotDownload)
-            .await?;
-
-        if !file_indices.is_empty() {
-            let select_indices: Vec<i64> = file_indices.iter().map(|&i| i as i64).collect();
-            let select_str = select_indices
-                .iter()
-                .map(|i| i.to_string())
-                .collect::<Vec<_>>()
-                .join("|");
+        // Set priorities for selected files to NORMAL, others to DO_NOT_DOWNLOAD
+        for file in &files {
+            let priority = if file_indices.contains(&file.index) {
+                Priority::Normal
+            } else {
+                Priority::DoNotDownload
+            };
+            
+            // Set priority for individual file
             self.api
-                .set_file_priority(&hash, Sep::from_str(&select_str)?, Priority::Normal)
+                .set_file_priority(&hash, Sep::from_str(&file.index.to_string())?, priority)
                 .await?;
         }
 
-        // Start the torrent (equivalent to resume)
+        // Small delay to ensure priorities are applied
+        sleep(Duration::from_millis(500)).await;
+        
+        // Start the torrent
         self.api.start_torrents(vec![hash.clone()]).await?;
 
-        // --- Progress monitoring (same as before, but progress reflects selected files) ---
+        // Progress monitoring
         let mut last_printed = -1.0;
         loop {
             if let Some(ref cancelfile) = self.cfile {
                 if try_exists(cancelfile).await.unwrap_or(false) {
-                    self.api.delete_torrents(vec![hash.clone()], Some(true)).await?;
+                    self.api.delete_torrents(vec![hash.clone()], true).await?;
                     println!("{}", lib_pn_emit!(
                         protocol = proto,
                         negkey = &neg,
@@ -199,7 +190,7 @@ impl P2p {
                     break;
                 }
                 Some(State::Error) | Some(State::MissingFiles) => {
-                    self.api.delete_torrents(vec![hash.clone()], Some(true)).await?;
+                    self.api.delete_torrents(vec![hash.clone()], true).await?;
                     println!("{}", lib_pn_emit!(
                         protocol = proto,
                         negkey = &neg,
@@ -233,7 +224,7 @@ impl P2p {
             schema = [leaf, leaf],
             data = ["1", "DONE"]
         ).unwrap());
-        self.api.delete_torrents(vec![hash], Some(false)).await?;
+        self.api.delete_torrents(vec![hash], false).await?;
         Ok(())
     }
 
