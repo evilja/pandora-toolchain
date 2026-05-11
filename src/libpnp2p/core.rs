@@ -124,8 +124,9 @@ impl P2p {
 
         self.api.add_torrent(add_args).await?;
         
+        sleep(Duration::from_secs(1)).await;
         // Get hash (most recent)
-        let mut torrents = self.api
+        let torrents = self.api
             .get_torrent_list(GetTorrentListArg::builder().build())
             .await?;
         let hash = torrents
