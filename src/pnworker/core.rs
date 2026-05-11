@@ -95,7 +95,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                                 job.directory.clone(),
                                 job.torrent.clone(),
                                 job.job_id,
-                                job.probe_file_index,  // ← was missing
+                                job.probe_file_index,
                             ))).await.unwrap();
                             job.ready = Stage::Downloading;
                         }

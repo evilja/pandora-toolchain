@@ -140,48 +140,42 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     ).await
                 }
             };
-            /*let torrent_dir = directory.join("contents").join("torrent");
-            let result = run_tool(
-                &pnp2p_path,
-                PNP2P_TORRENT,
-                &HashMap::from([
-                    ("OPCODE",      PathValue::from(arg_opcode.clone())),
-                    ("TORRENTTYPE", PathValue::from(format!("--{}", torrent.get_arg()))),
-                    ("SAVE",        PathValue::from(torrent_dir.display().to_string())),
-                    ("CANCELFILE",  PathValue::from(directory.join("CANCEL").display().to_string())),
-                ]),
-                job_id,
-                &mut proto,
-                |data| {
-                    let out: u16 = match data.get(0).and_then(|v| v.parse()) {
-                        Some(v) => v,
-                        None => return None,
-                    };
-                    match out {
-                        0 => {
-                            let payload = data.get(1).and_then(|v| v.as_multi())?;
-                            let percent = payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
-                            let progmb  = payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
-                            let totlmb  = payload.get(2).and_then(|v| v.as_str()).unwrap_or("0");
-                            tx.try_send((job_id, format!("{} {}% {}MB/{}MB", TORRENT_PROG, percent,
-                                string_byte_to_mb(progmb), string_byte_to_mb(totlmb)), None)).ok();
-                        }
-                        1 => return Some(ToolResult::Success),
-                        2 => return Some(ToolResult::Fail),
-                        3 => return Some(ToolResult::Cancel),
-                        _ => {}
-                    }
-                    None
-                },
-            ).await;*/
 
             match result {
                 ToolResult::Success => {
-                    let mut entries = read_dir(&torrent_dir).await.unwrap();
-                    if let Some(entry) = entries.next_entry().await.unwrap() {
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                        rename(entry.path(), torrent_dir.join("input.mkv")).await.unwrap();
+                    // Find all .mkv files recursively (no closure inside this block)
+                    let mkv_files = find_mkv_files(&torrent_dir).await;
+                    
+                    if mkv_files.is_empty() {
+                        eprintln!("No .mkv file found in downloaded torrent");
+                        tx.send((job_id, TORRENT_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
+                        continue 'll;
                     }
+                    
+                    // Pick the largest file (simple heuristic)
+                    let mut largest_path = mkv_files[0].clone();
+                    let mut largest_size = tokio::fs::metadata(&largest_path).await.map(|m| m.len()).unwrap_or(0);
+                    for path in &mkv_files[1..] {
+                        let size = tokio::fs::metadata(path).await.map(|m| m.len()).unwrap_or(0);
+                        if size > largest_size {
+                            largest_size = size;
+                            largest_path = path.clone();
+                        }
+                    }
+                    
+                    let target = torrent_dir.join("input.mkv");
+                    rename(&largest_path, &target).await.unwrap();
+                    
+                    // Optionally clean up empty source directory
+                    if let Some(parent) = largest_path.parent() {
+                        if parent != torrent_dir {
+                            let mut parent_entries = tokio::fs::read_dir(parent).await.unwrap();
+                            if parent_entries.next_entry().await.unwrap().is_none() {
+                                tokio::fs::remove_dir_all(parent).await.ok();
+                            }
+                        }
+                    }
+                    
                     tx.send((job_id, TORRENT_DONE.to_string(), Some(Stage::Downloaded))).await.unwrap();
                 }
                 ToolResult::Fail => {
@@ -197,4 +191,24 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
         sleep(Duration::from_secs(5)).await;
         pulse.try_send(()).ok();
     }
+}
+
+async fn find_mkv_files(root: &PathBuf) -> Vec<PathBuf> {
+    let mut result = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        let mut read = match tokio::fs::read_dir(&dir).await {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        while let Ok(Some(entry)) = read.next_entry().await {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("mkv") {
+                result.push(path);
+            }
+        }
+    }
+    result
 }
