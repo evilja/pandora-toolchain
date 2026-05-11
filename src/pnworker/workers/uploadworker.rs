@@ -127,9 +127,15 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             ).await;
 
             match result {
-                ToolResult::Fail | ToolResult::Success => {
-                    if matches!(result, ToolResult::Fail) {
-                        tx.send((job_id, format!("{}", UPLOAD_FAIL), Some(Stage::Failed))).await.unwrap();
+                ToolResult::Success | ToolResult::Fail => {
+                    let any_done = gd_done || dood_done || uq_done || lulu_done || voesx_done || abyss_done;
+                    if any_done {
+                        // Send final status with whatever links we have, force Stage::Uploaded
+                        tx.send((job_id, format!("{} \nGoogle Drive: {} \nDoodstream: {} \nUqload: {} \nLulustream: {} \nVoeSX: {} \nAbyss: {}",
+                            UPLOAD_DONE, gd_link, dood_link, uq_link, lulu_link, voesx_link, abyss_link
+                        ), Some(Stage::Uploaded))).await.unwrap();
+                    } else {
+                        tx.send((job_id, UPLOAD_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
                     }
                 }
                 ToolResult::Cancel => {
