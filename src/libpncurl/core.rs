@@ -195,7 +195,7 @@ impl Req {
         };
 
         let client = Client::builder()
-            .timeout(Duration::from_secs(360))
+            .timeout(Duration::from_secs(550))
             .build().unwrap();
 
         let upload_name = outfile.unwrap_or(self.target.clone());

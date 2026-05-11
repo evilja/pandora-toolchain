@@ -93,7 +93,7 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                                 _ => {}
                             }
                             let stage = if completed >= 6 { Some(Stage::Uploaded) } else { None };
-                            tx.try_send((job_id, format!("{} \nGoogle Drive: {} \nDoodstream: {} \nUqload: {} \nLulustream: {} \nVoeSX: {} \nAbyss: {}",
+                            tx.try_send((job_id, format!("{} \n{} \n{} \n{} \n{} \n{} \n{}",
                                 UPLOAD_DONE, gd_link, dood_link, uq_link, lulu_link, voesx_link, abyss_link
                             ), stage)).ok();
                             if completed >= 6 {
@@ -113,7 +113,7 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                                 _ => {}
                             }
                             let stage = if completed >= 6 { Some(Stage::Uploaded) } else { None };
-                            tx.try_send((job_id, format!("{} \nGoogle Drive: {} \nDoodstream: {} \nUqload: {} \nLulustream: {} \nVoeSX: {} \nAbyss: {}",
+                            tx.try_send((job_id, format!("{} \n{} \n{} \n{} \n{} \n{} \n{}",
                                 UPLOAD_DONE, gd_link, dood_link, uq_link, lulu_link, voesx_link, abyss_link
                             ), stage)).ok();
                             if completed >= 6 {

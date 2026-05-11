@@ -67,6 +67,8 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
 
             let torrent_dir = directory.join("contents").join("torrent");
 
+            let mut targeted_file: Option<String> = None;
+            
             let result = match file_index {
                 None => {
                     run_tool(
@@ -133,6 +135,11 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                                 1 => return Some(ToolResult::Success),
                                 2 => return Some(ToolResult::Fail),
                                 3 => return Some(ToolResult::Cancel),
+                                4 => {
+                                    if let Some(name) = data.get(1).and_then(|v| v.as_str()) {
+                                        targeted_file = Some(name.to_string());
+                                    }
+                                }
                                 _ => {}
                             }
                             None
@@ -164,7 +171,39 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     }
                     
                     let target = torrent_dir.join("input.mkv");
-                    rename(&largest_path, &target).await.unwrap();
+        
+                    // Use the captured filename if we have it, otherwise fallback to largest file scan
+                    let source_path = if let Some(ref rel_path) = targeted_file {
+                        let full_path = torrent_dir.join(rel_path);
+                        if full_path.exists() {
+                            Some(full_path)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    let final_source = match source_path {
+                        Some(p) => p,
+                        None => {
+                            // Fallback to your existing "Largest MKV" heuristic
+                            let mkv_files = find_mkv_files(&torrent_dir).await;
+                            if mkv_files.is_empty() {
+                                tx.send((job_id, TORRENT_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
+                                continue 'll;
+                            }
+                            let mut largest = mkv_files[0].clone();
+                            let mut max_sz = tokio::fs::metadata(&largest).await.map(|m| m.len()).unwrap_or(0);
+                            for path in mkv_files {
+                                let sz = tokio::fs::metadata(&path).await.map(|m| m.len()).unwrap_or(0);
+                                if sz > max_sz { max_sz = sz; largest = path; }
+                            }
+                            largest
+                        }
+                    };
+
+                    rename(&final_source, &target).await.unwrap();
                     
                     // Optionally clean up empty source directory
                     if let Some(parent) = largest_path.parent() {

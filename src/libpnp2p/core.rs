@@ -59,6 +59,7 @@ impl P2p {
 
         self.api.add_torrent(add_args).await?;
         println!("[pnp2p] probe_torrent: add_torrent succeeded");
+        sleep(Duration::from_secs(1)).await;
 
         // Find the hash (most recently added)
         println!("[pnp2p] probe_torrent: fetching torrent list to get hash");
@@ -185,6 +186,13 @@ impl P2p {
             };
             println!("[pnp2p] download_selected: file index={} name={} priority={:?}", 
                      file.index, file.name, priority);
+            let name = file.name.clone();
+            println!("{}", lib_pn_emit!(
+                protocol = proto,
+                negkey = &neg,
+                schema = [leaf, leaf],
+                data = ["4", name]
+            ).unwrap());
             self.api
                 .set_file_priority(&hash, Sep::from_str(&file.index.to_string())?, priority)
                 .await?;
