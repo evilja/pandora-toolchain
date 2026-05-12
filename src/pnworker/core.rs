@@ -7,6 +7,7 @@ use crate::libpnp2p::nyaaise::TorrentType;
 use crate::pnworker::heartbeat::core::{TypedShrine, Worker};
 use crate::pnworker::messages::{QUEUE_TOO_LONG, QUEUED, create_job_embed};
 use crate::libpndb::core::JobDb;
+use crate::pnworker::presence::{change_presence_job};
 use crate::pnworker::pull::git_pull;
 use tokio::fs::{File, create_dir_all, remove_dir_all, rename, write};
 use std::path::PathBuf;
@@ -158,17 +159,18 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
             let active_idx = queue.iter().position(|j| j.ready != Stage::Probed);
 
             if let Some(idx) = active_idx {
+                let qlen = queue.len();
                 let job = &mut queue[idx];
                 if job.ready == Stage::Downloaded {
                     shrine.send(&Worker::Encode, WorkerMsg::Encode((job.directory.clone(), job.preset.clone(), job.job_id))).await.unwrap();
                     job.ready = Stage::Encoding;
                     db.update_stage(job.job_id, Stage::Encoding).await.unwrap();
+                    change_presence_job(&job.context.0, (Some(idx), qlen)).await;
                 } else if job.ready == Stage::Encoded {
                     shrine.send(&Worker::Upload, WorkerMsg::Upload((job.directory.clone(), format!("{}.mp4", job.directory.file_name().unwrap_or_default().display()), false, job.job_id))).await.unwrap();
                     job.ready = Stage::Uploading;
                     db.update_stage(job.job_id, Stage::Uploading).await.unwrap();
                 }
-                // Timeout parked Probed jobs after 3 minutes
             }
             let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_secs(0));
             let timed_out: Vec<u64> = queue.iter()
@@ -184,7 +186,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                     let mut context_1 = queue[pos].context.1.clone();
 
                     context_1.edit(&*context_0, EditMessage::new().content("").embed(
-                        create_job_embed(&queue[pos], "⏰ Probe timed out — use /pancode within 3 minutes next time.")
+                        create_job_embed(&queue[pos], "Probe timed out — use /pancode within 3 minutes next time.")
                     )).await.unwrap();
 
                     cleanup_job(&directory, &PathBuf::from("DB").join("saved_data").join(id.to_string())).await;
@@ -195,6 +197,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
 
             // Comm receive is separate — it applies to any job in the queue, not just the active one
             if let Some((_, commdata)) = shrine.receive(500).await {
+                let qlen = queue.len();
                 if let Some(i) = queue.iter_mut().find(|j| j.job_id == commdata.0) {
                     if let Some(a) = commdata.2 {
                         i.ready = a;
@@ -216,6 +219,8 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                                 db.archive_job(probe_id).await.unwrap();
                                 queue.remove(probe_pos);
                             }
+                        } else {
+                            change_presence_job(&i.context.0, (None, qlen)).await;
                         }
                         db.archive_job(job_id).await.unwrap();
                         cleanup_job(&directory, &PathBuf::from("DB").join("saved_data").join(job_id.to_string())).await;
@@ -338,6 +343,12 @@ pub struct Job {
     pub probe_torrent_path: Option<String>,             // saved .torrent path for later
     pub probe_job_id: Option<u64>,
     pub probe_file_index: Option<u64>,
+}
+
+impl PartialEq for Job {
+    fn eq(&self, other: &Self) -> bool {
+        self.job_id == other.job_id
+    }
 }
 
 impl Job {

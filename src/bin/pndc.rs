@@ -1,5 +1,3 @@
-use std::u64;
-
 use serenity::{
     Client,
     all::{CommandOptionType, CreateMessage, Context, GatewayIntents, Interaction, Message, Ready},
@@ -86,7 +84,7 @@ pub async fn handle_probe(
     torrent_url: String,
 ) -> Option<Job> {
     command.create_response(ctx, CreateInteractionResponse::Message(
-        CreateInteractionResponseMessage::new().content("🔍 Probing torrent...")
+        CreateInteractionResponseMessage::new().content("Probing torrent...")
     )).await.ok();
 
     let response_msg = match command.get_response(&ctx.http).await {
@@ -193,7 +191,7 @@ impl EventHandler for Handler {
                 println!("[gate] BLOCKED user={} cmd={}", command.user.id.get(), command.data.name.as_str());
                 command.create_response(&ctx, CreateInteractionResponse::Message(
                     CreateInteractionResponseMessage::new()
-                        .content("Unauthorized.")
+                        .content("Yetkisiz işlem.\nGeliştiricimden izin isteyin.")
                         .ephemeral(true)
                 )).await.ok();
                 return;
