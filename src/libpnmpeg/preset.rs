@@ -24,9 +24,9 @@ pub const CPU_DUMMY: [FfmpegParams; 16] =
 pub const CPU_PSEUDOLOSSLESS: [FfmpegParams; 17] =
 [
     FfmpegParams::Input(Cow::Borrowed("INPUTFILEV")),
-    FfmpegParams::X264Params(Cow::Borrowed("me=umh:subme=8:merange=24:trellis=2:psy-rd=1:aq-strength=1.1:aq-mode=3:deblock=0,0")),
     FfmpegParams::BasicFilter(Cow::Borrowed("ass=INPUTFILEASS,format=yuv420p")),
     FfmpegParams::Cv(Cow::Borrowed("libx264")),
+    FfmpegParams::X264Params(Cow::Borrowed("me=umh:subme=8:merange=24:trellis=2:psy-rd=1:aq-strength=1.1:aq-mode=3")),
     FfmpegParams::Profile(Cow::Borrowed("high")),
     FfmpegParams::Level(Cow::Borrowed("4.1")),
     FfmpegParams::Map(Cow::Borrowed("0:v")),
@@ -41,11 +41,12 @@ pub const CPU_PSEUDOLOSSLESS: [FfmpegParams; 17] =
     FfmpegParams::Overwrite,
     FfmpegParams::Output(Cow::Borrowed("OUTFILEV")),
 ];
-pub const CPU_SANE_DEFAULTS: [FfmpegParams; 16] =
+pub const CPU_SANE_DEFAULTS: [FfmpegParams; 17] =
 [
     FfmpegParams::Input(Cow::Borrowed("INPUTFILEV")),
     FfmpegParams::BasicFilter(Cow::Borrowed("ass=INPUTFILEASS,format=yuv420p")),
     FfmpegParams::Cv(Cow::Borrowed("libx264")),
+    FfmpegParams::X264Params(Cow::Borrowed("aq-strength=1.0:aq-mode=3")),
     FfmpegParams::Profile(Cow::Borrowed("high")),
     FfmpegParams::Level(Cow::Borrowed("4.1")),
     FfmpegParams::Map(Cow::Borrowed("0:v")),

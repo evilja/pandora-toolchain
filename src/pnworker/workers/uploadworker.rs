@@ -23,15 +23,15 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
         if let Ok(WorkerMsg::Upload((directory, out_name, _release, job_id))) = rx.try_recv() {
             let output_path = directory.join("work").join("output.mp4").display().to_string();
             let mut completed = 0u8;
-            let mut gd_link = "Bekleniyor".to_string(); let mut gd_done = false;
-            let mut dood_link = "Bekleniyor".to_string(); let mut dood_done = false;
-            let mut uq_link = "Bekleniyor".to_string(); let mut uq_done = false;
-            let mut lulu_link = "Bekleniyor".to_string(); let mut lulu_done = false;
-            let mut voesx_link = "Bekleniyor".to_string(); let mut voesx_done = false;
-            let mut abyss_link = "Bekleniyor".to_string(); let mut abyss_done = false;
+            let mut gd_link = "Google Bekleniyor".to_string(); let mut gd_done = false;
+            let mut dood_link = "Doodstream Bekleniyor".to_string(); let mut dood_done = false;
+            let mut uq_link = "Uqload Bekleniyor".to_string(); let mut uq_done = false;
+            let mut lulu_link = "Lulustream Bekleniyor".to_string(); let mut lulu_done = false;
+            let mut voesx_link = "Voe Bekleniyor".to_string(); let mut voesx_done = false;
+            let mut abyss_link = "Abyss Bekleniyor".to_string(); let mut abyss_done = false;
 
             let emit_status = |gd: &str, dood: &str, uq: &str, lulu: &str, voe: &str, abyss: &str| {
-                format!("Google Drive: {}\nDoodstream: {}\nUqload: {}\nLulustream: {}\nVoeSX: {}\nAbyss: {}",
+                format!("{}\n{}\n{}\n{}\n{}\n{}",
                     gd, dood, uq, lulu, voe, abyss)
             };
 
@@ -104,12 +104,12 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                             completed += 1;
                             let host_id = data.get(1).and_then(|v| v.as_str()).unwrap_or("0");
                             match host_id {
-                                "1" => { gd_link = "Başarısız".to_string(); gd_done = true; }
-                                "2" => { dood_link = "Başarısız".to_string(); dood_done = true; }
-                                "3" => { uq_link = "Başarısız".to_string(); uq_done = true; }
-                                "4" => { lulu_link = "Başarısız".to_string(); lulu_done = true; }
-                                "5" => { voesx_link = "Başarısız".to_string(); voesx_done = true; }
-                                "6" => { abyss_link = "Başarısız".to_string(); abyss_done = true; }
+                                "1" => { gd_link = "Google Başarısız".to_string(); gd_done = true; }
+                                "2" => { dood_link = "Doodstream Başarısız".to_string(); dood_done = true; }
+                                "3" => { uq_link = "Uqload Başarısız".to_string(); uq_done = true; }
+                                "4" => { lulu_link = "Lulustream Başarısız".to_string(); lulu_done = true; }
+                                "5" => { voesx_link = "Voe Başarısız".to_string(); voesx_done = true; }
+                                "6" => { abyss_link = "Abyss Başarısız".to_string(); abyss_done = true; }
                                 _ => {}
                             }
                             let stage = if completed >= 6 { Some(Stage::Uploaded) } else { None };
@@ -131,7 +131,7 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     let any_done = gd_done || dood_done || uq_done || lulu_done || voesx_done || abyss_done;
                     if any_done {
                         // Send final status with whatever links we have, force Stage::Uploaded
-                        tx.send((job_id, format!("{} \nGoogle Drive: {} \nDoodstream: {} \nUqload: {} \nLulustream: {} \nVoeSX: {} \nAbyss: {}",
+                        tx.send((job_id, format!("{} \n{}\n{}\n{}\n{}\n{}\n{}",
                             UPLOAD_DONE, gd_link, dood_link, uq_link, lulu_link, voesx_link, abyss_link
                         ), Some(Stage::Uploaded))).await.unwrap();
                     } else {
