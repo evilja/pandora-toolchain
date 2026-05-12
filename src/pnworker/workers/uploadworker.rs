@@ -140,7 +140,7 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 ToolResult::Cancel => {
                     if any_done {
                         tx.send((job_id, format!("{} \n{}\n{}\n{}\n{}\n{}\n{}",
-                            UPLOAD_DONE, gd_link, dood_link, uq_link, lulu_link, voesx_link, abyss_link
+                            JOB_CANCELLED, gd_link, dood_link, uq_link, lulu_link, voesx_link, abyss_link
                         ), Some(Stage::Cancelled))).await.unwrap();
                     } else {
                         tx.send((job_id, JOB_CANCELLED.to_string(), Some(Stage::Cancelled))).await.unwrap();
