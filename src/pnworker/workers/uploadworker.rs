@@ -69,12 +69,12 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                             let voesx_totl = voesx_payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
                             let abyss_sent = abyss_payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
                             let abyss_totl = abyss_payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
-                            if !gd_done { gd_link = format!("{}/{} MB", string_byte_to_mb(gd_sent), string_byte_to_mb(gd_totl)); }
-                            if !dood_done { dood_link = format!("{}/{} MB", string_byte_to_mb(dood_sent), string_byte_to_mb(dood_totl)); }
-                            if !uq_done { uq_link = format!("{}/{} MB", string_byte_to_mb(uq_sent), string_byte_to_mb(uq_totl)); }
-                            if !lulu_done { lulu_link = format!("{}/{} MB", string_byte_to_mb(lulu_sent), string_byte_to_mb(lulu_totl)); }
-                            if !voesx_done { voesx_link = format!("{}/{} MB", string_byte_to_mb(voesx_sent), string_byte_to_mb(voesx_totl)); }
-                            if !abyss_done { abyss_link = format!("{}/{} MB", string_byte_to_mb(abyss_sent), string_byte_to_mb(abyss_totl)); }
+                            if !gd_done { gd_link = format!("Google {}/{} MB", string_byte_to_mb(gd_sent), string_byte_to_mb(gd_totl)); }
+                            if !dood_done { dood_link = format!("Doodstream {}/{} MB", string_byte_to_mb(dood_sent), string_byte_to_mb(dood_totl)); }
+                            if !uq_done { uq_link = format!("Uqload {}/{} MB", string_byte_to_mb(uq_sent), string_byte_to_mb(uq_totl)); }
+                            if !lulu_done { lulu_link = format!("Lulustream {}/{} MB", string_byte_to_mb(lulu_sent), string_byte_to_mb(lulu_totl)); }
+                            if !voesx_done { voesx_link = format!("Voe {}/{} MB", string_byte_to_mb(voesx_sent), string_byte_to_mb(voesx_totl)); }
+                            if !abyss_done { abyss_link = format!("Abyss {}/{} MB", string_byte_to_mb(abyss_sent), string_byte_to_mb(abyss_totl)); }
                             tx.try_send((job_id, format!("{}\n{}", UPLOAD_PROG,
                                 emit_status(&gd_link, &dood_link, &uq_link, &lulu_link, &voesx_link, &abyss_link)
                             ), None)).ok();
