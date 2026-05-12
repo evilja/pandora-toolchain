@@ -171,6 +171,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                     shrine.send(&Worker::Upload, WorkerMsg::Upload((job.directory.clone(), format!("{}.mp4", job.directory.file_name().unwrap_or_default().display()), false, job.job_id))).await.unwrap();
                     job.ready = Stage::Uploading;
                     db.update_stage(job.job_id, Stage::Uploading).await.unwrap();
+                    change_presence_job(&job.context.0, (None, qlen)).await;
                 }
             }
             let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_secs(0));
