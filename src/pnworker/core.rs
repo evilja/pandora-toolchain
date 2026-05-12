@@ -220,7 +220,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                                 queue.remove(probe_pos);
                             }
                         } else {
-                            change_presence_job(&i.context.0, (None, qlen)).await;
+                            change_presence_job(&i.context.0, (None, qlen.saturating_sub(1))).await;
                         }
                         db.archive_job(job_id).await.unwrap();
                         cleanup_job(&directory, &PathBuf::from("DB").join("saved_data").join(job_id.to_string())).await;
