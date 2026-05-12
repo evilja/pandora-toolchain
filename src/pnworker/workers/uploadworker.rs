@@ -94,7 +94,7 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                             }
                             let stage = if completed >= 6 { Some(Stage::Uploaded) } else { None };
                             tx.try_send((job_id, format!("{} \n{} \n{} \n{} \n{} \n{} \n{}",
-                                UPLOAD_DONE, gd_link, dood_link, uq_link, lulu_link, voesx_link, abyss_link
+                                UPLOAD_PROG, gd_link, dood_link, uq_link, lulu_link, voesx_link, abyss_link
                             ), stage)).ok();
                             if completed >= 6 {
                                 return Some(ToolResult::Success);
@@ -114,7 +114,7 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                             }
                             let stage = if completed >= 6 { Some(Stage::Uploaded) } else { None };
                             tx.try_send((job_id, format!("{} \n{} \n{} \n{} \n{} \n{} \n{}",
-                                UPLOAD_DONE, gd_link, dood_link, uq_link, lulu_link, voesx_link, abyss_link
+                                UPLOAD_PROG, gd_link, dood_link, uq_link, lulu_link, voesx_link, abyss_link
                             ), stage)).ok();
                             if completed >= 6 {
                                 return Some(ToolResult::Success);
