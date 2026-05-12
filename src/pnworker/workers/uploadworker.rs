@@ -126,11 +126,10 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 },
             ).await;
 
+            let any_done = gd_done || dood_done || uq_done || lulu_done || voesx_done || abyss_done;
             match result {
                 ToolResult::Success | ToolResult::Fail => {
-                    let any_done = gd_done || dood_done || uq_done || lulu_done || voesx_done || abyss_done;
                     if any_done {
-                        // Send final status with whatever links we have, force Stage::Uploaded
                         tx.send((job_id, format!("{} \n{}\n{}\n{}\n{}\n{}\n{}",
                             UPLOAD_DONE, gd_link, dood_link, uq_link, lulu_link, voesx_link, abyss_link
                         ), Some(Stage::Uploaded))).await.unwrap();
@@ -139,7 +138,13 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     }
                 }
                 ToolResult::Cancel => {
-                    tx.send((job_id, JOB_CANCELLED.to_string(), Some(Stage::Cancelled))).await.unwrap();
+                    if any_done {
+                        tx.send((job_id, format!("{} \n{}\n{}\n{}\n{}\n{}\n{}",
+                            UPLOAD_DONE, gd_link, dood_link, uq_link, lulu_link, voesx_link, abyss_link
+                        ), Some(Stage::Cancelled))).await.unwrap();
+                    } else {
+                        tx.send((job_id, JOB_CANCELLED.to_string(), Some(Stage::Cancelled))).await.unwrap();
+                    }
                 }
             }
             println!("[Pandora Uploader] End of Session");
