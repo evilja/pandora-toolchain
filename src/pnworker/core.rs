@@ -12,7 +12,7 @@ use crate::pnworker::pull::git_pull;
 use tokio::fs::{File, create_dir_all, remove_dir_all, rename, write};
 use std::path::PathBuf;
 use std::env;
-use serenity::all::{Message, Context, EditMessage};
+use serenity::all::{ActivityData, Context, EditMessage, Message, OnlineStatus};
 use crate::pnworker::workers::downloadworker::*;
 use crate::pnworker::workers::encodeworker::*;
 use crate::pnworker::workers::uploadworker::*;
@@ -144,6 +144,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                                         ctx.1.edit(&ctx.0, EditMessage::new().content("Git güncellemesi başarısız oldu.\nBot yine de yeniden başlatılıyor.")).await.unwrap()
                                     },
                                 }
+                                ctx.0.set_presence(Some(ActivityData::custom("Recompiling Pandora.")), OnlineStatus::Idle);
                                 let _ = remove_dir_all(PathBuf::from("DB").join("work")).await;
                                 std::process::exit(0);
                             }

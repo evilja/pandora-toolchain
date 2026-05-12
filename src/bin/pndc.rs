@@ -1,6 +1,6 @@
 use serenity::{
     Client,
-    all::{CommandOptionType, CreateMessage, Context, GatewayIntents, Interaction, Message, Ready},
+    all::{ActivityData, CommandOptionType, Context, CreateMessage, GatewayIntents, Interaction, Message, OnlineStatus, Ready},
     builder::{CreateCommand, CreateCommandOption, CreateInteractionResponse, CreateInteractionResponseMessage},
     prelude::*,
 };
@@ -353,6 +353,8 @@ impl EventHandler for Handler {
         println!("{} is connected!", ready.user.name);
         println!("Bot ID: {}", ready.user.id);
         println!("Serving {} guilds", ready.guilds.len());
+
+        ctx.set_presence(Some(ActivityData::custom("Pandora is active.")), OnlineStatus::Online);
 
         let mut concat_option = CreateCommandOption::new(
             CommandOptionType::String,
