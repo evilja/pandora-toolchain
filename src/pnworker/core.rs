@@ -154,82 +154,78 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                 }
             }
         }
-        if !queue.is_empty() {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_secs(0));
+        let timed_out: Vec<u64> = queue.iter()
+            .filter(|j| j.ready == Stage::Probed)
+            .filter(|j| now.saturating_sub(j.requested_at) > Duration::from_secs(180))
+            .map(|j| j.job_id)
+            .collect();
+        for id in timed_out {
+            if let Some(pos) = queue.iter().position(|j| j.job_id == id) {
+                let directory = queue[pos].directory.clone();
+                let context_0 = queue[pos].context.0.clone();
+                let mut context_1 = queue[pos].context.1.clone();
+
+                context_1.edit(&*context_0, EditMessage::new().content("").embed(
+                    create_job_embed(&queue[pos], "Probe timed out. use /pancode within 3 minutes next time.")
+                )).await.unwrap();
+
+                cleanup_job(&directory, &PathBuf::from("DB").join("saved_data").join(id.to_string())).await;
+                db.archive_job(id).await.unwrap();
+                queue.remove(pos);
+            }
+        }
+        if let Some((_, commdata)) = shrine.receive(500).await {
+            let qlen = queue.len();
+            if let Some(i) = queue.iter_mut().find(|j| j.job_id == commdata.0) {
+                if let Some(a) = commdata.2 {
+                    i.ready = a;
+                    db.update_stage(i.job_id, i.ready).await.unwrap();
+                }
+                let _ = i.context.1.edit(&*i.context.0, EditMessage::new().content("").embed(create_job_embed(&i, &commdata.1))).await;
+
+                let finished = matches!(i.ready, Stage::Uploaded | Stage::Failed | Stage::Cancelled);
+                let probe_job_id = i.probe_job_id;
+                let job_id = i.job_id;
+                let directory = i.directory.clone();
+
+                if finished {
+                    // If this was a pancode job, remove and clean up its probe parent
+                    if let Some(probe_id) = probe_job_id {
+                        if let Some(probe_pos) = queue.iter().position(|j| j.job_id == probe_id) {
+                            let probe = &queue[probe_pos];
+                            cleanup_job(&probe.directory.clone(), &PathBuf::from("DB").join("saved_data").join(probe_id.to_string())).await;
+                            db.archive_job(probe_id).await.unwrap();
+                            queue.remove(probe_pos);
+                        }
+                    } else {
+                        change_presence_job(&i.context.0, (None, qlen.saturating_sub(1))).await;
+                    }
+                    db.archive_job(job_id).await.unwrap();
+                    cleanup_job(&directory, &PathBuf::from("DB").join("saved_data").join(job_id.to_string())).await;
+                    // Find and remove by job_id since indices may have shifted after probe removal
+                    queue.retain(|j| j.job_id != job_id);
+                }
+            }
+        }
+        let qlen = queue.len();
+        for (idx, job) in queue.iter_mut().enumerate() {
             // Find the first job that's actively progressing (not parked at Probed)
             //
-            let active_idx = queue.iter().position(|j| j.ready != Stage::Probed);
-
-            if let Some(idx) = active_idx {
-                let qlen = queue.len();
-                let job = &mut queue[idx];
-                if job.ready == Stage::Downloaded {
-                    shrine.send(&Worker::Encode, WorkerMsg::Encode((job.directory.clone(), job.preset.clone(), job.job_id))).await.unwrap();
-                    job.ready = Stage::Encoding;
-                    db.update_stage(job.job_id, Stage::Encoding).await.unwrap();
-                    change_presence_job(&job.context.0, (Some(idx), qlen)).await;
-                } else if job.ready == Stage::Encoded {
-                    shrine.send(&Worker::Upload, WorkerMsg::Upload((job.directory.clone(), format!("{}.mp4", job.directory.file_name().unwrap_or_default().display()), false, job.job_id))).await.unwrap();
-                    job.ready = Stage::Uploading;
-                    db.update_stage(job.job_id, Stage::Uploading).await.unwrap();
-                    change_presence_job(&job.context.0, (None, qlen)).await;
-                }
-            }
-            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_secs(0));
-            let timed_out: Vec<u64> = queue.iter()
-                .filter(|j| j.ready == Stage::Probed)
-                .filter(|j| now.saturating_sub(j.requested_at) > Duration::from_secs(180))
-                .map(|j| j.job_id)
-                .collect();
-
-            for id in timed_out {
-                if let Some(pos) = queue.iter().position(|j| j.job_id == id) {
-                    let directory = queue[pos].directory.clone();
-                    let context_0 = queue[pos].context.0.clone();
-                    let mut context_1 = queue[pos].context.1.clone();
-
-                    context_1.edit(&*context_0, EditMessage::new().content("").embed(
-                        create_job_embed(&queue[pos], "Probe timed out — use /pancode within 3 minutes next time.")
-                    )).await.unwrap();
-
-                    cleanup_job(&directory, &PathBuf::from("DB").join("saved_data").join(id.to_string())).await;
-                    db.archive_job(id).await.unwrap();
-                    queue.remove(pos);
-                }
+            if job.ready == Stage::Probed {
+                continue;
             }
 
-            // Comm receive is separate — it applies to any job in the queue, not just the active one
-            if let Some((_, commdata)) = shrine.receive(500).await {
-                let qlen = queue.len();
-                if let Some(i) = queue.iter_mut().find(|j| j.job_id == commdata.0) {
-                    if let Some(a) = commdata.2 {
-                        i.ready = a;
-                        db.update_stage(i.job_id, i.ready).await.unwrap();
-                    }
-                    let _ = i.context.1.edit(&*i.context.0, EditMessage::new().content("").embed(create_job_embed(&i, &commdata.1))).await;
-
-                    let finished = matches!(i.ready, Stage::Uploaded | Stage::Failed | Stage::Cancelled);
-                    let probe_job_id = i.probe_job_id;
-                    let job_id = i.job_id;
-                    let directory = i.directory.clone();
-
-                    if finished {
-                        // If this was a pancode job, remove and clean up its probe parent
-                        if let Some(probe_id) = probe_job_id {
-                            if let Some(probe_pos) = queue.iter().position(|j| j.job_id == probe_id) {
-                                let probe = &queue[probe_pos];
-                                cleanup_job(&probe.directory.clone(), &PathBuf::from("DB").join("saved_data").join(probe_id.to_string())).await;
-                                db.archive_job(probe_id).await.unwrap();
-                                queue.remove(probe_pos);
-                            }
-                        } else {
-                            change_presence_job(&i.context.0, (None, qlen.saturating_sub(1))).await;
-                        }
-                        db.archive_job(job_id).await.unwrap();
-                        cleanup_job(&directory, &PathBuf::from("DB").join("saved_data").join(job_id.to_string())).await;
-                        // Find and remove by job_id since indices may have shifted after probe removal
-                        queue.retain(|j| j.job_id != job_id);
-                    }
-                }
+            if job.ready == Stage::Downloaded {
+                shrine.send(&Worker::Encode, WorkerMsg::Encode((job.directory.clone(), job.preset.clone(), job.job_id))).await.unwrap();
+                job.ready = Stage::Encoding;
+                db.update_stage(job.job_id, Stage::Encoding).await.unwrap();
+                change_presence_job(&job.context.0, (Some(idx), qlen)).await;
+            } else if job.ready == Stage::Encoded {
+                shrine.send(&Worker::Upload, WorkerMsg::Upload((job.directory.clone(), format!("{}.mp4", job.directory.file_name().unwrap_or_default().display()), false, job.job_id))).await.unwrap();
+                job.ready = Stage::Uploading;
+                db.update_stage(job.job_id, Stage::Uploading).await.unwrap();
+                change_presence_job(&job.context.0, (None, qlen)).await;
             }
         }
     }
