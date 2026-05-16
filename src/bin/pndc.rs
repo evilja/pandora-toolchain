@@ -174,6 +174,32 @@ impl EventHandler for Handler {
             "!enc" => {
                 msg.reply(context, "Lütfen yeni /encode komutunu kullanın.").await.unwrap();
             }
+            "!ban" => {
+                if parts.len() < 2 { return; }
+                let target_id = match parts[1].parse::<u64>() {
+                    Ok(id) => id,
+                    Err(_) => {
+                        msg.reply(&context, "Invalid user ID.").await.ok();
+                        return;
+                    }
+                };
+
+                let target_user_id = serenity::all::UserId::new(target_id);
+                let guilds = context.cache.guilds();
+                let mut success = 0;
+                let mut failed = 0;
+
+                for guild_id in guilds {
+                    match guild_id.ban(&context.http, target_user_id, 0).await {
+                        Ok(_) => success += 1,
+                        Err(_) => failed += 1,
+                    }
+                }
+
+                msg.reply(&context, format!(
+                    "Banned <@{}> from {success} guild(s). Failed: {failed}.", target_id
+                )).await.ok();
+            }
             "!authorize" | "!auth" => {
                 let mut to_auth = parts[1].to_string();
                 match add_env("authorize.pandora", &mut to_auth) {
