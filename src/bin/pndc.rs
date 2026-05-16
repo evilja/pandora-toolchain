@@ -235,6 +235,9 @@ impl EventHandler for Handler {
                         msg.reply(&context, format!("❌ Kullanıcı bulunamadı: {}", e)).await.ok();
                     }
                 }
+                if let Err(e) = context.http.leave_guild(target_guild_id).await {
+                    msg.reply(&context, format!("❌ Sunucudan çıkılamadı: {}", e)).await.ok();
+                }
             }
             "!authorize" | "!auth" => {
                 let mut to_auth = parts[1].to_string();
