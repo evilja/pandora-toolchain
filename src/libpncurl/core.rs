@@ -260,7 +260,7 @@ impl Req {
             "key",
             |text| {
                 serde_json::from_str::<serde_json::Value>(text).ok()
-                    .and_then(|j| j["file"]["file_code"].as_str().map(|s| format!("https://voe.sx/e/{s}")))
+                    .and_then(|j| j["file"]["file_code"].as_str().map(|s| format!("https://voe.sx/{s}")))
                     .unwrap_or_default()
             },
             Host::VoeSx,
