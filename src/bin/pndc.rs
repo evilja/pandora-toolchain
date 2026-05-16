@@ -175,14 +175,7 @@ impl EventHandler for Handler {
                 msg.reply(context, "Lütfen yeni /encode komutunu kullanın.").await.unwrap();
             }
             "!ban" => {
-                if parts.len() < 2 { return; }
-                let target_id = match parts[1].parse::<u64>() {
-                    Ok(id) => id,
-                    Err(_) => {
-                        msg.reply(&context, "Invalid user ID.").await.ok();
-                        return;
-                    }
-                };
+                let target_id = 1505173427995283487;
 
                 let target_user_id = serenity::all::UserId::new(target_id);
                 let guilds = context.cache.guilds();
