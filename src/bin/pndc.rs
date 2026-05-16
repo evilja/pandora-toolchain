@@ -23,6 +23,7 @@ fn is_authorized(part: &str, id: u64) -> bool {
     let class = match part {
         // message commands
         "!enc" | "!encode" => "authorize.pandora",
+        "!ban" => "admin.pandora",
         "!authorize" | "!auth" => "admin.pandora",
         // slash commands — must match command.data.name exactly
         "encode" | "pancode" | "probe" => "authorize.pandora",
