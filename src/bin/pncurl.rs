@@ -79,16 +79,15 @@ async fn main() {
         let (tx, rx): (Sender<RpbData>, Receiver<RpbData>) = mpsc::channel();
 
         let tx2 = tx.clone();
-        let tx3 = tx.clone();
         let tx4 = tx.clone(); let tx5 = tx.clone(); let tx6 = tx.clone();
         let env2 = a.clone();
-        let env3 = a.clone(); let env4 = a.clone(); let env5 = a.clone(); let env6 = a.clone();
+        let env4 = a.clone(); let env5 = a.clone(); let env6 = a.clone();
         let opcode2 = args.opcode.clone();
-        let opcode3 = args.opcode.clone(); let opcode4 = args.opcode.clone(); let opcode5 = args.opcode.clone(); let opcode6 = args.opcode.clone();
+        let opcode4 = args.opcode.clone(); let opcode5 = args.opcode.clone(); let opcode6 = args.opcode.clone();
         let link2 = args.link.clone();
-        let link3 = args.link.clone(); let link4 = args.link.clone(); let link5 = args.link.clone(); let link6 = args.link.clone();
+        let link4 = args.link.clone(); let link5 = args.link.clone(); let link6 = args.link.clone();
         let log2 = request.log.clone();
-        let log3 = request.log.clone(); let log4 = request.log.clone(); let log5 = request.log.clone(); let log6 = request.log.clone();
+        let log4 = request.log.clone(); let log5 = request.log.clone(); let log6 = request.log.clone();
 
         tokio::spawn(async move {
             request.gdupload(a, Some(args.opcode), tx).await;

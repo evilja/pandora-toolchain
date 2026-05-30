@@ -2,7 +2,7 @@ use crate::{libpnenv::{
     core::get_env,
     standard::{
         CLIENT_ID, CLIENT_SECRET, PARENTID, REFRESH_TOKEN, TOKEN_URL, DOODSTREAM,
-        UQLOAD, LULU, VOESX, ABYSS,
+        LULU, VOESX, ABYSS,
     }
 }, libpnlogging::core::LoggingHandle, log};
 use reqwest::{Client, multipart};
