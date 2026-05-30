@@ -134,6 +134,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                         }
                         JobType::GitSync => {
                             if let Some(mut ctx) = halfjob.context {
+                                ctx.0.set_presence(Some(ActivityData::custom("Recompiling Pandora.")), OnlineStatus::Idle);
                                 shrine.kill().await;
                                 let repo_path = std::env::current_dir().unwrap().to_str().unwrap().to_owned();
                                 println!("{}", repo_path);
@@ -144,7 +145,6 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                                         ctx.1.edit(&ctx.0, EditMessage::new().content("Git güncellemesi başarısız oldu.\nBot yine de yeniden başlatılıyor.")).await.unwrap()
                                     },
                                 }
-                                ctx.0.set_presence(Some(ActivityData::custom("Recompiling Pandora.")), OnlineStatus::Idle);
                                 let _ = remove_dir_all(PathBuf::from("DB").join("work")).await;
                                 std::process::exit(0);
                             }
