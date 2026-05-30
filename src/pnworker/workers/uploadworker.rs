@@ -105,7 +105,7 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                                 "6" => { abyss_link = "Abyss Başarısız".to_string(); abyss_done = true; }
                                 _ => {}
                             }
-                            let stage = if completed >= 6 { Some(Stage::Uploaded) } else { None };
+                            let stage = if completed >= 5 { Some(Stage::Uploaded) } else { None };
                             tx.try_send((job_id, format!("{} \n{} \n{} \n{} \n{} \n{}",
                                 UPLOAD_PROG, gd_link, dood_link, lulu_link, voesx_link, abyss_link
                             ), stage)).ok();
