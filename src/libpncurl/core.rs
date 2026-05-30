@@ -7,7 +7,7 @@ use crate::{libpnenv::{
 }, libpnlogging::core::LoggingHandle, log};
 use reqwest::{Client, multipart};
 use serde::Deserialize;
-use std::{fmt::Display, path::PathBuf, time::Duration};
+use std::{path::PathBuf, time::Duration};
 use std::fs::File;
 use tokio_util::io::ReaderStream;
 use std::io::Write;
@@ -84,7 +84,6 @@ async fn get_access_token(
 pub enum Host {
     Drive,
     Doodstream,
-    Uqload,
     Lulu,
     VoeSx,
     Abyss,
@@ -372,31 +371,10 @@ impl Req {
             |text| {
                 println!("[dood] upload response: {text}");
                 serde_json::from_str::<serde_json::Value>(text).ok()
-                    .and_then(|j| j["result"][0]["download_url"].as_str().map(|s| s.to_string()))
+                    .and_then(|j| j["result"][0]["filecode"].as_str().map(|s| format!("https://doodstream.com/d/{s}")))
                     .unwrap_or_default()
             },
             Host::Doodstream,
-            outfile,
-            tx,
-        ).await
-    }
-
-    pub async fn uqwrapupload(&self, envpath: String, outfile: Option<String>, tx: Sender<RpbData>) -> bool {
-        let env = get_env(&envpath);
-        let api_key = env[UQLOAD].clone();
-        self.filehost_upload(
-            api_key,
-            "https://uqload.is/api/upload/server".to_string(),
-            "api_key",
-            |text| {
-                // HTML response
-                text.split(r#"name="fn">"#)
-                    .nth(1)
-                    .and_then(|s| s.split("</textarea>").next())
-                    .map(|code| format!("https://uqload.is/embed-{code}.html"))
-                    .unwrap_or_default()
-            },
-            Host::Uqload,
             outfile,
             tx,
         ).await

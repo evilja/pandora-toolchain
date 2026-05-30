@@ -98,10 +98,6 @@ async fn main() {
             req2.doodwrapupload(env2, Some(opcode2), tx2).await;
         });
         tokio::spawn(async move {
-            let req3 = Req { target: link3, log: log3 };
-            req3.uqwrapupload(env3, Some(opcode3), tx3).await;
-        });
-        tokio::spawn(async move {
             let req4 = Req { target: link4, log: log4 };
             req4.luluwrapupload(env4, Some(opcode4), tx4).await;
         });
@@ -118,8 +114,6 @@ async fn main() {
         let mut gd_all = 0u64;
         let mut dood_done = 0u64;
         let mut dood_all = 0u64;
-        let mut uq_done = 0u64;
-        let mut uq_all = 0u64;
         let mut lulu_done = 0u64;
         let mut lulu_all = 0u64;
         let mut voesx_done = 0u64;
@@ -130,7 +124,6 @@ async fn main() {
 
         let mut gd_result: Option<Result<String, ()>> = None;
         let mut dood_result: Option<Result<String, ()>> = None;
-        let mut uq_result: Option<Result<String, ()>> = None;
         let mut lulu_result: Option<Result<String, ()>> = None;
         let mut voesx_result: Option<Result<String, ()>> = None;
         let mut abyss_result: Option<Result<String, ()>> = None;
@@ -145,8 +138,8 @@ async fn main() {
                         pn_emit!(
                             protocol = proto,
                             negkey = &neg,
-                            schema = [leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
-                            data   = ["0", [gd_done, gd_all], [dood_done, dood_all], [uq_done, uq_all], [lulu_done, lulu_all], [voesx_done, voesx_all], [abyss_done, abyss_all]]
+                            schema = [leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
+                            data   = ["0", [gd_done, gd_all], [dood_done, dood_all], [lulu_done, lulu_all], [voesx_done, voesx_all], [abyss_done, abyss_all]]
                         ).unwrap()
                     );
                 }
@@ -158,21 +151,8 @@ async fn main() {
                         pn_emit!(
                             protocol = proto,
                             negkey = &neg,
-                            schema = [leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
-                            data   = ["0", [gd_done, gd_all], [dood_done, dood_all], [uq_done, uq_all], [lulu_done, lulu_all], [voesx_done, voesx_all], [abyss_done, abyss_all]]
-                        ).unwrap()
-                    );
-                }
-                RpbData::Progress(done, total, Host::Uqload) => {
-                    uq_done = done; uq_all = total;
-                    if last.elapsed() < Duration::from_secs(5) { continue; }
-                    last = Instant::now();
-                    println!("{}",
-                        pn_emit!(
-                            protocol = proto,
-                            negkey = &neg,
-                            schema = [leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
-                            data   = ["0", [gd_done, gd_all], [dood_done, dood_all], [uq_done, uq_all], [lulu_done, lulu_all], [voesx_done, voesx_all], [abyss_done, abyss_all]]
+                            schema = [leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
+                            data   = ["0", [gd_done, gd_all], [dood_done, dood_all], [lulu_done, lulu_all], [voesx_done, voesx_all], [abyss_done, abyss_all]]
                         ).unwrap()
                     );
                 }
@@ -184,8 +164,8 @@ async fn main() {
                         pn_emit!(
                             protocol = proto,
                             negkey = &neg,
-                            schema = [leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
-                            data   = ["0", [gd_done, gd_all], [dood_done, dood_all], [uq_done, uq_all], [lulu_done, lulu_all], [voesx_done, voesx_all], [abyss_done, abyss_all]]
+                            schema = [leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
+                            data   = ["0", [gd_done, gd_all], [dood_done, dood_all], [lulu_done, lulu_all], [voesx_done, voesx_all], [abyss_done, abyss_all]]
                         ).unwrap()
                     );
                 }
@@ -197,8 +177,8 @@ async fn main() {
                         pn_emit!(
                             protocol = proto,
                             negkey = &neg,
-                            schema = [leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
-                            data   = ["0", [gd_done, gd_all], [dood_done, dood_all], [uq_done, uq_all], [lulu_done, lulu_all], [voesx_done, voesx_all], [abyss_done, abyss_all]]
+                            schema = [leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
+                            data   = ["0", [gd_done, gd_all], [dood_done, dood_all], [lulu_done, lulu_all], [voesx_done, voesx_all], [abyss_done, abyss_all]]
                         ).unwrap()
                     );
                 }
@@ -210,8 +190,8 @@ async fn main() {
                         pn_emit!(
                             protocol = proto,
                             negkey = &neg,
-                            schema = [leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
-                            data   = ["0", [gd_done, gd_all], [dood_done, dood_all], [uq_done, uq_all], [lulu_done, lulu_all], [voesx_done, voesx_all], [abyss_done, abyss_all]]
+                            schema = [leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
+                            data   = ["0", [gd_done, gd_all], [dood_done, dood_all], [lulu_done, lulu_all], [voesx_done, voesx_all], [abyss_done, abyss_all]]
                         ).unwrap()
                     );
                 }
@@ -224,11 +204,6 @@ async fn main() {
                     dood_result = Some(Ok(url.clone()));
                     println!("{}", pn_emit!(protocol = proto, negkey = &neg,
                         schema = [leaf, leaf, leaf], data = ["1", "2", url]).unwrap());
-                }
-                RpbData::Done(url, Host::Uqload) => {
-                    uq_result = Some(Ok(url.clone()));
-                    println!("{}", pn_emit!(protocol = proto, negkey = &neg,
-                        schema = [leaf, leaf, leaf], data = ["1", "3", url]).unwrap());
                 }
                 RpbData::Done(url, Host::Lulu) => {
                     lulu_result = Some(Ok(url.clone()));
@@ -247,13 +222,12 @@ async fn main() {
                 }
                 RpbData::Fail(Host::Drive) => { gd_result = Some(Err(())); }
                 RpbData::Fail(Host::Doodstream) => { dood_result = Some(Err(())); }
-                RpbData::Fail(Host::Uqload) => { uq_result = Some(Err(())); }
                 RpbData::Fail(Host::Lulu) => { lulu_result = Some(Err(())); }
                 RpbData::Fail(Host::VoeSx) => { voesx_result = Some(Err(())); }
                 RpbData::Fail(Host::Abyss) => { abyss_result = Some(Err(())); }
             }
 
-            if gd_result.is_some() && dood_result.is_some() && uq_result.is_some() &&  voesx_result.is_some() && lulu_result.is_some() && abyss_result.is_some() {
+            if gd_result.is_some() && dood_result.is_some() &&  voesx_result.is_some() && lulu_result.is_some() && abyss_result.is_some() {
                 break;
             }
         }
