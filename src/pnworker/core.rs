@@ -146,6 +146,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                                     },
                                 }
                                 let _ = remove_dir_all(PathBuf::from("DB").join("work")).await;
+                                tokio::time::sleep(Duration::from_secs(1)).await;
                                 std::process::exit(0);
                             }
                         }
