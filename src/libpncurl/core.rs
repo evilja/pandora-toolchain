@@ -7,7 +7,7 @@ use crate::{libpnenv::{
 }, libpnlogging::core::LoggingHandle, log};
 use reqwest::{Client, multipart};
 use serde::Deserialize;
-use std::{path::PathBuf, time::Duration};
+use std::{fmt::Display, path::PathBuf, time::Duration};
 use std::fs::File;
 use tokio_util::io::ReaderStream;
 use std::io::Write;
@@ -80,7 +80,7 @@ async fn get_access_token(
     Ok(token.access_token)
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Host {
     Drive,
     Doodstream,
@@ -89,7 +89,6 @@ pub enum Host {
     VoeSx,
     Abyss,
 }
-
 pub enum RpbData {
     Progress(u64, u64, Host),
     Done(String, Host),
@@ -162,6 +161,7 @@ impl Req {
         outfile: Option<String>,
         tx: Sender<RpbData>,
     ) -> bool {
+        println!("HOST {:?}", host);
         // Step 1: get upload server
         let server_url = {
             let resp = match reqwest::get(
