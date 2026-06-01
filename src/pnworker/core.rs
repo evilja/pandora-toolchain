@@ -64,6 +64,9 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                             write(job.directory.join("contents").join("subtitle.ass"), &job.attachment).await.unwrap();
                             shrine.send(&Worker::Download, WorkerMsg::Download((job.directory.clone(), job.torrent.clone(), job.job_id, None))).await.unwrap();
                             job.ready = Stage::Downloading;
+                            if queue.len() == 0 {
+                                change_presence_job(&job.context.0, (None, queue.len())).await;
+                            }
                         }
                         JobType::Probe => {
                             job.context.1.edit(&job.context.0, EditMessage::new().content("").embed(create_job_embed(&job, QUEUED))).await.unwrap();
