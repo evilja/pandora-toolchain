@@ -5,7 +5,7 @@ use crate::libpnenv::standard::PNCURL;
 use crate::libpnprotocol::core::Protocol;
 use crate::pnworker::messages::{JOB_CANCELLED, UPLOAD_DONE, UPLOAD_FAIL, UPLOAD_PROG, };
 use crate::pnworker::util::{ToolResult, run_tool};
-use crate::pnworker::tools::PNCURL_UPLOAD;
+use crate::pnworker::tools::{PNCURL_BACKUP, PNCURL_UPLOAD};
 use std::path::PathBuf;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -20,7 +20,7 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
     let mut proto = Protocol::new(vec![1]);
     let pncurl_path = get_env("env.pandora")[PNCURL].clone();
     'll: loop {
-        if let Ok(WorkerMsg::Upload((directory, out_name, _release, job_id))) = rx.try_recv() {
+        if let Ok(WorkerMsg::Upload((directory, out_name, release, job_id))) = rx.try_recv() {
             let output_path = directory.join("work").join("output.mp4").display().to_string();
             let mut completed = 0u8;
             let mut gd_link = "Google Bekleniyor".to_string(); let mut gd_done = false;
@@ -36,7 +36,7 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
 
             let result = run_tool(
                 &pncurl_path,
-                PNCURL_UPLOAD,
+                if release {PNCURL_UPLOAD} else {PNCURL_BACKUP},
                 &HashMap::from([
                     ("LINK",   PathValue::from(output_path.clone())),
                     ("OPCODE", PathValue::from(out_name.clone())),

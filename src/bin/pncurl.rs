@@ -43,6 +43,9 @@ struct Args {
 
     #[arg(long)]
     logfile: Option<String>,
+
+    #[arg(long)]
+    backup: bool,
 }
 
 #[tokio::main]
@@ -92,22 +95,24 @@ async fn main() {
         tokio::spawn(async move {
             request.gdupload(a, Some(args.opcode), tx).await;
         });
-        tokio::spawn(async move {
-            let req2 = Req { target: link2, log: log2 };
-            req2.doodwrapupload(env2, Some(opcode2), tx2).await;
-        });
-        tokio::spawn(async move {
-            let req4 = Req { target: link4, log: log4 };
-            req4.luluwrapupload(env4, Some(opcode4), tx4).await;
-        });
-        tokio::spawn(async move {
-            let req5 = Req { target: link5, log: log5 };
-            req5.voewrapupload(env5, Some(opcode5), tx5).await;
-        });
-        tokio::spawn(async move {
-            let req6 = Req { target: link6, log: log6 };
-            req6.abyssupload(env6, Some(opcode6), tx6).await;
-        });
+        if !args.backup {
+            tokio::spawn(async move {
+                let req2 = Req { target: link2, log: log2 };
+                req2.doodwrapupload(env2, Some(opcode2), tx2).await;
+            });
+            tokio::spawn(async move {
+                let req4 = Req { target: link4, log: log4 };
+                req4.luluwrapupload(env4, Some(opcode4), tx4).await;
+            });
+            tokio::spawn(async move {
+                let req5 = Req { target: link5, log: log5 };
+                req5.voewrapupload(env5, Some(opcode5), tx5).await;
+            });
+            tokio::spawn(async move {
+                let req6 = Req { target: link6, log: log6 };
+                req6.abyssupload(env6, Some(opcode6), tx6).await;
+            });
+        }
 
         let mut gd_done = 0u64;
         let mut gd_all = 0u64;
@@ -226,7 +231,7 @@ async fn main() {
                 RpbData::Fail(Host::Abyss) => { abyss_result = Some(Err(())); }
             }
 
-            if gd_result.is_some() && dood_result.is_some() &&  voesx_result.is_some() && lulu_result.is_some() && abyss_result.is_some() {
+            if (args.backup && gd_result.is_some()) || (gd_result.is_some() && dood_result.is_some() &&  voesx_result.is_some() && lulu_result.is_some() && abyss_result.is_some()) {
                 break;
             }
         }

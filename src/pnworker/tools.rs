@@ -53,6 +53,17 @@ pub const PNCURL_UPLOAD: &[CliParam] = &[
     CliParam::Literal("--negver"),      CliParam::NegVer("1"),
 ];
 
+pub const PNCURL_BACKUP: &[CliParam] = &[
+    CliParam::Literal("--link"),        CliParam::Path("LINK"),
+    CliParam::Literal("--opcode"),      CliParam::Path("OPCODE"),
+    CliParam::Literal("--drive"),
+    CliParam::Literal("--env"),         CliParam::Literal("env.pandora"),
+    CliParam::Literal("--negkey"),      CliParam::JobId("PNcurlG"),
+    CliParam::Literal("--negotiator"),  CliParam::Literal("PNuloadworker"),
+    CliParam::Literal("--negver"),      CliParam::NegVer("1"),
+    CliParam::Literal("--backup"),
+];
+
 pub const PNP2P_PROBE: &[CliParam] = &[
     CliParam::Literal("--opcode"),      CliParam::Path("OPCODE"),
     CliParam::Literal("--negkey"),      CliParam::JobId("PNp2pP"),
