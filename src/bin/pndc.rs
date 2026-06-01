@@ -24,10 +24,9 @@ fn is_authorized(part: &str, id: u64) -> bool {
         "!enc" | "!encode" => "authorize.pandora",
         "!ban" => "admin.pandora",
         "!authorize" | "!auth" => "admin.pandora",
-        "encode" | "pancode" | "probe" => "authorize.pandora",
+        "encode" | "pancode" | "probe" | "backup" | "scrape" => "authorize.pandora",
         "!some" => "admin.pandora",
         "gitsync" | "hearts" => "admin.pandora",
-
         _ => return false,
     };
     let allowed = get_perm(class.to_string());
@@ -101,6 +100,62 @@ pub async fn handle_probe(
         Preset::Dummy(None),   // irrelevant for probe
         nyaaise(&torrent_url),
         vec![],                // no attachment
+        ctx.clone(),
+        response_msg,
+    ))
+}
+
+pub async fn handle_backup(
+    ctx: &Context,
+    command: &serenity::all::CommandInteraction,
+    torrent_url: String,
+) -> Option<Job> {
+    command.create_response(ctx, CreateInteractionResponse::Message(
+        CreateInteractionResponseMessage::new().content("Backup process will begin shortly after...")
+    )).await.ok();
+
+    let response_msg = match command.get_response(&ctx.http).await {
+        Ok(m) => m,
+        Err(_) => return None,
+    };
+
+    Some(Job::new(
+        command.user.id.get(),
+        command.channel_id.get(),
+        response_msg.id.get(),
+        JobType::Backup,
+        response_msg.id.get(),
+        Preset::Dummy(None),
+        nyaaise(&torrent_url),
+        vec![],
+        ctx.clone(),
+        response_msg,
+    ))
+}
+
+pub async fn handle_scrape(
+    ctx: &Context,
+    command: &serenity::all::CommandInteraction,
+    torrent_url: String,
+) -> Option<Job> {
+    command.create_response(ctx, CreateInteractionResponse::Message(
+        CreateInteractionResponseMessage::new().content("Scraping...")
+    )).await.ok();
+
+    let response_msg = match command.get_response(&ctx.http).await {
+        Ok(m) => m,
+        Err(_) => return None,
+    };
+
+    Some(Job::new(
+        command.user.id.get(),
+        command.channel_id.get(),
+        response_msg.id.get(),
+        JobType::Backup,
+        response_msg.id.get(),
+        Preset::Dummy(None),
+        nyaaise(&torrent_url),
+        vec![],
         ctx.clone(),
         response_msg,
     ))

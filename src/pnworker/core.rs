@@ -256,14 +256,16 @@ pub enum JobType {
     Cancel = 002,
     Hearts = 003,
     GitSync = 004,
-    Probe   = 005,   // ← new
-    Pancode = 006,   // ← new (probe-seeded encode)
+    Probe   = 005,
+    Pancode = 006,
+    Scrape = 007,
+    Backup = 008,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Stage {
     Queued,
-    Probing,      // ← new
+    Probing,
     Probed,
     Downloading,
     Downloaded,
