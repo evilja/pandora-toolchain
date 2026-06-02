@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
+use tokio::time::Instant;
 
 pub struct GScrape {
     pub link: String,
@@ -108,21 +109,25 @@ impl GScrape {
 
         let total = resp.content_length().unwrap_or(1) as f64;
         let mut downloaded: f64 = 0.0;
-        let mut last_printed: f64 = -1.0;
+        let mut last_emit: Option<Instant> = None;
         let mut file = File::create(Path::new(path)).await?;
         while let Some(chunk) = resp.chunk().await? {
             file.write_all(&chunk).await?;
             let n = chunk.len() as f64;
             downloaded += n;
-            let percent = (downloaded / total * 100.0).ceil();
-            if (percent - last_printed).abs() >= 0.1 {
+            let should_emit = match last_emit {
+                Some(t) => t.elapsed() >= Duration::from_secs(5),
+                None => true,
+            };
+            if should_emit {
+                let percent = (downloaded / total * 100.0).ceil();
                 println!("{}", lib_pn_emit!(
                     protocol = proto,
                     negkey = &neg,
                     schema = [leaf, [leaf, leaf, leaf]],
                     data = ["0", [percent, downloaded, total]]
                 ).unwrap());
-                last_printed = percent;
+                last_emit = Some(Instant::now());
             }
         }
         file.flush().await?;
