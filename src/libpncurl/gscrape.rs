@@ -8,18 +8,19 @@ use regex::Regex;
 use reqwest::Client;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tokio::fs::File;
+use tokio::fs::{try_exists, File};
 use tokio::io::AsyncWriteExt;
 use tokio::time::Instant;
 
 pub struct GScrape {
     pub link: String,
     pub log: Option<PathBuf>,
+    pub cfile: Option<PathBuf>,
 }
 
 impl GScrape {
-    pub fn new(link: String, log: Option<PathBuf>) -> Self {
-        Self { link, log }
+    pub fn new(link: String, log: Option<PathBuf>, cfile: Option<PathBuf>) -> Self {
+        Self { link, log, cfile }
     }
 
     pub fn parse_id(link: &str) -> Option<String> {
@@ -112,6 +113,17 @@ impl GScrape {
         let mut last_emit: Option<Instant> = None;
         let mut file = File::create(Path::new(path)).await?;
         while let Some(chunk) = resp.chunk().await? {
+            if let Some(ref cancelfile) = self.cfile {
+                if try_exists(cancelfile).await.unwrap_or(false) {
+                    println!("{}", lib_pn_emit!(
+                        protocol = proto,
+                        negkey = &neg,
+                        schema = [leaf, leaf],
+                        data = ["3", "CANCELFILE"]
+                    ).unwrap());
+                    return Ok(());
+                }
+            }
             file.write_all(&chunk).await?;
             let n = chunk.len() as f64;
             downloaded += n;

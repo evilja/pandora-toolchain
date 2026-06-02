@@ -39,9 +39,10 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                         &pncurl_path,
                         PNCURL_GSCRAPE,
                         &HashMap::from([
-                            ("LINK",    PathValue::from(link.clone())),
-                            ("OPCODE",  PathValue::from(target_path.display().to_string())),
-                            ("LOGFILE", PathValue::from(directory.join("log").join(format!("PNcurlGS{}.log", job_id)).display().to_string())),
+                            ("LINK",       PathValue::from(link.clone())),
+                            ("OPCODE",     PathValue::from(target_path.display().to_string())),
+                            ("LOGFILE",    PathValue::from(directory.join("log").join(format!("PNcurlGS{}.log", job_id)).display().to_string())),
+                            ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),
                         ]),
                         job_id,
                         &mut proto,
@@ -61,6 +62,7 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                                 }
                                 1 => return Some(ToolResult::Success),
                                 2 => return Some(ToolResult::Fail),
+                                3 => return Some(ToolResult::Cancel),
                                 _ => {}
                             }
                             None

@@ -46,6 +46,9 @@ struct Args {
     logfile: Option<String>,
 
     #[arg(long)]
+    cancelfile: Option<String>,
+
+    #[arg(long)]
     backup: bool,
 
     #[arg(long)]
@@ -76,6 +79,7 @@ async fn main() {
         let scraper = GScrape {
             link: args.link.clone(),
             log: args.logfile.map(PathBuf::from),
+            cfile: args.cancelfile.map(PathBuf::from),
         };
         let ok = scraper.send(args.opcode, &proto, &neg).await;
         let code = if ok { "1" } else { "2" };

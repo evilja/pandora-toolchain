@@ -18,6 +18,7 @@ pub const PNCURL_GSCRAPE: &[CliParam] = &[
     CliParam::Literal("--negotiator"),  CliParam::Literal("PNdloadworker"),
     CliParam::Literal("--negver"),      CliParam::NegVer("1"),
     CliParam::Literal("--logfile"),     CliParam::Path("LOGFILE"),
+    CliParam::Literal("--cancelfile"),  CliParam::Path("CANCELFILE"),
 ];
 
 pub const PNP2P_TORRENT: &[CliParam] = &[
