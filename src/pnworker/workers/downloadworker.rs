@@ -6,8 +6,8 @@ use crate::libpnp2p::nyaaise::TorrentType;
 use crate::libpnprotocol::core::Protocol;
 use crate::pnworker::messages::{CTORRENT_DONE, CTORRENT_FAIL, JOB_CANCELLED, TORRENT_DONE, TORRENT_FAIL, TORRENT_PROG};
 use crate::pnworker::util::{ToolResult, run_tool};
-use crate::pnworker::tools::{PNCURL_TORRENT, PNP2P_TORRENT, PNP2P_SELECT};
-use tokio::fs::{rename};
+use crate::pnworker::tools::{PNCURL_GSCRAPE, PNCURL_TORRENT, PNP2P_TORRENT, PNP2P_SELECT};
+use tokio::fs::{create_dir_all, rename};
 use std::path::PathBuf;
 use std::collections::HashMap;
 use crate::pnworker::core::Stage;
@@ -26,6 +26,53 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
         if let Ok(WorkerMsg::Download((directory, torrent, job_id, file_index))) = rx.try_recv() {
             let arg_opcode: String;
             match torrent {
+                TorrentType::GDrive(ref link) => {
+                    let torrent_dir = directory.join("contents").join("torrent");
+                    if let Err(e) = create_dir_all(&torrent_dir).await {
+                        eprintln!("[Pandora Downloader] Failed to create torrent dir: {e}");
+                        tx.send((job_id, TORRENT_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
+                        continue 'll;
+                    }
+                    let target_path = torrent_dir.join("input.mkv");
+
+                    let result = run_tool(
+                        &pncurl_path,
+                        PNCURL_GSCRAPE,
+                        &HashMap::from([
+                            ("LINK",    PathValue::from(link.clone())),
+                            ("OPCODE",  PathValue::from(target_path.display().to_string())),
+                            ("LOGFILE", PathValue::from(directory.join("log").join(format!("PNcurlGS{}.log", job_id)).display().to_string())),
+                        ]),
+                        job_id,
+                        &mut proto,
+                        |data| {
+                            let out: u16 = match data.get(0).and_then(|v| v.parse()) {
+                                Some(v) => v,
+                                None => return None,
+                            };
+                            match out {
+                                1 => return Some(ToolResult::Success),
+                                2 => return Some(ToolResult::Fail),
+                                _ => {}
+                            }
+                            None
+                        },
+                    ).await;
+
+                    match result {
+                        ToolResult::Success => {
+                            tx.send((job_id, TORRENT_DONE.to_string(), Some(Stage::Downloaded))).await.unwrap();
+                        }
+                        ToolResult::Fail => {
+                            tx.send((job_id, TORRENT_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
+                        }
+                        ToolResult::Cancel => {
+                            tx.send((job_id, JOB_CANCELLED.to_string(), Some(Stage::Cancelled))).await.unwrap();
+                        }
+                    }
+                    println!("[Pandora Downloader] End of Session");
+                    continue 'll;
+                }
                 TorrentType::Link(ref link) => {
                     let result = run_tool(
                         &pncurl_path,

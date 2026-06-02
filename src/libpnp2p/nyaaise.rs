@@ -9,23 +9,27 @@
 pub enum TorrentType {
     Magnet(String),
     Link(String),
+    GDrive(String),
 }
 impl TorrentType {
     pub fn get(&self) -> String {
         match self {
             TorrentType::Link(a) => a.clone(),
             TorrentType::Magnet(a) => a.clone(),
+            TorrentType::GDrive(a) => a.clone(),
         }
     }
     pub fn get_arg(&self) -> String {
         match self {
             TorrentType::Magnet(_) => "magnet".to_string(),
+            TorrentType::GDrive(_) => "gdrive".to_string(),
             _ => "nomagnet".to_string()
         }
     }
     pub fn display(&self) -> String {
         match self {
             TorrentType::Link(a) => a.clone(),
+            TorrentType::GDrive(a) => a.clone(),
             TorrentType::Magnet(_) => String::from("Magnet linki gösterilmiyor.")
         }
     }
@@ -96,6 +100,10 @@ pub fn nyaaise(str: &str) -> TorrentType {
         return TorrentType::Link(String::new())
     } else if str.starts_with("magnet:") {
         return TorrentType::Magnet(str.to_string())
+    } else if str.starts_with("https://drive.google.com/")
+        || str.starts_with("https://drive.usercontent.google.com/")
+    {
+        return TorrentType::GDrive(str.to_string())
     }
     TorrentType::Link(str.to_string())
 }
@@ -117,6 +125,9 @@ mod tests {
             TorrentType::Magnet(_) => {
                 panic!("Magnet not expected")
             }
+            TorrentType::GDrive(_) => {
+                panic!("GDrive not expected")
+            }
         }
     }
     #[test]
@@ -130,6 +141,9 @@ mod tests {
             }
             TorrentType::Magnet(_) => {
                 panic!("Magnet not expected")
+            }
+            TorrentType::GDrive(_) => {
+                panic!("GDrive not expected")
             }
         }
     }
@@ -145,6 +159,9 @@ mod tests {
             TorrentType::Magnet(_) => {
                 panic!("Magnet not expected")
             }
+            TorrentType::GDrive(_) => {
+                panic!("GDrive not expected")
+            }
         }
     }
     #[test]
@@ -159,6 +176,9 @@ mod tests {
             TorrentType::Magnet(_) => {
                 panic!("Magnet not expected")
             }
+            TorrentType::GDrive(_) => {
+                panic!("GDrive not expected")
+            }
         }
     }
     #[test]
@@ -172,6 +192,9 @@ mod tests {
             }
             TorrentType::Magnet(a) => {
                 assert_eq!(expected, a);
+            }
+            TorrentType::GDrive(_) => {
+                panic!("GDrive not expected")
             }
         }
     }

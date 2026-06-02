@@ -3,6 +3,7 @@ use pandora_toolchain::{libpncurl::core::{
         RpbData,
         Host,
     },
+    libpncurl::gscrape::GScrape,
 };
 use tokio::time::Instant;
 use std::{path::PathBuf, time::Duration};
@@ -46,6 +47,9 @@ struct Args {
 
     #[arg(long)]
     backup: bool,
+
+    #[arg(long)]
+    gscrape: bool,
 }
 
 #[tokio::main]
@@ -66,9 +70,25 @@ async fn main() {
                   });
     let request = Req {
         target: args.link.clone(),
-        log: args.logfile.map(PathBuf::from),
+        log: args.logfile.clone().map(PathBuf::from),
     };
-    if !args.drive {
+    if args.gscrape {
+        let scraper = GScrape {
+            link: args.link.clone(),
+            log: args.logfile.map(PathBuf::from),
+        };
+        let ok = scraper.send(args.opcode).await;
+        let code = if ok { "1" } else { "2" };
+        let msg = if ok { "DONE" } else { "FAIL" };
+        println!("{}",
+            pn_emit!(
+                protocol = proto,
+                negkey = &neg,
+                schema = [leaf, leaf],
+                data   = [code, msg]
+            ).unwrap()
+        )
+    } else if !args.drive {
         request.send(args.opcode).await;
         println!("{}",
             pn_emit!(

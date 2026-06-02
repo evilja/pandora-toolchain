@@ -25,6 +25,10 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             // Phase 1: if Link, fetch .torrent file first (same as downloadworker)
             let arg_opcode: String;
             match torrent {
+                TorrentType::GDrive(_) => {
+                    tx.send((job_id, PROBE_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
+                    continue 'll;
+                }
                 TorrentType::Link(ref link) => {
                     let result = run_tool(
                         &pncurl_path,

@@ -445,7 +445,7 @@ impl EventHandler for Handler {
             CreateCommand::new("encode")
                 .description("Encode a video with subtitle")
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent URL or magnet link")
+                    CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent URL, magnet link, or Google Drive link")
                         .required(true)
                 )
                 .add_option(

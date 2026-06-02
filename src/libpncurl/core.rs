@@ -406,7 +406,7 @@ impl Req {
         let parent_id = env[PARENTID].clone();
 
         let client = Client::builder()
-            .timeout(Duration::from_secs(360))
+            .timeout(Duration::from_secs(600))
             .build().unwrap();
 
         let upload_name = outfile.clone().unwrap_or(self.target.clone());

@@ -10,6 +10,16 @@ pub const PNCURL_TORRENT: &[CliParam] = &[
     CliParam::Literal("--logfile"),     CliParam::Path("LOGFILE"),
 ];
 
+pub const PNCURL_GSCRAPE: &[CliParam] = &[
+    CliParam::Literal("--link"),        CliParam::Path("LINK"),
+    CliParam::Literal("--opcode"),      CliParam::Path("OPCODE"),
+    CliParam::Literal("--gscrape"),
+    CliParam::Literal("--negkey"),      CliParam::JobId("PNcurlGS"),
+    CliParam::Literal("--negotiator"),  CliParam::Literal("PNdloadworker"),
+    CliParam::Literal("--negver"),      CliParam::NegVer("1"),
+    CliParam::Literal("--logfile"),     CliParam::Path("LOGFILE"),
+];
+
 pub const PNP2P_TORRENT: &[CliParam] = &[
     CliParam::Literal("--opcode"),      CliParam::Path("OPCODE"),
     CliParam::Literal("--save"),        CliParam::Path("SAVE"),
