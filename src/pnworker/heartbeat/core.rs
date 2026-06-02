@@ -99,10 +99,15 @@ impl<M: Send + 'static> TypedLayer<M> {
         self.thread.abort();
     }
 
-    // Reboot: abort current thread, recreate channels, spawn fresh thread.
-    // reboot_count preserved. Caller replays last message via the new sender.
-    fn reboot(&mut self) {
-        self.abort();
+    async fn join_dead(&mut self) {
+        let old = std::mem::replace(&mut self.thread, tokio::spawn(async {}));
+        old.abort();
+        let _ = tokio::time::timeout(Duration::from_millis(100), old).await;
+        while self.return_receiver.try_recv().is_ok() {}
+    }
+
+    async fn reboot(&mut self) {
+        self.join_dead().await;
 
         let (tx_pulse, rx_pulse): (Sender<()>, Receiver<()>) = channel(1);
         let (tx_m, rx_m): (Sender<M>, Receiver<M>) = channel(self.send_capacity);
@@ -175,22 +180,40 @@ impl<M: Send + Clone + 'static> TypedShrine<M> {
         );
     }
 
-    // Send a message to a specific worker.
-    // Clones and stores as last_message for replay on reboot.
     pub async fn send(&mut self, worker: &Worker, msg: M) -> Result<(), String> {
-        match self.layers.get(worker) {
-            Some(layer) => {
-                layer
-                    .sender
-                    .send(msg.clone())
-                    .await
-                    .map_err(|_| format!("[Shrine] {:?} channel closed", worker))?;
-                println!("[Shrine] Message sent to: {worker:?}");
-                self.last_messages.insert(worker.clone(), msg);
-                Ok(())
-            }
-            None => Err(format!("[Shrine] {:?} layer not found", worker)),
+        if !self.layers.contains_key(worker) {
+            return Err(format!("[Shrine] {:?} layer not found", worker));
         }
+        for attempt in 0..2 {
+            if let Some(layer) = self.layers.get(worker) {
+                if !layer.is_alive() || layer.heartbeat_expired(160) {
+                    eprintln!("[Shrine] {:?} dead/expired — auto-rebooting before send", worker);
+                    self.reboot(worker).await;
+                }
+            }
+            match self.layers.get(worker) {
+                Some(layer) => match layer.sender.send(msg.clone()).await {
+                    Ok(()) => {
+                        if attempt > 0 {
+                            eprintln!("[Shrine] {:?} send recovered after auto-reboot", worker);
+                        }
+                        println!("[Shrine] Message sent to: {worker:?}");
+                        self.last_messages.insert(worker.clone(), msg);
+                        return Ok(());
+                    }
+                    Err(_) if attempt == 0 => {
+                        eprintln!("[Shrine] {:?} send hit closed channel — rebooting and retrying", worker);
+                        self.reboot(worker).await;
+                        continue;
+                    }
+                    Err(_) => {
+                        return Err(format!("[Shrine] {:?} channel still closed after reboot", worker));
+                    }
+                },
+                None => return Err(format!("[Shrine] {:?} layer vanished", worker)),
+            }
+        }
+        Err(format!("[Shrine] {:?} send exhausted retries", worker))
     }
 
     // Poll all layers for any heartbeat message.
@@ -247,7 +270,7 @@ impl<M: Send + Clone + 'static> TypedShrine<M> {
                 worker,
                 layer.reboot_count + 1
             );
-            layer.reboot();
+            layer.reboot().await;
         }
 
         // Replay last message so the job resumes transparently

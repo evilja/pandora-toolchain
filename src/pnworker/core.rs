@@ -62,7 +62,9 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                                 create_dir_all(job.directory.join(i)).await.unwrap();
                             }
                             write(job.directory.join("contents").join("subtitle.ass"), &job.attachment).await.unwrap();
-                            shrine.send(&Worker::Download, WorkerMsg::Download((job.directory.clone(), job.torrent.clone(), job.job_id, None))).await.unwrap();
+                            if !dispatch_or_kill(&mut shrine, &Worker::Download, WorkerMsg::Download((job.directory.clone(), job.torrent.clone(), job.job_id, None)), &mut job, &db, true).await {
+                                continue;
+                            }
                             job.ready = Stage::Downloading;
                             if queue.len() == 1 {
                                 change_presence_job(&job.context.0, (None, queue.len())).await;
@@ -72,7 +74,9 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                             job.context.1.edit(&job.context.0, EditMessage::new().content("").embed(create_job_embed(&job, QUEUED))).await.unwrap();
                             for i in STRUCT { create_dir_all(job.directory.join(i)).await.unwrap(); }
                             // no subtitle to write
-                            shrine.send(&Worker::Probe, WorkerMsg::Probe((job.directory.clone(), job.torrent.clone(), job.job_id))).await.unwrap();
+                            if !dispatch_or_kill(&mut shrine, &Worker::Probe, WorkerMsg::Probe((job.directory.clone(), job.torrent.clone(), job.job_id)), &mut job, &db, true).await {
+                                continue;
+                            }
                             job.ready = Stage::Probing;
                         }
                         JobType::Pancode => {
@@ -95,12 +99,14 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                                 }
                             };
 
-                            shrine.send(&Worker::Download, WorkerMsg::Download((
+                            if !dispatch_or_kill(&mut shrine, &Worker::Download, WorkerMsg::Download((
                                 job.directory.clone(),
                                 job.torrent.clone(),
                                 job.job_id,
                                 job.probe_file_index,
-                            ))).await.unwrap();
+                            )), &mut job, &db, true).await {
+                                continue;
+                            }
                             job.ready = Stage::Downloading;
                         }
                         JobType::Backup => {
@@ -108,7 +114,9 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                             for i in STRUCT {
                                 create_dir_all(job.directory.join(i)).await.unwrap();
                             }
-                            shrine.send(&Worker::Download, WorkerMsg::Download((job.directory.clone(), job.torrent.clone(), job.job_id, None))).await.unwrap();
+                            if !dispatch_or_kill(&mut shrine, &Worker::Download, WorkerMsg::Download((job.directory.clone(), job.torrent.clone(), job.job_id, None)), &mut job, &db, true).await {
+                                continue;
+                            }
                             job.ready = Stage::Downloading;
                         }
                         _ => {}
@@ -221,6 +229,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
             }
         }
         let qlen = queue.len();
+        let mut dead: Vec<u64> = vec![];
         for (idx, job) in queue.iter_mut().enumerate() {
             // Find the first job that's actively progressing (not parked at Probed)
             //
@@ -233,32 +242,42 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                     let src = job.directory.join("contents").join("torrent").join("input.mkv");
                     let dst = job.directory.join("work").join("output.mp4");
                     let _ = tokio::fs::rename(&src, &dst).await;
-                    shrine.send(&Worker::Upload, WorkerMsg::Upload((
+                    if !dispatch_or_kill(&mut shrine, &Worker::Upload, WorkerMsg::Upload((
                         job.directory.clone(),
                         format!("{}.mkv", job.directory.file_name().unwrap_or_default().display()),
                         false,
                         job.job_id
-                    ))).await.unwrap();
+                    )), job, &db, false).await {
+                        dead.push(job.job_id);
+                        continue;
+                    }
                     job.ready = Stage::Uploading;
                     db.update_stage(job.job_id, Stage::Uploading).await.unwrap();
                 } else {
-                    shrine.send(&Worker::Encode, WorkerMsg::Encode((job.directory.clone(), job.preset.clone(), job.job_id))).await.unwrap();
+                    if !dispatch_or_kill(&mut shrine, &Worker::Encode, WorkerMsg::Encode((job.directory.clone(), job.preset.clone(), job.job_id)), job, &db, false).await {
+                        dead.push(job.job_id);
+                        continue;
+                    }
                     job.ready = Stage::Encoding;
                     db.update_stage(job.job_id, Stage::Encoding).await.unwrap();
                     change_presence_job(&job.context.0, (Some(idx), qlen)).await;
                 }
             } else if job.ready == Stage::Encoded {
-                shrine.send(&Worker::Upload, WorkerMsg::Upload((job.directory.clone(), format!("{}.mp4", job.directory.file_name().unwrap_or_default().display()),
+                if !dispatch_or_kill(&mut shrine, &Worker::Upload, WorkerMsg::Upload((job.directory.clone(), format!("{}.mp4", job.directory.file_name().unwrap_or_default().display()),
                     match job.preset {
                         Preset::Dummy(_) => false,
                         _ => true,
                     },
-                 job.job_id))).await.unwrap();
+                 job.job_id)), job, &db, false).await {
+                    dead.push(job.job_id);
+                    continue;
+                }
                 job.ready = Stage::Uploading;
                 db.update_stage(job.job_id, Stage::Uploading).await.unwrap();
                 change_presence_job(&job.context.0, (None, qlen)).await;
             }
         }
+        queue.retain(|j| !dead.contains(&j.job_id));
     }
 }
 
@@ -268,6 +287,29 @@ async fn cleanup_job(source: &PathBuf, dest: &PathBuf) {
     let _ = rename(source.join("contents").join("fetch.torrent"), dest.join("fetch.torrent")).await;
     let _ = rename(source.join("log"), dest.join("log")).await;
     remove_dir_all(source).await.ok();
+}
+
+async fn dispatch_or_kill(
+    shrine: &mut TypedShrine<WorkerMsg>,
+    worker: &Worker,
+    msg: WorkerMsg,
+    job: &mut Job,
+    db: &JobDb,
+    needs_insert: bool,
+) -> bool {
+    if let Err(e) = shrine.send(worker, msg).await {
+        eprintln!("[Pandora] job {} dispatch failed: {}", job.job_id, e);
+        let _ = job.context.1.react(&job.context.0, '☠').await;
+        if needs_insert {
+            let _ = db.insert_job(job).await;
+        }
+        let _ = db.update_stage(job.job_id, Stage::Failed).await;
+        let _ = db.archive_job(job.job_id).await;
+        cleanup_job(&job.directory, &PathBuf::from("DB").join("saved_data").join(job.job_id.to_string())).await;
+        false
+    } else {
+        true
+    }
 }
 
 #[derive(Clone, Debug)]
