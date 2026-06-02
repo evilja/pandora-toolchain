@@ -51,6 +51,14 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                                 None => return None,
                             };
                             match out {
+                                0 => {
+                                    let payload = data.get(1).and_then(|v| v.as_multi())?;
+                                    let percent = payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
+                                    let progmb  = payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
+                                    let totlmb  = payload.get(2).and_then(|v| v.as_str()).unwrap_or("0");
+                                    tx.try_send((job_id, format!("{} {}% {}MB/{}MB", TORRENT_PROG, percent,
+                                        string_byte_to_mb(progmb), string_byte_to_mb(totlmb)), None)).ok();
+                                }
                                 1 => return Some(ToolResult::Success),
                                 2 => return Some(ToolResult::Fail),
                                 _ => {}

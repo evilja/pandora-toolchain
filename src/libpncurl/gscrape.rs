@@ -3,7 +3,7 @@
 
 // https://drive.usercontent.google.com/download?id=1QMul1d30l_ux05JJW5ZD8V4H8TWnXJ1S&export=download&confirm=t&uuid=4508405e-7311-498a-a81c-77bd9ee5f5f7
 
-use crate::{libpnlogging::core::LoggingHandle, log};
+use crate::{lib_pn_data, lib_pn_emit, lib_pn_schema, libpnlogging::core::LoggingHandle, libpnprotocol::core::{Protocol, Schema}, log};
 use regex::Regex;
 use reqwest::Client;
 use std::path::{Path, PathBuf};
@@ -46,11 +46,16 @@ impl GScrape {
         format!("https://drive.usercontent.google.com/download?id={id}&export=download&confirm=t&uuid={uuid}")
     }
 
-    pub async fn send(&self, path: String) -> bool {
-        self.download(&path).await.is_ok()
+    pub async fn send(&self, path: String, proto: &Protocol, neg: &str) -> bool {
+        self.download(&path, proto, neg).await.is_ok()
     }
 
-    pub async fn download(&self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn download(
+        &self,
+        path: &str,
+        proto: &Protocol,
+        neg: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let mut handle: Option<LoggingHandle> = match self.log {
             Some(ref pb) => Some(LoggingHandle::get_handle(pb).await.unwrap()),
             None => None,
@@ -101,9 +106,24 @@ impl GScrape {
             return Err("download failed".into());
         }
 
+        let total = resp.content_length().unwrap_or(1) as f64;
+        let mut downloaded: f64 = 0.0;
+        let mut last_printed: f64 = -1.0;
         let mut file = File::create(Path::new(path)).await?;
         while let Some(chunk) = resp.chunk().await? {
             file.write_all(&chunk).await?;
+            let n = chunk.len() as f64;
+            downloaded += n;
+            let percent = (downloaded / total * 100.0).ceil();
+            if (percent - last_printed).abs() >= 0.1 {
+                println!("{}", lib_pn_emit!(
+                    protocol = proto,
+                    negkey = &neg,
+                    schema = [leaf, [leaf, leaf, leaf]],
+                    data = ["0", [percent, downloaded, total]]
+                ).unwrap());
+                last_printed = percent;
+            }
         }
         file.flush().await?;
 

@@ -77,7 +77,7 @@ async fn main() {
             link: args.link.clone(),
             log: args.logfile.map(PathBuf::from),
         };
-        let ok = scraper.send(args.opcode).await;
+        let ok = scraper.send(args.opcode, &proto, &neg).await;
         let code = if ok { "1" } else { "2" };
         let msg = if ok { "DONE" } else { "FAIL" };
         println!("{}",
