@@ -103,6 +103,14 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                             ))).await.unwrap();
                             job.ready = Stage::Downloading;
                         }
+                        JobType::Backup => {
+                            job.context.1.edit(&job.context.0, EditMessage::new().content("").embed(create_job_embed(&job, QUEUED))).await.unwrap();
+                            for i in STRUCT {
+                                create_dir_all(job.directory.join(i)).await.unwrap();
+                            }
+                            shrine.send(&Worker::Download, WorkerMsg::Download((job.directory.clone(), job.torrent.clone(), job.job_id, None))).await.unwrap();
+                            job.ready = Stage::Downloading;
+                        }
                         _ => {}
                     }
                     db.insert_job(&job).await.unwrap();
@@ -221,10 +229,24 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
             }
 
             if job.ready == Stage::Downloaded {
-                shrine.send(&Worker::Encode, WorkerMsg::Encode((job.directory.clone(), job.preset.clone(), job.job_id))).await.unwrap();
-                job.ready = Stage::Encoding;
-                db.update_stage(job.job_id, Stage::Encoding).await.unwrap();
-                change_presence_job(&job.context.0, (Some(idx), qlen)).await;
+                if job.job_type == JobType::Backup {
+                    let src = job.directory.join("contents").join("torrent").join("input.mkv");
+                    let dst = job.directory.join("work").join("output.mp4");
+                    let _ = tokio::fs::rename(&src, &dst).await;
+                    shrine.send(&Worker::Upload, WorkerMsg::Upload((
+                        job.directory.clone(),
+                        format!("{}.mkv", job.directory.file_name().unwrap_or_default().display()),
+                        false,
+                        job.job_id
+                    ))).await.unwrap();
+                    job.ready = Stage::Uploading;
+                    db.update_stage(job.job_id, Stage::Uploading).await.unwrap();
+                } else {
+                    shrine.send(&Worker::Encode, WorkerMsg::Encode((job.directory.clone(), job.preset.clone(), job.job_id))).await.unwrap();
+                    job.ready = Stage::Encoding;
+                    db.update_stage(job.job_id, Stage::Encoding).await.unwrap();
+                    change_presence_job(&job.context.0, (Some(idx), qlen)).await;
+                }
             } else if job.ready == Stage::Encoded {
                 shrine.send(&Worker::Upload, WorkerMsg::Upload((job.directory.clone(), format!("{}.mp4", job.directory.file_name().unwrap_or_default().display()),
                     match job.preset {
@@ -257,7 +279,7 @@ pub enum Preset {
 
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(u16)]
 pub enum JobType {
     Encode = 001,

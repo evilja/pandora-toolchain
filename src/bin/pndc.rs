@@ -367,6 +367,26 @@ impl EventHandler for Handler {
                         self.tx.send(JobClass::Job(job)).await.unwrap();
                     }
                 }
+                "backup" => {
+                    let torrent_url = match command.data.options.iter()
+                        .find(|opt| opt.name == "torrent")
+                        .and_then(|opt| opt.value.as_str())
+                    {
+                        Some(url) if !url.is_empty() => url.to_string(),
+                        _ => {
+                            command.create_response(&ctx, CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content("Error: Torrent URL is required")
+                                    .ephemeral(true)
+                            )).await.ok();
+                            return;
+                        }
+                    };
+
+                    if let Some(job) = handle_backup(&ctx, &command, torrent_url).await {
+                        self.tx.send(JobClass::Job(job)).await.unwrap();
+                    }
+                }
                 "hearts" => {
                     command.create_response(&ctx, CreateInteractionResponse::Message(
                         CreateInteractionResponseMessage::new().content("...")
@@ -474,6 +494,12 @@ impl EventHandler for Handler {
                 .add_option(concat_option.clone()),
             CreateCommand::new("gitsync")
                 .description("Sync with the git repo"),
+            CreateCommand::new("backup")
+                .description("Download torrent and upload MKV to GDrive without release")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent URL or magnet link")
+                        .required(true)
+                ),
         ];
 
         for guild in &ready.guilds {
