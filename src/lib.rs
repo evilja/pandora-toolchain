@@ -7,6 +7,8 @@ pub mod libpnprotocol;
 pub mod libpndb;
 pub mod libkagami;
 pub mod libpnlogging;
+pub mod libpntmdb;
+pub mod libpnforgejo;
 
 #[macro_export]
 macro_rules! pn_schema {

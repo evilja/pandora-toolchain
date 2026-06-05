@@ -354,7 +354,7 @@ impl Req {
             |text| {
                 println!("[lulu] upload response: {text}");
                 serde_json::from_str::<serde_json::Value>(text).ok()
-                    .and_then(|j| j["files"][0]["filecode"].as_str().map(|s| format!("https://lulustream.com/e/{s}")))
+                    .and_then(|j| j["files"][0]["filecode"].as_str().map(|s| format!("https://lulustream.com/{s}")))
                     .unwrap_or_default()
             },
             Host::Lulu,

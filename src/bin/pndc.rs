@@ -1,6 +1,6 @@
 use serenity::{
     Client,
-    all::{ActivityData, CommandOptionType, Context, CreateMessage, GatewayIntents, Interaction, Message, OnlineStatus, Ready},
+    all::{ActivityData, CommandOptionType, Context, CreateMessage, EditMessage, GatewayIntents, Interaction, Message, OnlineStatus, Ready},
     builder::{CreateCommand, CreateCommandOption, CreateInteractionResponse, CreateInteractionResponseMessage},
     prelude::*,
 };
@@ -11,6 +11,8 @@ use pandora_toolchain::libpnenv::{
     core::{add_env, get_env, get_perm},
     standard::TOKEN,
 };
+use pandora_toolchain::libpntmdb::{fetch_anime, AnimeMeta, AnimeKind};
+use pandora_toolchain::libpnforgejo::{Forgejo, base64_encode};
 use pandora_toolchain::pnworker::core::pn_worker;
 use tokio::sync::mpsc::{channel, Sender, Receiver};
 use regex::Regex;
@@ -181,39 +183,303 @@ pub async fn handle_scrape(
     ))
 }
 
-pub async fn handle_attach_stub(
+fn pad2(n: u32) -> String {
+    if n < 100 {
+        format!("{:02}", n)
+    } else {
+        n.to_string()
+    }
+}
+
+fn last_path_segment(url: &str) -> Option<String> {
+    let trimmed = url.trim_end_matches('/');
+    let after = trimmed.rfind('/')?;
+    let seg = &trimmed[after + 1..];
+    if seg.is_empty() { None } else { Some(seg.to_string()) }
+}
+
+fn parse_repo_url(url: &str) -> Result<(String, String), String> {
+    let re = regex::Regex::new(r"^https?://[^/]+/([^/]+)/([^/]+)/?$").unwrap();
+    let caps = re.captures(url.trim_end_matches('/'))
+        .ok_or_else(|| format!("not a Forgejo repo URL: {}", url))?;
+    let owner = caps.get(1).unwrap().as_str().to_string();
+    let repo = caps.get(2).unwrap().as_str().to_string();
+    Ok((owner, repo))
+}
+
+#[derive(serde::Deserialize, Default)]
+struct ChannelMeta {
+    tmdb_id: Option<u64>,
+    kind: Option<String>,
+    name: Option<String>,
+    slug: Option<String>,
+    episode_count: Option<u32>,
+    repo_url: Option<String>,
+}
+
+fn meta_to_toml(m: &ChannelMeta) -> String {
+    match (&m.kind, m.tmdb_id) {
+        (Some(k), Some(id)) => format!("tmdb_id = {}\nkind = \"{}\"\nname = \"{}\"\nslug = \"{}\"\nepisode_count = {}\nrepo_url = \"{}\"\n",
+            id, k, m.name.as_deref().unwrap_or(""), m.slug.as_deref().unwrap_or(""),
+            m.episode_count.unwrap_or(0), m.repo_url.as_deref().unwrap_or("")),
+        _ => String::new(),
+    }
+}
+
+fn meta_path(server_id: u64, channel_id: u64) -> std::path::PathBuf {
+    std::path::PathBuf::from("DB")
+        .join("config")
+        .join(server_id.to_string())
+        .join(channel_id.to_string())
+        .join("meta.toml")
+}
+
+fn read_channel_meta(server_id: u64, channel_id: u64) -> ChannelMeta {
+    let path = meta_path(server_id, channel_id);
+    match std::fs::read_to_string(&path) {
+        Ok(s) => toml::from_str(&s).unwrap_or_default(),
+        Err(_) => ChannelMeta::default(),
+    }
+}
+
+async fn write_channel_meta(server_id: u64, channel_id: u64, m: &ChannelMeta) -> Result<(), String> {
+    let path = meta_path(server_id, channel_id);
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
+    }
+    tokio::fs::write(&path, meta_to_toml(m)).await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+async fn bootstrap_repo(
+    fg: &Forgejo,
+    owner_repo: &str,
+    meta: &AnimeMeta,
+    base_md: Option<String>,
+    create_root_readme: bool,
+) -> Result<Vec<String>, String> {
+    let mut created: Vec<String> = Vec::new();
+    let existing = fg.list_contents(owner_repo, "").await.unwrap_or_default();
+
+    let existing_nums: Vec<u32> = existing.iter()
+        .filter_map(|n| n.trim_start_matches('0').parse::<u32>().ok().filter(|v| *v > 0).or_else(|| {
+            if n == "0" { Some(0) } else { None }
+        }))
+        .collect();
+
+    let content = base_md.unwrap_or_default();
+    let b64 = base64_encode(&content);
+
+    for n in 1..=meta.episode_count {
+        if existing_nums.contains(&n) { continue; }
+        let folder = pad2(n);
+        let path = format!("{}/base.md", folder);
+        fg.create_file(owner_repo, &path, &b64, "bootstrap episode folder").await?;
+        created.push(folder);
+    }
+
+    let has_readme = existing.iter().any(|n| n.eq_ignore_ascii_case("README.md"));
+    if create_root_readme || !has_readme {
+        fg.create_file(owner_repo, "README.md", &b64, "bootstrap root readme").await?;
+        created.push("README.md".to_string());
+    }
+
+    Ok(created)
+}
+
+async fn read_server_meta(server_id: u64) -> Result<(String, String), String> {
+    let path = format!("DB/config/{}/meta.pandora", server_id);
+    let s = tokio::fs::read_to_string(&path).await.map_err(|e| e.to_string())?;
+    let mut lines = s.lines();
+    let lang = lines.next().unwrap_or("tr").to_string();
+    let forgejo = lines.next().unwrap_or("").to_string();
+    Ok((lang, forgejo))
+}
+
+fn kind_label(k: &AnimeKind) -> &'static str {
+    match k {
+        AnimeKind::Movie => "Movie",
+        AnimeKind::MultiEpisode => "MultiEpisode",
+    }
+}
+
+async fn run_attach_or_init(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,
-    label: &str,
+    is_init: bool,
 ) {
-    let tmdb_url = command.data.options.iter()
+    let label = if is_init { "/init" } else { "/attach" };
+
+    let server_id = match command.guild_id {
+        Some(g) => g.get(),
+        None => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(format!("Error: {} can only be used in a server", label))
+                    .ephemeral(true)
+            )).await.ok();
+            return;
+        }
+    };
+    let channel_id = command.channel_id.get();
+
+    let tmdb_url = match command.data.options.iter()
         .find(|opt| opt.name == "tmdb")
         .and_then(|opt| opt.value.as_str())
         .filter(|s| !s.is_empty())
-        .map(String::from);
-    let repo_url = command.data.options.iter()
+    {
+        Some(u) => u.to_string(),
+        None => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(format!("Error: `tmdb` is required for {}", label))
+                    .ephemeral(true)
+            )).await.ok();
+            return;
+        }
+    };
+
+    let repo_arg = command.data.options.iter()
         .find(|opt| opt.name == "repo")
         .and_then(|opt| opt.value.as_str())
         .filter(|s| !s.is_empty())
         .map(String::from);
 
-    if tmdb_url.is_none() && repo_url.is_none() {
+    if !is_init && repo_arg.is_none() {
         command.create_response(ctx, CreateInteractionResponse::Message(
             CreateInteractionResponseMessage::new()
-                .content("Error: either `tmdb` or `repo` link is required")
+                .content("Error: `repo` is required for /attach")
                 .ephemeral(true)
         )).await.ok();
         return;
     }
 
-    let mut parts: Vec<String> = Vec::new();
-    if let Some(t) = tmdb_url { parts.push(format!("TMDB: `{}`", t)); }
-    if let Some(r) = repo_url { parts.push(format!("Repo: `{}`", r)); }
+    let existing = read_channel_meta(server_id, channel_id);
+
+    let (_lang, forgejo_base) = match read_server_meta(server_id).await {
+        Ok(t) => t,
+        Err(e) => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(format!("Failed to read server meta: {}", e))
+                    .ephemeral(true)
+            )).await.ok();
+            return;
+        }
+    };
+    if forgejo_base.is_empty() {
+        command.create_response(ctx, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content("Error: server has no forgejo org configured. Run `/configure` first.")
+                .ephemeral(true)
+        )).await.ok();
+        return;
+    }
+
     command.create_response(ctx, CreateInteractionResponse::Message(
-        CreateInteractionResponseMessage::new()
-            .content(format!("{} registered — {} (stub).", label, parts.join(", ")))
-            .ephemeral(true)
+        CreateInteractionResponseMessage::new().content("Working...")
     )).await.ok();
+    let mut response_msg = match command.get_response(&ctx.http).await {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+
+    let meta = match fetch_anime(&tmdb_url).await {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = response_msg.edit(ctx, EditMessage::new().content(format!("TMDB fetch failed: {}", e))).await;
+            return;
+        }
+    };
+
+    if let Some(eid) = existing.tmdb_id {
+        if eid != meta.tmdb_id {
+            let _ = response_msg.edit(ctx, EditMessage::new().content(format!(
+                "Channel is already attached to `{}`. Use a different channel to attach a new anime.",
+                existing.name.unwrap_or_default()
+            ))).await;
+            return;
+        }
+    }
+
+    let fg = match Forgejo::from_env(forgejo_base.clone()) {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = response_msg.edit(ctx, EditMessage::new().content(format!("Forgejo init failed: {}", e))).await;
+            return;
+        }
+    };
+
+    let (owner_repo, repo_url) = if is_init {
+        let org = match last_path_segment(&forgejo_base) {
+            Some(s) => s,
+            None => {
+                let _ = response_msg.edit(ctx, EditMessage::new().content("Error: forgejo base has no org path segment (expected `https://host/org`)")).await;
+                return;
+            }
+        };
+        let or = format!("{}/{}", org, meta.slug);
+        let url = match fg.create_repo(&meta.slug).await {
+            Ok(u) => u,
+            Err(e) => {
+                let _ = response_msg.edit(ctx, EditMessage::new().content(format!("create_repo failed: {}", e))).await;
+                return;
+            }
+        };
+        (or, url)
+    } else {
+        let repo_url = repo_arg.unwrap();
+        let (owner, repo) = match parse_repo_url(&repo_url) {
+            Ok(t) => t,
+            Err(e) => {
+                let _ = response_msg.edit(ctx, EditMessage::new().content(format!("Bad repo URL: {}", e))).await;
+                return;
+            }
+        };
+        (format!("{}/{}", owner, repo), repo_url)
+    };
+
+    let base_md = tokio::fs::read_to_string(format!("DB/config/{}/base.md", server_id)).await.ok();
+
+    let created = match bootstrap_repo(&fg, &owner_repo, &meta, base_md, is_init).await {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = response_msg.edit(ctx, EditMessage::new().content(format!("Bootstrap failed: {}", e))).await;
+            return;
+        }
+    };
+
+    let new_meta = ChannelMeta {
+        tmdb_id: Some(meta.tmdb_id),
+        kind: Some(kind_label(&meta.kind).to_string()),
+        name: Some(meta.name.clone()),
+        slug: Some(meta.slug.clone()),
+        episode_count: Some(meta.episode_count),
+        repo_url: Some(repo_url.clone()),
+    };
+    if let Err(e) = write_channel_meta(server_id, channel_id, &new_meta).await {
+        let _ = response_msg.edit(ctx, EditMessage::new().content(format!("Failed to save channel meta: {}", e))).await;
+        return;
+    }
+
+    let created_list = if created.is_empty() {
+        "_none — repo already had all folders and README_".to_string()
+    } else {
+        created.join(", ")
+    };
+    let body = format!(
+        "**{}** — attached to this channel.\nName: `{}`\nSlug: `{}`\nKind: `{}`\nEpisodes: `{}`\nRepo: <{}>\nCreated/updated: {}",
+        label, meta.name, meta.slug, kind_label(&meta.kind), meta.episode_count, repo_url, created_list
+    );
+    let _ = response_msg.edit(ctx, EditMessage::new().content(body)).await;
+}
+
+pub async fn handle_init(ctx: &Context, command: &serenity::all::CommandInteraction) {
+    run_attach_or_init(ctx, command, true).await;
+}
+
+pub async fn handle_attach(ctx: &Context, command: &serenity::all::CommandInteraction) {
+    run_attach_or_init(ctx, command, false).await;
 }
 
 pub async fn handle_gitcode(
@@ -649,10 +915,10 @@ impl EventHandler for Handler {
                     ))).await.ok();
                 }
                 "attach" => {
-                    handle_attach_stub(&ctx, &command, "/attach").await;
+                    handle_attach(&ctx, &command).await;
                 }
                 "init" => {
-                    handle_attach_stub(&ctx, &command, "/init").await;
+                    handle_init(&ctx, &command).await;
                 }
                 "gitcode" => {
                     let torrent_url = match command.data.options.iter()
@@ -788,17 +1054,17 @@ impl EventHandler for Handler {
                         .required(true)
                 ),
             CreateCommand::new("attach")
-                .description("Attach metadata to a job (TMDB link and/or Forgejo repo link) (stub)")
+                .description("Attach a TMDB anime to this channel and bootstrap an existing Forgejo repo")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "tmdb", "TMDB link")
-                        .required(false)
+                        .required(true)
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "repo", "Forgejo repo link (e.g. https://git.einzu.fun/owner/repo)")
-                        .required(false)
+                        .required(true)
                 ),
             CreateCommand::new("init")
-                .description("Initialize a job from a TMDB link (stub)")
+                .description("Attach a TMDB anime to this channel and create a new Forgejo repo for it")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "tmdb", "TMDB link")
                         .required(true)
