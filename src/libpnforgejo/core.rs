@@ -26,15 +26,25 @@ impl Forgejo {
             .map_err(|e| e.to_string())?;
 
         let trimmed = forgejo_line.trim_end_matches('/');
-        let last_slash = trimmed.rfind('/').ok_or_else(|| {
-            format!("forgejo line `{}` is not a URL with a host", trimmed)
+        let scheme_end = trimmed.find("://").ok_or_else(|| {
+            format!("forgejo line `{}` must start with `http://` or `https://`", trimmed)
         })?;
-        let host = trimmed[..last_slash].to_string();
-        let org = trimmed[last_slash + 1..].to_string();
-        if host.is_empty() || org.is_empty() {
-            return Err(format!(
-                "forgejo line `{}` must be a full URL including the org, e.g. `https://git.example.com/MyOrg`",
+        let after_scheme = &trimmed[scheme_end + 3..];
+        let slash_in_rest = after_scheme.find('/').ok_or_else(|| {
+            format!(
+                "forgejo line `{}` must include the org as a path segment, e.g. `https://git.example.com/MyOrg`",
                 trimmed
+            )
+        })?;
+        let host = trimmed[..scheme_end + 3 + slash_in_rest].to_string();
+        let org = after_scheme[slash_in_rest + 1..].to_string();
+        if org.is_empty() {
+            return Err(format!("forgejo line `{}` has empty org", trimmed));
+        }
+        if org.contains('/') {
+            return Err(format!(
+                "forgejo line `{}` org must be a single path segment, got `{}`",
+                trimmed, org
             ));
         }
         Ok(Forgejo { host, org, token, client })
