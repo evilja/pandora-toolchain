@@ -76,7 +76,7 @@ impl GScrape {
 
         let client = Client::builder()
             .cookie_store(true)
-            .timeout(Duration::from_secs(360))
+            .timeout(Duration::from_secs(600))
             .build()?;
 
         let confirm = Self::confirm_url(&id);

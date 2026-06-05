@@ -114,7 +114,10 @@ impl Req {
             }
             None => None,
         };
-        let response = reqwest::get(&self.target).await?;
+        let client = Client::builder()
+            .timeout(Duration::from_secs(600))
+            .build()?;
+        let response = client.get(&self.target).send().await?;
 
         if !response.status().is_success() {
             log!(handle, "Request failed\n");
