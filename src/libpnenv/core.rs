@@ -13,8 +13,8 @@ pub fn get_env(envfile: &str) -> Vec<String> {
         return vec![];
     }
     let lines: Vec<String> = buf.lines().map(|line| line.to_string()).collect();
-    if lines.len() < 17 {
-        eprintln!("Warning: env.pandora has only {} lines, expected 17", lines.len());
+    if lines.len() < 16 {
+        eprintln!("Warning: env.pandora has only {} lines, expected 16", lines.len());
         return vec![];
     }
     lines.clone()

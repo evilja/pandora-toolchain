@@ -11,7 +11,7 @@ use pandora_toolchain::libpnenv::{
     core::{add_env, get_env, get_perm},
     standard::TOKEN,
 };
-use pandora_toolchain::libpntmdb::{fetch_anime, AnimeMeta, AnimeKind};
+use pandora_toolchain::libpnmal::{fetch_anime, AnimeMeta, AnimeKind};
 use pandora_toolchain::libpnforgejo::{Forgejo, base64_encode};
 use pandora_toolchain::pnworker::core::pn_worker;
 use tokio::sync::mpsc::{channel, Sender, Receiver};
@@ -202,26 +202,21 @@ fn parse_repo_url(url: &str) -> Result<(String, String), String> {
 
 #[derive(serde::Deserialize, Default)]
 struct ChannelMeta {
-    tmdb_id: Option<u64>,
+    mal_id: Option<u64>,
     kind: Option<String>,
     name: Option<String>,
     slug: Option<String>,
     episode_count: Option<u32>,
     repo_url: Option<String>,
-    season: Option<u32>,
 }
 
 fn meta_to_toml(m: &ChannelMeta) -> String {
-    match (&m.kind, m.tmdb_id) {
-        (Some(k), Some(id)) => {
-            let season_line = match m.season {
-                Some(s) => format!("season = {}\n", s),
-                None => String::new(),
-            };
-            format!("tmdb_id = {}\nkind = \"{}\"\nname = \"{}\"\nslug = \"{}\"\nepisode_count = {}\nrepo_url = \"{}\"\n{}",
-                id, k, m.name.as_deref().unwrap_or(""), m.slug.as_deref().unwrap_or(""),
-                m.episode_count.unwrap_or(0), m.repo_url.as_deref().unwrap_or(""), season_line)
-        }
+    match (&m.kind, m.mal_id) {
+        (Some(k), Some(id)) => format!(
+            "mal_id = {}\nkind = \"{}\"\nname = \"{}\"\nslug = \"{}\"\nepisode_count = {}\nrepo_url = \"{}\"\n",
+            id, k, m.name.as_deref().unwrap_or(""), m.slug.as_deref().unwrap_or(""),
+            m.episode_count.unwrap_or(0), m.repo_url.as_deref().unwrap_or("")
+        ),
         _ => String::new(),
     }
 }
@@ -256,7 +251,6 @@ async fn bootstrap_repo(
     owner_repo: &str,
     meta: &AnimeMeta,
     base_md: Option<String>,
-    create_root_readme: bool,
     existing: Vec<String>,
 ) -> Result<Vec<String>, String> {
     let mut created: Vec<String> = Vec::new();
@@ -278,11 +272,12 @@ async fn bootstrap_repo(
     }
 
     let has_readme = existing.iter().any(|n| n.eq_ignore_ascii_case("README.md"));
-    if create_root_readme || !has_readme {
-        let readme = base_md.unwrap_or_default();
-        let b64 = base64_encode(&readme);
-        fg.create_file(owner_repo, "README.md", &b64, "bootstrap root readme").await?;
-        created.push("README.md".to_string());
+    if !has_readme {
+        if let Some(readme) = base_md {
+            let b64 = base64_encode(&readme);
+            fg.create_file(owner_repo, "README.md", &b64, "bootstrap root readme").await?;
+            created.push("README.md".to_string());
+        }
     }
 
     Ok(created)
@@ -393,8 +388,8 @@ async fn run_attach_or_init(
         }
     };
 
-    if let Some(eid) = existing.tmdb_id {
-        if eid != meta.tmdb_id || existing.season != meta.season {
+    if let Some(eid) = existing.mal_id {
+        if eid != meta.mal_id {
             let _ = response_msg.edit(ctx, EditMessage::new().content(format!(
                 "Channel is already attached to `{}`. Use a different channel to attach a new anime.",
                 existing.name.unwrap_or_default()
@@ -443,7 +438,7 @@ async fn run_attach_or_init(
 
     let base_md = tokio::fs::read_to_string(format!("DB/config/{}/base.md", server_id)).await.ok();
 
-    let created = match bootstrap_repo(&fg, &owner_repo, &meta, base_md, is_init, existing_root).await {
+    let created = match bootstrap_repo(&fg, &owner_repo, &meta, base_md, existing_root).await {
         Ok(v) => v,
         Err(e) => {
             let _ = response_msg.edit(ctx, EditMessage::new().content(format!("Bootstrap failed: {}", e))).await;
@@ -452,13 +447,12 @@ async fn run_attach_or_init(
     };
 
     let new_meta = ChannelMeta {
-        tmdb_id: Some(meta.tmdb_id),
+        mal_id: Some(meta.mal_id),
         kind: Some(kind_label(&meta.kind).to_string()),
         name: Some(meta.name.clone()),
         slug: Some(meta.slug.clone()),
         episode_count: Some(meta.episode_count),
         repo_url: Some(repo_url.clone()),
-        season: meta.season,
     };
     if let Err(e) = write_channel_meta(server_id, channel_id, &new_meta).await {
         let _ = response_msg.edit(ctx, EditMessage::new().content(format!("Failed to save channel meta: {}", e))).await;

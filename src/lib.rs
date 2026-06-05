@@ -7,7 +7,7 @@ pub mod libpnprotocol;
 pub mod libpndb;
 pub mod libkagami;
 pub mod libpnlogging;
-pub mod libpntmdb;
+pub mod libpnmal;
 pub mod libpnforgejo;
 
 #[macro_export]

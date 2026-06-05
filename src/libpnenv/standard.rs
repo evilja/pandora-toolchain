@@ -17,4 +17,3 @@ pub const LULU: usize = 12;
 pub const VOESX: usize = 13;
 pub const ABYSS: usize = 14;
 pub const FORGEJO_API_KEY: usize = 15;
-pub const TMDB_API_KEY: usize = 16;
