@@ -357,15 +357,17 @@ pub async fn handle_configure(
         .find(|opt| opt.name == "forgejo")
         .and_then(|opt| opt.value.as_str())
     {
+        Some(u) if u.is_empty() => String::new(),
         Some(u) if u.starts_with("http://") || u.starts_with("https://") => u.trim_end_matches('/').to_string(),
-        _ => {
+        Some(other) => {
             command.create_response(ctx, CreateInteractionResponse::Message(
                 CreateInteractionResponseMessage::new()
-                    .content("Error: forgejo must be an http(s) URL")
+                    .content(format!("Error: forgejo `{}` must be an http(s) URL", other))
                     .ephemeral(true)
             )).await.ok();
             return;
         }
+        None => String::new(),
     };
 
     let dir = std::path::PathBuf::from("DB")
@@ -391,10 +393,11 @@ pub async fn handle_configure(
         return;
     }
 
+    let forgejo_display = if forgejo.is_empty() { "(unset)".to_string() } else { format!("`{}`", forgejo) };
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
-            .content(format!("Configured server `{}` — language: {}, forgejo: `{}`, announcement channel: <#{}>",
-                server_id, language, forgejo, command.channel_id.get()))
+            .content(format!("Configured server `{}` — language: {}, forgejo: {}, announcement channel: <#{}>",
+                server_id, language, forgejo_display, command.channel_id.get()))
             .ephemeral(true)
     )).await.ok();
 }
@@ -829,8 +832,8 @@ impl EventHandler for Handler {
                         .add_string_choice("日本語", "JP")
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "forgejo", "Forgejo base link (e.g. https://git.einzu.fun)")
-                        .required(true)
+                    CreateCommandOption::new(CommandOptionType::String, "forgejo", "Forgejo base link (e.g. https://git.einzu.fun) — leave empty to unset")
+                        .required(false)
                 ),
         ];
 
