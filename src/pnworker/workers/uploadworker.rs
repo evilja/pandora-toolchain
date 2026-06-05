@@ -3,7 +3,7 @@ use tokio::time::sleep;
 use crate::libpnenv::core::get_env;
 use crate::libpnenv::standard::PNCURL;
 use crate::libpnprotocol::core::Protocol;
-use crate::pnworker::messages::{JOB_CANCELLED, UPLOAD_DONE, UPLOAD_FAIL, UPLOAD_PROG, };
+use crate::pnworker::messages::{JOB_CANCELLED, MessagePayload, UPLOAD_DONE, UPLOAD_FAIL, UPLOAD_PROG};
 use crate::pnworker::util::{ToolResult, run_tool};
 use crate::pnworker::tools::{PNCURL_BACKUP, PNCURL_UPLOAD};
 use std::path::PathBuf;
@@ -28,11 +28,6 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             let mut lulu_link = "Lulustream Bekleniyor".to_string(); let mut lulu_done = false;
             let mut voesx_link = "Voe Bekleniyor".to_string(); let mut voesx_done = false;
             let mut abyss_link = "Abyss Bekleniyor".to_string(); let mut abyss_done = false;
-
-            let emit_status = |gd: &str, dood: &str, lulu: &str, voe: &str, abyss: &str| {
-                format!("{}\n{}\n{}\n{}\n{}",
-                    gd, dood, lulu, voe, abyss)
-            };
 
             let result = run_tool(
                 &pncurl_path,
@@ -70,9 +65,9 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                             if !lulu_done { lulu_link = format!("Lulustream {}/{} MB", string_byte_to_mb(lulu_sent), string_byte_to_mb(lulu_totl)); }
                             if !voesx_done { voesx_link = format!("Voe {}/{} MB", string_byte_to_mb(voesx_sent), string_byte_to_mb(voesx_totl)); }
                             if !abyss_done { abyss_link = format!("Abyss {}/{} MB", string_byte_to_mb(abyss_sent), string_byte_to_mb(abyss_totl)); }
-                            tx.try_send((job_id, format!("{}\n{}", UPLOAD_PROG,
-                                emit_status(&gd_link, &dood_link, &lulu_link, &voesx_link, &abyss_link)
-                            ), None)).ok();
+                            tx.try_send((job_id, MessagePayload::Progress(UPLOAD_PROG, vec![
+                                gd_link.clone(), dood_link.clone(), lulu_link.clone(), voesx_link.clone(), abyss_link.clone(),
+                            ]), None)).ok();
                         }
                         1 => {
                             completed += 1;
@@ -87,9 +82,9 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                                 _ => {}
                             }
                             let stage = if completed >= 6 { Some(Stage::Uploaded) } else { None };
-                            tx.try_send((job_id, format!("{} \n{} \n{} \n{} \n{} \n{}",
-                                UPLOAD_PROG, gd_link, dood_link, lulu_link, voesx_link, abyss_link
-                            ), stage)).ok();
+                            tx.try_send((job_id, MessagePayload::Progress(UPLOAD_PROG, vec![
+                                gd_link.clone(), dood_link.clone(), lulu_link.clone(), voesx_link.clone(), abyss_link.clone(),
+                            ]), stage)).ok();
                             if completed >= 6 {
                                 return Some(ToolResult::Success);
                             }
@@ -106,9 +101,9 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                                 _ => {}
                             }
                             let stage = if completed >= 5 { Some(Stage::Uploaded) } else { None };
-                            tx.try_send((job_id, format!("{} \n{} \n{} \n{} \n{} \n{}",
-                                UPLOAD_PROG, gd_link, dood_link, lulu_link, voesx_link, abyss_link
-                            ), stage)).ok();
+                            tx.try_send((job_id, MessagePayload::Progress(UPLOAD_PROG, vec![
+                                gd_link.clone(), dood_link.clone(), lulu_link.clone(), voesx_link.clone(), abyss_link.clone(),
+                            ]), stage)).ok();
                             if completed >= 6 {
                                 return Some(ToolResult::Success);
                             }
@@ -123,20 +118,20 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             match result {
                 ToolResult::Success | ToolResult::Fail => {
                     if any_done {
-                        tx.send((job_id, format!("{} \n{}\n{}\n{}\n{}\n{}",
-                            UPLOAD_DONE, gd_link, dood_link, lulu_link, voesx_link, abyss_link
-                        ), Some(Stage::Uploaded))).await.unwrap();
+                        tx.send((job_id, MessagePayload::Progress(UPLOAD_DONE, vec![
+                            gd_link.clone(), dood_link.clone(), lulu_link.clone(), voesx_link.clone(), abyss_link.clone(),
+                        ]), Some(Stage::Uploaded))).await.unwrap();
                     } else {
-                        tx.send((job_id, UPLOAD_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
+                        tx.send((job_id, MessagePayload::Static(UPLOAD_FAIL), Some(Stage::Failed))).await.unwrap();
                     }
                 }
                 ToolResult::Cancel => {
                     if any_done {
-                        tx.send((job_id, format!("{} \n{}\n{}\n{}\n{}\n{}",
-                            JOB_CANCELLED, gd_link, dood_link, lulu_link, voesx_link, abyss_link
-                        ), Some(Stage::Cancelled))).await.unwrap();
+                        tx.send((job_id, MessagePayload::Progress(JOB_CANCELLED, vec![
+                            gd_link.clone(), dood_link.clone(), lulu_link.clone(), voesx_link.clone(), abyss_link.clone(),
+                        ]), Some(Stage::Cancelled))).await.unwrap();
                     } else {
-                        tx.send((job_id, JOB_CANCELLED.to_string(), Some(Stage::Cancelled))).await.unwrap();
+                        tx.send((job_id, MessagePayload::Static(JOB_CANCELLED), Some(Stage::Cancelled))).await.unwrap();
                     }
                 }
             }

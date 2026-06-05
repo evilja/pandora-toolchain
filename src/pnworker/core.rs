@@ -5,7 +5,7 @@ use tokio::time::sleep;
 use tokio::time::Duration;
 use crate::libpnp2p::nyaaise::TorrentType;
 use crate::pnworker::heartbeat::core::{TypedShrine, Worker};
-use crate::pnworker::messages::{QUEUE_TOO_LONG, QUEUED, create_job_embed};
+use crate::pnworker::messages::{MessagePayload, PROBE_TIMEOUT, QUEUE_TOO_LONG, QUEUED, create_job_embed};
 use crate::libpndb::core::JobDb;
 use crate::pnworker::presence::{change_presence_job};
 use crate::pnworker::pull::git_pull;
@@ -18,7 +18,7 @@ use crate::pnworker::workers::encodeworker::*;
 use crate::pnworker::workers::uploadworker::*;
 use crate::pnworker::workers::probeworker::*;
 
-pub type CommData = (u64, String, Option<Stage>);
+pub type CommData = (u64, MessagePayload, Option<Stage>);
 
 #[derive(Clone)]
 pub enum WorkerMsg {
@@ -52,12 +52,12 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                 JobClass::Job(mut job) => {
                     if queue.len() > 4 {
                         job.ready = Stage::Declined;
-                        job.context.1.edit(&job.context.0, EditMessage::new().content("").embed(create_job_embed(&job, QUEUE_TOO_LONG))).await.unwrap();
+                        job.context.1.edit(&job.context.0, EditMessage::new().content("").embed(create_job_embed(&job, &MessagePayload::Static(QUEUE_TOO_LONG)))).await.unwrap();
                         continue;
                     }
                     match job.job_type {
                         JobType::Encode => {
-                            job.context.1.edit(&job.context.0, EditMessage::new().content("").embed(create_job_embed(&job, QUEUED))).await.unwrap();
+                            job.context.1.edit(&job.context.0, EditMessage::new().content("").embed(create_job_embed(&job, &MessagePayload::Static(QUEUED)))).await.unwrap();
                             for i in STRUCT {
                                 create_dir_all(job.directory.join(i)).await.unwrap();
                             }
@@ -71,7 +71,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                             }
                         }
                         JobType::Probe => {
-                            job.context.1.edit(&job.context.0, EditMessage::new().content("").embed(create_job_embed(&job, QUEUED))).await.unwrap();
+                            job.context.1.edit(&job.context.0, EditMessage::new().content("").embed(create_job_embed(&job, &MessagePayload::Static(QUEUED)))).await.unwrap();
                             for i in STRUCT { create_dir_all(job.directory.join(i)).await.unwrap(); }
                             // no subtitle to write
                             if !dispatch_or_kill(&mut shrine, &Worker::Probe, WorkerMsg::Probe((job.directory.clone(), job.torrent.clone(), job.job_id)), &mut job, &db, true).await {
@@ -84,7 +84,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                                 .join("DB").join("work")
                                 .join(job.probe_job_id.unwrap().to_string());
 
-                            job.context.1.edit(&job.context.0, EditMessage::new().content("").embed(create_job_embed(&job, QUEUED))).await.unwrap();
+                            job.context.1.edit(&job.context.0, EditMessage::new().content("").embed(create_job_embed(&job, &MessagePayload::Static(QUEUED)))).await.unwrap();
                             for i in STRUCT { create_dir_all(job.directory.join(i)).await.unwrap(); }
                             write(job.directory.join("contents").join("subtitle.ass"), &job.attachment).await.unwrap();
 
@@ -110,7 +110,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                             job.ready = Stage::Downloading;
                         }
                         JobType::Backup => {
-                            job.context.1.edit(&job.context.0, EditMessage::new().content("").embed(create_job_embed(&job, QUEUED))).await.unwrap();
+                            job.context.1.edit(&job.context.0, EditMessage::new().content("").embed(create_job_embed(&job, &MessagePayload::Static(QUEUED)))).await.unwrap();
                             for i in STRUCT {
                                 create_dir_all(job.directory.join(i)).await.unwrap();
                             }
@@ -187,7 +187,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                 let mut context_1 = queue[pos].context.1.clone();
 
                 context_1.edit(&*context_0, EditMessage::new().content("").embed(
-                    create_job_embed(&queue[pos], "Probe timed out. use /pancode within 3 minutes next time.")
+                    create_job_embed(&queue[pos], &MessagePayload::Static(PROBE_TIMEOUT))
                 )).await.unwrap();
 
                 cleanup_job(&directory, &PathBuf::from("DB").join("saved_data").join(id.to_string())).await;
@@ -416,6 +416,7 @@ pub struct Job {
     pub probe_torrent_path: Option<String>,             // saved .torrent path for later
     pub probe_job_id: Option<u64>,
     pub probe_file_index: Option<u64>,
+    pub lang: String,
 }
 
 impl PartialEq for Job {
@@ -426,7 +427,8 @@ impl PartialEq for Job {
 
 impl Job {
     pub fn new(author: u64, channel_id: u64, response_id: u64, job_type: JobType, job_id: u64,
-            preset: Preset, torrent: TorrentType, attachment: Vec<u8>, context: Context, msg: Message) -> Self {
+            preset: Preset, torrent: TorrentType, attachment: Vec<u8>, context: Context, msg: Message,
+            lang: String) -> Self {
         let requested_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_secs(0));
         Self {
             author, channel_id, response_id, job_type, job_id, preset, torrent, attachment,
@@ -441,6 +443,7 @@ impl Job {
             probe_torrent_path: None,
             probe_job_id: None,
             probe_file_index: None,
+            lang,
         }
     }
 }

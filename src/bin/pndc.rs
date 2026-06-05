@@ -37,6 +37,19 @@ fn is_authorized(part: &str, id: u64) -> bool {
     !allowed.is_empty() && allowed.contains(&id.to_string())
 }
 
+fn read_lang(guild_id: Option<serenity::all::GuildId>) -> String {
+    let id = match guild_id {
+        Some(g) => g.get(),
+        None => return "tr".to_string(),
+    };
+    let path = format!("DB/config/{}/meta.pandora", id);
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| s.lines().next().map(String::from))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "tr".to_string())
+}
+
 pub async fn handle_message(
     context: &Context,
     msg: &Message,
@@ -77,6 +90,7 @@ pub async fn handle_message(
         attachment_bytes,
         context.clone(),
         response_msg,
+        read_lang(msg.guild_id),
     ))
 }
 
@@ -105,6 +119,7 @@ pub async fn handle_probe(
         vec![],                // no attachment
         ctx.clone(),
         response_msg,
+        read_lang(command.guild_id),
     ))
 }
 
@@ -133,6 +148,7 @@ pub async fn handle_backup(
         vec![],
         ctx.clone(),
         response_msg,
+        read_lang(command.guild_id),
     ))
 }
 
@@ -161,6 +177,7 @@ pub async fn handle_scrape(
         vec![],
         ctx.clone(),
         response_msg,
+        read_lang(command.guild_id),
     ))
 }
 
@@ -280,6 +297,7 @@ pub async fn handle_gitcode(
         attachment_bytes,
         ctx.clone(),
         response_msg,
+        read_lang(command.guild_id),
     ))
 }
 
@@ -362,7 +380,7 @@ pub async fn handle_configure(
         return;
     }
 
-    let body = format!("{}\n{}\n", language, forgejo);
+    let body = format!("{}\n{}\n{}\n", language, forgejo, command.channel_id.get());
     let path = dir.join("meta.pandora");
     if let Err(e) = tokio::fs::write(&path, body).await {
         command.create_response(ctx, CreateInteractionResponse::Message(
@@ -375,7 +393,8 @@ pub async fn handle_configure(
 
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
-            .content(format!("Configured server `{}` — language: {}, forgejo: `{}`", server_id, language, forgejo))
+            .content(format!("Configured server `{}` — language: {}, forgejo: `{}`, announcement channel: <#{}>",
+                server_id, language, forgejo, command.channel_id.get()))
             .ephemeral(true)
     )).await.ok();
 }
@@ -434,6 +453,7 @@ pub async fn handle_interaction(
         attachment_bytes,
         ctx.clone(),
         response_msg,
+        read_lang(command.guild_id),
     ))
 }
 
@@ -846,6 +866,7 @@ async fn main() {
     tokio::spawn(pn_worker(rx));
     let intros = IntrosConfig::load();
     println!("{:?}", intros);
+    pandora_toolchain::pnworker::messages::init_language_files();
     let mut discord = Client::builder(env[TOKEN].clone(), GatewayIntents::all())
         .event_handler(Handler { tx, intros })
         .await

@@ -4,7 +4,7 @@ use crate::libpnenv::core::get_env;
 use crate::libpnenv::standard::{PNCURL, PNP2P};
 use crate::libpnp2p::nyaaise::TorrentType;
 use crate::libpnprotocol::core::Protocol;
-use crate::pnworker::messages::{CTORRENT_DONE, CTORRENT_FAIL, PROBE_FAIL, PROBE_ROW};
+use crate::pnworker::messages::{CTORRENT_DONE, CTORRENT_FAIL, MessagePayload, PROBE_FAIL, PROBE_ROW};
 use crate::pnworker::util::{ToolResult, run_tool, string_byte_to_mb};
 use crate::pnworker::tools::{PNCURL_TORRENT, PNP2P_PROBE};
 use std::path::PathBuf;
@@ -26,7 +26,7 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             let arg_opcode: String;
             match torrent {
                 TorrentType::GDrive(_) => {
-                    tx.send((job_id, PROBE_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
+                    tx.send((job_id, MessagePayload::Static(PROBE_FAIL), Some(Stage::Failed))).await.unwrap();
                     continue 'll;
                 }
                 TorrentType::Link(ref link) => {
@@ -46,7 +46,7 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                                 None => return None,
                             };
                             match out {
-                                1 => { tx.try_send((job_id, CTORRENT_DONE.to_string(), None)).ok(); }
+                                1 => { tx.try_send((job_id, MessagePayload::Static(CTORRENT_DONE), None)).ok(); }
                                 2 => return Some(ToolResult::Fail),
                                 _ => {}
                             }
@@ -56,7 +56,7 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
 
                     match result {
                         ToolResult::Fail => {
-                            tx.send((job_id, CTORRENT_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
+                            tx.send((job_id, MessagePayload::Static(CTORRENT_FAIL), Some(Stage::Failed))).await.unwrap();
                             continue 'll;
                         }
                         _ => {}
@@ -120,21 +120,17 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             match result {
                 ToolResult::Success => {
                     if probe_rows.is_empty() {
-                        tx.send((job_id, PROBE_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
+                        tx.send((job_id, MessagePayload::Static(PROBE_FAIL), Some(Stage::Failed))).await.unwrap();
                         continue 'll;
                     }
-                    // Emit the whole file list as a single CommData message, stage → Probed
-                    // The core loop will format this into the Discord embed
                     let list = probe_rows.join("\n");
-                    let msg = format!("{}\n{}", PROBE_ROW, list);
-                    tx.send((job_id, msg, Some(Stage::Probed))).await.unwrap();
+                    tx.send((job_id, MessagePayload::Progress(PROBE_ROW, vec![list]), Some(Stage::Probed))).await.unwrap();
                 }
                 ToolResult::Fail => {
-                    tx.send((job_id, PROBE_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
+                    tx.send((job_id, MessagePayload::Static(PROBE_FAIL), Some(Stage::Failed))).await.unwrap();
                 }
-                // Probe has no cancel support (it's fast, no cancelfile needed)
                 _ => {
-                    tx.send((job_id, PROBE_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
+                    tx.send((job_id, MessagePayload::Static(PROBE_FAIL), Some(Stage::Failed))).await.unwrap();
                 }
             }
             println!("[Pandora Probe] End of Session");

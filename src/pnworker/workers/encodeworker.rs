@@ -5,7 +5,7 @@ use tokio::time::sleep;
 use crate::libpnenv::core::get_env;
 use crate::libpnenv::standard::PNMPEG;
 use crate::libpnprotocol::core::Protocol;
-use crate::pnworker::messages::{ENCODE_CONCAT_PROG, ENCODE_DONE, ENCODE_FAIL, ENCODE_PROG, JOB_CANCELLED};
+use crate::pnworker::messages::{ENCODE_CONCAT_PROG, ENCODE_DONE, ENCODE_FAIL, ENCODE_PROG, JOB_CANCELLED, MessagePayload};
 use crate::pnworker::util::{ToolResult, run_tool};
 use crate::pnworker::tools::{PNMPEG_CONCAT, PNMPEG_ENCODE};
 use tokio::fs::rename;
@@ -68,8 +68,13 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                             let frame     = payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
                             let totlframe = payload.get(2).and_then(|v| v.as_str()).unwrap_or("0");
                             let bitrate   = payload.get(3).and_then(|v| v.as_str()).unwrap_or("0");
-                            tx.try_send((job_id, format!("{}\nAşama: 1/{}\nİşlenen kare: {}/{}\nSaniye başına işlenen kare: {}\nSaniye başına ortalama veri: {}kbit/s",
-                                ENCODE_PROG, intro_q, frame, totlframe, fps, bitrate), None)).ok();
+                            tx.try_send((job_id, MessagePayload::Progress(ENCODE_PROG, vec![
+                                intro_q.to_string(),
+                                frame.to_string(),
+                                totlframe.to_string(),
+                                fps.to_string(),
+                                bitrate.to_string(),
+                            ]), None)).ok();
                         }
                         1 => return Some(ToolResult::Success),
                         2 => return Some(ToolResult::Fail),
@@ -82,11 +87,11 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
 
             match result {
                 ToolResult::Fail => {
-                    tx.send((job_id, ENCODE_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
+                    tx.send((job_id, MessagePayload::Static(ENCODE_FAIL), Some(Stage::Failed))).await.unwrap();
                     continue 'll;
                 }
                 ToolResult::Cancel => {
-                    tx.send((job_id, JOB_CANCELLED.to_string(), Some(Stage::Cancelled))).await.unwrap();
+                    tx.send((job_id, MessagePayload::Static(JOB_CANCELLED), Some(Stage::Cancelled))).await.unwrap();
                     continue 'll;
                 }
                 ToolResult::Success => {}
@@ -117,8 +122,12 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                                 let frame     = payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
                                 let totlframe = payload.get(2).and_then(|v| v.as_str()).unwrap_or("0");
                                 let bitrate   = payload.get(3).and_then(|v| v.as_str()).unwrap_or("0");
-                                tx.try_send((job_id, format!("{}\nAşama: 2/2\nİşlenen kare: {}/{}\nSaniye başına işlenen kare: {}\nSaniye başına ortalama veri: {}kbit/s",
-                                    ENCODE_CONCAT_PROG, frame, totlframe, fps, bitrate), None)).ok();
+                            tx.try_send((job_id, MessagePayload::Progress(ENCODE_CONCAT_PROG, vec![
+                                frame.to_string(),
+                                totlframe.to_string(),
+                                fps.to_string(),
+                                bitrate.to_string(),
+                            ]), None)).ok();
                             }
                             1 => return Some(ToolResult::Success),
                             2 => return Some(ToolResult::Fail),
@@ -131,13 +140,13 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
 
                 match result {
                     ToolResult::Success => {
-                        tx.send((job_id, ENCODE_DONE.to_string(), Some(Stage::Encoded))).await.unwrap();
+                        tx.send((job_id, MessagePayload::Static(ENCODE_DONE), Some(Stage::Encoded))).await.unwrap();
                     }
                     ToolResult::Fail => {
-                        tx.send((job_id, ENCODE_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
+                        tx.send((job_id, MessagePayload::Static(ENCODE_FAIL), Some(Stage::Failed))).await.unwrap();
                     }
                     ToolResult::Cancel => {
-                        tx.send((job_id, JOB_CANCELLED.to_string(), Some(Stage::Cancelled))).await.unwrap();
+                        tx.send((job_id, MessagePayload::Static(JOB_CANCELLED), Some(Stage::Cancelled))).await.unwrap();
                     }
                 }
             } else {
@@ -145,7 +154,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     directory.join("work").join("output_noconcat.mp4"),
                     directory.join("work").join("output.mp4"),
                 ).await.unwrap();
-                tx.send((job_id, ENCODE_DONE.to_string(), Some(Stage::Encoded))).await.unwrap();
+                tx.send((job_id, MessagePayload::Static(ENCODE_DONE), Some(Stage::Encoded))).await.unwrap();
             }
             println!("[Pandora Encoder] End of Session");
             continue 'll;

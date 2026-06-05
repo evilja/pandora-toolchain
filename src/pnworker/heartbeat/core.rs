@@ -5,10 +5,11 @@ use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, Instant};
 use crate::pnworker::core::Stage;
+use crate::pnworker::messages::MessagePayload;
 
 // CommData is the uniform heartbeat type all ShrineLayers emit back.
-// (job_id, message, optional stage)
-pub type CommData = (u64, String, Option<Stage>);
+// (job_id, message payload, optional stage)
+pub type CommData = (u64, MessagePayload, Option<Stage>);
 
 
 // Worker is the key type for the Shrine's HashMap.

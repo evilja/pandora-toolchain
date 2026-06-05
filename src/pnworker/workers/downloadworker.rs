@@ -4,7 +4,7 @@ use crate::libpnenv::core::get_env;
 use crate::libpnenv::standard::{PNCURL, PNP2P};
 use crate::libpnp2p::nyaaise::TorrentType;
 use crate::libpnprotocol::core::Protocol;
-use crate::pnworker::messages::{CTORRENT_DONE, CTORRENT_FAIL, JOB_CANCELLED, TORRENT_DONE, TORRENT_FAIL, TORRENT_PROG};
+use crate::pnworker::messages::{CTORRENT_DONE, CTORRENT_FAIL, JOB_CANCELLED, MessagePayload, TORRENT_DONE, TORRENT_FAIL, TORRENT_PROG, TORRENT_PROG_SELECT};
 use crate::pnworker::util::{ToolResult, run_tool};
 use crate::pnworker::tools::{PNCURL_GSCRAPE, PNCURL_TORRENT, PNP2P_TORRENT, PNP2P_SELECT};
 use tokio::fs::{create_dir_all, rename};
@@ -30,7 +30,7 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     let torrent_dir = directory.join("contents").join("torrent");
                     if let Err(e) = create_dir_all(&torrent_dir).await {
                         eprintln!("[Pandora Downloader] Failed to create torrent dir: {e}");
-                        tx.send((job_id, TORRENT_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
+                        tx.send((job_id, MessagePayload::Static(TORRENT_FAIL), Some(Stage::Failed))).await.unwrap();
                         continue 'll;
                     }
                     let target_path = torrent_dir.join("input.mkv");
@@ -57,8 +57,11 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                                     let percent = payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
                                     let progmb  = payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
                                     let totlmb  = payload.get(2).and_then(|v| v.as_str()).unwrap_or("0");
-                                    tx.try_send((job_id, format!("{} {}% {}MB/{}MB", TORRENT_PROG, percent,
-                                        string_byte_to_mb(progmb), string_byte_to_mb(totlmb)), None)).ok();
+                                    tx.try_send((job_id, MessagePayload::Progress(TORRENT_PROG, vec![
+                                        percent.to_string(),
+                                        string_byte_to_mb(progmb).to_string(),
+                                        string_byte_to_mb(totlmb).to_string(),
+                                    ]), None)).ok();
                                 }
                                 1 => return Some(ToolResult::Success),
                                 2 => return Some(ToolResult::Fail),
@@ -71,13 +74,13 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
 
                     match result {
                         ToolResult::Success => {
-                            tx.send((job_id, TORRENT_DONE.to_string(), Some(Stage::Downloaded))).await.unwrap();
+                            tx.send((job_id, MessagePayload::Static(TORRENT_DONE), Some(Stage::Downloaded))).await.unwrap();
                         }
                         ToolResult::Fail => {
-                            tx.send((job_id, TORRENT_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
+                            tx.send((job_id, MessagePayload::Static(TORRENT_FAIL), Some(Stage::Failed))).await.unwrap();
                         }
                         ToolResult::Cancel => {
-                            tx.send((job_id, JOB_CANCELLED.to_string(), Some(Stage::Cancelled))).await.unwrap();
+                            tx.send((job_id, MessagePayload::Static(JOB_CANCELLED), Some(Stage::Cancelled))).await.unwrap();
                         }
                     }
                     println!("[Pandora Downloader] End of Session");
@@ -100,7 +103,7 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                                 None => return None,
                             };
                             match out {
-                                1 => { tx.try_send((job_id, CTORRENT_DONE.to_string(), None)).ok(); }
+                                1 => { tx.try_send((job_id, MessagePayload::Static(CTORRENT_DONE), None)).ok(); }
                                 2 => return Some(ToolResult::Fail),
                                 _ => {}
                             }
@@ -110,7 +113,7 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
 
                     match result {
                         ToolResult::Fail => {
-                            tx.send((job_id, CTORRENT_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
+                            tx.send((job_id, MessagePayload::Static(CTORRENT_FAIL), Some(Stage::Failed))).await.unwrap();
                             continue 'll;
                         }
                         _ => {}
@@ -150,8 +153,11 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                                     let percent = payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
                                     let progmb  = payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
                                     let totlmb  = payload.get(2).and_then(|v| v.as_str()).unwrap_or("0");
-                                    tx.try_send((job_id, format!("{} {}% {}MB/{}MB", TORRENT_PROG, percent,
-                                        string_byte_to_mb(progmb), string_byte_to_mb(totlmb)), None)).ok();
+                                    tx.try_send((job_id, MessagePayload::Progress(TORRENT_PROG, vec![
+                                        percent.to_string(),
+                                        string_byte_to_mb(progmb).to_string(),
+                                        string_byte_to_mb(totlmb).to_string(),
+                                    ]), None)).ok();
                                 }
                                 1 => return Some(ToolResult::Success),
                                 2 => return Some(ToolResult::Fail),
@@ -185,8 +191,10 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                                     let payload = data.get(1).and_then(|v| v.as_multi())?;
                                     let percent = payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
                                     let progmb  = payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
-                                    tx.try_send((job_id, format!("{} {}% {}MB", TORRENT_PROG, percent,
-                                        string_byte_to_mb(progmb)), None)).ok();
+                                    tx.try_send((job_id, MessagePayload::Progress(TORRENT_PROG_SELECT, vec![
+                                        percent.to_string(),
+                                        string_byte_to_mb(progmb).to_string(),
+                                    ]), None)).ok();
                                 }
                                 1 => return Some(ToolResult::Success),
                                 2 => return Some(ToolResult::Fail),
@@ -211,7 +219,7 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     
                     if mkv_files.is_empty() {
                         eprintln!("No .mkv file found in downloaded torrent");
-                        tx.send((job_id, TORRENT_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
+                        tx.send((job_id, MessagePayload::Static(TORRENT_FAIL), Some(Stage::Failed))).await.unwrap();
                         continue 'll;
                     }
                     
@@ -246,7 +254,7 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                             // Fallback to your existing "Largest MKV" heuristic
                             let mkv_files = find_mkv_files(&torrent_dir).await;
                             if mkv_files.is_empty() {
-                                tx.send((job_id, TORRENT_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
+                                tx.send((job_id, MessagePayload::Static(TORRENT_FAIL), Some(Stage::Failed))).await.unwrap();
                                 continue 'll;
                             }
                             let mut largest = mkv_files[0].clone();
@@ -272,13 +280,13 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                         }
                     }
                     
-                    tx.send((job_id, TORRENT_DONE.to_string(), Some(Stage::Downloaded))).await.unwrap();
+                    tx.send((job_id, MessagePayload::Static(TORRENT_DONE), Some(Stage::Downloaded))).await.unwrap();
                 }
                 ToolResult::Fail => {
-                    tx.send((job_id, TORRENT_FAIL.to_string(), Some(Stage::Failed))).await.unwrap();
+                    tx.send((job_id, MessagePayload::Static(TORRENT_FAIL), Some(Stage::Failed))).await.unwrap();
                 }
                 ToolResult::Cancel => {
-                    tx.send((job_id, JOB_CANCELLED.to_string(), Some(Stage::Cancelled))).await.unwrap();
+                    tx.send((job_id, MessagePayload::Static(JOB_CANCELLED), Some(Stage::Cancelled))).await.unwrap();
                 }
             }
             println!("[Pandora Downloader] End of Session");
