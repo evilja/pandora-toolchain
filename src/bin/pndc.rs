@@ -1,7 +1,7 @@
 use serenity::{
     Client,
-    all::{ActivityData, CommandOptionType, Context, CreateMessage, EditMessage, GatewayIntents, Interaction, Message, OnlineStatus, Ready},
-    builder::{CreateCommand, CreateCommandOption, CreateInteractionResponse, CreateInteractionResponseMessage},
+    all::{ActivityData, ChannelType, CommandOptionType, Context, CreateMessage, EditMessage, GatewayIntents, Interaction, Message, OnlineStatus, Ready},
+    builder::{CreateCommand, CreateCommandOption, CreateInteractionResponse, CreateInteractionResponseMessage, EditChannel},
     prelude::*,
 };
 use pandora_toolchain::libpnp2p::nyaaise::nyaaise;
@@ -28,7 +28,7 @@ fn is_authorized(part: &str, id: u64) -> bool {
         "!enc" | "!encode" => "authorize.pandora",
         "!ban" => "admin.pandora",
         "!authorize" | "!auth" => "admin.pandora",
-        "encode" | "pancode" | "probe" | "backup" | "scrape" | "gitcode" => "authorize.pandora",
+        "encode" | "pancode" | "probe" | "backup" | "scrape" | "gitcode" | "job" => "authorize.pandora",
         "attach" | "init" => "upper.pandora",
         "!some" => "admin.pandora",
         "gitsync" | "hearts" | "configure" => "admin.pandora",
@@ -299,6 +299,24 @@ fn kind_label(k: &AnimeKind) -> &'static str {
     }
 }
 
+async fn try_rename_forum_channel(ctx: &Context, channel_id: serenity::all::ChannelId, name: &str) -> Option<String> {
+    let mut ch = channel_id.to_channel(&ctx.http).await.ok()?;
+    let g = match &mut ch {
+        serenity::all::Channel::Guild(g) => g,
+        _ => return None,
+    };
+    if g.kind != ChannelType::Forum {
+        return None;
+    }
+    let new_name: String = if name.chars().count() > 100 {
+        name.chars().take(100).collect()
+    } else {
+        name.to_string()
+    };
+    g.edit(&ctx.http, EditChannel::new().name(&new_name)).await.ok()?;
+    Some(new_name)
+}
+
 async fn run_attach_or_init(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,
@@ -464,9 +482,14 @@ async fn run_attach_or_init(
     } else {
         created.join(", ")
     };
+    let renamed = try_rename_forum_channel(ctx, command.channel_id, &meta.name).await;
+    let rename_line = match &renamed {
+        Some(n) => format!("\nChannel renamed: `{}`", n),
+        None => String::new(),
+    };
     let body = format!(
-        "**{}** — attached to this channel.\nName: `{}`\nSlug: `{}`\nKind: `{}`\nEpisodes: `{}`\nRepo: <{}>\nCreated/updated: {}",
-        label, meta.name, meta.slug, kind_label(&meta.kind), meta.episode_count, repo_url, created_list
+        "**{}** — attached to this channel.\nName: `{}`\nSlug: `{}`\nKind: `{}`\nEpisodes: `{}`\nRepo: <{}>\nCreated/updated: {}{}",
+        label, meta.name, meta.slug, kind_label(&meta.kind), meta.episode_count, repo_url, created_list, rename_line
     );
     let _ = response_msg.edit(ctx, EditMessage::new().content(body)).await;
 }
@@ -477,6 +500,14 @@ pub async fn handle_init(ctx: &Context, command: &serenity::all::CommandInteract
 
 pub async fn handle_attach(ctx: &Context, command: &serenity::all::CommandInteraction) {
     run_attach_or_init(ctx, command, false).await;
+}
+
+pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteraction) {
+    command.create_response(ctx, CreateInteractionResponse::Message(
+        CreateInteractionResponseMessage::new()
+            .content("`/job` is not implemented yet.")
+            .ephemeral(true)
+    )).await.ok();
 }
 
 pub async fn handle_gitcode(
@@ -917,6 +948,9 @@ impl EventHandler for Handler {
                 "init" => {
                     handle_init(&ctx, &command).await;
                 }
+                "job" => {
+                    handle_job(&ctx, &command).await;
+                }
                 "gitcode" => {
                     let torrent_url = match command.data.options.iter()
                         .find(|opt| opt.name == "torrent")
@@ -1098,6 +1132,8 @@ impl EventHandler for Handler {
                     CreateCommandOption::new(CommandOptionType::String, "forgejo", "Forgejo base link (e.g. https://git.einzu.fun) — leave empty to unset")
                         .required(false)
                 ),
+            CreateCommand::new("job")
+                .description("Job operations (stub)"),
         ];
 
         for guild in &ready.guilds {
