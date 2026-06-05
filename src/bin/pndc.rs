@@ -208,13 +208,20 @@ struct ChannelMeta {
     slug: Option<String>,
     episode_count: Option<u32>,
     repo_url: Option<String>,
+    season: Option<u32>,
 }
 
 fn meta_to_toml(m: &ChannelMeta) -> String {
     match (&m.kind, m.tmdb_id) {
-        (Some(k), Some(id)) => format!("tmdb_id = {}\nkind = \"{}\"\nname = \"{}\"\nslug = \"{}\"\nepisode_count = {}\nrepo_url = \"{}\"\n",
-            id, k, m.name.as_deref().unwrap_or(""), m.slug.as_deref().unwrap_or(""),
-            m.episode_count.unwrap_or(0), m.repo_url.as_deref().unwrap_or("")),
+        (Some(k), Some(id)) => {
+            let season_line = match m.season {
+                Some(s) => format!("season = {}\n", s),
+                None => String::new(),
+            };
+            format!("tmdb_id = {}\nkind = \"{}\"\nname = \"{}\"\nslug = \"{}\"\nepisode_count = {}\nrepo_url = \"{}\"\n{}",
+                id, k, m.name.as_deref().unwrap_or(""), m.slug.as_deref().unwrap_or(""),
+                m.episode_count.unwrap_or(0), m.repo_url.as_deref().unwrap_or(""), season_line)
+        }
         _ => String::new(),
     }
 }
@@ -250,9 +257,9 @@ async fn bootstrap_repo(
     meta: &AnimeMeta,
     base_md: Option<String>,
     create_root_readme: bool,
+    existing: Vec<String>,
 ) -> Result<Vec<String>, String> {
     let mut created: Vec<String> = Vec::new();
-    let existing = fg.list_contents(owner_repo, "").await.unwrap_or_default();
 
     let existing_nums: Vec<u32> = existing.iter()
         .filter_map(|n| n.trim_start_matches('0').parse::<u32>().ok().filter(|v| *v > 0).or_else(|| {
@@ -387,7 +394,7 @@ async fn run_attach_or_init(
     };
 
     if let Some(eid) = existing.tmdb_id {
-        if eid != meta.tmdb_id {
+        if eid != meta.tmdb_id || existing.season != meta.season {
             let _ = response_msg.edit(ctx, EditMessage::new().content(format!(
                 "Channel is already attached to `{}`. Use a different channel to attach a new anime.",
                 existing.name.unwrap_or_default()
@@ -426,9 +433,17 @@ async fn run_attach_or_init(
         (format!("{}/{}", owner, repo), repo_url)
     };
 
+    let existing_root = match fg.list_contents(&owner_repo, "").await {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = response_msg.edit(ctx, EditMessage::new().content(format!("list_contents failed: {}", e))).await;
+            return;
+        }
+    };
+
     let base_md = tokio::fs::read_to_string(format!("DB/config/{}/base.md", server_id)).await.ok();
 
-    let created = match bootstrap_repo(&fg, &owner_repo, &meta, base_md, is_init).await {
+    let created = match bootstrap_repo(&fg, &owner_repo, &meta, base_md, is_init, existing_root).await {
         Ok(v) => v,
         Err(e) => {
             let _ = response_msg.edit(ctx, EditMessage::new().content(format!("Bootstrap failed: {}", e))).await;
@@ -443,6 +458,7 @@ async fn run_attach_or_init(
         slug: Some(meta.slug.clone()),
         episode_count: Some(meta.episode_count),
         repo_url: Some(repo_url.clone()),
+        season: meta.season,
     };
     if let Err(e) = write_channel_meta(server_id, channel_id, &new_meta).await {
         let _ = response_msg.edit(ctx, EditMessage::new().content(format!("Failed to save channel meta: {}", e))).await;

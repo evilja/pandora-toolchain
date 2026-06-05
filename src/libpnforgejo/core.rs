@@ -62,12 +62,15 @@ impl Forgejo {
             .json(&body)
             .send().await
             .map_err(|e| e.to_string())?;
-        if !resp.status().is_success() {
-            let s = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("create_repo failed: {} {}", s, text));
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(format!("{}/{}/{}", self.host, self.org, name));
         }
-        Ok(format!("{}/{}/{}", self.host, self.org, name))
+        let text = resp.text().await.unwrap_or_default();
+        if status.as_u16() == 409 {
+            return Ok(format!("{}/{}/{}", self.host, self.org, name));
+        }
+        Err(format!("create_repo failed: {} {}", status, text))
     }
 
     pub async fn list_contents(&self, owner_repo: &str, path: &str) -> Result<Vec<String>, String> {
