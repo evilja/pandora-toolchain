@@ -191,13 +191,6 @@ fn pad2(n: u32) -> String {
     }
 }
 
-fn last_path_segment(url: &str) -> Option<String> {
-    let trimmed = url.trim_end_matches('/');
-    let after = trimmed.rfind('/')?;
-    let seg = &trimmed[after + 1..];
-    if seg.is_empty() { None } else { Some(seg.to_string()) }
-}
-
 fn parse_repo_url(url: &str) -> Result<(String, String), String> {
     let re = regex::Regex::new(r"^https?://[^/]+/([^/]+)/([^/]+)/?$").unwrap();
     let caps = re.captures(url.trim_end_matches('/'))
@@ -267,19 +260,20 @@ async fn bootstrap_repo(
         }))
         .collect();
 
-    let content = base_md.unwrap_or_default();
-    let b64 = base64_encode(&content);
+    let empty_b64 = base64_encode("");
 
     for n in 1..=meta.episode_count {
         if existing_nums.contains(&n) { continue; }
         let folder = pad2(n);
-        let path = format!("{}/base.md", folder);
-        fg.create_file(owner_repo, &path, &b64, "bootstrap episode folder").await?;
+        let path = format!("{}/.gitkeep", folder);
+        fg.create_file(owner_repo, &path, &empty_b64, "bootstrap episode folder").await?;
         created.push(folder);
     }
 
     let has_readme = existing.iter().any(|n| n.eq_ignore_ascii_case("README.md"));
     if create_root_readme || !has_readme {
+        let readme = base_md.unwrap_or_default();
+        let b64 = base64_encode(&readme);
         fg.create_file(owner_repo, "README.md", &b64, "bootstrap root readme").await?;
         created.push("README.md".to_string());
     }
@@ -411,14 +405,7 @@ async fn run_attach_or_init(
     };
 
     let (owner_repo, repo_url) = if is_init {
-        let org = match last_path_segment(&forgejo_base) {
-            Some(s) => s,
-            None => {
-                let _ = response_msg.edit(ctx, EditMessage::new().content("Error: forgejo base has no org path segment (expected `https://host/org`)")).await;
-                return;
-            }
-        };
-        let or = format!("{}/{}", org, meta.slug);
+        let or = format!("{}/{}", fg.org, meta.slug);
         let url = match fg.create_repo(&meta.slug).await {
             Ok(u) => u,
             Err(e) => {

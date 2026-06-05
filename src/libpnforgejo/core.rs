@@ -7,13 +7,14 @@ use serde_json::Value;
 use std::time::Duration;
 
 pub struct Forgejo {
-    pub base: String,
+    pub host: String,
+    pub org: String,
     pub token: String,
     pub client: Client,
 }
 
 impl Forgejo {
-    pub fn from_env(base: String) -> Result<Self, String> {
+    pub fn from_env(forgejo_line: String) -> Result<Self, String> {
         let env = get_env("env.pandora");
         if env.len() <= FORGEJO_API_KEY || env[FORGEJO_API_KEY].is_empty() {
             return Err("FORGEJO_API_KEY is not set in env.pandora".to_string());
@@ -23,12 +24,24 @@ impl Forgejo {
             .timeout(Duration::from_secs(60))
             .build()
             .map_err(|e| e.to_string())?;
-        let trimmed = base.trim_end_matches('/').to_string();
-        Ok(Forgejo { base: trimmed, token, client })
+
+        let trimmed = forgejo_line.trim_end_matches('/');
+        let last_slash = trimmed.rfind('/').ok_or_else(|| {
+            format!("forgejo line `{}` is not a URL with a host", trimmed)
+        })?;
+        let host = trimmed[..last_slash].to_string();
+        let org = trimmed[last_slash + 1..].to_string();
+        if host.is_empty() || org.is_empty() {
+            return Err(format!(
+                "forgejo line `{}` must be a full URL including the org, e.g. `https://git.example.com/MyOrg`",
+                trimmed
+            ));
+        }
+        Ok(Forgejo { host, org, token, client })
     }
 
     pub async fn create_repo(&self, name: &str) -> Result<String, String> {
-        let url = format!("{}/api/v1/user/repos", self.base);
+        let url = format!("{}/api/v1/orgs/{}/repos", self.host, self.org);
         let body = serde_json::json!({
             "name": name,
             "auto_init": true,
@@ -44,14 +57,14 @@ impl Forgejo {
             let text = resp.text().await.unwrap_or_default();
             return Err(format!("create_repo failed: {} {}", s, text));
         }
-        Ok(format!("{}/{}", self.base, name))
+        Ok(format!("{}/{}/{}", self.host, self.org, name))
     }
 
     pub async fn list_contents(&self, owner_repo: &str, path: &str) -> Result<Vec<String>, String> {
         let url = if path.is_empty() {
-            format!("{}/api/v1/repos/{}/contents", self.base, owner_repo)
+            format!("{}/api/v1/repos/{}/contents", self.host, owner_repo)
         } else {
-            format!("{}/api/v1/repos/{}/contents/{}", self.base, owner_repo, path)
+            format!("{}/api/v1/repos/{}/contents/{}", self.host, owner_repo, path)
         };
         let resp = self.client.get(&url)
             .bearer_auth(&self.token)
@@ -79,7 +92,7 @@ impl Forgejo {
     }
 
     pub async fn create_file(&self, owner_repo: &str, path: &str, content_b64: &str, message: &str) -> Result<(), String> {
-        let url = format!("{}/api/v1/repos/{}/contents/{}", self.base, owner_repo, path);
+        let url = format!("{}/api/v1/repos/{}/contents/{}", self.host, owner_repo, path);
         let body = serde_json::json!({
             "content": content_b64,
             "message": message,
