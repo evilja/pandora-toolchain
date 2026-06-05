@@ -1,159 +1,176 @@
+use std::collections::HashMap;
+use std::path::Path;
 use crate::pnworker::core::{Job, Preset, Stage};
+use serde::Deserialize;
 use serenity::all::{Colour, CreateEmbed};
 
 const PKGVER: &'static str = env!("CARGO_PKG_VERSION");
 
-pub const QUEUE_TOO_LONG: usize = 0;
-pub const QUEUED: usize = 1;
-pub const JOB_CANCELLED: usize = 2;
-pub const PROBE_TIMEOUT: usize = 3;
-pub const GITSYNC_PROGRESS: usize = 4;
-pub const GITSYNC_SUCCESS: usize = 5;
-pub const GITSYNC_FAIL: usize = 6;
-
-pub const CTORRENT_DONE: usize = 7;
-pub const CTORRENT_FAIL: usize = 8;
-pub const TORRENT_PROG: usize = 9;
-pub const TORRENT_PROG_SELECT: usize = 10;
-pub const TORRENT_DONE: usize = 11;
-pub const TORRENT_FAIL: usize = 12;
-
-pub const ENCODE_PROG: usize = 13;
-pub const ENCODE_CONCAT_PROG: usize = 14;
-pub const ENCODE_DONE: usize = 15;
-pub const ENCODE_FAIL: usize = 16;
-
-pub const UPLOAD_PROG: usize = 17;
-pub const UPLOAD_DONE: usize = 18;
-pub const UPLOAD_FAIL: usize = 19;
-
-pub const PROBE_DONE: usize = 20;
-pub const PROBE_FAIL: usize = 21;
-pub const PROBE_ROW: usize = 22;
-
-pub const EMBED_TITLE: usize = 23;
-pub const FIELD_JOBID: usize = 24;
-pub const FIELD_AUTHOR: usize = 25;
-pub const FIELD_STATUS: usize = 26;
-pub const FIELD_PRESET: usize = 27;
-pub const FIELD_TORRENT: usize = 28;
-pub const FIELD_PROGRESS: usize = 29;
-
-pub const STAGE_QUEUED: usize = 30;
-pub const STAGE_PROBING: usize = 31;
-pub const STAGE_PROBED: usize = 32;
-pub const STAGE_DOWNLOADING: usize = 33;
-pub const STAGE_DOWNLOADED: usize = 34;
-pub const STAGE_ENCODING: usize = 35;
-pub const STAGE_ENCODED: usize = 36;
-pub const STAGE_UPLOADING: usize = 37;
-pub const STAGE_UPLOADED: usize = 38;
-pub const STAGE_FAILED: usize = 39;
-pub const STAGE_DECLINED: usize = 40;
-pub const STAGE_CANCELLED: usize = 41;
-
-pub const PRESET_PSEUDOLOSSLESS_INTRO: usize = 42;
-pub const PRESET_PSEUDOLOSSLESS_NOINTRO: usize = 43;
-pub const PRESET_GPU_INTRO: usize = 44;
-pub const PRESET_GPU_NOINTRO: usize = 45;
-pub const PRESET_STANDARD_INTRO: usize = 46;
-pub const PRESET_STANDARD_NOINTRO: usize = 47;
-pub const PRESET_DUMMY: usize = 48;
-
-pub const MESSAGE_COUNT: usize = 49;
+pub const QUEUE_TOO_LONG: &str = "QUEUE_TOO_LONG";
+pub const QUEUED: &str = "QUEUED";
+pub const JOB_CANCELLED: &str = "JOB_CANCELLED";
+pub const PROBE_TIMEOUT: &str = "PROBE_TIMEOUT";
+pub const GITSYNC_PROGRESS: &str = "GITSYNC_PROGRESS";
+pub const GITSYNC_SUCCESS: &str = "GITSYNC_SUCCESS";
+pub const GITSYNC_FAIL: &str = "GITSYNC_FAIL";
+pub const CTORRENT_DONE: &str = "CTORRENT_DONE";
+pub const CTORRENT_FAIL: &str = "CTORRENT_FAIL";
+pub const TORRENT_PROG: &str = "TORRENT_PROG";
+pub const TORRENT_PROG_SELECT: &str = "TORRENT_PROG_SELECT";
+pub const TORRENT_DONE: &str = "TORRENT_DONE";
+pub const TORRENT_FAIL: &str = "TORRENT_FAIL";
+pub const ENCODE_PROG: &str = "ENCODE_PROG";
+pub const ENCODE_CONCAT_PROG: &str = "ENCODE_CONCAT_PROG";
+pub const ENCODE_DONE: &str = "ENCODE_DONE";
+pub const ENCODE_FAIL: &str = "ENCODE_FAIL";
+pub const UPLOAD_PROG: &str = "UPLOAD_PROG";
+pub const UPLOAD_DONE: &str = "UPLOAD_DONE";
+pub const UPLOAD_FAIL: &str = "UPLOAD_FAIL";
+pub const PROBE_DONE: &str = "PROBE_DONE";
+pub const PROBE_FAIL: &str = "PROBE_FAIL";
+pub const PROBE_ROW: &str = "PROBE_ROW";
+pub const EMBED_TITLE: &str = "EMBED_TITLE";
+pub const FIELD_JOBID: &str = "FIELD_JOBID";
+pub const FIELD_AUTHOR: &str = "FIELD_AUTHOR";
+pub const FIELD_STATUS: &str = "FIELD_STATUS";
+pub const FIELD_PRESET: &str = "FIELD_PRESET";
+pub const FIELD_TORRENT: &str = "FIELD_TORRENT";
+pub const FIELD_PROGRESS: &str = "FIELD_PROGRESS";
+pub const STAGE_QUEUED: &str = "STAGE_QUEUED";
+pub const STAGE_PROBING: &str = "STAGE_PROBING";
+pub const STAGE_PROBED: &str = "STAGE_PROBED";
+pub const STAGE_DOWNLOADING: &str = "STAGE_DOWNLOADING";
+pub const STAGE_DOWNLOADED: &str = "STAGE_DOWNLOADED";
+pub const STAGE_ENCODING: &str = "STAGE_ENCODING";
+pub const STAGE_ENCODED: &str = "STAGE_ENCODED";
+pub const STAGE_UPLOADING: &str = "STAGE_UPLOADING";
+pub const STAGE_UPLOADED: &str = "STAGE_UPLOADED";
+pub const STAGE_FAILED: &str = "STAGE_FAILED";
+pub const STAGE_DECLINED: &str = "STAGE_DECLINED";
+pub const STAGE_CANCELLED: &str = "STAGE_CANCELLED";
+pub const PRESET_PSEUDOLOSSLESS_INTRO: &str = "PRESET_PSEUDOLOSSLESS_INTRO";
+pub const PRESET_PSEUDOLOSSLESS_NOINTRO: &str = "PRESET_PSEUDOLOSSLESS_NOINTRO";
+pub const PRESET_GPU_INTRO: &str = "PRESET_GPU_INTRO";
+pub const PRESET_GPU_NOINTRO: &str = "PRESET_GPU_NOINTRO";
+pub const PRESET_STANDARD_INTRO: &str = "PRESET_STANDARD_INTRO";
+pub const PRESET_STANDARD_NOINTRO: &str = "PRESET_STANDARD_NOINTRO";
+pub const PRESET_DUMMY: &str = "PRESET_DUMMY";
 
 pub const DEFAULT_LANGS: &[&str] = &["en", "tr", "jp"];
 
-static DEFAULT_MESSAGES: &[&str] = &[
-    "\n\nŞu anda Pandora Toolchain'de biraz sıra var. \nLütfen daha sonra tekrar deneyin.",
-    "\n\nİsteğiniz alındı.",
-    "\nİşlem iptal edildi.",
-    "Probe timed out. use /pancode within 3 minutes next time.",
-    "Tüm işlemler kapatılıyor.",
-    "Kaynak kodlar git ile güncellendi.\nBot yeniden başlatılıyor.",
-    "Git güncellemesi başarısız oldu.\nBot yine de yeniden başlatılıyor.",
-    "\n\nTorrent kısa süre içinde indirilmeye başlanacak.",
-    "\n\nTorrent metadatası indirilemedi.",
-    "\n\nTorrent ilerlemesi: {}% {}MB/{}MB",
-    "\n\nTorrent ilerlemesi: {}% {}MB",
-    "\n\nEncode kısa süre içinde başlayacak.",
-    "\n\nTorrent indirilemedi.",
-    "\n\nDosya encode ediliyor.\nAşama: 1/{}\nİşlenen kare: {}/{}\nSaniye başına işlenen kare: {}\nSaniye başına ortalama veri: {}kbit/s",
-    "\n\nDosyaya intro ekleniyor.\nAşama: 2/2\nİşlenen kare: {}/{}\nSaniye başına işlenen kare: {}\nSaniye başına ortalama veri: {}kbit/s",
-    "\n\nÇıktı sunuculara yükleniyor.",
-    "\n\nDosya encode edilemedi.",
-    "\n\nYükleme ilerlemesi:\n{}\n{}\n{}\n{}\n{}",
-    "\n\nDosya yüklendi.\n{}\n{}\n{}\n{}\n{}",
-    "\n\nDosya yüklenemedi. \nBir yetkiliden botu yeniden başlatmasını isteyebilirsiniz.",
-    "\n\nBatch torrent incelendi.",
-    "\n\nBatch torrent incelenemedi.",
-    "\n\nDosya numaraları:\n{}",
-    "Encode İşlemi ({})",
-    "İşlem Numarası",
-    "İşlem Sahibi",
-    "Durum",
-    "Encode Preset",
-    "Torrent Linki",
-    "İlerleme",
-    "Sırada",
-    "İnceleniyor",
-    "İncelendi",
-    "İndiriliyor",
-    "İndirildi",
-    "Encode Ediliyor",
-    "Encode Edildi",
-    "Yükleniyor",
-    "Tamamlandı",
-    "Başarısız",
-    "Reddedildi",
-    "İptal Edildi",
-    "Kayıpsız - İşlemci | İntrolu",
-    "Kayıpsız - İşlemci | İntrosuz",
-    "Standart - Ekran kartı | İntrolu",
-    "Standart - Ekran kartı | İntrosuz",
-    "Standart - İşlemci | İntrolu",
-    "Standart - İşlemci | İntrosuz",
-    "DEVELOPER",
+static DEFAULT_ENTRIES: &[(&str, &str, usize)] = &[
+    ("QUEUE_TOO_LONG", "\n\nŞu anda Pandora Toolchain'de biraz sıra var. \nLütfen daha sonra tekrar deneyin.", 0),
+    ("QUEUED", "\n\nİsteğiniz alındı.", 0),
+    ("JOB_CANCELLED", "\nİşlem iptal edildi.", 0),
+    ("PROBE_TIMEOUT", "Probe timed out. use /pancode within 3 minutes next time.", 0),
+    ("GITSYNC_PROGRESS", "Tüm işlemler kapatılıyor.", 0),
+    ("GITSYNC_SUCCESS", "Kaynak kodlar git ile güncellendi.\nBot yeniden başlatılıyor.", 0),
+    ("GITSYNC_FAIL", "Git güncellemesi başarısız oldu.\nBot yine de yeniden başlatılıyor.", 0),
+    ("CTORRENT_DONE", "\n\nTorrent kısa süre içinde indirilmeye başlanacak.", 0),
+    ("CTORRENT_FAIL", "\n\nTorrent metadatası indirilemedi.", 0),
+    ("TORRENT_PROG", "\n\nTorrent ilerlemesi: {}% {}MB/{}MB", 3),
+    ("TORRENT_PROG_SELECT", "\n\nTorrent ilerlemesi: {}% {}MB", 2),
+    ("TORRENT_DONE", "\n\nEncode kısa süre içinde başlayacak.", 0),
+    ("TORRENT_FAIL", "\n\nTorrent indirilemedi.", 0),
+    ("ENCODE_PROG", "\n\nDosya encode ediliyor.\nAşama: 1/{}\nİşlenen kare: {}/{}\nSaniye başına işlenen kare: {}\nSaniye başına ortalama veri: {}kbit/s", 5),
+    ("ENCODE_CONCAT_PROG", "\n\nDosyaya intro ekleniyor.\nAşama: 2/2\nİşlenen kare: {}/{}\nSaniye başına işlenen kare: {}\nSaniye başına ortalama veri: {}kbit/s", 4),
+    ("ENCODE_DONE", "\n\nÇıktı sunuculara yükleniyor.", 0),
+    ("ENCODE_FAIL", "\n\nDosya encode edilemedi.", 0),
+    ("UPLOAD_PROG", "\n\nYükleme ilerlemesi:\n{}\n{}\n{}\n{}\n{}", 5),
+    ("UPLOAD_DONE", "\n\nDosya yüklendi.\n{}\n{}\n{}\n{}\n{}", 5),
+    ("UPLOAD_FAIL", "\n\nDosya yüklenemedi. \nBir yetkiliden botu yeniden başlatmasını isteyebilirsiniz.", 0),
+    ("PROBE_DONE", "\n\nBatch torrent incelendi.", 0),
+    ("PROBE_FAIL", "\n\nBatch torrent incelenemedi.", 0),
+    ("PROBE_ROW", "\n\nDosya numaraları:\n{}", 1),
+    ("EMBED_TITLE", "Encode İşlemi ({})", 1),
+    ("FIELD_JOBID", "İşlem Numarası", 0),
+    ("FIELD_AUTHOR", "İşlem Sahibi", 0),
+    ("FIELD_STATUS", "Durum", 0),
+    ("FIELD_PRESET", "Encode Preset", 0),
+    ("FIELD_TORRENT", "Torrent Linki", 0),
+    ("FIELD_PROGRESS", "İlerleme", 0),
+    ("STAGE_QUEUED", "Sırada", 0),
+    ("STAGE_PROBING", "İnceleniyor", 0),
+    ("STAGE_PROBED", "İncelendi", 0),
+    ("STAGE_DOWNLOADING", "İndiriliyor", 0),
+    ("STAGE_DOWNLOADED", "İndirildi", 0),
+    ("STAGE_ENCODING", "Encode Ediliyor", 0),
+    ("STAGE_ENCODED", "Encode Edildi", 0),
+    ("STAGE_UPLOADING", "Yükleniyor", 0),
+    ("STAGE_UPLOADED", "Tamamlandı", 0),
+    ("STAGE_FAILED", "Başarısız", 0),
+    ("STAGE_DECLINED", "Reddedildi", 0),
+    ("STAGE_CANCELLED", "İptal Edildi", 0),
+    ("PRESET_PSEUDOLOSSLESS_INTRO", "Kayıpsız - İşlemci | İntrolu", 0),
+    ("PRESET_PSEUDOLOSSLESS_NOINTRO", "Kayıpsız - İşlemci | İntrosuz", 0),
+    ("PRESET_GPU_INTRO", "Standart - Ekran kartı | İntrolu", 0),
+    ("PRESET_GPU_NOINTRO", "Standart - Ekran kartı | İntrosuz", 0),
+    ("PRESET_STANDARD_INTRO", "Standart - İşlemci | İntrolu", 0),
+    ("PRESET_STANDARD_NOINTRO", "Standart - İşlemci | İntrosuz", 0),
+    ("PRESET_DUMMY", "DEVELOPER", 0),
 ];
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct MessageEntry {
+    pub text: String,
+    pub args: usize,
+}
 
 pub fn init_language_files() {
     for lang in DEFAULT_LANGS {
-        let path = format!("DB/config/{}.pandora", lang);
-        if std::path::Path::new(&path).exists() {
+        let path = format!("DB/config/{}.toml", lang);
+        if Path::new(&path).exists() {
             continue;
         }
-        if let Some(parent) = std::path::Path::new(&path).parent() {
+        if let Some(parent) = Path::new(&path).parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let body: String = DEFAULT_MESSAGES.iter()
-            .map(|s| format!("{}\n", s))
-            .collect();
+        let mut body = String::new();
+        for (id, text, args) in DEFAULT_ENTRIES {
+            body.push_str(&format!("[{}]\ntext = {:?}\nargs = {}\n\n", id, text, args));
+        }
         let _ = std::fs::write(&path, body);
     }
 }
 
-pub fn get_message(id: usize, lang: &str) -> String {
-    let path = format!("DB/config/{}.pandora", lang);
+pub fn get_message(id: &str, lang: &str) -> String {
+    lookup(id, lang).map(|(text, _)| text).unwrap_or_default()
+}
+
+pub fn get_arg_count(id: &str, lang: &str) -> Option<usize> {
+    lookup(id, lang).map(|(_, args)| args)
+}
+
+fn lookup(id: &str, lang: &str) -> Option<(String, usize)> {
+    let path = format!("DB/config/{}.toml", lang);
     if let Ok(content) = std::fs::read_to_string(&path) {
-        let lines: Vec<&str> = content.lines().collect();
-        if let Some(line) = lines.get(id) {
-            return (*line).to_string();
+        if let Ok(map) = toml::from_str::<HashMap<String, MessageEntry>>(&content) {
+            if let Some(entry) = map.get(id) {
+                return Some((entry.text.clone(), entry.args));
+            }
         }
     }
-    DEFAULT_MESSAGES.get(id).map(|s| (*s).to_string()).unwrap_or_default()
+    DEFAULT_ENTRIES.iter()
+        .find(|(k, _, _)| *k == id)
+        .map(|(_, text, args)| ((*text).to_string(), *args))
 }
 
 #[derive(Clone, Debug)]
 pub enum MessagePayload {
-    Static(usize),
-    Progress(usize, Vec<String>),
+    Static(&'static str),
+    Progress(&'static str, Vec<String>),
 }
 
 pub fn format_payload(payload: &MessagePayload, lang: &str) -> String {
     match payload {
-        MessagePayload::Static(id) => get_message(*id, lang),
+        MessagePayload::Static(id) => get_message(id, lang),
         MessagePayload::Progress(id, args) => {
-            let template = get_message(*id, lang);
+            if let Some(expected) = get_arg_count(id, lang) {
+                if expected != args.len() {
+                    eprintln!("[messages] arg count mismatch for {}: expected {}, got {}", id, expected, args.len());
+                }
+            }
+            let template = get_message(id, lang);
             substitute(&template, args)
         }
     }
@@ -198,7 +215,7 @@ pub fn create_job_embed(job: &Job, payload: &MessagePayload) -> CreateEmbed {
     };
 
     CreateEmbed::new()
-        .title(get_message(EMBED_TITLE, lang).replace("{}", PKGVER))
+        .title(substitute(&get_message(EMBED_TITLE, lang), &[PKGVER.to_string()]))
         .colour(color)
         .field(get_message(FIELD_JOBID, lang), format!("`{}`", job.job_id), true)
         .field(get_message(FIELD_AUTHOR, lang), format!("<@{}>", job.author), true)
