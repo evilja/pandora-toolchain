@@ -299,13 +299,21 @@ fn kind_label(k: &AnimeKind) -> &'static str {
     }
 }
 
-async fn try_rename_forum_channel(ctx: &Context, channel_id: serenity::all::ChannelId, name: &str) -> Option<String> {
-    let mut ch = channel_id.to_channel(&ctx.http).await.ok()?;
-    let g = match &mut ch {
-        serenity::all::Channel::Guild(g) => g,
+async fn try_rename_channel_to_anime(ctx: &Context, channel_id: serenity::all::ChannelId, name: &str) -> Option<String> {
+    let ch = channel_id.to_channel(&ctx.http).await.ok()?;
+    let kind = match &ch {
+        serenity::all::Channel::Guild(g) => g.kind,
         _ => return None,
     };
-    if g.kind != ChannelType::Forum {
+    let renamable = matches!(kind,
+        ChannelType::Text
+        | ChannelType::News
+        | ChannelType::NewsThread
+        | ChannelType::PublicThread
+        | ChannelType::PrivateThread
+        | ChannelType::Forum
+    );
+    if !renamable {
         return None;
     }
     let new_name: String = if name.chars().count() > 100 {
@@ -313,7 +321,7 @@ async fn try_rename_forum_channel(ctx: &Context, channel_id: serenity::all::Chan
     } else {
         name.to_string()
     };
-    g.edit(&ctx.http, EditChannel::new().name(&new_name)).await.ok()?;
+    channel_id.edit(&ctx.http, EditChannel::new().name(&new_name)).await.ok()?;
     Some(new_name)
 }
 
@@ -482,7 +490,7 @@ async fn run_attach_or_init(
     } else {
         created.join(", ")
     };
-    let renamed = try_rename_forum_channel(ctx, command.channel_id, &meta.name).await;
+    let renamed = try_rename_channel_to_anime(ctx, command.channel_id, &meta.name).await;
     let rename_line = match &renamed {
         Some(n) => format!("\nChannel renamed: `{}`", n),
         None => String::new(),
