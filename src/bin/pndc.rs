@@ -319,8 +319,8 @@ async fn run_attach_or_init(
     };
     let channel_id = command.channel_id.get();
 
-    let tmdb_url = match command.data.options.iter()
-        .find(|opt| opt.name == "tmdb")
+    let mal_url = match command.data.options.iter()
+        .find(|opt| opt.name == "mal")
         .and_then(|opt| opt.value.as_str())
         .filter(|s| !s.is_empty())
     {
@@ -328,7 +328,7 @@ async fn run_attach_or_init(
         None => {
             command.create_response(ctx, CreateInteractionResponse::Message(
                 CreateInteractionResponseMessage::new()
-                    .content(format!("Error: `tmdb` is required for {}", label))
+                    .content(format!("Error: `mal` is required for {}", label))
                     .ephemeral(true)
             )).await.ok();
             return;
@@ -380,10 +380,10 @@ async fn run_attach_or_init(
         Err(_) => return,
     };
 
-    let meta = match fetch_anime(&tmdb_url).await {
+    let meta = match fetch_anime(&mal_url).await {
         Ok(m) => m,
         Err(e) => {
-            let _ = response_msg.edit(ctx, EditMessage::new().content(format!("TMDB fetch failed: {}", e))).await;
+            let _ = response_msg.edit(ctx, EditMessage::new().content(format!("MAL fetch failed: {}", e))).await;
             return;
         }
     };
@@ -1051,9 +1051,9 @@ impl EventHandler for Handler {
                         .required(true)
                 ),
             CreateCommand::new("attach")
-                .description("Attach a TMDB anime to this channel and bootstrap an existing Forgejo repo")
+                .description("Attach a MyAnimeList anime to this channel and bootstrap an existing Forgejo repo")
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "tmdb", "TMDB link")
+                    CreateCommandOption::new(CommandOptionType::String, "mal", "MyAnimeList link (e.g. https://myanimelist.net/anime/52991)")
                         .required(true)
                 )
                 .add_option(
@@ -1061,9 +1061,9 @@ impl EventHandler for Handler {
                         .required(true)
                 ),
             CreateCommand::new("init")
-                .description("Attach a TMDB anime to this channel and create a new Forgejo repo for it")
+                .description("Attach a MyAnimeList anime to this channel and create a new Forgejo repo for it")
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "tmdb", "TMDB link")
+                    CreateCommandOption::new(CommandOptionType::String, "mal", "MyAnimeList link (e.g. https://myanimelist.net/anime/52991)")
                         .required(true)
                 ),
             CreateCommand::new("gitcode")
