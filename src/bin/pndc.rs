@@ -1895,6 +1895,13 @@ impl EventHandler for Handler {
                 "detach" => {
                     handle_detach(&ctx, &command).await;
                 }
+                "smartcode" => {
+                    command.create_response(&ctx, CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content("smartcode is not implemented yet.")
+                            .ephemeral(true)
+                    )).await.ok();
+                }
                 "job" => {
                     handle_job(&ctx, &command).await;
                 }
@@ -2093,6 +2100,8 @@ impl EventHandler for Handler {
                 .description("Delete the Forgejo repo of the attached anime and detach this channel"),
             CreateCommand::new("detach")
                 .description("Detach this channel from its attached anime (the Forgejo repo is left untouched)"),
+            CreateCommand::new("smartcode")
+                .description("smartcode (not implemented yet)"),
             CreateCommand::new("gitcode")
                 .description("Encode with a subtitle fetched from a URL")
                 .add_option(
