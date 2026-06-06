@@ -169,6 +169,25 @@ impl Forgejo {
         }
     }
 
+    pub async fn move_file(&self, owner_repo: &str, from_path: &str, to_path: &str, message: &str) -> Result<(), String> {
+        let url = contents_url(&self.host, owner_repo, to_path)?;
+        let body = serde_json::json!({
+            "from_path": from_path,
+            "message": message,
+        });
+        let resp = self.client.post(url.clone())
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send().await
+            .map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            let s = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("move_file failed ({} -> {}): {} {} (POST {})", from_path, to_path, s, text, url));
+        }
+        Ok(())
+    }
+
     pub async fn delete_repo(&self, owner_repo: &str) -> Result<(), String> {
         let url = format!("{}/api/v1/repos/{}", self.host, owner_repo);
         let resp = self.client.delete(&url)

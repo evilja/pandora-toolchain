@@ -476,8 +476,9 @@ async fn run_attach_or_init(
     };
 
     let (owner_repo, repo_url) = if is_init {
-        let or = format!("{}/{}", fg.org, meta.slug);
-        let url = match fg.create_repo(&meta.slug).await {
+        let repo_slug = meta.slug.replace('-', "_");
+        let or = format!("{}/{}", fg.org, repo_slug);
+        let url = match fg.create_repo(&repo_slug).await {
             Ok(u) => u,
             Err(e) => {
                 let _ = response_msg.edit(ctx, EditMessage::new().content(format!("create_repo failed: {}", e))).await;
@@ -517,6 +518,37 @@ async fn run_attach_or_init(
         }
     };
 
+    let mut renamed_files: Vec<String> = Vec::new();
+    if !is_init {
+        let safe_name = meta.name.replace('/', "-");
+        for n in 1..=meta.episode_count {
+            let folder = pad2(n);
+            let entries = match fg.list_contents(&owner_repo, &folder).await {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let ass_files: Vec<String> = entries.into_iter()
+                .filter(|name| name.to_lowercase().ends_with(".ass"))
+                .collect();
+            if ass_files.len() != 1 {
+                continue;
+            }
+            let old_name = ass_files.into_iter().next().unwrap();
+            let old_path = format!("{}/{}", folder, old_name);
+            let new_name = format!("TL - {} - S{:02}E{:02}.ass", safe_name, season, n);
+            let new_path = format!("{}/{}", folder, new_name);
+            if old_path == new_path {
+                continue;
+            }
+            if let Err(e) = fg.move_file(&owner_repo, &old_path, &new_path, "attach: rename to standard filename").await {
+                let _ = response_msg.edit(ctx, EditMessage::new()
+                    .content(format!("move_file failed ({}): {}", old_path, e))).await;
+                return;
+            }
+            renamed_files.push(format!("`{}` -> `{}`", folder, new_name));
+        }
+    }
+
     let new_meta = ChannelMeta {
         mal_id: Some(meta.mal_id),
         kind: Some(kind_label(&meta.kind).to_string()),
@@ -538,14 +570,19 @@ async fn run_attach_or_init(
     } else {
         created.join(", ")
     };
+    let renamed_files_line = if renamed_files.is_empty() {
+        String::new()
+    } else {
+        format!("\nRenamed files: {}", renamed_files.join(", "))
+    };
     let renamed = try_rename_channel_to_anime(ctx, command.channel_id, &meta.name).await;
     let rename_line = match &renamed {
         Some(n) => format!("\nChannel renamed: `{}`", n),
         None => String::new(),
     };
     let body = format!(
-        "**{}** — attached to this channel.\nName: `{}`\nSlug: `{}`\nKind: `{}`\nEpisodes: `{}`\nRepo: <{}>\nCreated/updated: {}{}",
-        label, meta.name, meta.slug, kind_label(&meta.kind), meta.episode_count, repo_url, created_list, rename_line
+        "**{}** — attached to this channel.\nName: `{}`\nSlug: `{}`\nKind: `{}`\nEpisodes: `{}`\nRepo: <{}>\nCreated/updated: {}{}{}",
+        label, meta.name, meta.slug, kind_label(&meta.kind), meta.episode_count, repo_url, created_list, rename_line, renamed_files_line
     );
     let _ = response_msg.edit(ctx, EditMessage::new().content(body)).await;
 }
