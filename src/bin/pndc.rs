@@ -9,7 +9,7 @@ use pandora_toolchain::pnworker::core::{HalfJob, Job, JobClass, JobType, Preset}
 use pandora_toolchain::pnworker::util::{IntrosConfig, PathValue, ToolResult, run_tool};
 use pandora_toolchain::pnworker::tools::PNASS_LAYER;
 use pandora_toolchain::libpnenv::{
-    core::{add_env, get_env, get_perm},
+    core::{add_env, get_env, get_perm, remove_env},
     standard::TOKEN,
 };
 use pandora_toolchain::libpnmal::{fetch_anime, AnimeMeta, AnimeKind};
@@ -33,11 +33,10 @@ fn is_authorized(part: &str, id: u64) -> bool {
     let class = match part {
         "!enc" | "!encode" => "authorize.pandora",
         "!ban" => "admin.pandora",
-        "!authorize" | "!auth" => "admin.pandora",
         "encode" | "pancode" | "probe" | "backup" | "scrape" | "gitcode" => "authorize.pandora",
         "attach" | "init" | "job" | "destruct" | "detach" => "upper.pandora",
         "!some" => "admin.pandora",
-        "gitsync" | "hearts" | "configure" | "readmebase" => "admin.pandora",
+        "gitsync" | "hearts" | "configure" | "readmebase" | "auth" | "remove" => "admin.pandora",
         _ => return false,
     };
     let allowed = get_perm(class.to_string());
@@ -1441,6 +1440,105 @@ pub async fn handle_readmebase(
     )).await.ok();
 }
 
+pub async fn handle_auth(
+    ctx: &Context,
+    command: &serenity::all::CommandInteraction,
+) {
+    let user_id = match command.data.options.iter()
+        .find(|opt| opt.name == "user_id")
+        .and_then(|opt| opt.value.as_str())
+    {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Error: `user_id` is required.")
+                    .ephemeral(true)
+            )).await.ok();
+            return;
+        }
+    };
+    let level = command.data.options.iter()
+        .find(|opt| opt.name == "level")
+        .and_then(|opt| opt.value.as_str())
+        .unwrap_or("authorize.pandora")
+        .to_string();
+
+    let mut to_add = user_id.clone();
+    if add_env(&level, &mut to_add) {
+        command.create_response(ctx, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content(format!("Authorized <@{}> at `{}`.", user_id, level))
+                .ephemeral(true)
+        )).await.ok();
+    } else {
+        command.create_response(ctx, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content(format!("Failed to authorize: could not open `{}` for writing.", level))
+                .ephemeral(true)
+        )).await.ok();
+    }
+}
+
+pub async fn handle_remove(
+    ctx: &Context,
+    command: &serenity::all::CommandInteraction,
+) {
+    let user_id = match command.data.options.iter()
+        .find(|opt| opt.name == "user_id")
+        .and_then(|opt| opt.value.as_str())
+    {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Error: `user_id` is required.")
+                    .ephemeral(true)
+            )).await.ok();
+            return;
+        }
+    };
+    let level = match command.data.options.iter()
+        .find(|opt| opt.name == "level")
+        .and_then(|opt| opt.value.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        Some(s) => s.to_string(),
+        None => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Error: `level` is required.")
+                    .ephemeral(true)
+            )).await.ok();
+            return;
+        }
+    };
+
+    match remove_env(&level, &user_id) {
+        Ok(true) => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(format!("Removed <@{}> from `{}`.", user_id, level))
+                    .ephemeral(true)
+            )).await.ok();
+        }
+        Ok(false) => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(format!("<@{}> was not in `{}`.", user_id, level))
+                    .ephemeral(true)
+            )).await.ok();
+        }
+        Err(e) => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(format!("Failed to remove: {}", e))
+                    .ephemeral(true)
+            )).await.ok();
+        }
+    }
+}
+
 pub async fn handle_interaction(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,
@@ -1509,13 +1607,6 @@ impl EventHandler for Handler {
         match parts[0] {
             "!enc" => {
                 msg.reply(context, "Lütfen yeni /encode komutunu kullanın.").await.unwrap();
-            }
-            "!authorize" | "!auth" => {
-                let mut to_auth = parts[1].to_string();
-                match add_env("authorize.pandora", &mut to_auth) {
-                    true  => { msg.reply(context, format!("Merhaba, Pandora'ya hoş geldiniz.\nYetkilendirilen kullanıcı: <@{}>", parts[1])).await.unwrap(); }
-                    false => { msg.reply(context, "Merhaba, Pandora'ya hoş geldiniz.\nKullanıcı yetkilendirilemedi.").await.unwrap(); }
-                }
             }
             _ => {}
         }
@@ -1673,6 +1764,12 @@ impl EventHandler for Handler {
                 }
                 "readmebase" => {
                     handle_readmebase(&ctx, &command).await;
+                }
+                "auth" => {
+                    handle_auth(&ctx, &command).await;
+                }
+                "remove" => {
+                    handle_remove(&ctx, &command).await;
                 }
                 "hearts" => {
                     command.create_response(&ctx, CreateInteractionResponse::Message(
@@ -1937,6 +2034,32 @@ impl EventHandler for Handler {
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::Attachment, "file", "The base.md file")
                         .required(true)
+                ),
+            CreateCommand::new("auth")
+                .description("Append a user id to an auth level file")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "user_id", "The Discord user id to authorize")
+                        .required(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "level", "The auth level file. Defaults to `authorize.pandora`.")
+                        .required(false)
+                        .add_string_choice("Authorize", "authorize.pandora")
+                        .add_string_choice("Upper", "upper.pandora")
+                        .add_string_choice("Admin", "admin.pandora")
+                ),
+            CreateCommand::new("remove")
+                .description("Remove a user id from an auth level file")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "user_id", "The Discord user id to deauthorize")
+                        .required(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "level", "The auth level file")
+                        .required(true)
+                        .add_string_choice("Authorize", "authorize.pandora")
+                        .add_string_choice("Upper", "upper.pandora")
+                        .add_string_choice("Admin", "admin.pandora")
                 ),
             CreateCommand::new("job")
                 .description("Submit a single-episode job against the channel's attached anime")

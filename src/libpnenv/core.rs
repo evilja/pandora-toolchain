@@ -33,6 +33,22 @@ pub fn add_env(envfile: &str, string: &mut String) -> bool {
         Err(_) => {return false;}
     }
 }
+pub fn remove_env(envfile: &str, target: &str) -> Result<bool, String> {
+    let contents = std::fs::read_to_string(envfile).map_err(|e| e.to_string())?;
+    let lines: Vec<&str> = contents.lines().collect();
+    let original_len = lines.len();
+    let filtered: Vec<&str> = lines.into_iter().filter(|l| l.trim() != target).collect();
+    if filtered.len() == original_len {
+        return Ok(false);
+    }
+    let mut out = String::new();
+    for line in filtered {
+        out.push_str(line);
+        out.push('\n');
+    }
+    std::fs::write(envfile, out).map_err(|e| e.to_string())?;
+    Ok(true)
+}
 pub fn get_perm(envfile: String) -> Vec<String> {
     // Q: CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN, TOKEN_URL, TOKEN, UPLOAD_URL
     let mut file = match File::open(&envfile) {
