@@ -15,6 +15,7 @@ use pandora_toolchain::libpnmal::{fetch_anime, AnimeMeta, AnimeKind};
 use pandora_toolchain::libpnforgejo::{Forgejo, base64_encode, base64_encode_bytes};
 use pandora_toolchain::pnworker::core::pn_worker;
 use pandora_toolchain::libpnenv::standard::PNASS;
+use pandora_toolchain::libkagami::core::SubstationAlpha;
 use tokio::sync::mpsc::{channel, Sender, Receiver};
 use tokio::process::Command;
 use std::process::Stdio;
@@ -861,6 +862,15 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
                 .content(format!("Failed to copy input to output: {}", e))).await;
             return;
         }
+    }
+
+    let title = if name.is_empty() { owner.clone() } else { format!("{} - {}", owner, name) };
+    let mut sub = SubstationAlpha::load(PathBuf::from(&output_path), false).await;
+    sub.script_info.title = title;
+    if sub.dump_to_file(PathBuf::from(&output_path)).await.is_err() {
+        let _ = response_msg.edit(ctx, EditMessage::new()
+            .content(format!("Failed to rewrite ASS title.\nLog: `{}`", log_path))).await;
+        return;
     }
 
     let output_bytes = match tokio::fs::read(&output_path).await {
