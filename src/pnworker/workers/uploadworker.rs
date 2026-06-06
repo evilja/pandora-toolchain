@@ -18,7 +18,7 @@ pub type UploadData = (PathBuf, String, bool, u64);
 
 pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, pulse: Sender<()>) {
     let mut proto = Protocol::new(vec![1]);
-    let pncurl_path = get_pandora_env()[PNCURL].clone();
+    let pncurl_path = get_pandora_env().get(PNCURL).cloned().unwrap_or_default();
     'll: loop {
         if let Ok(WorkerMsg::Upload((directory, out_name, release, job_id))) = rx.try_recv() {
             let output_path = directory.join("work").join("output.mp4").display().to_string();

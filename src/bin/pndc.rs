@@ -258,6 +258,57 @@ async fn migrate_pandora_files() {
             Err(e) => eprintln!("Warning: failed to migrate {} -> {}: {}", env_old, env_new, e),
         }
     }
+
+    migrate_env_format().await;
+}
+
+async fn migrate_env_format() {
+    use pandora_toolchain::libpnenv::standard::ENV_SEP;
+
+    let path = pandora_toolchain::libpnenv::standard::ENV_PATH;
+    let contents = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    let is_new = contents.lines()
+        .map(str::trim)
+        .any(|l| !l.is_empty() && !l.starts_with('#') && l.contains(ENV_SEP));
+    if is_new {
+        return;
+    }
+
+    let mapping: &[(&str, usize)] = &[
+        ("gdrive_client_id", 0),
+        ("gdrive_client_secret", 1),
+        ("gdrive_refresh_token", 2),
+        ("gdrive_token_url", 3),
+        ("discord_token", 4),
+        ("gdrive_upload_url", 5),
+        ("pnmpeg", 6),
+        ("pnp2p", 7),
+        ("pncurl", 8),
+        ("gdrive_parent_id", 9),
+        ("doodstream", 10),
+        ("uqload", 11),
+        ("lulu", 12),
+        ("voesx", 13),
+        ("abyss", 14),
+        ("pnass", 15),
+    ];
+
+    let lines: Vec<&str> = contents.lines().collect();
+    let mut out = String::new();
+    for (name, idx) in mapping {
+        if let Some(value) = lines.get(*idx) {
+            out.push_str(&format!("{}{}{}\n", name, ENV_SEP, value));
+        }
+    }
+
+    match std::fs::write(path, out) {
+        Ok(()) => println!("Migrated env.pandora to new format"),
+        Err(e) => eprintln!("Warning: failed to migrate env.pandora to new format: {}", e),
+    }
 }
 
 fn read_credit_option(command: &serenity::all::CommandInteraction, name: &str) -> String {
@@ -2168,7 +2219,7 @@ async fn main() {
     let intros = IntrosConfig::load();
     println!("{:?}", intros);
     pandora_toolchain::pnworker::messages::init_language_files();
-    let mut discord = Client::builder(env[TOKEN].clone(), GatewayIntents::all())
+    let mut discord = Client::builder(env.get(TOKEN).cloned().unwrap_or_default(), GatewayIntents::all())
         .event_handler(Handler { tx, intros })
         .await
         .unwrap();

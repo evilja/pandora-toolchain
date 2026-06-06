@@ -32,7 +32,7 @@ fn path_to_ffmpeg(path: &Path) -> String {
 
 pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, pulse: Sender<()>) {
     let mut proto = Protocol::new(vec![1]);
-    let pnmpeg_path = get_pandora_env()[PNMPEG].clone();
+    let pnmpeg_path = get_pandora_env().get(PNMPEG).cloned().unwrap_or_default();
     'll: loop {
         if let Ok(WorkerMsg::Encode((directory, preset, job_id))) = rx.try_recv() {
             let (concat_value, insert) = match preset {

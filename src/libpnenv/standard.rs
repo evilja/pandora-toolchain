@@ -1,21 +1,23 @@
-// Q: CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN, TOKEN_URL, TOKEN, UPLOAD_URL
+// Q: gdrive_client_id, gdrive_client_secret, gdrive_refresh_token, gdrive_token_url, discord_token, gdrive_upload_url, pnmpeg, pnp2p, pncurl, gdrive_parent_id, doodstream, uqload, lulu, voesx, abyss, pnass
 //
 
 pub const ENV_PATH: &str = "DB/config/global/environment/env.pandora";
 
-pub const CLIENT_ID: usize = 0; // Gdrive
-pub const CLIENT_SECRET: usize = 1; // Gdrive
-pub const REFRESH_TOKEN: usize = 2; // Gdrive
-pub const TOKEN_URL: usize = 3; // Gdrive
-pub const TOKEN: usize = 4; // Discord
-pub const UPLOAD_URL: usize = 5; // Gdrive
-pub const PNMPEG: usize = 6;
-pub const PNP2P: usize = 7;
-pub const PNCURL: usize = 8;
-pub const PARENTID: usize = 9; // Gdrive
-pub const DOODSTREAM: usize = 10; // Doodstream
-pub const UQLOAD: usize = 11;
-pub const LULU: usize = 12;
-pub const VOESX: usize = 13;
-pub const ABYSS: usize = 14;
-pub const PNASS: usize = 15;
+pub const ENV_SEP: &str = "|pntools|";
+
+pub const CLIENT_ID: &str = "gdrive_client_id";
+pub const CLIENT_SECRET: &str = "gdrive_client_secret";
+pub const REFRESH_TOKEN: &str = "gdrive_refresh_token";
+pub const TOKEN_URL: &str = "gdrive_token_url";
+pub const TOKEN: &str = "discord_token";
+pub const UPLOAD_URL: &str = "gdrive_upload_url";
+pub const PNMPEG: &str = "pnmpeg";
+pub const PNP2P: &str = "pnp2p";
+pub const PNCURL: &str = "pncurl";
+pub const PARENTID: &str = "gdrive_parent_id";
+pub const DOODSTREAM: &str = "doodstream";
+pub const UQLOAD: &str = "uqload";
+pub const LULU: &str = "lulu";
+pub const VOESX: &str = "voesx";
+pub const ABYSS: &str = "abyss";
+pub const PNASS: &str = "pnass";

@@ -7,7 +7,7 @@ use crate::{libpnenv::{
 }, libpnlogging::core::LoggingHandle, log};
 use reqwest::{Client, multipart};
 use serde::Deserialize;
-use std::{path::PathBuf, time::Duration};
+use std::{collections::HashMap, path::PathBuf, time::Duration};
 use std::fs::File;
 use tokio_util::io::ReaderStream;
 use std::io::Write;
@@ -58,19 +58,19 @@ struct TokenResponse {
 
 async fn get_access_token(
     // CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN, TOKEN_URL
-    env: &Vec<String>,
+    env: &HashMap<String, String>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let client = Client::new();
 
     let params = [
-        ("client_id", env[CLIENT_ID].clone()),
-        ("client_secret", env[CLIENT_SECRET].clone()),
-        ("refresh_token", env[REFRESH_TOKEN].clone()),
+        ("client_id", env.get(CLIENT_ID).cloned().unwrap_or_default()),
+        ("client_secret", env.get(CLIENT_SECRET).cloned().unwrap_or_default()),
+        ("refresh_token", env.get(REFRESH_TOKEN).cloned().unwrap_or_default()),
         ("grant_type", "refresh_token".into()),
     ];
 
     let resp = client
-        .post(env[TOKEN_URL].clone())
+        .post(env.get(TOKEN_URL).cloned().unwrap_or_default())
         .form(&params)
         .send().await?
         .error_for_status()?;
@@ -255,7 +255,7 @@ impl Req {
 
     pub async fn voewrapupload(&self, envpath: String, outfile: Option<String>, tx: Sender<RpbData>) -> bool {
         let env = get_env(&envpath);
-        let api_key = env[VOESX].clone();
+        let api_key = env.get(VOESX).cloned().unwrap_or_default();
         let result = self.filehost_upload(
             api_key,
             "https://voe.sx/api/upload/server".to_string(),
@@ -275,8 +275,8 @@ impl Req {
     pub async fn abyssupload(&self, envpath: String, outfile: Option<String>, tx: Sender<RpbData>) -> bool {
         println!("[abyss] abyssupload started");
         let env = get_env(&envpath);
-        println!("[abyss] env len: {}, ABYSS idx: {}, value: {:?}", env.len(), ABYSS, env.get(ABYSS));
-        let api_key = env[ABYSS].clone();
+        println!("[abyss] env len: {}, ABYSS key: {}, value: {:?}", env.len(), ABYSS, env.get(ABYSS));
+        let api_key = env.get(ABYSS).cloned().unwrap_or_default();
 
         let client = Client::builder()
             .timeout(Duration::from_secs(360))
@@ -346,7 +346,7 @@ impl Req {
 
     pub async fn luluwrapupload(&self, envpath: String, outfile: Option<String>, tx: Sender<RpbData>) -> bool {
         let env = get_env(&envpath);
-        let api_key = env[LULU].clone();
+        let api_key = env.get(LULU).cloned().unwrap_or_default();
         let result = self.filehost_upload(
             api_key,
             "https://lulustream.com/api/upload/server".to_string(),
@@ -366,7 +366,7 @@ impl Req {
 
     pub async fn doodwrapupload(&self, envpath: String, outfile: Option<String>, tx: Sender<RpbData>) -> bool {
         let env = get_env(&envpath);
-        let api_key = env[DOODSTREAM].clone();
+        let api_key = env.get(DOODSTREAM).cloned().unwrap_or_default();
         self.filehost_upload(
             api_key,
             "https://doodapi.co/api/upload/server".to_string(),
@@ -406,7 +406,7 @@ impl Req {
                 return false;
             },
         };
-        let parent_id = env[PARENTID].clone();
+        let parent_id = env.get(PARENTID).cloned().unwrap_or_default();
 
         let client = Client::builder()
             .timeout(Duration::from_secs(1600))

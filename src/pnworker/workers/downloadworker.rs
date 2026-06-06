@@ -20,8 +20,8 @@ pub type DownloadData = (PathBuf, TorrentType, u64, Option<u64>);
 pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, pulse: Sender<()>) {
     let mut proto = Protocol::new(vec![1]);
     let env = get_pandora_env();
-    let pncurl_path = env[PNCURL].clone();
-    let pnp2p_path = env[PNP2P].clone();
+    let pncurl_path = env.get(PNCURL).cloned().unwrap_or_default();
+    let pnp2p_path = env.get(PNP2P).cloned().unwrap_or_default();
     'll: loop {
         if let Ok(WorkerMsg::Download((directory, torrent, job_id, file_index))) = rx.try_recv() {
             let arg_opcode: String;

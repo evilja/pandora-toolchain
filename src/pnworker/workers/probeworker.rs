@@ -18,8 +18,8 @@ pub type ProbeData = (PathBuf, TorrentType, u64);
 pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, pulse: Sender<()>) {
     let mut proto = Protocol::new(vec![1]);
     let env = get_pandora_env();
-    let pncurl_path = env[PNCURL].clone();
-    let pnp2p_path = env[PNP2P].clone();
+    let pncurl_path = env.get(PNCURL).cloned().unwrap_or_default();
+    let pnp2p_path = env.get(PNP2P).cloned().unwrap_or_default();
     'll: loop {
         if let Ok(WorkerMsg::Probe((directory, torrent, job_id))) = rx.try_recv() {
             // Phase 1: if Link, fetch .torrent file first (same as downloadworker)

@@ -1,28 +1,32 @@
-use std::{fs::{File, OpenOptions}, io::{Read, Write}};
+use std::{collections::HashMap, fs::{File, OpenOptions}, io::{Read, Write}};
 
-use crate::libpnenv::standard::ENV_PATH;
+use crate::libpnenv::standard::{ENV_PATH, ENV_SEP};
 
 
 
-pub fn get_env(envfile: &str) -> Vec<String> {
-    // Q: CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN, TOKEN_URL, TOKEN, UPLOAD_URL
+pub fn get_env(envfile: &str) -> HashMap<String, String> {
     let mut file = match File::open(&envfile) {
         Ok(f) => f,
-        Err(_) => return vec![],
+        Err(_) => return HashMap::new(),
     };
     let mut buf = String::new();
     if file.read_to_string(&mut buf).is_err() {
-        return vec![];
+        return HashMap::new();
     }
-    let lines: Vec<String> = buf.lines().map(|line| line.to_string()).collect();
-    if lines.len() < 16 {
-        eprintln!("Warning: {} has only {} lines, expected 16", envfile, lines.len());
-        return vec![];
+    let mut map = HashMap::new();
+    for line in buf.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once(ENV_SEP) {
+            map.insert(key.trim().to_string(), value.trim().to_string());
+        }
     }
-    lines.clone()
+    map
 }
 
-pub fn get_pandora_env() -> Vec<String> {
+pub fn get_pandora_env() -> HashMap<String, String> {
     get_env(ENV_PATH)
 }
 
@@ -41,14 +45,14 @@ pub fn add_env(envfile: &str, string: &mut String) -> bool {
 }
 pub fn remove_env(envfile: &str, target: &str) -> Result<bool, String> {
     let contents = std::fs::read_to_string(envfile).map_err(|e| e.to_string())?;
-    let lines: Vec<&str> = contents.lines().collect();
+    let mut lines: Vec<String> = contents.lines().map(|l| l.to_string()).collect();
     let original_len = lines.len();
-    let filtered: Vec<&str> = lines.into_iter().filter(|l| l.trim() != target).collect();
-    if filtered.len() == original_len {
+    lines.retain(|l| l.trim() != target);
+    if lines.len() == original_len {
         return Ok(false);
     }
     let mut out = String::new();
-    for line in filtered {
+    for line in &lines {
         out.push_str(line);
         out.push('\n');
     }
