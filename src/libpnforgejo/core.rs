@@ -169,13 +169,33 @@ impl Forgejo {
         }
     }
 
-    pub async fn move_file(&self, owner_repo: &str, from_path: &str, to_path: &str, message: &str) -> Result<(), String> {
-        let url = contents_url(&self.host, owner_repo, to_path)?;
+    pub async fn get_file_content(&self, owner_repo: &str, path: &str) -> Result<Option<(String, String)>, String> {
+        let url = contents_url(&self.host, owner_repo, path)?;
+        let resp = self.client.get(url.clone())
+            .bearer_auth(&self.token)
+            .send().await
+            .map_err(|e| e.to_string())?;
+        let status = resp.status();
+        if status.as_u16() == 404 {
+            return Ok(None);
+        }
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("get_file_content failed ({}): {} {} (GET {})", path, status, text, url));
+        }
+        let body: Value = resp.json().await.map_err(|e| e.to_string())?;
+        let content = body.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let sha = body.get("sha").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        Ok(Some((content, sha)))
+    }
+
+    pub async fn delete_file(&self, owner_repo: &str, path: &str, sha: &str, message: &str) -> Result<(), String> {
+        let url = contents_url(&self.host, owner_repo, path)?;
         let body = serde_json::json!({
-            "from_path": from_path,
+            "sha": sha,
             "message": message,
         });
-        let resp = self.client.post(url.clone())
+        let resp = self.client.delete(url.clone())
             .bearer_auth(&self.token)
             .json(&body)
             .send().await
@@ -183,8 +203,18 @@ impl Forgejo {
         if !resp.status().is_success() {
             let s = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(format!("move_file failed ({} -> {}): {} {} (POST {})", from_path, to_path, s, text, url));
+            return Err(format!("delete_file failed ({}): {} {} (DELETE {})", path, s, text, url));
         }
+        Ok(())
+    }
+
+    pub async fn move_file(&self, owner_repo: &str, from_path: &str, to_path: &str, message: &str) -> Result<(), String> {
+        let (content, sha) = match self.get_file_content(owner_repo, from_path).await? {
+            Some(v) => v,
+            None => return Err(format!("move_file: source not found: {}", from_path)),
+        };
+        self.create_file(owner_repo, to_path, &content, message).await?;
+        self.delete_file(owner_repo, from_path, &sha, message).await?;
         Ok(())
     }
 
