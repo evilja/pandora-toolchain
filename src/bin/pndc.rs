@@ -37,7 +37,7 @@ fn is_authorized(part: &str, id: u64) -> bool {
         "encode" | "pancode" | "probe" | "backup" | "scrape" | "gitcode" => "authorize.pandora",
         "attach" | "init" | "job" | "destruct" | "detach" => "upper.pandora",
         "!some" => "admin.pandora",
-        "gitsync" | "hearts" | "configure" => "admin.pandora",
+        "gitsync" | "hearts" | "configure" | "readmebase" => "admin.pandora",
         _ => return false,
     };
     let allowed = get_perm(class.to_string());
@@ -1364,6 +1364,79 @@ pub async fn handle_configure(
     )).await.ok();
 }
 
+pub async fn handle_readmebase(
+    ctx: &Context,
+    command: &serenity::all::CommandInteraction,
+) {
+    let server_id = match command.guild_id {
+        Some(g) => g.get(),
+        None => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Error: /readmebase can only be used in a server")
+                    .ephemeral(true)
+            )).await.ok();
+            return;
+        }
+    };
+
+    let attachment_id = command.data.options.iter()
+        .find(|opt| opt.name == "file")
+        .and_then(|opt| opt.value.as_attachment_id());
+    let attachment = match attachment_id.and_then(|id| command.data.resolved.attachments.get(&id)) {
+        Some(a) => a,
+        None => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Error: `file` attachment is required.")
+                    .ephemeral(true)
+            )).await.ok();
+            return;
+        }
+    };
+
+    let attachment_bytes = match attachment.download().await {
+        Ok(b) => b,
+        Err(e) => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(format!("Failed to download attachment: {}", e))
+                    .ephemeral(true)
+            )).await.ok();
+            return;
+        }
+    };
+
+    let dir = std::path::PathBuf::from("DB")
+        .join("config")
+        .join(server_id.to_string());
+    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+        command.create_response(ctx, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content(format!("Failed to create config dir: {}", e))
+                .ephemeral(true)
+        )).await.ok();
+        return;
+    }
+
+    let path = dir.join("base.md");
+    if let Err(e) = tokio::fs::write(&path, &attachment_bytes).await {
+        command.create_response(ctx, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content(format!("Failed to write base.md: {}", e))
+                .ephemeral(true)
+        )).await.ok();
+        return;
+    }
+
+    command.create_response(ctx, CreateInteractionResponse::Message(
+        CreateInteractionResponseMessage::new()
+            .content(format!("Set `base.md` for server `{}` ({} bytes, from `{}`).",
+                server_id, attachment_bytes.len(), attachment.filename))
+            .ephemeral(true)
+    )).await.ok();
+}
+
 pub async fn handle_interaction(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,
@@ -1593,6 +1666,9 @@ impl EventHandler for Handler {
                 }
                 "configure" => {
                     handle_configure(&ctx, &command).await;
+                }
+                "readmebase" => {
+                    handle_readmebase(&ctx, &command).await;
                 }
                 "hearts" => {
                     command.create_response(&ctx, CreateInteractionResponse::Message(
@@ -1851,6 +1927,12 @@ impl EventHandler for Handler {
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "forgejo", "Forgejo base link (e.g. https://git.einzu.fun) — leave empty to unset")
                         .required(false)
+                ),
+            CreateCommand::new("readmebase")
+                .description("Set the base.md for this server (used as the README template when bootstrapping repos)")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Attachment, "file", "The base.md file")
+                        .required(true)
                 ),
             CreateCommand::new("job")
                 .description("Submit a single-episode job against the channel's attached anime")
