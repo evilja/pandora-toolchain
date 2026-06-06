@@ -1,6 +1,6 @@
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::sleep;
-use crate::libpnenv::core::get_env;
+use crate::libpnenv::core::get_pandora_env;
 use crate::libpnenv::standard::PNCURL;
 use crate::libpnprotocol::core::Protocol;
 use crate::pnworker::messages::{JOB_CANCELLED, MessagePayload, UPLOAD_DONE, UPLOAD_FAIL, UPLOAD_PROG};
@@ -18,7 +18,7 @@ pub type UploadData = (PathBuf, String, bool, u64);
 
 pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, pulse: Sender<()>) {
     let mut proto = Protocol::new(vec![1]);
-    let pncurl_path = get_env("env.pandora")[PNCURL].clone();
+    let pncurl_path = get_pandora_env()[PNCURL].clone();
     'll: loop {
         if let Ok(WorkerMsg::Upload((directory, out_name, release, job_id))) = rx.try_recv() {
             let output_path = directory.join("work").join("output.mp4").display().to_string();

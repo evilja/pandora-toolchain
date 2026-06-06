@@ -1,6 +1,8 @@
 // Q: CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN, TOKEN_URL, TOKEN, UPLOAD_URL
 //
 
+pub const ENV_PATH: &str = "DB/config/global/environment/env.pandora";
+
 pub const CLIENT_ID: usize = 0; // Gdrive
 pub const CLIENT_SECRET: usize = 1; // Gdrive
 pub const REFRESH_TOKEN: usize = 2; // Gdrive

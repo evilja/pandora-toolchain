@@ -1,5 +1,7 @@
 use std::{fs::{File, OpenOptions}, io::{Read, Write}};
 
+use crate::libpnenv::standard::ENV_PATH;
+
 
 
 pub fn get_env(envfile: &str) -> Vec<String> {
@@ -14,10 +16,14 @@ pub fn get_env(envfile: &str) -> Vec<String> {
     }
     let lines: Vec<String> = buf.lines().map(|line| line.to_string()).collect();
     if lines.len() < 16 {
-        eprintln!("Warning: env.pandora has only {} lines, expected 16", lines.len());
+        eprintln!("Warning: {} has only {} lines, expected 16", envfile, lines.len());
         return vec![];
     }
     lines.clone()
+}
+
+pub fn get_pandora_env() -> Vec<String> {
+    get_env(ENV_PATH)
 }
 
 pub fn add_env(envfile: &str, string: &mut String) -> bool {

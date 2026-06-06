@@ -1,6 +1,6 @@
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::{Duration, sleep};
-use crate::libpnenv::core::get_env;
+use crate::libpnenv::core::get_pandora_env;
 use crate::libpnenv::standard::{PNCURL, PNP2P};
 use crate::libpnp2p::nyaaise::TorrentType;
 use crate::libpnprotocol::core::Protocol;
@@ -19,7 +19,7 @@ pub type DownloadData = (PathBuf, TorrentType, u64, Option<u64>);
 
 pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, pulse: Sender<()>) {
     let mut proto = Protocol::new(vec![1]);
-    let env = get_env("env.pandora");
+    let env = get_pandora_env();
     let pncurl_path = env[PNCURL].clone();
     let pnp2p_path = env[PNP2P].clone();
     'll: loop {

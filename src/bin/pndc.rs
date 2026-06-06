@@ -9,7 +9,7 @@ use pandora_toolchain::pnworker::core::{HalfJob, Job, JobClass, JobType, Preset}
 use pandora_toolchain::pnworker::util::{IntrosConfig, PathValue, ToolResult, run_tool};
 use pandora_toolchain::pnworker::tools::PNASS_LAYER;
 use pandora_toolchain::libpnenv::{
-    core::{add_env, get_env, get_perm, remove_env},
+    core::{add_env, get_pandora_env, get_perm, remove_env},
     standard::TOKEN,
 };
 use pandora_toolchain::libpnmal::{fetch_anime, AnimeMeta, AnimeKind};
@@ -39,7 +39,7 @@ fn is_authorized(part: &str, id: u64) -> bool {
         "gitsync" | "hearts" | "configure" | "readmebase" | "auth" | "remove" => "admin.pandora",
         _ => return false,
     };
-    let allowed = get_perm(class.to_string());
+    let allowed = get_perm(perm_path(class));
 
     !allowed.is_empty() && allowed.contains(&id.to_string())
 }
@@ -230,6 +230,35 @@ struct ChannelMeta {
 fn default_season() -> u16 { 1 }
 
 fn default_credit() -> String { "---".to_string() }
+
+fn perm_path(name: &str) -> String {
+    format!("DB/config/global/perms/{}", name)
+}
+
+async fn migrate_pandora_files() {
+    let _ = tokio::fs::create_dir_all("DB/config/global/perms").await;
+    let _ = tokio::fs::create_dir_all("DB/config/global/environment").await;
+
+    for name in ["authorize.pandora", "upper.pandora", "admin.pandora"] {
+        let old = name.to_string();
+        let new_path = format!("DB/config/global/perms/{}", name);
+        if std::path::Path::new(&old).exists() && !std::path::Path::new(&new_path).exists() {
+            match std::fs::rename(&old, &new_path) {
+                Ok(()) => println!("Migrated {} -> {}", old, new_path),
+                Err(e) => eprintln!("Warning: failed to migrate {} -> {}: {}", old, new_path, e),
+            }
+        }
+    }
+
+    let env_old = "env.pandora";
+    let env_new = "DB/config/global/environment/env.pandora";
+    if std::path::Path::new(env_old).exists() && !std::path::Path::new(env_new).exists() {
+        match std::fs::rename(env_old, env_new) {
+            Ok(()) => println!("Migrated {} -> {}", env_old, env_new),
+            Err(e) => eprintln!("Warning: failed to migrate {} -> {}: {}", env_old, env_new, e),
+        }
+    }
+}
 
 fn read_credit_option(command: &serenity::all::CommandInteraction, name: &str) -> String {
     command.data.options.iter()
@@ -1057,11 +1086,11 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
     let mut warnings: Vec<String> = Vec::new();
     let needs_pnass = matches!(job_kind, JobKind::TL | JobKind::TLC);
     if needs_pnass {
-        let pnass_path = match get_env("env.pandora").get(PNASS) {
+        let pnass_path = match get_pandora_env().get(PNASS) {
             Some(p) if !p.is_empty() => p.clone(),
             _ => {
                 let _ = response_msg.edit(ctx, EditMessage::new()
-                    .content("Error: PNASS binary path is not set in env.pandora.")).await;
+                    .content("Error: PNASS binary path is not set in DB/config/global/environment/env.pandora.")).await;
                 return;
             }
         };
@@ -1481,7 +1510,7 @@ pub async fn handle_auth(
         .to_string();
 
     let mut to_add = user_id.clone();
-    if add_env(&level, &mut to_add) {
+    if add_env(&perm_path(&level), &mut to_add) {
         command.create_response(ctx, CreateInteractionResponse::Message(
             CreateInteractionResponseMessage::new()
                 .content(format!("Authorized <@{}> at `{}`.", user_id, level))
@@ -1530,7 +1559,7 @@ pub async fn handle_remove(
         }
     };
 
-    match remove_env(&level, &user_id) {
+    match remove_env(&perm_path(&level), &user_id) {
         Ok(true) => {
             command.create_response(ctx, CreateInteractionResponse::Message(
                 CreateInteractionResponseMessage::new()
@@ -2132,7 +2161,8 @@ impl EventHandler for Handler {
 
 #[tokio::main]
 async fn main() {
-    let env = get_env("env.pandora".into());
+    migrate_pandora_files().await;
+    let env = get_pandora_env();
     let (tx, rx): (Sender<JobClass>, Receiver<JobClass>) = channel(5);
     tokio::spawn(pn_worker(rx));
     let intros = IntrosConfig::load();

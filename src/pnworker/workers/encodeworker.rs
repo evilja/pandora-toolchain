@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::sleep;
-use crate::libpnenv::core::get_env;
+use crate::libpnenv::core::get_pandora_env;
 use crate::libpnenv::standard::PNMPEG;
 use crate::libpnprotocol::core::Protocol;
 use crate::pnworker::messages::{ENCODE_CONCAT_PROG, ENCODE_DONE, ENCODE_FAIL, ENCODE_PROG, JOB_CANCELLED, MessagePayload};
@@ -32,7 +32,7 @@ fn path_to_ffmpeg(path: &Path) -> String {
 
 pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, pulse: Sender<()>) {
     let mut proto = Protocol::new(vec![1]);
-    let pnmpeg_path = get_env("env.pandora")[PNMPEG].clone();
+    let pnmpeg_path = get_pandora_env()[PNMPEG].clone();
     'll: loop {
         if let Ok(WorkerMsg::Encode((directory, preset, job_id))) = rx.try_recv() {
             let (concat_value, insert) = match preset {
