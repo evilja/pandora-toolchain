@@ -221,7 +221,7 @@ pub fn create_job_embed(job: &Job, payload: &MessagePayload) -> CreateEmbed {
         .field(get_message(FIELD_AUTHOR, lang), format!("<@{}>", job.author), true)
         .field(get_message(FIELD_STATUS, lang), get_stage_text(job.ready, lang), true)
         .field(get_message(FIELD_PRESET, lang), preset_text, false)
-        .field(get_message(FIELD_TORRENT, lang), format!("Torrent: {}", job.torrent.display()), false)
+        .field(get_message(FIELD_TORRENT, lang), format!("{}", job.torrent.display()), false)
         .field(get_message(FIELD_PROGRESS, lang), status_message, false)
         .timestamp(serenity::model::Timestamp::now())
 }

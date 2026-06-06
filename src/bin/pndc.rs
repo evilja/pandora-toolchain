@@ -1,12 +1,13 @@
 use serenity::{
     Client,
-    all::{ActivityData, ChannelType, CommandOptionType, Context, CreateMessage, EditMessage, GatewayIntents, Interaction, Message, OnlineStatus, Ready},
+    all::{ActivityData, ChannelType, CommandOptionType, Context, CreateEmbed, CreateMessage, EditMessage, GatewayIntents, Interaction, Message, OnlineStatus, Ready},
     builder::{CreateCommand, CreateCommandOption, CreateInteractionResponse, CreateInteractionResponseMessage, EditChannel},
     prelude::*,
 };
 use pandora_toolchain::libpnp2p::nyaaise::nyaaise;
 use pandora_toolchain::pnworker::core::{HalfJob, Job, JobClass, JobType, Preset};
-use pandora_toolchain::pnworker::util::IntrosConfig;
+use pandora_toolchain::pnworker::util::{IntrosConfig, PathValue, ToolResult, run_tool};
+use pandora_toolchain::pnworker::tools::PNASS_LAYER;
 use pandora_toolchain::libpnenv::{
     core::{add_env, get_env, get_perm},
     standard::TOKEN,
@@ -16,9 +17,9 @@ use pandora_toolchain::libpnforgejo::{Forgejo, base64_encode, base64_encode_byte
 use pandora_toolchain::pnworker::core::pn_worker;
 use pandora_toolchain::libpnenv::standard::PNASS;
 use pandora_toolchain::libkagami::core::SubstationAlpha;
+use pandora_toolchain::libpnprotocol::core::Protocol;
 use tokio::sync::mpsc::{channel, Sender, Receiver};
-use tokio::process::Command;
-use std::process::Stdio;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use regex::Regex;
 use reqwest;
@@ -770,9 +771,6 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
             .content(format!("Failed to create job dir: {}", e))).await;
         return;
     }
-    let log_dir = format!("{}/log", job_dir);
-    let _ = tokio::fs::create_dir_all(&log_dir).await;
-    let log_path = format!("{}/PNass_{}.log", log_dir, job_id);
     let input_path = format!("{}/input.ass", job_dir);
     let output_path = format!("{}/output.ass", job_dir);
 
@@ -805,7 +803,7 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
             }
             Err(e) => {
                 let _ = response_msg.edit(ctx, EditMessage::new()
-                    .content(format!("Zip extraction failed: {}\nLog: `{}`", e, log_path))).await;
+                    .content(format!("Zip extraction failed: {}", e))).await;
                 return;
             }
         }
@@ -815,6 +813,7 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
         return;
     }
 
+    let mut warnings: Vec<String> = Vec::new();
     let needs_pnass = matches!(job_kind, JobKind::TL);
     if needs_pnass {
         let pnass_path = match get_env("env.pandora").get(PNASS) {
@@ -825,36 +824,32 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
                 return;
             }
         };
-        let log_file = match std::fs::File::create(&log_path) {
-            Ok(f) => f,
-            Err(e) => {
-                let _ = response_msg.edit(ctx, EditMessage::new()
-                    .content(format!("Failed to create log file: {}", e))).await;
-                return;
-            }
-        };
-        let status = Command::new(&pnass_path)
-            .arg("--input").arg(&input_path)
-            .arg("--output").arg(&output_path)
-            .arg("--set-layer").arg("9")
-            .arg("--negkey").arg("PNass")
-            .arg("--negotiator").arg("PNdc")
-            .arg("--negver").arg("0.1.1")
-            .stdout(Stdio::from(log_file))
-            .stderr(Stdio::null())
-            .status().await;
-        match status {
-            Ok(s) if s.success() => {}
-            Ok(s) => {
-                let _ = response_msg.edit(ctx, EditMessage::new()
-                    .content(format!("ASS normalisation failed (exit {}).\nLog: `{}`", s, log_path))).await;
-                return;
-            }
-            Err(e) => {
-                let _ = response_msg.edit(ctx, EditMessage::new()
-                    .content(format!("Failed to spawn pnass: {}\nLog: `{}`", e, log_path))).await;
-                return;
-            }
+        let mut proto = Protocol::new(vec![1]);
+        let result = run_tool(
+            &pnass_path,
+            PNASS_LAYER,
+            &HashMap::from([
+                ("INPUT", PathValue::from(input_path.clone())),
+                ("OUTPUT", PathValue::from(output_path.clone())),
+            ]),
+            job_id,
+            &mut proto,
+            |data| {
+                match data.get(0).and_then(|v| v.as_str()) {
+                    Some("4") => {
+                        if let Some(line) = data.get(1).and_then(|v| v.as_str()) {
+                            warnings.push(line.to_string());
+                        }
+                    }
+                    _ => {}
+                }
+                None
+            },
+        ).await;
+        if !matches!(result, ToolResult::Success) {
+            let _ = response_msg.edit(ctx, EditMessage::new()
+                .content(format!("ASS normalisation failed (warnings so far: {}).", warnings.len()))).await;
+            return;
         }
     } else {
         if let Err(e) = tokio::fs::copy(&input_path, &output_path).await {
@@ -869,7 +864,7 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
     sub.script_info.title = title;
     if sub.dump_to_file(PathBuf::from(&output_path)).await.is_err() {
         let _ = response_msg.edit(ctx, EditMessage::new()
-            .content(format!("Failed to rewrite ASS title.\nLog: `{}`", log_path))).await;
+            .content(format!("Failed to rewrite ASS title."))).await;
         return;
     }
 
@@ -877,7 +872,7 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
         Ok(b) => b,
         Err(e) => {
             let _ = response_msg.edit(ctx, EditMessage::new()
-                .content(format!("Failed to read output: {}\nLog: `{}`", e, log_path))).await;
+                .content(format!("Failed to read output: {}", e))).await;
             return;
         }
     };
@@ -902,20 +897,49 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
         Ok(f) => f,
         Err(e) => {
             let _ = response_msg.edit(ctx, EditMessage::new()
-                .content(format!("Forgejo init failed: {}\nLog: `{}`", e, log_path))).await;
+                .content(format!("Forgejo init failed: {}", e))).await;
             return;
         }
     };
     match fg.upsert_file(&owner_repo, &repo_path, &b64, &commit_msg).await {
         Ok(()) => {
-            let _ = response_msg.edit(ctx, EditMessage::new()
-                .content(format!("Wrote `{}` in `{}` (commit: `{}`).\nLog: `{}`", repo_path, owner_repo, commit_msg, log_path))).await;
+            let embed = CreateEmbed::new()
+                .title("Job complete")
+                .field("Repo", format!("`{}`", owner_repo), true)
+                .field("File", format!("`{}`", repo_path), true)
+                .field("Job", format!("`{}`", job_id), true)
+                .field("Commit Message", format!("`{}`", commit_msg), false)
+                .field("Warnings", format_warnings_field(&warnings), false);
+            let _ = response_msg.edit(ctx, EditMessage::new().content("").embed(embed)).await;
         }
         Err(e) => {
             let _ = response_msg.edit(ctx, EditMessage::new()
-                .content(format!("Upload failed: {}\nLog: `{}`", e, log_path))).await;
+                .content(format!("Upload failed: {}", e))).await;
         }
     }
+}
+
+fn format_warnings_field(warnings: &[String]) -> String {
+    if warnings.is_empty() {
+        return "None".to_string();
+    }
+    const LIMIT: usize = 1000;
+    let mut out = String::new();
+    let mut count = 0usize;
+    for w in warnings {
+        let piece = format!("- {}\n", w);
+        if out.len() + piece.len() > LIMIT {
+            out.push_str(&format!("…and {} more", warnings.len() - count));
+            return out;
+        }
+        out.push_str(&piece);
+        count += 1;
+    }
+    if out.len() > 1024 {
+        out.truncate(1021);
+        out.push_str("…");
+    }
+    out
 }
 
 pub async fn handle_gitcode(

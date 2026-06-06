@@ -1,6 +1,7 @@
 use clap::Parser;
 use pandora_toolchain::libkagami::core::{ScriptInfo, SubstationAlpha};
-use pandora_toolchain::libpnprotocol::core::{Protocol, ToolInfo};
+use pandora_toolchain::libpnprotocol::core::{Protocol, Schema, ToolInfo};
+use pandora_toolchain::{pn_data, pn_emit, pn_schema};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -38,7 +39,7 @@ async fn main() {
     let args = Args::parse();
 
     let mut proto = Protocol::new(vec![1]);
-    let _neg = proto.request(
+    let neg = proto.request(
         ToolInfo {
             tool: args.negotiator.as_deref().unwrap_or("PNass"),
             build: args.negver.as_deref().unwrap_or("0.1.1"),
@@ -61,17 +62,64 @@ async fn main() {
         }
     }
 
+    for ev in &sub.events {
+        for line in split_visible_lines(&ev.text.stringify()) {
+            if line.chars().count() > 50 {
+                println!("{}", pn_emit!(protocol = proto, negkey = &neg,
+                    schema = [leaf, leaf], data = ["4", line]).unwrap());
+            }
+        }
+    }
+
     if sub.dump_to_file(PathBuf::from(&args.output)).await.is_err() {
         eprintln!("pnass: failed to write {}", args.output);
         std::process::exit(1);
     }
 }
 
+fn split_visible_lines(s: &str) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    let mut depth: i32 = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\\' && i + 1 < chars.len() {
+            let next = chars[i + 1];
+            if next == 'N' && depth == 0 {
+                lines.push(std::mem::take(&mut current));
+                i += 2;
+                continue;
+            }
+            if next == '{' || next == '}' {
+                current.push(next);
+                i += 2;
+                continue;
+            }
+        }
+        if c == '{' {
+            depth += 1;
+            i += 1;
+            continue;
+        }
+        if c == '}' {
+            depth -= 1;
+            i += 1;
+            continue;
+        }
+        current.push(c);
+        i += 1;
+    }
+    lines.push(current);
+    lines
+}
+
 fn fill_script_info_defaults(si: &mut ScriptInfo) {
     if si.script_type.is_empty() {
         si.script_type = "v4.00+".to_string();
     }
-    if si.wrap_style == 0 {
+    if si.wrap_style != 2 {
         si.wrap_style = 2;
     }
     if !si.scaled_border_and_shadow {
@@ -87,9 +135,9 @@ fn fill_script_info_defaults(si: &mut ScriptInfo) {
         si.ycbcr_matrix = "TV.709".to_string();
     }
     if si.layout_res_x == 0 {
-        si.layout_res_x = 1920;
+        si.layout_res_x = si.playresx;
     }
     if si.layout_res_y == 0 {
-        si.layout_res_y = 1080;
+        si.layout_res_y = si.playresy;
     }
 }
