@@ -110,7 +110,7 @@ impl Forgejo {
             "content": content_b64,
             "message": message,
         });
-        let resp = self.client.post(url)
+        let resp = self.client.post(url.clone())
             .bearer_auth(&self.token)
             .json(&body)
             .send().await
@@ -118,14 +118,14 @@ impl Forgejo {
         if !resp.status().is_success() {
             let s = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(format!("create_file failed ({}): {} {}", path, s, text));
+            return Err(format!("create_file failed ({}): {} {} (POST {})", path, s, text, url));
         }
         Ok(())
     }
 
     pub async fn get_file_sha(&self, owner_repo: &str, path: &str) -> Result<Option<String>, String> {
         let url = contents_url(&self.host, owner_repo, path)?;
-        let resp = self.client.get(url)
+        let resp = self.client.get(url.clone())
             .bearer_auth(&self.token)
             .send().await
             .map_err(|e| e.to_string())?;
@@ -135,7 +135,7 @@ impl Forgejo {
         }
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(format!("get_file_sha failed: {} {}", status, text));
+            return Err(format!("get_file_sha failed ({}): {} {} (GET {})", path, status, text, url));
         }
         let body: Value = resp.json().await.map_err(|e| e.to_string())?;
         let sha = body.get("sha").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -149,7 +149,7 @@ impl Forgejo {
             "message": message,
             "sha": sha,
         });
-        let resp = self.client.put(url)
+        let resp = self.client.put(url.clone())
             .bearer_auth(&self.token)
             .json(&body)
             .send().await
@@ -157,7 +157,7 @@ impl Forgejo {
         if !resp.status().is_success() {
             let s = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(format!("update_file failed ({}): {} {}", path, s, text));
+            return Err(format!("update_file failed ({}): {} {} (PUT {})", path, s, text, url));
         }
         Ok(())
     }
