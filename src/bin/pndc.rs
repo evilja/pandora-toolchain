@@ -314,12 +314,16 @@ async fn bootstrap_repo(
     }
 
     let has_readme = existing.iter().any(|n| n.eq_ignore_ascii_case("README.md"));
-    if !has_readme {
-        if let Some(readme) = base_md {
-            let b64 = base64_encode(&readme);
+    if let Some(readme) = base_md {
+        let b64 = base64_encode(&readme);
+        if has_readme {
+            let sha = fg.get_file_sha(owner_repo, "README.md").await?
+                .ok_or_else(|| "README.md disappeared between list and update".to_string())?;
+            fg.update_file(owner_repo, "README.md", &b64, &sha, "bootstrap root readme").await?;
+        } else {
             fg.create_file(owner_repo, "README.md", &b64, "bootstrap root readme").await?;
-            created.push("README.md".to_string());
         }
+        created.push("README.md".to_string());
     }
 
     Ok(created)
