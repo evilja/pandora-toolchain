@@ -12,9 +12,13 @@ use pandora_toolchain::libpnenv::{
     standard::TOKEN,
 };
 use pandora_toolchain::libpnmal::{fetch_anime, AnimeMeta, AnimeKind};
-use pandora_toolchain::libpnforgejo::{Forgejo, base64_encode};
+use pandora_toolchain::libpnforgejo::{Forgejo, base64_encode, base64_encode_bytes};
 use pandora_toolchain::pnworker::core::pn_worker;
+use pandora_toolchain::libpnenv::standard::PNASS;
 use tokio::sync::mpsc::{channel, Sender, Receiver};
+use tokio::process::Command;
+use std::process::Stdio;
+use std::path::{Path, PathBuf};
 use regex::Regex;
 use reqwest;
 
@@ -28,8 +32,8 @@ fn is_authorized(part: &str, id: u64) -> bool {
         "!enc" | "!encode" => "authorize.pandora",
         "!ban" => "admin.pandora",
         "!authorize" | "!auth" => "admin.pandora",
-        "encode" | "pancode" | "probe" | "backup" | "scrape" | "gitcode" | "job" => "authorize.pandora",
-        "attach" | "init" => "upper.pandora",
+        "encode" | "pancode" | "probe" | "backup" | "scrape" | "gitcode" => "authorize.pandora",
+        "attach" | "init" | "job" => "upper.pandora",
         "!some" => "admin.pandora",
         "gitsync" | "hearts" | "configure" => "admin.pandora",
         _ => return false,
@@ -208,15 +212,31 @@ struct ChannelMeta {
     slug: Option<String>,
     episode_count: Option<u32>,
     repo_url: Option<String>,
+    episode_count_at_git: Option<u32>,
+    year: Option<u16>,
+    #[serde(default = "default_season")]
+    season: u16,
 }
+
+fn default_season() -> u16 { 1 }
 
 fn meta_to_toml(m: &ChannelMeta) -> String {
     match (&m.kind, m.mal_id) {
-        (Some(k), Some(id)) => format!(
-            "mal_id = {}\nkind = \"{}\"\nname = \"{}\"\nslug = \"{}\"\nepisode_count = {}\nrepo_url = \"{}\"\n",
-            id, k, m.name.as_deref().unwrap_or(""), m.slug.as_deref().unwrap_or(""),
-            m.episode_count.unwrap_or(0), m.repo_url.as_deref().unwrap_or("")
-        ),
+        (Some(k), Some(id)) => {
+            let mut out = format!(
+                "mal_id = {}\nkind = \"{}\"\nname = \"{}\"\nslug = \"{}\"\nepisode_count = {}\nrepo_url = \"{}\"\nseason = {}\n",
+                id, k, m.name.as_deref().unwrap_or(""), m.slug.as_deref().unwrap_or(""),
+                m.episode_count.unwrap_or(0), m.repo_url.as_deref().unwrap_or(""),
+                m.season
+            );
+            if let Some(y) = m.year {
+                out.push_str(&format!("year = {}\n", y));
+            }
+            if let Some(c) = m.episode_count_at_git {
+                out.push_str(&format!("episode_count_at_git = {}\n", c));
+            }
+            out
+        }
         _ => String::new(),
     }
 }
@@ -281,6 +301,13 @@ async fn bootstrap_repo(
     }
 
     Ok(created)
+}
+
+fn count_existing_episodes(existing: &[String], max: u32) -> u32 {
+    existing.iter()
+        .filter_map(|n| n.trim_start_matches('0').parse::<u32>().ok().filter(|&v| v >= 1))
+        .filter(|&n| n <= max)
+        .count() as u32
 }
 
 async fn read_server_meta(server_id: u64) -> Result<(String, String), String> {
@@ -376,6 +403,20 @@ async fn run_attach_or_init(
         return;
     }
 
+    let season_input = command.data.options.iter()
+        .find(|opt| opt.name == "season")
+        .and_then(|opt| opt.value.as_i64())
+        .unwrap_or(1);
+    if season_input < 1 || season_input > u16::MAX as i64 {
+        command.create_response(ctx, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content("Error: `season` must be between 1 and 65535.")
+                .ephemeral(true)
+        )).await.ok();
+        return;
+    }
+    let season = season_input as u16;
+
     let existing = read_channel_meta(server_id, channel_id);
 
     let (_lang, forgejo_base) = match read_server_meta(server_id).await {
@@ -462,6 +503,8 @@ async fn run_attach_or_init(
         }
     };
 
+    let episode_count_at_git = count_existing_episodes(&existing_root, meta.episode_count);
+
     let base_md = tokio::fs::read_to_string(format!("DB/config/{}/base.md", server_id)).await.ok();
 
     let created = match bootstrap_repo(&fg, &owner_repo, &meta, base_md, existing_root).await {
@@ -479,6 +522,9 @@ async fn run_attach_or_init(
         slug: Some(meta.slug.clone()),
         episode_count: Some(meta.episode_count),
         repo_url: Some(repo_url.clone()),
+        episode_count_at_git: Some(episode_count_at_git),
+        year: meta.year,
+        season: season,
     };
     if let Err(e) = write_channel_meta(server_id, channel_id, &new_meta).await {
         let _ = response_msg.edit(ctx, EditMessage::new().content(format!("Failed to save channel meta: {}", e))).await;
@@ -510,12 +556,356 @@ pub async fn handle_attach(ctx: &Context, command: &serenity::all::CommandIntera
     run_attach_or_init(ctx, command, false).await;
 }
 
+enum JobKind { TL, TLC, TS }
+
+fn parse_job_kind(s: &str) -> Option<JobKind> {
+    match s {
+        "TL" => Some(JobKind::TL),
+        "TLC" => Some(JobKind::TLC),
+        "TS" => Some(JobKind::TS),
+        _ => None,
+    }
+}
+
+async fn extract_zip_root_ass(bytes: &[u8], dest: &Path) -> Result<Option<PathBuf>, String> {
+    use async_zip::base::read::stream::ZipFileReader;
+    use futures_lite::io::AsyncReadExt;
+    use tokio::io::{AsyncWriteExt, BufReader};
+
+    let tmp = std::env::temp_dir().join(format!("pandora_job_zip_{}.zip",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos()));
+
+    let result = async {
+        {
+            let mut f = tokio::fs::File::create(&tmp).await.map_err(|e| e.to_string())?;
+            f.write_all(bytes).await.map_err(|e| e.to_string())?;
+            f.sync_all().await.map_err(|e| e.to_string())?;
+        }
+        let f = tokio::fs::File::open(&tmp).await.map_err(|e| e.to_string())?;
+        let mut zip = ZipFileReader::with_tokio(BufReader::new(f));
+
+        let mut found: Option<PathBuf> = None;
+        let mut count: usize = 0;
+
+        loop {
+            let mut entry = match zip.next_with_entry().await.map_err(|e| format!("zip: {}", e))? {
+                Some(e) => e,
+                None => break,
+            };
+            let filename = entry.reader().entry().filename().as_str()
+                .map_err(|e| format!("zip filename: {}", e))?
+                .to_string();
+            let is_root = !filename.contains('/');
+            let is_ass = filename.to_lowercase().ends_with(".ass");
+
+            if is_root && is_ass {
+                count += 1;
+                if count > 1 {
+                    return Ok(None);
+                }
+                let mut data = Vec::new();
+                entry.reader_mut().read_to_end(&mut data).await
+                    .map_err(|e| format!("zip read: {}", e))?;
+                let out_path = dest.join(&filename);
+                tokio::fs::write(&out_path, &data).await.map_err(|e| e.to_string())?;
+                found = Some(out_path);
+            }
+
+            zip = entry.skip().await.map_err(|e| format!("zip skip: {}", e))?;
+        }
+
+        Ok(found)
+    }.await;
+
+    let _ = tokio::fs::remove_file(&tmp).await;
+    result
+}
+
 pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteraction) {
+    let job_kind = match command.data.options.iter()
+        .find(|opt| opt.name == "type")
+        .and_then(|opt| opt.value.as_str())
+        .and_then(parse_job_kind)
+    {
+        Some(k) => k,
+        None => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Error: `type` must be TL, TLC, or TS.")
+                    .ephemeral(true)
+            )).await.ok();
+            return;
+        }
+    };
+
+    let episode = match command.data.options.iter()
+        .find(|opt| opt.name == "episode")
+        .and_then(|opt| opt.value.as_i64())
+    {
+        Some(n) if n >= 1 && n <= u32::MAX as i64 => n as u32,
+        _ => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Error: `episode` must be a positive integer.")
+                    .ephemeral(true)
+            )).await.ok();
+            return;
+        }
+    };
+
+    let attachment_id = command.data.options.iter()
+        .find(|opt| opt.name == "subtitle")
+        .and_then(|opt| opt.value.as_attachment_id());
+    let attachment = match attachment_id.and_then(|id| command.data.resolved.attachments.get(&id)) {
+        Some(a) => a,
+        None => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Error: `subtitle` attachment is required.")
+                    .ephemeral(true)
+            )).await.ok();
+            return;
+        }
+    };
+
+    let custom_commit = command.data.options.iter()
+        .find(|opt| opt.name == "commit")
+        .and_then(|opt| opt.value.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    let server_id = match command.guild_id {
+        Some(g) => g.get(),
+        None => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Error: /job can only be used in a server")
+                    .ephemeral(true)
+            )).await.ok();
+            return;
+        }
+    };
+    let channel_id = command.channel_id.get();
+
+    let meta = read_channel_meta(server_id, channel_id);
+    if meta.mal_id.is_none() {
+        command.create_response(ctx, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content("Error: this channel is not attached to an anime. Run `/init` or `/attach` first.")
+                .ephemeral(true)
+        )).await.ok();
+        return;
+    }
+    let name = meta.name.clone().unwrap_or_default();
+    let season = meta.season;
+    let max_ep = meta.episode_count.unwrap_or(0);
+    if episode < 1 || episode > max_ep {
+        command.create_response(ctx, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content(format!("Error: `episode` must be between 1 and {}.", max_ep))
+                .ephemeral(true)
+        )).await.ok();
+        return;
+    }
+    let repo_url = meta.repo_url.clone().unwrap_or_default();
+    let (owner, repo) = match parse_repo_url(&repo_url) {
+        Ok(t) => t,
+        Err(e) => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(format!("Error: bad repo URL in meta: {}", e))
+                    .ephemeral(true)
+            )).await.ok();
+            return;
+        }
+    };
+    let owner_repo = format!("{}/{}", owner, repo);
+
+    let (_lang, forgejo_base) = match read_server_meta(server_id).await {
+        Ok(t) => t,
+        Err(e) => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(format!("Error: failed to read server meta: {}", e))
+                    .ephemeral(true)
+            )).await.ok();
+            return;
+        }
+    };
+    if forgejo_base.is_empty() {
+        command.create_response(ctx, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content("Error: server has no forgejo org configured. Run `/configure` first.")
+                .ephemeral(true)
+        )).await.ok();
+        return;
+    }
+
     command.create_response(ctx, CreateInteractionResponse::Message(
-        CreateInteractionResponseMessage::new()
-            .content("`/job` is not implemented yet.")
-            .ephemeral(true)
+        CreateInteractionResponseMessage::new().content("Working…")
     )).await.ok();
+    let mut response_msg = match command.get_response(&ctx.http).await {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+
+    let attachment_bytes = match attachment.download().await {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = response_msg.edit(ctx, EditMessage::new()
+                .content(format!("Failed to download attachment: {}", e))).await;
+            return;
+        }
+    };
+
+    let job_id = response_msg.id.get();
+    let job_dir = format!("DB/saved_data/{}", job_id);
+    if let Err(e) = tokio::fs::create_dir_all(&job_dir).await {
+        let _ = response_msg.edit(ctx, EditMessage::new()
+            .content(format!("Failed to create job dir: {}", e))).await;
+        return;
+    }
+    let log_dir = format!("{}/log", job_dir);
+    let _ = tokio::fs::create_dir_all(&log_dir).await;
+    let log_path = format!("{}/PNass_{}.log", log_dir, job_id);
+    let input_path = format!("{}/input.ass", job_dir);
+    let output_path = format!("{}/output.ass", job_dir);
+
+    let attachment_name = attachment.filename.to_lowercase();
+    if attachment_name.ends_with(".ass") {
+        if let Err(e) = tokio::fs::write(&input_path, &attachment_bytes).await {
+            let _ = response_msg.edit(ctx, EditMessage::new()
+                .content(format!("Failed to write input: {}", e))).await;
+            return;
+        }
+    } else if attachment_name.ends_with(".zip") {
+        let extract_dir = format!("{}/extract", job_dir);
+        if let Err(e) = tokio::fs::create_dir_all(&extract_dir).await {
+            let _ = response_msg.edit(ctx, EditMessage::new()
+                .content(format!("Failed to create extract dir: {}", e))).await;
+            return;
+        }
+        match extract_zip_root_ass(&attachment_bytes, &PathBuf::from(&extract_dir)).await {
+            Ok(Some(src)) => {
+                if let Err(e) = tokio::fs::copy(&src, &input_path).await {
+                    let _ = response_msg.edit(ctx, EditMessage::new()
+                        .content(format!("Failed to copy extracted .ass: {}", e))).await;
+                    return;
+                }
+            }
+            Ok(None) => {
+                let _ = response_msg.edit(ctx, EditMessage::new()
+                    .content("Error: zip must contain exactly one .ass file at the root.")).await;
+                return;
+            }
+            Err(e) => {
+                let _ = response_msg.edit(ctx, EditMessage::new()
+                    .content(format!("Zip extraction failed: {}\nLog: `{}`", e, log_path))).await;
+                return;
+            }
+        }
+    } else {
+        let _ = response_msg.edit(ctx, EditMessage::new()
+            .content("Error: unsupported subtitle file type. Use .ass or .zip.")).await;
+        return;
+    }
+
+    let needs_pnass = matches!(job_kind, JobKind::TL);
+    if needs_pnass {
+        let pnass_path = match get_env("env.pandora").get(PNASS) {
+            Some(p) if !p.is_empty() => p.clone(),
+            _ => {
+                let _ = response_msg.edit(ctx, EditMessage::new()
+                    .content("Error: PNASS binary path is not set in env.pandora.")).await;
+                return;
+            }
+        };
+        let log_file = match std::fs::File::create(&log_path) {
+            Ok(f) => f,
+            Err(e) => {
+                let _ = response_msg.edit(ctx, EditMessage::new()
+                    .content(format!("Failed to create log file: {}", e))).await;
+                return;
+            }
+        };
+        let status = Command::new(&pnass_path)
+            .arg("--input").arg(&input_path)
+            .arg("--output").arg(&output_path)
+            .arg("--set-layer").arg("9")
+            .arg("--negkey").arg("PNass")
+            .arg("--negotiator").arg("PNdc")
+            .arg("--negver").arg("0.1.1")
+            .stdout(Stdio::from(log_file))
+            .stderr(Stdio::null())
+            .status().await;
+        match status {
+            Ok(s) if s.success() => {}
+            Ok(s) => {
+                let _ = response_msg.edit(ctx, EditMessage::new()
+                    .content(format!("ASS normalisation failed (exit {}).\nLog: `{}`", s, log_path))).await;
+                return;
+            }
+            Err(e) => {
+                let _ = response_msg.edit(ctx, EditMessage::new()
+                    .content(format!("Failed to spawn pnass: {}\nLog: `{}`", e, log_path))).await;
+                return;
+            }
+        }
+    } else {
+        if let Err(e) = tokio::fs::copy(&input_path, &output_path).await {
+            let _ = response_msg.edit(ctx, EditMessage::new()
+                .content(format!("Failed to copy input to output: {}", e))).await;
+            return;
+        }
+    }
+
+    let output_bytes = match tokio::fs::read(&output_path).await {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = response_msg.edit(ctx, EditMessage::new()
+                .content(format!("Failed to read output: {}\nLog: `{}`", e, log_path))).await;
+            return;
+        }
+    };
+    let b64 = base64_encode_bytes(&output_bytes);
+
+    let (file_type_label, prefix, default_msg) = match job_kind {
+        JobKind::TL  => ("TL",  "TL",  "Translation"),
+        JobKind::TLC => ("TL",  "TLC", "Edit"),
+        JobKind::TS  => ("TS",  "TS",  "Typeset"),
+    };
+    let commit_msg = if custom_commit.is_empty() {
+        default_msg.to_string()
+    } else {
+        format!("[{}] {}", prefix, custom_commit)
+    };
+    let safe_name = name.replace('/', "-");
+    let file_name = format!("{} - {} - S{:02}E{:02}.ass",
+        file_type_label, safe_name, season, episode);
+    let repo_path = format!("{}/{}", pad2(episode), file_name);
+
+    let fg = match Forgejo::from_env(forgejo_base) {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = response_msg.edit(ctx, EditMessage::new()
+                .content(format!("Forgejo init failed: {}\nLog: `{}`", e, log_path))).await;
+            return;
+        }
+    };
+    match fg.upsert_file(&owner_repo, &repo_path, &b64, &commit_msg).await {
+        Ok(()) => {
+            let _ = response_msg.edit(ctx, EditMessage::new()
+                .content(format!("Wrote `{}` in `{}` (commit: `{}`).\nLog: `{}`", repo_path, owner_repo, commit_msg, log_path))).await;
+        }
+        Err(e) => {
+            let _ = response_msg.edit(ctx, EditMessage::new()
+                .content(format!("Upload failed: {}\nLog: `{}`", e, log_path))).await;
+        }
+    }
 }
 
 pub async fn handle_gitcode(
@@ -1101,12 +1491,22 @@ impl EventHandler for Handler {
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "repo", "Forgejo repo link (e.g. https://git.einzu.fun/owner/repo)")
                         .required(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "season", "Season number (1 for the first season, 2 for a sequel, …). Defaults to 1.")
+                        .required(false)
+                        .min_int_value(1)
                 ),
             CreateCommand::new("init")
                 .description("Attach a MyAnimeList anime to this channel and create a new Forgejo repo for it")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "mal", "MyAnimeList link (e.g. https://myanimelist.net/anime/52991)")
                         .required(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "season", "Season number (1 for the first season, 2 for a sequel, …). Defaults to 1.")
+                        .required(false)
+                        .min_int_value(1)
                 ),
             CreateCommand::new("gitcode")
                 .description("Encode with a subtitle fetched from a URL")
@@ -1141,7 +1541,27 @@ impl EventHandler for Handler {
                         .required(false)
                 ),
             CreateCommand::new("job")
-                .description("Job operations (stub)"),
+                .description("Submit a single-episode job against the channel's attached anime")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "type", "Job type")
+                        .required(true)
+                        .add_string_choice("Translation", "TL")
+                        .add_string_choice("Translation Check", "TLC")
+                        .add_string_choice("Typeset", "TS")
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (1-based)")
+                        .required(true)
+                        .min_int_value(1)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "The .ass or .zip file")
+                        .required(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "commit", "Custom commit message (optional; will be prefixed with [TL]/[TLC]/[TS])")
+                        .required(false)
+                ),
         ];
 
         for guild in &ready.guilds {

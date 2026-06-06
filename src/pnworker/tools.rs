@@ -92,3 +92,12 @@ pub const PNP2P_SELECT: &[CliParam] = &[
     CliParam::Literal("--negver"),      CliParam::NegVer("1"),
     CliParam::Literal("--cancelfile"),  CliParam::Path("CANCELFILE"),
 ];
+
+pub const PNASS_LAYER: &[CliParam] = &[
+    CliParam::Literal("--input"),        CliParam::Path("INPUT"),
+    CliParam::Literal("--output"),       CliParam::Path("OUTPUT"),
+    CliParam::Literal("--set-layer"),    CliParam::Literal("9"),
+    CliParam::Literal("--negkey"),       CliParam::Literal("PNass"),
+    CliParam::Literal("--negotiator"),   CliParam::Literal("PNdc"),
+    CliParam::Literal("--negver"),       CliParam::Literal("0.1.1"),
+];

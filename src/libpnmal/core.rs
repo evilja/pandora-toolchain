@@ -14,6 +14,8 @@ pub struct AnimeMeta {
     pub name: String,
     pub slug: String,
     pub episode_count: u32,
+    pub year: Option<u16>,
+    pub season: u16,
 }
 
 pub fn slugify(s: &str) -> String {
@@ -83,11 +85,23 @@ pub async fn fetch_anime(url: &str) -> Result<AnimeMeta, String> {
 
     let slug = slugify(&name);
 
+    let year = data.get("year").and_then(|v| v.as_u64())
+        .and_then(|y| u16::try_from(y).ok())
+        .or_else(|| {
+            data.get("aired")
+                .and_then(|a| a.get("from"))
+                .and_then(|f| f.as_str())
+                .and_then(|s| if s.len() >= 4 { s.get(..4) } else { None })
+                .and_then(|y| y.parse::<u16>().ok())
+        });
+
     Ok(AnimeMeta {
         mal_id: id,
         kind,
         name,
         slug,
         episode_count: episodes as u32,
+        year,
+        season: 1,
     })
 }

@@ -18,3 +18,5 @@ tokio-util = { version = "0.7.18", features = ["io"] }
 toml = "0.8"
 git2 = "0.19"
 md5 = "0.7"
+async_zip = { version = "0.0.17", features = ["tokio"] }
+futures-lite = "2"

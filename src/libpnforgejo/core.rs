@@ -105,12 +105,12 @@ impl Forgejo {
     }
 
     pub async fn create_file(&self, owner_repo: &str, path: &str, content_b64: &str, message: &str) -> Result<(), String> {
-        let url = format!("{}/api/v1/repos/{}/contents/{}", self.host, owner_repo, path);
+        let url = contents_url(&self.host, owner_repo, path)?;
         let body = serde_json::json!({
             "content": content_b64,
             "message": message,
         });
-        let resp = self.client.post(&url)
+        let resp = self.client.post(url)
             .bearer_auth(&self.token)
             .json(&body)
             .send().await
@@ -122,33 +122,89 @@ impl Forgejo {
         }
         Ok(())
     }
+
+    pub async fn get_file_sha(&self, owner_repo: &str, path: &str) -> Result<Option<String>, String> {
+        let url = contents_url(&self.host, owner_repo, path)?;
+        let resp = self.client.get(url)
+            .bearer_auth(&self.token)
+            .send().await
+            .map_err(|e| e.to_string())?;
+        let status = resp.status();
+        if status.as_u16() == 404 {
+            return Ok(None);
+        }
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("get_file_sha failed: {} {}", status, text));
+        }
+        let body: Value = resp.json().await.map_err(|e| e.to_string())?;
+        let sha = body.get("sha").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        Ok(Some(sha))
+    }
+
+    pub async fn update_file(&self, owner_repo: &str, path: &str, content_b64: &str, sha: &str, message: &str) -> Result<(), String> {
+        let url = contents_url(&self.host, owner_repo, path)?;
+        let body = serde_json::json!({
+            "content": content_b64,
+            "message": message,
+            "sha": sha,
+        });
+        let resp = self.client.put(url)
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send().await
+            .map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            let s = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("update_file failed ({}): {} {}", path, s, text));
+        }
+        Ok(())
+    }
+
+    pub async fn upsert_file(&self, owner_repo: &str, path: &str, content_b64: &str, message: &str) -> Result<(), String> {
+        match self.get_file_sha(owner_repo, path).await? {
+            Some(sha) => self.update_file(owner_repo, path, content_b64, &sha, message).await,
+            None => self.create_file(owner_repo, path, content_b64, message).await,
+        }
+    }
+}
+
+fn contents_url(host: &str, owner_repo: &str, path: &str) -> Result<reqwest::Url, String> {
+    let base = format!("{}/api/v1/repos/{}/contents", host, owner_repo);
+    reqwest::Url::parse(&base)
+        .and_then(|u| u.join(path))
+        .map_err(|e| format!("invalid contents URL ({}): {}", path, e))
 }
 
 pub fn base64_encode(input: &str) -> String {
+    base64_encode_bytes(input.as_bytes())
+}
+
+pub fn base64_encode_bytes(input: &[u8]) -> String {
     const ALPH: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let bytes = input.as_bytes();
-    let mut out = String::with_capacity(((bytes.len() + 2) / 3) * 4);
+    let mut out = String::with_capacity(((input.len() + 2) / 3) * 4);
     let mut i = 0;
-    while i + 3 <= bytes.len() {
-        let b0 = bytes[i];
-        let b1 = bytes[i + 1];
-        let b2 = bytes[i + 2];
+    while i + 3 <= input.len() {
+        let b0 = input[i];
+        let b1 = input[i + 1];
+        let b2 = input[i + 2];
         out.push(ALPH[(b0 >> 2) as usize] as char);
         out.push(ALPH[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
         out.push(ALPH[(((b1 & 0x0F) << 2) | (b2 >> 6)) as usize] as char);
         out.push(ALPH[(b2 & 0x3F) as usize] as char);
         i += 3;
     }
-    let rem = bytes.len() - i;
+    let rem = input.len() - i;
     if rem == 1 {
-        let b0 = bytes[i];
+        let b0 = input[i];
         out.push(ALPH[(b0 >> 2) as usize] as char);
         out.push(ALPH[((b0 & 0x03) << 4) as usize] as char);
         out.push('=');
         out.push('=');
     } else if rem == 2 {
-        let b0 = bytes[i];
-        let b1 = bytes[i + 1];
+        let b0 = input[i];
+        let b1 = input[i + 1];
         out.push(ALPH[(b0 >> 2) as usize] as char);
         out.push(ALPH[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
         out.push(ALPH[((b1 & 0x0F) << 2) as usize] as char);
