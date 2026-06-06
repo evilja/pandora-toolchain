@@ -1,5 +1,7 @@
 use clap::Parser;
 use pandora_toolchain::libkagami::core::{ScriptInfo, SubstationAlpha};
+use pandora_toolchain::libkagami::complex::overrides::ASSOverride;
+use pandora_toolchain::libkagami::tags::{ASSLine, ASSText};
 use pandora_toolchain::libpnprotocol::core::{Protocol, Schema, ToolInfo};
 use pandora_toolchain::{pn_data, pn_emit, pn_schema};
 use std::path::PathBuf;
@@ -49,7 +51,7 @@ async fn main() {
         args.negkey.clone().unwrap_or_else(|| "PNassCLI".to_string()),
     );
 
-    let mut sub = SubstationAlpha::load(PathBuf::from(&args.input), false).await;
+    let mut sub = SubstationAlpha::load(PathBuf::from(&args.input), true).await;
 
     if let Some(t) = args.title {
         sub.script_info.title = t;
@@ -64,7 +66,11 @@ async fn main() {
 
     let mut run_count: usize = 0;
     for (i, ev) in sub.events.iter().enumerate() {
-        let lines = split_visible_lines(&ev.text.stringify());
+        let is_drawing = ev.text.data.iter().any(|item| matches!(item, ASSText::Override(ASSOverride::P(1))));
+        if is_drawing {
+            continue;
+        }
+        let lines = visible_lines(&ev.text);
         let has_warning = lines.iter().any(|l| l.chars().count() > 50);
         if has_warning {
             if run_count == 0 {
@@ -96,43 +102,23 @@ async fn main() {
     }
 }
 
-fn split_visible_lines(s: &str) -> Vec<String> {
+fn visible_lines(line: &ASSLine) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     let mut current = String::new();
-    let chars: Vec<char> = s.chars().collect();
-    let mut i = 0;
-    let mut depth: i32 = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        if depth == 0 && c == '\\' && i + 1 < chars.len() {
-            let next = chars[i + 1];
-            if next == 'N' {
-                lines.push(std::mem::take(&mut current));
-                i += 2;
-                continue;
-            }
-            if next == '{' || next == '}' {
-                current.push(next);
-                i += 2;
-                continue;
+    for item in &line.data {
+        if let ASSText::RawText(t) = item {
+            let chars: Vec<char> = t.chars().collect();
+            let mut k = 0;
+            while k < chars.len() {
+                if chars[k] == '\\' && k + 1 < chars.len() && chars[k + 1] == 'N' {
+                    lines.push(std::mem::take(&mut current));
+                    k += 2;
+                    continue;
+                }
+                current.push(chars[k]);
+                k += 1;
             }
         }
-        if c == '{' {
-            depth += 1;
-            i += 1;
-            continue;
-        }
-        if c == '}' {
-            if depth > 0 { depth -= 1; }
-            i += 1;
-            continue;
-        }
-        if depth > 0 {
-            i += 1;
-            continue;
-        }
-        current.push(c);
-        i += 1;
     }
     lines.push(current);
     lines

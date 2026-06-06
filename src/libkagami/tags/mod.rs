@@ -35,13 +35,24 @@ impl ASSLine {
                     data.push(ASSText::RawText(std::mem::take(&mut raw_buf)));
                 }
 
+                if find_block_end(bytes, i + 1).is_none() {
+                    raw_buf.push('{');
+                    i += 1;
+                    continue;
+                }
+
                 let block_start = i + 1;
                 let mut depth = 1usize;
                 let mut block_end = s.len();
+                let mut nested = false;
                 let mut j = block_start;
                 while j < bytes.len() {
+                    if bytes[j] == b'\\' && j + 1 < bytes.len() && bytes[j + 1] == b'{' {
+                        j += 2;
+                        continue;
+                    }
                     match bytes[j] {
-                        b'{' => depth += 1,
+                        b'{' => { depth += 1; nested = true; }
                         b'}' => {
                             depth -= 1;
                             if depth == 0 {
@@ -52,6 +63,11 @@ impl ASSLine {
                         _ => {}
                     }
                     j += 1;
+                }
+
+                if nested {
+                    i = block_end + 1;
+                    continue;
                 }
 
                 let block_content = &s[block_start..block_end];
@@ -87,6 +103,11 @@ impl ASSLine {
 
                 i = block_end + 1;
             } else {
+                if bytes[i] == b'\\' && i + 1 < bytes.len() && (bytes[i + 1] == b'{' || bytes[i + 1] == b'}') {
+                    raw_buf.push(bytes[i + 1] as char);
+                    i += 2;
+                    continue;
+                }
                 let ch_len = s[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
                 raw_buf.push_str(&s[i..i + ch_len]);
                 i += ch_len;
@@ -118,13 +139,24 @@ impl std::str::FromStr for ASSLine {
                     data.push(ASSText::RawText(std::mem::take(&mut raw_buf)));
                 }
 
+                if find_block_end(bytes, i + 1).is_none() {
+                    raw_buf.push('{');
+                    i += 1;
+                    continue;
+                }
+
                 let block_start = i + 1;
                 let mut depth = 1usize;
                 let mut block_end = s.len();
+                let mut nested = false;
                 let mut j = block_start;
                 while j < bytes.len() {
+                    if bytes[j] == b'\\' && j + 1 < bytes.len() && bytes[j + 1] == b'{' {
+                        j += 2;
+                        continue;
+                    }
                     match bytes[j] {
-                        b'{' => depth += 1,
+                        b'{' => { depth += 1; nested = true; }
                         b'}' => {
                             depth -= 1;
                             if depth == 0 {
@@ -135,6 +167,11 @@ impl std::str::FromStr for ASSLine {
                         _ => {}
                     }
                     j += 1;
+                }
+
+                if nested {
+                    i = block_end + 1;
+                    continue;
                 }
 
                 let block_content = &s[block_start..block_end];
@@ -161,6 +198,11 @@ impl std::str::FromStr for ASSLine {
 
                 i = block_end + 1;
             } else {
+                if bytes[i] == b'\\' && i + 1 < bytes.len() && (bytes[i + 1] == b'{' || bytes[i + 1] == b'}') {
+                    raw_buf.push(bytes[i + 1] as char);
+                    i += 2;
+                    continue;
+                }
                 let ch_len = s[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
                 raw_buf.push_str(&s[i..i + ch_len]);
                 i += ch_len;
@@ -199,6 +241,29 @@ impl ASSLine {
         }
         out
     }
+}
+
+fn find_block_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut depth = 1usize;
+    let mut j = start;
+    while j < bytes.len() {
+        if bytes[j] == b'\\' && j + 1 < bytes.len() && bytes[j + 1] == b'{' {
+            j += 2;
+            continue;
+        }
+        match bytes[j] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(j);
+                }
+            }
+            _ => {}
+        }
+        j += 1;
+    }
+    None
 }
 
 #[cfg(test)]
