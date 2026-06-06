@@ -218,18 +218,38 @@ struct ChannelMeta {
     year: Option<u16>,
     #[serde(default = "default_season")]
     season: u16,
+    #[serde(default = "default_credit")]
+    tl: String,
+    #[serde(default = "default_credit")]
+    tlc: String,
+    #[serde(default = "default_credit")]
+    ts: String,
+    #[serde(default = "default_credit")]
+    qc: String,
 }
 
 fn default_season() -> u16 { 1 }
+
+fn default_credit() -> String { "---".to_string() }
+
+fn read_credit_option(command: &serenity::all::CommandInteraction, name: &str) -> String {
+    command.data.options.iter()
+        .find(|opt| opt.name == name)
+        .and_then(|opt| opt.value.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("---")
+        .to_string()
+}
 
 fn meta_to_toml(m: &ChannelMeta) -> String {
     match (&m.kind, m.mal_id) {
         (Some(k), Some(id)) => {
             let mut out = format!(
-                "mal_id = {}\nkind = \"{}\"\nname = \"{}\"\nslug = \"{}\"\nepisode_count = {}\nrepo_url = \"{}\"\nseason = {}\n",
+                "mal_id = {}\nkind = \"{}\"\nname = \"{}\"\nslug = \"{}\"\nepisode_count = {}\nrepo_url = \"{}\"\nseason = {}\ntl = \"{}\"\ntlc = \"{}\"\nts = \"{}\"\nqc = \"{}\"\n",
                 id, k, m.name.as_deref().unwrap_or(""), m.slug.as_deref().unwrap_or(""),
                 m.episode_count.unwrap_or(0), m.repo_url.as_deref().unwrap_or(""),
-                m.season
+                m.season, m.tl, m.tlc, m.ts, m.qc
             );
             if let Some(y) = m.year {
                 out.push_str(&format!("year = {}\n", y));
@@ -310,6 +330,39 @@ fn count_existing_episodes(existing: &[String], max: u32) -> u32 {
         .filter_map(|n| n.trim_start_matches('0').parse::<u32>().ok().filter(|&v| v >= 1))
         .filter(|&n| n <= max)
         .count() as u32
+}
+
+fn substitute_base_md(
+    template: &str,
+    meta: &AnimeMeta,
+    repo_url: &str,
+    episode_count_at_git: u32,
+    season: u16,
+    tl: &str,
+    tlc: &str,
+    ts: &str,
+    qc: &str,
+) -> String {
+    let mut out = template.to_string();
+    let pairs: Vec<(&str, String)> = vec![
+        ("name", meta.name.clone()),
+        ("slug", meta.slug.clone()),
+        ("kind", kind_label(&meta.kind).to_string()),
+        ("mal_id", meta.mal_id.to_string()),
+        ("episode_count", meta.episode_count.to_string()),
+        ("year", meta.year.map(|y| y.to_string()).unwrap_or_default()),
+        ("repo_url", repo_url.to_string()),
+        ("episode_count_at_git", episode_count_at_git.to_string()),
+        ("season", season.to_string()),
+        ("tl", tl.to_string()),
+        ("tlc", tlc.to_string()),
+        ("ts", ts.to_string()),
+        ("qc", qc.to_string()),
+    ];
+    for (key, val) in &pairs {
+        out = out.replace(&format!("%{}%", key), val);
+    }
+    out
 }
 
 async fn read_server_meta(server_id: u64) -> Result<(String, String), String> {
@@ -419,6 +472,11 @@ async fn run_attach_or_init(
     }
     let season = season_input as u16;
 
+    let tl = read_credit_option(command, "tl");
+    let tlc = read_credit_option(command, "tlc");
+    let ts = read_credit_option(command, "ts");
+    let qc = read_credit_option(command, "qc");
+
     let existing = read_channel_meta(server_id, channel_id);
 
     let (_lang, forgejo_base) = match read_server_meta(server_id).await {
@@ -508,7 +566,10 @@ async fn run_attach_or_init(
 
     let episode_count_at_git = count_existing_episodes(&existing_root, meta.episode_count);
 
-    let base_md = tokio::fs::read_to_string(format!("DB/config/{}/base.md", server_id)).await.ok();
+    let base_md = tokio::fs::read_to_string(format!("DB/config/{}/base.md", server_id))
+        .await
+        .ok()
+        .map(|t| substitute_base_md(&t, &meta, &repo_url, episode_count_at_git, season, &tl, &tlc, &ts, &qc));
 
     let created = match bootstrap_repo(&fg, &owner_repo, &meta, base_md, existing_root).await {
         Ok(v) => v,
@@ -559,6 +620,10 @@ async fn run_attach_or_init(
         episode_count_at_git: Some(episode_count_at_git),
         year: meta.year,
         season: season,
+        tl: tl.clone(),
+        tlc: tlc.clone(),
+        ts: ts.clone(),
+        qc: qc.clone(),
     };
     if let Err(e) = write_channel_meta(server_id, channel_id, &new_meta).await {
         let _ = response_msg.edit(ctx, EditMessage::new().content(format!("Failed to save channel meta: {}", e))).await;
@@ -1707,6 +1772,22 @@ impl EventHandler for Handler {
                     CreateCommandOption::new(CommandOptionType::Integer, "season", "Season number (1 for the first season, 2 for a sequel, …). Defaults to 1.")
                         .required(false)
                         .min_int_value(1)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "tl", "Translator credit (defaults to `---`)")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "tlc", "Translation checker credit (defaults to `---`)")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "ts", "Typesetter credit (defaults to `---`)")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "qc", "Quality checker credit (defaults to `---`)")
+                        .required(false)
                 ),
             CreateCommand::new("init")
                 .description("Attach a MyAnimeList anime to this channel and create a new Forgejo repo for it")
@@ -1718,6 +1799,22 @@ impl EventHandler for Handler {
                     CreateCommandOption::new(CommandOptionType::Integer, "season", "Season number (1 for the first season, 2 for a sequel, …). Defaults to 1.")
                         .required(false)
                         .min_int_value(1)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "tl", "Translator credit (defaults to `---`)")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "tlc", "Translation checker credit (defaults to `---`)")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "ts", "Typesetter credit (defaults to `---`)")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "qc", "Quality checker credit (defaults to `---`)")
+                        .required(false)
                 ),
             CreateCommand::new("destruct")
                 .description("Delete the Forgejo repo of the attached anime and detach this channel"),
