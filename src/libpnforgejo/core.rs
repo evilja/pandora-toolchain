@@ -184,8 +184,27 @@ impl Forgejo {
             return Err(format!("get_file_content failed ({}): {} {} (GET {})", path, status, text, url));
         }
         let body: Value = resp.json().await.map_err(|e| e.to_string())?;
-        let content = body.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let sha = body.get("sha").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let inline = body.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let content = if !inline.trim().is_empty() {
+            inline.trim_end().to_string()
+        } else {
+            let download_url = match body.get("download_url").and_then(|v| v.as_str()) {
+                Some(u) if !u.is_empty() => u.to_string(),
+                _ => return Err(format!("get_file_content: no inline content and no download_url for {}", path)),
+            };
+            let dl_resp = self.client.get(&download_url)
+                .bearer_auth(&self.token)
+                .send().await
+                .map_err(|e| format!("get_file_content: download_url fetch failed ({}): {}", path, e))?;
+            if !dl_resp.status().is_success() {
+                let s = dl_resp.status();
+                return Err(format!("get_file_content: download_url returned {} for {}", s, path));
+            }
+            let bytes = dl_resp.bytes().await
+                .map_err(|e| format!("get_file_content: download_url body read failed ({}): {}", path, e))?;
+            base64_encode_bytes(&bytes)
+        };
         Ok(Some((content, sha)))
     }
 
