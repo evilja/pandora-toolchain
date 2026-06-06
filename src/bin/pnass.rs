@@ -62,13 +62,32 @@ async fn main() {
         }
     }
 
-    for ev in &sub.events {
-        for line in split_visible_lines(&ev.text.stringify()) {
-            if line.chars().count() > 50 {
-                println!("{}", pn_emit!(protocol = proto, negkey = &neg,
-                    schema = [leaf, leaf], data = ["4", line]).unwrap());
+    let mut run_count: usize = 0;
+    for (i, ev) in sub.events.iter().enumerate() {
+        let lines = split_visible_lines(&ev.text.stringify());
+        let has_warning = lines.iter().any(|l| l.chars().count() > 50);
+        if has_warning {
+            if run_count == 0 {
+                for line in lines.iter().filter(|l| l.chars().count() > 50) {
+                    let prefixed = format!("{}: {}", i + 1, line);
+                    println!("{}", pn_emit!(protocol = proto, negkey = &neg,
+                        schema = [leaf, leaf], data = ["4", prefixed]).unwrap());
+                }
             }
+            run_count += 1;
+        } else if run_count > 1 {
+            let more = format!("{} more similar warnings", run_count - 1);
+            println!("{}", pn_emit!(protocol = proto, negkey = &neg,
+                schema = [leaf, leaf], data = ["4", more]).unwrap());
+            run_count = 0;
+        } else {
+            run_count = 0;
         }
+    }
+    if run_count > 1 {
+        let more = format!("{} more similar warnings", run_count - 1);
+        println!("{}", pn_emit!(protocol = proto, negkey = &neg,
+            schema = [leaf, leaf], data = ["4", more]).unwrap());
     }
 
     if sub.dump_to_file(PathBuf::from(&args.output)).await.is_err() {

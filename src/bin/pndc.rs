@@ -814,7 +814,7 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
     }
 
     let mut warnings: Vec<String> = Vec::new();
-    let needs_pnass = matches!(job_kind, JobKind::TL);
+    let needs_pnass = matches!(job_kind, JobKind::TL | JobKind::TLC);
     if needs_pnass {
         let pnass_path = match get_env("env.pandora").get(PNASS) {
             Some(p) if !p.is_empty() => p.clone(),
