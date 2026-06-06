@@ -35,7 +35,7 @@ fn is_authorized(part: &str, id: u64) -> bool {
         "!ban" => "admin.pandora",
         "!authorize" | "!auth" => "admin.pandora",
         "encode" | "pancode" | "probe" | "backup" | "scrape" | "gitcode" => "authorize.pandora",
-        "attach" | "init" | "job" => "upper.pandora",
+        "attach" | "init" | "job" | "destruct" | "detach" => "upper.pandora",
         "!some" => "admin.pandora",
         "gitsync" | "hearts" | "configure" => "admin.pandora",
         _ => return false,
@@ -556,6 +556,146 @@ pub async fn handle_init(ctx: &Context, command: &serenity::all::CommandInteract
 
 pub async fn handle_attach(ctx: &Context, command: &serenity::all::CommandInteraction) {
     run_attach_or_init(ctx, command, false).await;
+}
+
+pub async fn handle_destruct(ctx: &Context, command: &serenity::all::CommandInteraction) {
+    let server_id = match command.guild_id {
+        Some(g) => g.get(),
+        None => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Error: /destruct can only be used in a server")
+                    .ephemeral(true)
+            )).await.ok();
+            return;
+        }
+    };
+    let channel_id = command.channel_id.get();
+
+    let meta = read_channel_meta(server_id, channel_id);
+    let repo_url = match meta.repo_url.clone().filter(|s| !s.is_empty()) {
+        Some(u) => u,
+        None => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Error: this channel is not attached to an anime. Run `/init` or `/attach` first.")
+                    .ephemeral(true)
+            )).await.ok();
+            return;
+        }
+    };
+    let (owner, repo) = match parse_repo_url(&repo_url) {
+        Ok(t) => t,
+        Err(e) => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(format!("Error: bad repo URL in meta: {}", e))
+                    .ephemeral(true)
+            )).await.ok();
+            return;
+        }
+    };
+    let owner_repo = format!("{}/{}", owner, repo);
+    let anime_name = meta.name.clone().unwrap_or_default();
+
+    let (_lang, forgejo_base) = match read_server_meta(server_id).await {
+        Ok(t) => t,
+        Err(e) => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(format!("Error: failed to read server meta: {}", e))
+                    .ephemeral(true)
+            )).await.ok();
+            return;
+        }
+    };
+    if forgejo_base.is_empty() {
+        command.create_response(ctx, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content("Error: server has no forgejo org configured. Run `/configure` first.")
+                .ephemeral(true)
+        )).await.ok();
+        return;
+    }
+
+    command.create_response(ctx, CreateInteractionResponse::Message(
+        CreateInteractionResponseMessage::new().content("Working…")
+    )).await.ok();
+    let mut response_msg = match command.get_response(&ctx.http).await {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+
+    let fg = match Forgejo::from_env(forgejo_base) {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = response_msg.edit(ctx, EditMessage::new()
+                .content(format!("Forgejo init failed: {}", e))).await;
+            return;
+        }
+    };
+
+    match fg.delete_repo(&owner_repo).await {
+        Ok(()) => {
+            let _ = tokio::fs::remove_file(meta_path(server_id, channel_id)).await;
+            let name_line = if anime_name.is_empty() {
+                String::new()
+            } else {
+                format!(" (`{}`)", anime_name)
+            };
+            let _ = response_msg.edit(ctx, EditMessage::new()
+                .content(format!("Deleted repo `{}`{}.\nChannel detached from this anime.", owner_repo, name_line))).await;
+        }
+        Err(e) => {
+            let _ = response_msg.edit(ctx, EditMessage::new()
+                .content(format!("delete_repo failed: {}", e))).await;
+        }
+    }
+}
+
+pub async fn handle_detach(ctx: &Context, command: &serenity::all::CommandInteraction) {
+    let server_id = match command.guild_id {
+        Some(g) => g.get(),
+        None => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Error: /detach can only be used in a server")
+                    .ephemeral(true)
+            )).await.ok();
+            return;
+        }
+    };
+    let channel_id = command.channel_id.get();
+
+    let meta = read_channel_meta(server_id, channel_id);
+    if meta.repo_url.as_deref().map_or(true, str::is_empty) {
+        command.create_response(ctx, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content("Error: this channel is not attached to an anime.")
+                .ephemeral(true)
+        )).await.ok();
+        return;
+    }
+    let anime_name = meta.name.clone().unwrap_or_default();
+    let repo_url = meta.repo_url.clone().unwrap_or_default();
+
+    command.create_response(ctx, CreateInteractionResponse::Message(
+        CreateInteractionResponseMessage::new().content("Working…")
+    )).await.ok();
+    let mut response_msg = match command.get_response(&ctx.http).await {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+
+    let _ = tokio::fs::remove_file(meta_path(server_id, channel_id)).await;
+
+    let name_line = if anime_name.is_empty() {
+        String::new()
+    } else {
+        format!(" (`{}`)", anime_name)
+    };
+    let _ = response_msg.edit(ctx, EditMessage::new()
+        .content(format!("Detached channel from{}.\nRepo `{}` is left untouched.", name_line, repo_url))).await;
 }
 
 enum JobKind { TL, TLC, TS }
@@ -1380,6 +1520,12 @@ impl EventHandler for Handler {
                 "init" => {
                     handle_init(&ctx, &command).await;
                 }
+                "destruct" => {
+                    handle_destruct(&ctx, &command).await;
+                }
+                "detach" => {
+                    handle_detach(&ctx, &command).await;
+                }
                 "job" => {
                     handle_job(&ctx, &command).await;
                 }
@@ -1542,6 +1688,10 @@ impl EventHandler for Handler {
                         .required(false)
                         .min_int_value(1)
                 ),
+            CreateCommand::new("destruct")
+                .description("Delete the Forgejo repo of the attached anime and detach this channel"),
+            CreateCommand::new("detach")
+                .description("Detach this channel from its attached anime (the Forgejo repo is left untouched)"),
             CreateCommand::new("gitcode")
                 .description("Encode with a subtitle fetched from a URL")
                 .add_option(

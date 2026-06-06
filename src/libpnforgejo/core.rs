@@ -168,6 +168,20 @@ impl Forgejo {
             None => self.create_file(owner_repo, path, content_b64, message).await,
         }
     }
+
+    pub async fn delete_repo(&self, owner_repo: &str) -> Result<(), String> {
+        let url = format!("{}/api/v1/repos/{}", self.host, owner_repo);
+        let resp = self.client.delete(&url)
+            .bearer_auth(&self.token)
+            .send().await
+            .map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            let s = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("delete_repo failed ({}): {} {} (DELETE {})", owner_repo, s, text, url));
+        }
+        Ok(())
+    }
 }
 
 fn contents_url(host: &str, owner_repo: &str, path: &str) -> Result<reqwest::Url, String> {
