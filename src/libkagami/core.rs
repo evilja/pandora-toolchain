@@ -142,6 +142,8 @@ impl SubstationAlpha {
         let mut ycbcr_matrix = String::new();
         let mut playresx = 0u16;
         let mut playresy = 0u16;
+        let mut layout_res_x = 0u16;
+        let mut layout_res_y = 0u16;
         let mut v4p_styles = Vec::new();
         let mut events = Vec::new();
 
@@ -168,6 +170,8 @@ impl SubstationAlpha {
                             "YCbCr Matrix" => ycbcr_matrix = val.trim().to_string(),
                             "PlayResX" => playresx = val.trim().parse().unwrap_or(0),
                             "PlayResY" => playresy = val.trim().parse().unwrap_or(0),
+                            "LayoutResX" => layout_res_x = val.trim().parse().unwrap_or(0),
+                            "LayoutResY" => layout_res_y = val.trim().parse().unwrap_or(0),
                             _ => {}
                         }
                     }
@@ -245,8 +249,8 @@ impl SubstationAlpha {
                 playresx,
                 playresy,
                 ycbcr_matrix,
-                layout_res_x: 0,
-                layout_res_y: 0,
+                layout_res_x: if layout_res_x == 0 { playresx } else { layout_res_x },
+                layout_res_y: if layout_res_y == 0 { playresy } else { layout_res_y },
             },
             v4p_styles,
             events,
