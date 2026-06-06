@@ -171,7 +171,7 @@ impl Forgejo {
 }
 
 fn contents_url(host: &str, owner_repo: &str, path: &str) -> Result<reqwest::Url, String> {
-    let base = format!("{}/api/v1/repos/{}/contents", host, owner_repo);
+    let base = format!("{}/api/v1/repos/{}/contents/", host, owner_repo);
     reqwest::Url::parse(&base)
         .and_then(|u| u.join(path))
         .map_err(|e| format!("invalid contents URL ({}): {}", path, e))
