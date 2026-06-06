@@ -368,13 +368,15 @@ fn substitute_base_md(
     out
 }
 
-async fn read_server_meta(server_id: u64) -> Result<(String, String), String> {
+async fn read_server_meta(server_id: u64) -> Result<(String, String, String), String> {
     let path = format!("DB/config/{}/meta.pandora", server_id);
     let s = tokio::fs::read_to_string(&path).await.map_err(|e| e.to_string())?;
     let mut lines = s.lines();
     let lang = lines.next().unwrap_or("tr").to_string();
     let forgejo = lines.next().unwrap_or("").to_string();
-    Ok((lang, forgejo))
+    let _channel_id = lines.next().unwrap_or("").to_string();
+    let api_key = lines.next().unwrap_or("").to_string();
+    Ok((lang, forgejo, api_key))
 }
 
 fn kind_label(k: &AnimeKind) -> &'static str {
@@ -482,7 +484,7 @@ async fn run_attach_or_init(
 
     let existing = read_channel_meta(server_id, channel_id);
 
-    let (_lang, forgejo_base) = match read_server_meta(server_id).await {
+    let (_lang, forgejo_base, api_key) = match read_server_meta(server_id).await {
         Ok(t) => t,
         Err(e) => {
             command.create_response(ctx, CreateInteractionResponse::Message(
@@ -528,7 +530,7 @@ async fn run_attach_or_init(
         }
     }
 
-    let fg = match Forgejo::from_env(forgejo_base.clone()) {
+    let fg = match Forgejo::new(forgejo_base.clone(), api_key) {
         Ok(f) => f,
         Err(e) => {
             let _ = response_msg.edit(ctx, EditMessage::new().content(format!("Forgejo init failed: {}", e))).await;
@@ -698,7 +700,7 @@ pub async fn handle_destruct(ctx: &Context, command: &serenity::all::CommandInte
     let owner_repo = format!("{}/{}", owner, repo);
     let anime_name = meta.name.clone().unwrap_or_default();
 
-    let (_lang, forgejo_base) = match read_server_meta(server_id).await {
+    let (_lang, forgejo_base, api_key) = match read_server_meta(server_id).await {
         Ok(t) => t,
         Err(e) => {
             command.create_response(ctx, CreateInteractionResponse::Message(
@@ -726,7 +728,7 @@ pub async fn handle_destruct(ctx: &Context, command: &serenity::all::CommandInte
         Err(_) => return,
     };
 
-    let fg = match Forgejo::from_env(forgejo_base) {
+    let fg = match Forgejo::new(forgejo_base, api_key) {
         Ok(f) => f,
         Err(e) => {
             let _ = response_msg.edit(ctx, EditMessage::new()
@@ -966,7 +968,7 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
     };
     let owner_repo = format!("{}/{}", owner, repo);
 
-    let (_lang, forgejo_base) = match read_server_meta(server_id).await {
+    let (_lang, forgejo_base, api_key) = match read_server_meta(server_id).await {
         Ok(t) => t,
         Err(e) => {
             command.create_response(ctx, CreateInteractionResponse::Message(
@@ -1132,7 +1134,7 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
         file_type_label, safe_name, episode);
     let repo_path = format!("{}/{}", pad2(episode), file_name);
 
-    let fg = match Forgejo::from_env(forgejo_base) {
+    let fg = match Forgejo::new(forgejo_base, api_key) {
         Ok(f) => f,
         Err(e) => {
             let _ = response_msg.edit(ctx, EditMessage::new()
@@ -1347,7 +1349,20 @@ pub async fn handle_configure(
         return;
     }
 
-    let body = format!("{}\n{}\n{}\n", language, forgejo, command.channel_id.get());
+    let existing_api_key = std::fs::read_to_string(dir.join("meta.pandora"))
+        .ok()
+        .and_then(|s| s.lines().nth(3).map(str::to_string))
+        .unwrap_or_default();
+
+    let new_api_key = command.data.options.iter()
+        .find(|opt| opt.name == "api_key")
+        .and_then(|opt| opt.value.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&existing_api_key)
+        .to_string();
+
+    let body = format!("{}\n{}\n{}\n{}\n", language, forgejo, command.channel_id.get(), new_api_key);
     let path = dir.join("meta.pandora");
     if let Err(e) = tokio::fs::write(&path, body).await {
         command.create_response(ctx, CreateInteractionResponse::Message(
@@ -1359,10 +1374,11 @@ pub async fn handle_configure(
     }
 
     let forgejo_display = if forgejo.is_empty() { "(unset)".to_string() } else { format!("`{}`", forgejo) };
+    let api_key_display = if new_api_key.is_empty() { "(unset)".to_string() } else { "(set)".to_string() };
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
-            .content(format!("Configured server `{}` — language: {}, forgejo: {}, announcement channel: <#{}>",
-                server_id, language, forgejo_display, command.channel_id.get()))
+            .content(format!("Configured server `{}` — language: {}, forgejo: {}, forgejo api_key: {}, announcement channel: <#{}>",
+                server_id, language, forgejo_display, api_key_display, command.channel_id.get()))
             .ephemeral(true)
     )).await.ok();
 }
@@ -2017,7 +2033,7 @@ impl EventHandler for Handler {
                 )
                 .add_option(concat_option.clone()),
             CreateCommand::new("configure")
-                .description("Configure this server (language and Forgejo base link)")
+                .description("Configure this server (language, Forgejo base link, Forgejo API key)")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "language", "Bot language")
                         .required(true)
@@ -2027,6 +2043,10 @@ impl EventHandler for Handler {
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "forgejo", "Forgejo base link (e.g. https://git.einzu.fun) — leave empty to unset")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "api_key", "Forgejo API token. Omit to keep the existing one.")
                         .required(false)
                 ),
             CreateCommand::new("readmebase")

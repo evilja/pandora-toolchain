@@ -1,7 +1,3 @@
-use crate::libpnenv::{
-    core::get_env,
-    standard::FORGEJO_API_KEY,
-};
 use reqwest::Client;
 use serde_json::Value;
 use std::time::Duration;
@@ -14,12 +10,11 @@ pub struct Forgejo {
 }
 
 impl Forgejo {
-    pub fn from_env(forgejo_line: String) -> Result<Self, String> {
-        let env = get_env("env.pandora");
-        if env.len() <= FORGEJO_API_KEY || env[FORGEJO_API_KEY].is_empty() {
-            return Err("FORGEJO_API_KEY is not set in env.pandora".to_string());
+    pub fn new(forgejo_line: String, api_key: String) -> Result<Self, String> {
+        if api_key.is_empty() {
+            return Err("forgejo API key is empty. Run /configure with the `api_key` option.".to_string());
         }
-        let token = env[FORGEJO_API_KEY].clone();
+        let token = api_key;
         let client = Client::builder()
             .timeout(Duration::from_secs(60))
             .build()
