@@ -535,7 +535,7 @@ async fn run_attach_or_init(
             }
             let old_name = ass_files.into_iter().next().unwrap();
             let old_path = format!("{}/{}", folder, old_name);
-            let new_name = format!("TL - {} - S{:02}E{:02}.ass", safe_name, season, n);
+            let new_name = format!("TL - {} - E{:02}.ass", safe_name, n);
             let new_path = format!("{}/{}", folder, new_name);
             if old_path == new_path {
                 continue;
@@ -570,19 +570,14 @@ async fn run_attach_or_init(
     } else {
         created.join(", ")
     };
-    let renamed_files_line = if renamed_files.is_empty() {
-        String::new()
-    } else {
-        format!("\nRenamed files: {}", renamed_files.join(", "))
-    };
     let renamed = try_rename_channel_to_anime(ctx, command.channel_id, &meta.name).await;
     let rename_line = match &renamed {
         Some(n) => format!("\nChannel renamed: `{}`", n),
         None => String::new(),
     };
     let body = format!(
-        "**{}** — attached to this channel.\nName: `{}`\nSlug: `{}`\nKind: `{}`\nEpisodes: `{}`\nRepo: <{}>\nCreated/updated: {}{}{}",
-        label, meta.name, meta.slug, kind_label(&meta.kind), meta.episode_count, repo_url, created_list, rename_line, renamed_files_line
+        "**{}** — attached to this channel.\nName: `{}`\nSlug: `{}`\nKind: `{}`\nEpisodes: `{}`\nRepo: <{}>\nCreated/updated: {}{}",
+        label, meta.name, meta.slug, kind_label(&meta.kind), meta.episode_count, repo_url, created_list, rename_line,
     );
     let _ = response_msg.edit(ctx, EditMessage::new().content(body)).await;
 }
@@ -880,7 +875,6 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
         return;
     }
     let name = meta.name.clone().unwrap_or_default();
-    let season = meta.season;
     let max_ep = meta.episode_count.unwrap_or(0);
     if episode < 1 || episode > max_ep {
         command.create_response(ctx, CreateInteractionResponse::Message(
@@ -1066,8 +1060,8 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
         format!("[{}] {}", prefix, custom_commit)
     };
     let safe_name = name.replace('/', "-");
-    let file_name = format!("{} - {} - S{:02}E{:02}.ass",
-        file_type_label, safe_name, season, episode);
+    let file_name = format!("{} - {} - E{:02}.ass",
+        file_type_label, safe_name, episode);
     let repo_path = format!("{}/{}", pad2(episode), file_name);
 
     let fg = match Forgejo::from_env(forgejo_base) {
