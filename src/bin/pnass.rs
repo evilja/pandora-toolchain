@@ -104,9 +104,9 @@ fn split_visible_lines(s: &str) -> Vec<String> {
     let mut depth: i32 = 0;
     while i < chars.len() {
         let c = chars[i];
-        if c == '\\' && i + 1 < chars.len() {
+        if depth == 0 && c == '\\' && i + 1 < chars.len() {
             let next = chars[i + 1];
-            if next == 'N' && depth == 0 {
+            if next == 'N' {
                 lines.push(std::mem::take(&mut current));
                 i += 2;
                 continue;
@@ -123,7 +123,11 @@ fn split_visible_lines(s: &str) -> Vec<String> {
             continue;
         }
         if c == '}' {
-            depth -= 1;
+            if depth > 0 { depth -= 1; }
+            i += 1;
+            continue;
+        }
+        if depth > 0 {
             i += 1;
             continue;
         }
