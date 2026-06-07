@@ -2684,7 +2684,7 @@ impl EventHandler for Handler {
                         .min_int_value(1)
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "link", "Torrent URL, magnet link, or Google Drive link. Optional — falls back to SOURCE.md from the episode folder if absent.")
+                    CreateCommandOption::new(CommandOptionType::String, "link", "Source link. Falls back to SOURCE.md if omitted.")
                         .required(false)
                 )
                 .add_option(
