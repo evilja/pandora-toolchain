@@ -7,7 +7,7 @@ use crate::libpnp2p::nyaaise::TorrentType;
 use crate::pnworker::heartbeat::core::{TypedShrine, Worker};
 use crate::pnworker::messages::{MessagePayload, PROBE_TIMEOUT, QUEUE_TOO_LONG, QUEUED, create_job_embed};
 use crate::libpndb::core::JobDb;
-use crate::pnworker::presence::{change_presence_job};
+use crate::pnworker::presence::{change_presence_job, presence_from_queue, Presence};
 use crate::pnworker::pull::git_pull;
 use tokio::fs::{File, create_dir_all, remove_dir_all, rename, write};
 use std::path::PathBuf;
@@ -66,9 +66,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                                 continue;
                             }
                             job.ready = Stage::Downloading;
-                            if queue.len() == 1 {
-                                change_presence_job(&job.context.0, (None, queue.len())).await;
-                            }
+                            change_presence_job(&job.context.0, Presence::Downloading { idx: queue.len(), total: queue.len() + 1 }).await;
                         }
                         JobType::Probe => {
                             job.context.1.edit(&job.context.0, EditMessage::new().content("").embed(create_job_embed(&job, &MessagePayload::Static(QUEUED)))).await.unwrap();
@@ -78,6 +76,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                                 continue;
                             }
                             job.ready = Stage::Probing;
+                            change_presence_job(&job.context.0, Presence::Probing { idx: queue.len(), total: queue.len() + 1 }).await;
                         }
                         JobType::Pancode => {
                             let probe_dir = env::current_dir().unwrap()
@@ -108,6 +107,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                                 continue;
                             }
                             job.ready = Stage::Downloading;
+                            change_presence_job(&job.context.0, Presence::Downloading { idx: queue.len(), total: queue.len() + 1 }).await;
                         }
                         JobType::Backup => {
                             job.context.1.edit(&job.context.0, EditMessage::new().content("").embed(create_job_embed(&job, &MessagePayload::Static(QUEUED)))).await.unwrap();
@@ -118,6 +118,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                                 continue;
                             }
                             job.ready = Stage::Downloading;
+                            change_presence_job(&job.context.0, Presence::Downloading { idx: queue.len(), total: queue.len() + 1 }).await;
                         }
                         _ => {}
                     }
@@ -193,10 +194,11 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                 cleanup_job(&directory, &PathBuf::from("DB").join("saved_data").join(id.to_string())).await;
                 db.archive_job(id).await.unwrap();
                 queue.remove(pos);
+                change_presence_job(&context_0, presence_from_queue(&queue)).await;
             }
         }
         if let Some((_, commdata)) = shrine.receive(500).await {
-            let qlen = queue.len();
+            let mut finished_ctx: Option<Arc<Context>> = None;
             if let Some(i) = queue.iter_mut().find(|j| j.job_id == commdata.0) {
                 if let Some(a) = commdata.2 {
                     i.ready = a;
@@ -208,6 +210,9 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                 let probe_job_id = i.probe_job_id;
                 let job_id = i.job_id;
                 let directory = i.directory.clone();
+                if finished {
+                    finished_ctx = Some(i.context.0.clone());
+                }
 
                 if finished {
                     // If this was a pancode job, remove and clean up its probe parent
@@ -218,14 +223,15 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                             db.archive_job(probe_id).await.unwrap();
                             queue.remove(probe_pos);
                         }
-                    } else {
-                        change_presence_job(&i.context.0, (None, qlen.saturating_sub(1))).await;
                     }
                     db.archive_job(job_id).await.unwrap();
                     cleanup_job(&directory, &PathBuf::from("DB").join("saved_data").join(job_id.to_string())).await;
                     // Find and remove by job_id since indices may have shifted after probe removal
                     queue.retain(|j| j.job_id != job_id);
                 }
+            }
+            if let Some(ctx) = finished_ctx {
+                change_presence_job(&ctx, presence_from_queue(&queue)).await;
             }
         }
         let qlen = queue.len();
@@ -253,6 +259,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                     }
                     job.ready = Stage::Uploading;
                     db.update_stage(job.job_id, Stage::Uploading).await.unwrap();
+                    change_presence_job(&job.context.0, Presence::Uploading { idx, total: qlen }).await;
                 } else {
                     if !dispatch_or_kill(&mut shrine, &Worker::Encode, WorkerMsg::Encode((job.directory.clone(), job.preset.clone(), job.job_id)), job, &db, false).await {
                         dead.push(job.job_id);
@@ -260,7 +267,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                     }
                     job.ready = Stage::Encoding;
                     db.update_stage(job.job_id, Stage::Encoding).await.unwrap();
-                    change_presence_job(&job.context.0, (Some(idx), qlen)).await;
+                    change_presence_job(&job.context.0, Presence::Encoding { idx, total: qlen }).await;
                 }
             } else if job.ready == Stage::Encoded {
                 if !dispatch_or_kill(&mut shrine, &Worker::Upload, WorkerMsg::Upload((job.directory.clone(), format!("{}.mp4", job.directory.file_name().unwrap_or_default().display()),
@@ -274,7 +281,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                 }
                 job.ready = Stage::Uploading;
                 db.update_stage(job.job_id, Stage::Uploading).await.unwrap();
-                change_presence_job(&job.context.0, (None, qlen)).await;
+                change_presence_job(&job.context.0, Presence::Uploading { idx, total: qlen }).await;
             }
         }
         queue.retain(|j| !dead.contains(&j.job_id));
