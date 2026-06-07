@@ -35,7 +35,7 @@ fn is_authorized(part: &str, id: u64) -> bool {
     let class = match part {
         "!enc" | "!encode" => "authorize.pandora",
         "!ban" => "admin.pandora",
-        "encode" | "pancode" | "probe" | "backup" | "scrape" | "gitcode" | "smartcode" => "authorize.pandora",
+        "encode" | "pancode" | "probe" | "backup" | "scrape" | "gitcode" | "smartcode" | "source" => "authorize.pandora",
         "attach" | "init" | "job" | "destruct" | "detach" => "upper.pandora",
         "!some" => "admin.pandora",
         "gitsync" | "hearts" | "configure" | "readmebase" | "auth" | "remove" => "admin.pandora",
@@ -364,20 +364,12 @@ pub async fn handle_smartcode(
         }
     };
 
-    let link = match command.data.options.iter()
+    let link_opt = command.data.options.iter()
         .find(|opt| opt.name == "link")
         .and_then(|opt| opt.value.as_str())
-    {
-        Some(s) if !s.is_empty() => s.to_string(),
-        _ => {
-            command.create_response(ctx, CreateInteractionResponse::Message(
-                CreateInteractionResponseMessage::new()
-                    .content("Error: `link` is required.")
-                    .ephemeral(true)
-            )).await.ok();
-            return None;
-        }
-    };
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from);
 
     let candidates = command.data.options.iter()
         .find(|opt| opt.name == "concat")
@@ -526,6 +518,56 @@ pub async fn handle_smartcode(
         None => None,
     };
 
+    let link = match link_opt {
+        Some(ref l) => l.clone(),
+        None => {
+            let source_md_path = format!("{}/SOURCE.md", folder);
+            let b64 = match fg.get_file_content(&owner_repo, &source_md_path).await {
+                Ok(Some((b, _))) => b,
+                Ok(None) => {
+                    let _ = response_msg.edit(ctx, EditMessage::new()
+                        .content(format!("`link` was not provided and no `{}` exists in the repo to read it from.",
+                            source_md_path))).await;
+                    return None;
+                }
+                Err(e) => {
+                    let _ = response_msg.edit(ctx, EditMessage::new()
+                        .content(format!("Failed to fetch `{}`: {}", source_md_path, e))).await;
+                    return None;
+                }
+            };
+            let bytes = match base64_decode_bytes(&b64) {
+                Ok(b) => b,
+                Err(e) => {
+                    let _ = response_msg.edit(ctx, EditMessage::new()
+                        .content(format!("Failed to decode `{}` base64: {}", source_md_path, e))).await;
+                    return None;
+                }
+            };
+            let text = match String::from_utf8(bytes) {
+                Ok(t) => t,
+                Err(e) => {
+                    let _ = response_msg.edit(ctx, EditMessage::new()
+                        .content(format!("`{}` is not valid UTF-8: {}", source_md_path, e))).await;
+                    return None;
+                }
+            };
+            let parsed = text.lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty() && !l.starts_with(';'))
+                .map(|l| l.trim_start_matches('#').trim().to_string())
+                .filter(|s| !s.is_empty());
+            match parsed {
+                Some(p) => p,
+                None => {
+                    let _ = response_msg.edit(ctx, EditMessage::new()
+                        .content(format!("`{}` does not contain a parseable source link.", source_md_path))).await;
+                    return None;
+                }
+            }
+        }
+    };
+
     let pnass_path = match get_pandora_env().get(PNASS) {
         Some(p) if !p.is_empty() => p.clone(),
         _ => {
@@ -623,26 +665,31 @@ pub async fn handle_smartcode(
     }
 
     let source_path = format!("{}/SOURCE.md", folder);
-    let source_content = format!("# {}\n", link.trim());
-    let source_b64 = base64_encode(&source_content);
-    let source_commit = "Smartcode source".to_string();
-    match fg.upsert_file(&owner_repo, &source_path, &source_b64, &source_commit).await {
-        Ok(()) => {
-            println!("[smartcode] uploaded {}", source_path);
-        }
-        Err(e) => {
-            println!("[smartcode] SOURCE.md upload failed for {}: {}", source_path, e);
-            let _ = response_msg.edit(ctx, EditMessage::new()
-                .content(format!("SOURCE.md upload to `{}` failed: {}\nEncoding will continue with the local file.",
-                    source_path, e))).await;
+    if link_opt.is_none() {
+        println!("[smartcode] source from {} (skipping rewrite)", source_path);
+    } else {
+        let source_content = format!("# {}\n", link.trim());
+        let source_b64 = base64_encode(&source_content);
+        let source_commit = "Smartcode source".to_string();
+        match fg.upsert_file(&owner_repo, &source_path, &source_b64, &source_commit).await {
+            Ok(()) => {
+                println!("[smartcode] uploaded {}", source_path);
+            }
+            Err(e) => {
+                println!("[smartcode] SOURCE.md upload failed for {}: {}", source_path, e);
+                let _ = response_msg.edit(ctx, EditMessage::new()
+                    .content(format!("SOURCE.md upload to `{}` failed: {}\nEncoding will continue with the local file.",
+                        source_path, e))).await;
             return None;
         }
     }
+    }
 
-    println!("[smartcode] repo={} episode={} tl={} ts_presence={} warnings={} merged_bytes={} release={} source={}",
+    println!("[smartcode] repo={} episode={} tl={} ts_presence={} warnings={} merged_bytes={} release={} source_origin={}",
         owner_repo, episode, tl_path,
         if ts_bytes_opt.is_some() { "present" } else { "absent" },
-        warnings.len(), merged_bytes.len(), release_path, source_path);
+        warnings.len(), merged_bytes.len(), release_path,
+        if link_opt.is_some() { "argument" } else { "SOURCE.md" });
 
     let _ = tokio::fs::remove_dir_all(&work_dir).await;
 
@@ -668,6 +715,153 @@ pub async fn handle_smartcode(
         final_msg,
         read_lang(command.guild_id),
     ))
+}
+
+pub async fn handle_source(ctx: &Context, command: &serenity::all::CommandInteraction) {
+    let episode = match command.data.options.iter()
+        .find(|opt| opt.name == "episode")
+        .and_then(|opt| opt.value.as_i64())
+    {
+        Some(n) if n >= 1 && n <= u32::MAX as i64 => n as u32,
+        _ => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Error: `episode` must be a positive integer.")
+                    .ephemeral(true)
+            )).await.ok();
+            return;
+        }
+    };
+
+    let link = match command.data.options.iter()
+        .find(|opt| opt.name == "link")
+        .and_then(|opt| opt.value.as_str())
+    {
+        Some(s) => s.trim().to_string(),
+        None => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Error: `link` is required.")
+                    .ephemeral(true)
+            )).await.ok();
+            return;
+        }
+    };
+    if link.is_empty() {
+        command.create_response(ctx, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content("Error: `link` must not be empty.")
+                .ephemeral(true)
+        )).await.ok();
+        return;
+    }
+
+    let server_id = match command.guild_id {
+        Some(g) => g.get(),
+        None => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Error: /source can only be used in a server")
+                    .ephemeral(true)
+            )).await.ok();
+            return;
+        }
+    };
+    let channel_id = command.channel_id.get();
+
+    let meta = read_channel_meta(server_id, channel_id);
+    if meta.mal_id.is_none() {
+        command.create_response(ctx, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content("Error: this channel is not attached to an anime. Run `/init` or `/attach` first.")
+                .ephemeral(true)
+        )).await.ok();
+        return;
+    }
+    let max_ep = meta.episode_count.unwrap_or(0);
+    if episode < 1 || episode > max_ep {
+        command.create_response(ctx, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content(format!("Error: `episode` must be between 1 and {}.", max_ep))
+                .ephemeral(true)
+        )).await.ok();
+        return;
+    }
+    let repo_url = match meta.repo_url.clone().filter(|s| !s.is_empty()) {
+        Some(u) => u,
+        None => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Error: this channel has no repo URL configured.")
+                    .ephemeral(true)
+            )).await.ok();
+            return;
+        }
+    };
+    let (owner, repo) = match parse_repo_url(&repo_url) {
+        Ok(t) => t,
+        Err(e) => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(format!("Error: bad repo URL in meta: {}", e))
+                    .ephemeral(true)
+            )).await.ok();
+            return;
+        }
+    };
+    let owner_repo = format!("{}/{}", owner, repo);
+
+    let (_lang, forgejo_base, api_key) = match read_server_meta(server_id).await {
+        Ok(t) => t,
+        Err(e) => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(format!("Error: failed to read server meta: {}", e))
+                    .ephemeral(true)
+            )).await.ok();
+            return;
+        }
+    };
+    if forgejo_base.is_empty() {
+        command.create_response(ctx, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content("Error: server has no forgejo org configured. Run `/configure` first.")
+                .ephemeral(true)
+        )).await.ok();
+        return;
+    }
+
+    command.create_response(ctx, CreateInteractionResponse::Message(
+        CreateInteractionResponseMessage::new().content("Working…")
+    )).await.ok();
+    let mut response_msg = match command.get_response(&ctx.http).await {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+
+    let fg = match Forgejo::new(forgejo_base, api_key) {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = response_msg.edit(ctx, EditMessage::new()
+                .content(format!("Forgejo init failed: {}", e))).await;
+            return;
+        }
+    };
+
+    let folder = pad2(episode);
+    let source_path = format!("{}/SOURCE.md", folder);
+    let source_content = format!("# {}\n", link);
+    let source_b64 = base64_encode(&source_content);
+    match fg.upsert_file(&owner_repo, &source_path, &source_b64, "Set source link").await {
+        Ok(()) => {
+            let _ = response_msg.edit(ctx, EditMessage::new()
+                .content(format!("Wrote `{}` with:\n```\n{}\n```", source_path, source_content.trim_end()))).await;
+        }
+        Err(e) => {
+            let _ = response_msg.edit(ctx, EditMessage::new()
+                .content(format!("Failed to write `{}`: {}", source_path, e))).await;
+        }
+    }
 }
 
 fn meta_path(server_id: u64, channel_id: u64) -> std::path::PathBuf {
@@ -2281,6 +2475,9 @@ impl EventHandler for Handler {
                         self.tx.send(JobClass::Job(job)).await.unwrap();
                     }
                 }
+                "source" => {
+                    handle_source(&ctx, &command).await;
+                }
                 "job" => {
                     handle_job(&ctx, &command).await;
                 }
@@ -2487,8 +2684,8 @@ impl EventHandler for Handler {
                         .min_int_value(1)
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "link", "Torrent URL, magnet link, or Google Drive link")
-                        .required(true)
+                    CreateCommandOption::new(CommandOptionType::String, "link", "Torrent URL, magnet link, or Google Drive link. Optional — falls back to SOURCE.md from the episode folder if absent.")
+                        .required(false)
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "preset", "Encoding preset")
@@ -2499,6 +2696,17 @@ impl EventHandler for Handler {
                         .add_string_choice("DEV", "dummy")
                 )
                 .add_option(concat_option.clone()),
+            CreateCommand::new("source")
+                .description("Write the SOURCE.md for an episode's folder in the attached repo")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (1-based)")
+                        .required(true)
+                        .min_int_value(1)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "link", "Source link (torrent URL, magnet link, or Google Drive link)")
+                        .required(true)
+                ),
             CreateCommand::new("gitcode")
                 .description("Encode with a subtitle fetched from a URL")
                 .add_option(
