@@ -622,10 +622,27 @@ pub async fn handle_smartcode(
         }
     }
 
-    println!("[smartcode] repo={} episode={} tl={} ts_presence={} warnings={} merged_bytes={} release={}",
+    let source_path = format!("{}/SOURCE.md", folder);
+    let source_content = format!("# {}\n", link.trim());
+    let source_b64 = base64_encode(&source_content);
+    let source_commit = "Smartcode source".to_string();
+    match fg.upsert_file(&owner_repo, &source_path, &source_b64, &source_commit).await {
+        Ok(()) => {
+            println!("[smartcode] uploaded {}", source_path);
+        }
+        Err(e) => {
+            println!("[smartcode] SOURCE.md upload failed for {}: {}", source_path, e);
+            let _ = response_msg.edit(ctx, EditMessage::new()
+                .content(format!("SOURCE.md upload to `{}` failed: {}\nEncoding will continue with the local file.",
+                    source_path, e))).await;
+            return None;
+        }
+    }
+
+    println!("[smartcode] repo={} episode={} tl={} ts_presence={} warnings={} merged_bytes={} release={} source={}",
         owner_repo, episode, tl_path,
         if ts_bytes_opt.is_some() { "present" } else { "absent" },
-        warnings.len(), merged_bytes.len(), release_path);
+        warnings.len(), merged_bytes.len(), release_path, source_path);
 
     let _ = tokio::fs::remove_dir_all(&work_dir).await;
 
