@@ -69,9 +69,12 @@ async fn main() {
 
     if let Some(merge_path) = args.merge.as_deref() {
         let mut secondary = SubstationAlpha::load(PathBuf::from(merge_path), false).await;
-        if !style_names(&sub).is_disjoint(&style_names(&secondary)) {
-            migrate_styles(&mut sub);
-            migrate_styles(&mut secondary);
+        let overlap: std::collections::HashSet<String> = style_names(&sub)
+            .intersection(&style_names(&secondary))
+            .cloned()
+            .collect();
+        if !overlap.is_empty() {
+            rename_overlapping_styles(&mut secondary, &overlap);
         }
         append_sub(&mut sub, secondary);
     }
@@ -182,12 +185,14 @@ fn random_suffix() -> String {
     out
 }
 
-fn migrate_styles(sub: &mut SubstationAlpha) {
+fn rename_overlapping_styles(sub: &mut SubstationAlpha, names: &std::collections::HashSet<String>) {
     use std::collections::HashMap;
 
     let mut mapping: HashMap<String, String> = HashMap::new();
     for style in &sub.v4p_styles {
-        mapping.entry(style.name.clone()).or_insert_with(|| format!("pn-{}", random_suffix()));
+        if names.contains(&style.name) {
+            mapping.entry(style.name.clone()).or_insert_with(|| format!("pn-{}", random_suffix()));
+        }
     }
 
     for ev in &mut sub.events {
