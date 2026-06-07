@@ -102,3 +102,20 @@ pub const PNASS_LAYER: &[CliParam] = &[
     CliParam::Literal("--negotiator"),   CliParam::Literal("PNdc"),
     CliParam::Literal("--negver"),       CliParam::Literal("0.1.1"),
 ];
+
+pub const PNASS_MERGE: &[CliParam] = &[
+    CliParam::Literal("--input"),        CliParam::Path("INPUT"),
+    CliParam::Literal("--merge"),        CliParam::Path("MERGE"),
+    CliParam::Literal("--output"),       CliParam::Path("OUTPUT"),
+    CliParam::Literal("--negkey"),       CliParam::Literal("PNassMerge"),
+    CliParam::Literal("--negotiator"),   CliParam::Literal("PNdc"),
+    CliParam::Literal("--negver"),       CliParam::Literal("0.1.1"),
+];
+
+pub const PNASS_MERGE_TL_ONLY: &[CliParam] = &[
+    CliParam::Literal("--input"),        CliParam::Path("INPUT"),
+    CliParam::Literal("--output"),       CliParam::Path("OUTPUT"),
+    CliParam::Literal("--negkey"),       CliParam::Literal("PNassMerge"),
+    CliParam::Literal("--negotiator"),   CliParam::Literal("PNdc"),
+    CliParam::Literal("--negver"),       CliParam::Literal("0.1.1"),
+];

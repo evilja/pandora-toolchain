@@ -21,6 +21,9 @@ struct Args {
     output: String,
 
     #[arg(long)]
+    merge: Option<String>,
+
+    #[arg(long)]
     set_layer: Option<u16>,
 
     #[arg(long)]
@@ -62,6 +65,13 @@ async fn main() {
         for ev in &mut sub.events {
             ev.layer = n;
         }
+    }
+
+    if let Some(merge_path) = args.merge.as_deref() {
+        let mut secondary = SubstationAlpha::load(PathBuf::from(merge_path), false).await;
+        migrate_styles(&mut sub);
+        migrate_styles(&mut secondary);
+        append_sub(&mut sub, secondary);
     }
 
     let mut run_count: usize = 0;
@@ -149,4 +159,89 @@ fn fill_script_info_defaults(si: &mut ScriptInfo) {
     if si.layout_res_y == 0 {
         si.layout_res_y = si.playresy;
     }
+}
+
+fn random_suffix() -> String {
+    const ALPH: &[u8; 36] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+    let mut state: u64 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x9E3779B97F4A7C15);
+    if state == 0 {
+        state = 0x9E3779B97F4A7C15;
+    }
+    let mut out = String::with_capacity(10);
+    for _ in 0..10 {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        out.push(ALPH[(state as usize) % ALPH.len()] as char);
+    }
+    out
+}
+
+fn migrate_styles(sub: &mut SubstationAlpha) {
+    use std::collections::HashSet;
+
+    let mut referenced: HashSet<String> = HashSet::new();
+    for ev in &sub.events {
+        if !ev.style.is_empty() {
+            referenced.insert(ev.style.clone());
+        }
+    }
+
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut mapping: Vec<(String, String, pandora_toolchain::libkagami::core::V4pStyle)> = Vec::new();
+
+    for style in &sub.v4p_styles {
+        if !referenced.contains(&style.name) && seen.contains(&style.name) {
+            continue;
+        }
+        if seen.contains(&style.name) {
+            continue;
+        }
+        let new_name = format!("pn-{}", random_suffix());
+        seen.insert(style.name.clone());
+        mapping.push((style.name.clone(), new_name, pandora_toolchain::libkagami::core::V4pStyle {
+            name: String::new(),
+            fontname: style.fontname.clone(),
+            fontsize: style.fontsize,
+            colours: style.colours,
+            bold: style.bold,
+            italic: style.italic,
+            underline: style.underline,
+            strikeout: style.strikeout,
+            scale_x: style.scale_x,
+            scale_y: style.scale_y,
+            spacing: style.spacing,
+            angle: style.angle,
+            border_style: style.border_style,
+            outline: style.outline,
+            shadow: style.shadow,
+            alignment: style.alignment,
+            margin_l: style.margin_l,
+            margin_r: style.margin_r,
+            margin_v: style.margin_v,
+            encoding: style.encoding,
+        }));
+    }
+
+    for ev in &mut sub.events {
+        for (old, new, _) in &mapping {
+            if ev.style == *old {
+                ev.style = new.clone();
+                break;
+            }
+        }
+    }
+
+    for (_, new_name, mut style) in mapping {
+        style.name = new_name;
+        sub.v4p_styles.push(style);
+    }
+}
+
+fn append_sub(dst: &mut SubstationAlpha, src: SubstationAlpha) {
+    dst.v4p_styles.extend(src.v4p_styles);
+    dst.events.extend(src.events);
 }

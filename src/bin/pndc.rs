@@ -6,8 +6,10 @@ use serenity::{
 };
 use pandora_toolchain::libpnp2p::nyaaise::nyaaise;
 use pandora_toolchain::pnworker::core::{HalfJob, Job, JobClass, JobType, Preset};
-use pandora_toolchain::pnworker::util::{IntrosConfig, PathValue, ToolResult, run_tool};
+use pandora_toolchain::pnworker::util::{CliParam, IntrosConfig, PathValue, ToolResult, run_tool};
 use pandora_toolchain::pnworker::tools::PNASS_LAYER;
+use pandora_toolchain::pnworker::tools::PNASS_MERGE;
+use pandora_toolchain::pnworker::tools::PNASS_MERGE_TL_ONLY;
 use pandora_toolchain::libpnenv::{
     core::{add_env, get_pandora_env, get_perm, remove_env},
     standard::TOKEN,
@@ -33,7 +35,7 @@ fn is_authorized(part: &str, id: u64) -> bool {
     let class = match part {
         "!enc" | "!encode" => "authorize.pandora",
         "!ban" => "admin.pandora",
-        "encode" | "pancode" | "probe" | "backup" | "scrape" | "gitcode" => "authorize.pandora",
+        "encode" | "pancode" | "probe" | "backup" | "scrape" | "gitcode" | "smartcode" => "authorize.pandora",
         "attach" | "init" | "job" | "destruct" | "detach" => "upper.pandora",
         "!some" => "admin.pandora",
         "gitsync" | "hearts" | "configure" | "readmebase" | "auth" | "remove" => "admin.pandora",
@@ -340,6 +342,299 @@ fn meta_to_toml(m: &ChannelMeta) -> String {
         }
         _ => String::new(),
     }
+}
+
+pub async fn handle_smartcode(
+    ctx: &Context,
+    command: &serenity::all::CommandInteraction,
+    intros: &IntrosConfig,
+) -> Option<Job> {
+    let episode = match command.data.options.iter()
+        .find(|opt| opt.name == "episode")
+        .and_then(|opt| opt.value.as_i64())
+    {
+        Some(n) if n >= 1 && n <= u32::MAX as i64 => n as u32,
+        _ => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Error: `episode` must be a positive integer.")
+                    .ephemeral(true)
+            )).await.ok();
+            return None;
+        }
+    };
+
+    let link = match command.data.options.iter()
+        .find(|opt| opt.name == "link")
+        .and_then(|opt| opt.value.as_str())
+    {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Error: `link` is required.")
+                    .ephemeral(true)
+            )).await.ok();
+            return None;
+        }
+    };
+
+    let candidates = command.data.options.iter()
+        .find(|opt| opt.name == "concat")
+        .and_then(|opt| opt.value.as_str())
+        .and_then(|group| intros.resolve(group));
+
+    let preset = match command.data.options.iter()
+        .find(|opt| opt.name == "preset")
+        .and_then(|opt| opt.value.as_str())
+        .unwrap_or("standard")
+    {
+        "gpu"             => Preset::Standard(candidates.clone()),
+        "standard"        => Preset::Standard(candidates.clone()),
+        "dummy"           => Preset::Dummy(candidates.clone()),
+        _                 => Preset::PseudoLossless(candidates.clone()),
+    };
+
+    let server_id = match command.guild_id {
+        Some(g) => g.get(),
+        None => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Error: /smartcode can only be used in a server")
+                    .ephemeral(true)
+            )).await.ok();
+            return None;
+        }
+    };
+    let channel_id = command.channel_id.get();
+
+    let meta = read_channel_meta(server_id, channel_id);
+    if meta.mal_id.is_none() {
+        command.create_response(ctx, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content("Error: this channel is not attached to an anime. Run `/init` or `/attach` first.")
+                .ephemeral(true)
+        )).await.ok();
+        return None;
+    }
+    let name = meta.name.clone().unwrap_or_default();
+    let max_ep = meta.episode_count.unwrap_or(0);
+    if episode < 1 || episode > max_ep {
+        command.create_response(ctx, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                    .content(format!("Error: `episode` must be between 1 and {}.", max_ep))
+                    .ephemeral(true)
+        )).await.ok();
+        return None;
+    }
+    let repo_url = meta.repo_url.clone().unwrap_or_default();
+    let (owner, repo) = match parse_repo_url(&repo_url) {
+        Ok(t) => t,
+        Err(e) => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(format!("Error: bad repo URL in meta: {}", e))
+                    .ephemeral(true)
+            )).await.ok();
+            return None;
+        }
+    };
+    let owner_repo = format!("{}/{}", owner, repo);
+
+    let (_lang, forgejo_base, api_key) = match read_server_meta(server_id).await {
+        Ok(t) => t,
+        Err(e) => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(format!("Error: failed to read server meta: {}", e))
+                    .ephemeral(true)
+            )).await.ok();
+            return None;
+        }
+    };
+    if forgejo_base.is_empty() {
+        command.create_response(ctx, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content("Error: server has no forgejo org configured. Run `/configure` first.")
+                .ephemeral(true)
+        )).await.ok();
+        return None;
+    }
+
+    command.create_response(ctx, CreateInteractionResponse::Message(
+        CreateInteractionResponseMessage::new().content("Working…")
+    )).await.ok();
+    let mut response_msg = match command.get_response(&ctx.http).await {
+        Ok(m) => m,
+        Err(_) => return None,
+    };
+
+    let fg = match Forgejo::new(forgejo_base, api_key) {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = response_msg.edit(ctx, EditMessage::new()
+                .content(format!("Forgejo init failed: {}", e))).await;
+            return None;
+        }
+    };
+
+    let safe_name = name.replace('/', "-");
+    let folder = pad2(episode);
+    let tl_path = format!("{}/TL - {} - E{:02}.ass", folder, safe_name, episode);
+    let ts_path = format!("{}/TS - {} - E{:02}.ass", folder, safe_name, episode);
+
+    let tl_b64 = match fg.get_file_content(&owner_repo, &tl_path).await {
+        Ok(Some((b, _))) => b,
+        Ok(None) => {
+            let _ = response_msg.edit(ctx, EditMessage::new()
+                .content(format!("TL file not found at `{}`.", tl_path))).await;
+            return None;
+        }
+        Err(e) => {
+            let _ = response_msg.edit(ctx, EditMessage::new()
+                .content(format!("Failed to fetch TL: {}", e))).await;
+            return None;
+        }
+    };
+    let tl_bytes = match base64_decode_bytes(&tl_b64) {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = response_msg.edit(ctx, EditMessage::new()
+                .content(format!("Failed to decode TL base64: {}", e))).await;
+            return None;
+        }
+    };
+
+    let ts_b64_opt = match fg.get_file_content(&owner_repo, &ts_path).await {
+        Ok(Some((b, _))) => Some(b),
+        Ok(None) => None,
+        Err(e) => {
+            let _ = response_msg.edit(ctx, EditMessage::new()
+                .content(format!("Failed to fetch TS: {}", e))).await;
+            return None;
+        }
+    };
+    let ts_bytes_opt: Option<Vec<u8>> = match ts_b64_opt {
+        Some(b64) => match base64_decode_bytes(&b64) {
+            Ok(b) => Some(b),
+            Err(e) => {
+                let _ = response_msg.edit(ctx, EditMessage::new()
+                    .content(format!("Failed to decode TS base64: {}", e))).await;
+                return None;
+            }
+        },
+        None => None,
+    };
+
+    let pnass_path = match get_pandora_env().get(PNASS) {
+        Some(p) if !p.is_empty() => p.clone(),
+        _ => {
+            let _ = response_msg.edit(ctx, EditMessage::new()
+                .content("Error: PNASS binary path is not set in DB/config/global/environment/env.pandora.")).await;
+            return None;
+        }
+    };
+
+    let job_id = response_msg.id.get();
+    let work_dir = match std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+    {
+        Ok(d) => std::env::temp_dir().join(format!("pandora_smartcode_{}", d.as_nanos())),
+        Err(_) => std::env::temp_dir().join(format!("pandora_smartcode_{}", job_id)),
+    };
+    if let Err(e) = tokio::fs::create_dir_all(&work_dir).await {
+        let _ = response_msg.edit(ctx, EditMessage::new()
+            .content(format!("Failed to create work dir: {}", e))).await;
+        return None;
+    }
+
+    let tl_local = work_dir.join("tl.ass");
+    let ts_local = work_dir.join("ts.ass");
+    let merged_local = work_dir.join("merged.ass");
+
+    if let Err(e) = tokio::fs::write(&tl_local, &tl_bytes).await {
+        let _ = response_msg.edit(ctx, EditMessage::new()
+            .content(format!("Failed to write TL: {}", e))).await;
+        return None;
+    }
+    if let Some(ref b) = ts_bytes_opt {
+        if let Err(e) = tokio::fs::write(&ts_local, b).await {
+            let _ = response_msg.edit(ctx, EditMessage::new()
+                .content(format!("Failed to write TS: {}", e))).await;
+            return None;
+        }
+    }
+
+    let spec: &[CliParam] = if ts_bytes_opt.is_some() { PNASS_MERGE } else { PNASS_MERGE_TL_ONLY };
+    let mut paths: HashMap<&str, PathValue> = HashMap::from([
+        ("INPUT",  PathValue::from(tl_local.display().to_string())),
+        ("OUTPUT", PathValue::from(merged_local.display().to_string())),
+    ]);
+    if ts_bytes_opt.is_some() {
+        paths.insert("MERGE", PathValue::from(ts_local.display().to_string()));
+    }
+
+    let mut warnings: Vec<String> = Vec::new();
+    let mut proto = Protocol::new(vec![1]);
+    let result = run_tool(
+        &pnass_path,
+        spec,
+        &paths,
+        job_id,
+        &mut proto,
+        |data| {
+            if data.get(0).and_then(|v| v.as_str()) == Some("4") {
+                if let Some(line) = data.get(1).and_then(|v| v.as_str()) {
+                    warnings.push(line.to_string());
+                }
+            }
+            None
+        },
+    ).await;
+    if !matches!(result, ToolResult::Success) {
+        let _ = response_msg.edit(ctx, EditMessage::new()
+            .content(format!("ASS merge failed (warnings so far: {}).", warnings.len()))).await;
+        return None;
+    }
+
+    let merged_bytes = match tokio::fs::read(&merged_local).await {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = response_msg.edit(ctx, EditMessage::new()
+                .content(format!("Failed to read merged ASS: {}", e))).await;
+            return None;
+        }
+    };
+
+    println!("[smartcode] repo={} episode={} tl={} ts_presence={} warnings={} merged_bytes={}",
+        owner_repo, episode, tl_path,
+        if ts_bytes_opt.is_some() { "present" } else { "absent" },
+        warnings.len(), merged_bytes.len());
+
+    let _ = tokio::fs::remove_dir_all(&work_dir).await;
+
+    let _ = response_msg.edit(ctx, EditMessage::new().content("...")).await;
+
+    response_msg.react(ctx, '❌').await.ok();
+
+    let final_msg = match command.get_response(&ctx.http).await {
+        Ok(m) => m,
+        Err(_) => return None,
+    };
+
+    Some(Job::new(
+        command.user.id.get(),
+        command.channel_id.get(),
+        final_msg.id.get(),
+        JobType::Encode,
+        final_msg.id.get(),
+        preset,
+        nyaaise(&link),
+        merged_bytes,
+        ctx.clone(),
+        final_msg,
+        read_lang(command.guild_id),
+    ))
 }
 
 fn meta_path(server_id: u64, channel_id: u64) -> std::path::PathBuf {
@@ -946,6 +1241,59 @@ async fn extract_zip_root_ass(bytes: &[u8], dest: &Path) -> Result<Option<PathBu
 
     let _ = tokio::fs::remove_file(&tmp).await;
     result
+}
+
+fn base64_decode_bytes(input: &str) -> Result<Vec<u8>, String> {
+    const ALPH: [u8; 128] = {
+        let mut a = [255u8; 128];
+        let chars = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut i = 0;
+        while i < chars.len() {
+            a[chars[i] as usize] = i as u8;
+            i += 1;
+        }
+        a
+    };
+    let cleaned: Vec<u8> = input.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    if cleaned.len() % 4 != 0 {
+        return Err(format!("base64: invalid length {}", cleaned.len()));
+    }
+    let mut out: Vec<u8> = Vec::with_capacity(cleaned.len() / 4 * 3);
+    let mut i = 0;
+    while i < cleaned.len() {
+        let c0 = cleaned[i];
+        let c1 = cleaned[i + 1];
+        let c2 = cleaned[i + 2];
+        let c3 = cleaned[i + 3];
+        let pad2 = c2 == b'=';
+        let pad3 = c3 == b'=';
+        let v0 = ALPH[c0 as usize];
+        let v1 = ALPH[c1 as usize];
+        if v0 == 255 || v1 == 255 {
+            return Err(format!("base64: invalid char at {}", i));
+        }
+        if !pad2 {
+            let v2 = ALPH[c2 as usize];
+            if v2 == 255 {
+                return Err(format!("base64: invalid char at {}", i + 2));
+            }
+            out.push((v0 << 2) | (v1 >> 4));
+            if !pad3 {
+                let v3 = ALPH[c3 as usize];
+                if v3 == 255 {
+                    return Err(format!("base64: invalid char at {}", i + 3));
+                }
+                out.push((v1 << 4) | (v2 >> 2));
+                out.push((v2 << 6) | v3);
+            } else {
+                out.push((v1 << 4) | (v2 >> 2));
+            }
+        } else {
+            out.push((v0 << 2) | (v1 >> 4));
+        }
+        i += 4;
+    }
+    Ok(out)
 }
 
 pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteraction) {
@@ -1896,11 +2244,9 @@ impl EventHandler for Handler {
                     handle_detach(&ctx, &command).await;
                 }
                 "smartcode" => {
-                    command.create_response(&ctx, CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new()
-                            .content("smartcode is not implemented yet.")
-                            .ephemeral(true)
-                    )).await.ok();
+                    if let Some(job) = handle_smartcode(&ctx, &command, &self.intros).await {
+                        self.tx.send(JobClass::Job(job)).await.unwrap();
+                    }
                 }
                 "job" => {
                     handle_job(&ctx, &command).await;
@@ -2101,7 +2447,25 @@ impl EventHandler for Handler {
             CreateCommand::new("detach")
                 .description("Detach this channel from its attached anime (the Forgejo repo is left untouched)"),
             CreateCommand::new("smartcode")
-                .description("smartcode (not implemented yet)"),
+                .description("Merge the channel's attached TL and TS subtitles for an episode and encode a torrent")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (1-based)")
+                        .required(true)
+                        .min_int_value(1)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "link", "Torrent URL, magnet link, or Google Drive link")
+                        .required(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "preset", "Encoding preset")
+                        .required(false)
+                        .add_string_choice("Pseudo Lossless", "pseudolossless")
+                        .add_string_choice("Standard x264", "standard")
+                        .add_string_choice("GPU", "gpu")
+                        .add_string_choice("DEV", "dummy")
+                )
+                .add_option(concat_option.clone()),
             CreateCommand::new("gitcode")
                 .description("Encode with a subtitle fetched from a URL")
                 .add_option(
