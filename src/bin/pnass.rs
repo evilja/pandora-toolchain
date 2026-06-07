@@ -69,8 +69,10 @@ async fn main() {
 
     if let Some(merge_path) = args.merge.as_deref() {
         let mut secondary = SubstationAlpha::load(PathBuf::from(merge_path), false).await;
-        migrate_styles(&mut sub);
-        migrate_styles(&mut secondary);
+        if !style_names(&sub).is_disjoint(&style_names(&secondary)) {
+            migrate_styles(&mut sub);
+            migrate_styles(&mut secondary);
+        }
         append_sub(&mut sub, secondary);
     }
 
@@ -181,64 +183,35 @@ fn random_suffix() -> String {
 }
 
 fn migrate_styles(sub: &mut SubstationAlpha) {
-    use std::collections::HashSet;
+    use std::collections::HashMap;
 
-    let mut referenced: HashSet<String> = HashSet::new();
-    for ev in &sub.events {
-        if !ev.style.is_empty() {
-            referenced.insert(ev.style.clone());
-        }
-    }
-
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut mapping: Vec<(String, String, pandora_toolchain::libkagami::core::V4pStyle)> = Vec::new();
-
+    let mut mapping: HashMap<String, String> = HashMap::new();
     for style in &sub.v4p_styles {
-        if !referenced.contains(&style.name) && seen.contains(&style.name) {
-            continue;
-        }
-        if seen.contains(&style.name) {
-            continue;
-        }
-        let new_name = format!("pn-{}", random_suffix());
-        seen.insert(style.name.clone());
-        mapping.push((style.name.clone(), new_name, pandora_toolchain::libkagami::core::V4pStyle {
-            name: String::new(),
-            fontname: style.fontname.clone(),
-            fontsize: style.fontsize,
-            colours: style.colours,
-            bold: style.bold,
-            italic: style.italic,
-            underline: style.underline,
-            strikeout: style.strikeout,
-            scale_x: style.scale_x,
-            scale_y: style.scale_y,
-            spacing: style.spacing,
-            angle: style.angle,
-            border_style: style.border_style,
-            outline: style.outline,
-            shadow: style.shadow,
-            alignment: style.alignment,
-            margin_l: style.margin_l,
-            margin_r: style.margin_r,
-            margin_v: style.margin_v,
-            encoding: style.encoding,
-        }));
+        mapping.entry(style.name.clone()).or_insert_with(|| format!("pn-{}", random_suffix()));
     }
 
     for ev in &mut sub.events {
-        for (old, new, _) in &mapping {
-            if ev.style == *old {
-                ev.style = new.clone();
-                break;
-            }
+        if let Some(new) = mapping.get(&ev.style) {
+            ev.style = new.clone();
         }
     }
 
-    for (_, new_name, mut style) in mapping {
-        style.name = new_name;
-        sub.v4p_styles.push(style);
+    for style in &mut sub.v4p_styles {
+        if let Some(new) = mapping.get(&style.name) {
+            style.name = new.clone();
+        }
     }
+}
+
+fn style_names(sub: &SubstationAlpha) -> std::collections::HashSet<String> {
+    use std::collections::HashSet;
+    let mut set: HashSet<String> = sub.v4p_styles.iter().map(|s| s.name.clone()).collect();
+    for ev in &sub.events {
+        if !ev.style.is_empty() {
+            set.insert(ev.style.clone());
+        }
+    }
+    set
 }
 
 fn append_sub(dst: &mut SubstationAlpha, src: SubstationAlpha) {
