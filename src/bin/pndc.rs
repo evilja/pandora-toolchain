@@ -31,19 +31,49 @@ pub struct Handler {
     pub intros: IntrosConfig,
 }
 
-fn is_authorized(part: &str, id: u64) -> bool {
-    let class = match part {
-        "!enc" | "!encode" => "authorize.pandora",
-        "!ban" => "admin.pandora",
-        "encode" | "pancode" | "probe" | "backup" | "scrape" | "gitcode" | "smartcode" | "source" => "authorize.pandora",
-        "attach" | "init" | "job" | "destruct" | "detach" => "upper.pandora",
-        "!some" => "admin.pandora",
-        "gitsync" | "hearts" | "configure" | "readmebase" | "auth" | "remove" => "admin.pandora",
-        _ => return false,
-    };
-    let allowed = get_perm(perm_path(class));
+const ALL_LEVELS: &[&str] = &[
+    "upper.pandora",
+    "admin.pandora",
+    "fansubber.pandora",
+    "authorize.pandora",
+];
 
-    !allowed.is_empty() && allowed.contains(&id.to_string())
+fn level_rank(name: &str) -> u8 {
+    match name {
+        "upper.pandora" => 3,
+        "admin.pandora" => 2,
+        "fansubber.pandora" => 1,
+        "authorize.pandora" => 0,
+        _ => u8::MAX,
+    }
+}
+
+fn has_level_at_least(id: u64, min_rank: u8) -> bool {
+    ALL_LEVELS.iter().any(|lvl| {
+        if level_rank(lvl) >= min_rank {
+            let allowed = get_perm(perm_path(lvl));
+            !allowed.is_empty() && allowed.contains(&id.to_string())
+        } else {
+            false
+        }
+    })
+}
+
+fn min_rank_for_command(part: &str) -> u8 {
+    match part {
+        "encode" | "pancode" | "probe" | "backup" | "scrape" | "gitcode" | "smartcode" | "source" => 0,
+        "!enc" | "!encode" => 0,
+        "job" => 1,
+        "auth" | "remove" | "gitsync" | "hearts" | "configure" | "readmebase" | "!ban" | "!some" => 2,
+        "attach" | "init" | "destruct" | "detach" => 3,
+        _ => u8::MAX,
+    }
+}
+
+fn is_authorized(part: &str, id: u64) -> bool {
+    let min_rank = min_rank_for_command(part);
+    if min_rank == u8::MAX { return false; }
+    has_level_at_least(id, min_rank)
 }
 
 fn read_lang(guild_id: Option<serenity::all::GuildId>) -> String {
@@ -241,7 +271,7 @@ async fn migrate_pandora_files() {
     let _ = tokio::fs::create_dir_all("DB/config/global/perms").await;
     let _ = tokio::fs::create_dir_all("DB/config/global/environment").await;
 
-    for name in ["authorize.pandora", "upper.pandora", "admin.pandora"] {
+    for name in ["authorize.pandora", "upper.pandora", "fansubber.pandora", "admin.pandora"] {
         let old = name.to_string();
         let new_path = format!("DB/config/global/perms/{}", name);
         if std::path::Path::new(&old).exists() && !std::path::Path::new(&new_path).exists() {
@@ -2135,6 +2165,15 @@ pub async fn handle_auth(
         .unwrap_or("authorize.pandora")
         .to_string();
 
+    if !has_level_at_least(command.user.id.get(), level_rank(&level)) {
+        command.create_response(ctx, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content(format!("Error: your level does not outrank `{}`.", level))
+                .ephemeral(true)
+        )).await.ok();
+        return;
+    }
+
     let mut to_add = user_id.clone();
     if add_env(&perm_path(&level), &mut to_add) {
         command.create_response(ctx, CreateInteractionResponse::Message(
@@ -2184,6 +2223,15 @@ pub async fn handle_remove(
             return;
         }
     };
+
+    if !has_level_at_least(command.user.id.get(), level_rank(&level)) {
+        command.create_response(ctx, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content(format!("Error: your level does not outrank `{}`.", level))
+                .ephemeral(true)
+        )).await.ok();
+        return;
+    }
 
     match remove_env(&perm_path(&level), &user_id) {
         Ok(true) => {
@@ -2760,6 +2808,7 @@ impl EventHandler for Handler {
                         .required(false)
                         .add_string_choice("Authorize", "authorize.pandora")
                         .add_string_choice("Upper", "upper.pandora")
+                        .add_string_choice("Fansubber", "fansubber.pandora")
                         .add_string_choice("Admin", "admin.pandora")
                 ),
             CreateCommand::new("remove")
@@ -2773,6 +2822,7 @@ impl EventHandler for Handler {
                         .required(true)
                         .add_string_choice("Authorize", "authorize.pandora")
                         .add_string_choice("Upper", "upper.pandora")
+                        .add_string_choice("Fansubber", "fansubber.pandora")
                         .add_string_choice("Admin", "admin.pandora")
                 ),
             CreateCommand::new("job")
