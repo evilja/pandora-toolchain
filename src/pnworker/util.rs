@@ -102,7 +102,7 @@ pub struct IntrosConfig {
 
 impl IntrosConfig {
     pub fn load() -> Self {
-        std::fs::read_to_string("intros.toml")
+        std::fs::read_to_string("DB/config/global/environment/intros.toml")
             .ok()
             .and_then(|c| toml::from_str(&c).ok())
             .unwrap_or(IntrosConfig { groups: HashMap::new() })
