@@ -801,6 +801,69 @@ async fn extract_zip_root_ass(bytes: &[u8], dest: &Path) -> Result<Option<PathBu
     result
 }
 
+async fn extract_zip_to_dir(bytes: &[u8], dest: &Path) -> Result<usize, String> {
+    use async_zip::base::read::stream::ZipFileReader;
+    use futures_lite::io::AsyncReadExt;
+    use tokio::io::{AsyncWriteExt, BufReader};
+
+    let tmp = std::env::temp_dir().join(format!("pandora_font_zip_{}.zip",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos()));
+
+    let result = async {
+        {
+            let mut f = tokio::fs::File::create(&tmp).await.map_err(|e| e.to_string())?;
+            f.write_all(bytes).await.map_err(|e| e.to_string())?;
+            f.sync_all().await.map_err(|e| e.to_string())?;
+        }
+        tokio::fs::create_dir_all(dest).await.map_err(|e| e.to_string())?;
+        let f = tokio::fs::File::open(&tmp).await.map_err(|e| e.to_string())?;
+        let mut zip = ZipFileReader::with_tokio(BufReader::new(f));
+        let mut count: usize = 0;
+
+        loop {
+            let mut entry = match zip.next_with_entry().await.map_err(|e| format!("zip: {}", e))? {
+                Some(e) => e,
+                None => break,
+            };
+            let filename = entry.reader().entry().filename().as_str()
+                .map_err(|e| format!("zip filename: {}", e))?
+                .to_string();
+            let trimmed = filename.trim_matches('/');
+            if trimmed.is_empty() {
+                zip = entry.skip().await.map_err(|e| format!("zip skip: {}", e))?;
+                continue;
+            }
+            let path = Path::new(trimmed);
+            if path.is_absolute() || path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+                return Err(format!("zip contains unsafe path: {}", filename));
+            }
+            let out_path = dest.join(path);
+            if filename.ends_with('/') {
+                tokio::fs::create_dir_all(&out_path).await.map_err(|e| e.to_string())?;
+                zip = entry.skip().await.map_err(|e| format!("zip skip: {}", e))?;
+                continue;
+            }
+            if let Some(parent) = out_path.parent() {
+                tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
+            }
+            let mut data = Vec::new();
+            entry.reader_mut().read_to_end(&mut data).await
+                .map_err(|e| format!("zip read: {}", e))?;
+            tokio::fs::write(&out_path, &data).await.map_err(|e| e.to_string())?;
+            count += 1;
+            zip = entry.skip().await.map_err(|e| format!("zip skip: {}", e))?;
+        }
+
+        Ok(count)
+    }.await;
+
+    let _ = tokio::fs::remove_file(&tmp).await;
+    result
+}
+
 fn base64_decode_bytes(input: &str) -> Result<Vec<u8>, String> {
     const ALPH: [u8; 128] = {
         let mut a = [255u8; 128];
@@ -1292,6 +1355,111 @@ pub async fn handle_addapi(
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
             .content(format!("{} `{}` in `{}`.", action, key_name, ENV_PATH))
+            .ephemeral(true)
+    )).await.ok();
+}
+
+pub async fn handle_font(
+    ctx: &Context,
+    command: &serenity::all::CommandInteraction,
+) {
+    let server_id = match command_server_id(ctx, command, "/font").await {
+        Some(id) => id,
+        None => return,
+    };
+
+    let attachment = option_attachment(command, "file");
+    let has_attachment = attachment.is_some();
+    let link = option_trimmed(command, "link");
+
+    if attachment.is_none() && link.is_none() {
+        command_error(ctx, command, "Error: provide either `file` or `link`.").await;
+        return;
+    }
+
+    let zip_bytes = if let Some(a) = attachment {
+        let name = a.filename.to_lowercase();
+        if !name.ends_with(".zip") {
+            command_error(ctx, command, "Error: `file` must be a .zip archive.").await;
+            return;
+        }
+        match a.download().await {
+            Ok(b) => b,
+            Err(e) => {
+                command.create_response(ctx, CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content(format!("Failed to download attachment: {}", e))
+                        .ephemeral(true)
+                )).await.ok();
+                return;
+            }
+        }
+    } else {
+        let url = link.unwrap();
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            command_error(ctx, command, "Error: `link` must be an http(s) URL.").await;
+            return;
+        }
+        let resp = match reqwest::get(&url).await {
+            Ok(r) => r,
+            Err(e) => {
+                command.create_response(ctx, CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content(format!("Failed to fetch zip: {}", e))
+                        .ephemeral(true)
+                )).await.ok();
+                return;
+            }
+        };
+        if !resp.status().is_success() {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(format!("Failed to fetch zip: HTTP {}", resp.status()))
+                    .ephemeral(true)
+            )).await.ok();
+            return;
+        }
+        match resp.bytes().await {
+            Ok(b) => b.to_vec(),
+            Err(e) => {
+                command.create_response(ctx, CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content(format!("Failed to read zip body: {}", e))
+                        .ephemeral(true)
+                )).await.ok();
+                return;
+            }
+        }
+    };
+
+    let dir = std::path::PathBuf::from("DB")
+        .join("fontconfig")
+        .join(server_id.to_string());
+    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+        command.create_response(ctx, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content(format!("Failed to create font dir: {}", e))
+                .ephemeral(true)
+        )).await.ok();
+        return;
+    }
+
+    let count = match extract_zip_to_dir(&zip_bytes, &dir).await {
+        Ok(c) => c,
+        Err(e) => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(format!("Failed to extract zip: {}", e))
+                    .ephemeral(true)
+            )).await.ok();
+            return;
+        }
+    };
+
+    let source = if has_attachment { "attachment" } else { "link" };
+    command.create_response(ctx, CreateInteractionResponse::Message(
+        CreateInteractionResponseMessage::new()
+            .content(format!("Extracted {} file(s) from {} into `{}`.", count, source, dir.display()))
             .ephemeral(true)
     )).await.ok();
 }

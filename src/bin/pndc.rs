@@ -72,7 +72,7 @@ fn min_rank_for_command(part: &str) -> u8 {
         "encode" | "pancode" | "probe" | "backup" | "scrape" | "gitcode" | "smartcode" | "source" => 0,
         "!enc" | "!encode" => 0,
         "job" => 1,
-        "auth" | "remove" | "gitsync" | "hearts" | "configure" | "readmebase" | "addapi" | "!ban" | "!some" => 2,
+        "auth" | "remove" | "gitsync" | "hearts" | "configure" | "readmebase" | "addapi" | "font" | "!ban" | "!some" => 2,
         "attach" | "init" | "destruct" | "detach" => 3,
         _ => u8::MAX,
     }
@@ -485,6 +485,9 @@ impl EventHandler for Handler {
                 "addapi" => {
                     handle_addapi(&ctx, &command).await;
                 }
+                "font" => {
+                    handle_font(&ctx, &command).await;
+                }
                 "readmebase" => {
                     handle_readmebase(&ctx, &command).await;
                 }
@@ -773,6 +776,16 @@ impl EventHandler for Handler {
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "token", "Token value to write")
                         .required(true)
+                ),
+            CreateCommand::new("font")
+                .description("Download a font zip and extract it to this server's fontconfig directory")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Attachment, "file", "A .zip archive of fonts")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "link", "HTTP(S) link to a .zip archive of fonts")
+                        .required(false)
                 ),
             CreateCommand::new("readmebase")
                 .description("Set the base.md for this server (used as the README template when bootstrapping repos)")
