@@ -261,7 +261,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                     db.update_stage(job.job_id, Stage::Uploading).await.unwrap();
                     change_presence_job(&job.context.0, Presence::Uploading { idx, total: qlen }).await;
                 } else {
-                    if !dispatch_or_kill(&mut shrine, &Worker::Encode, WorkerMsg::Encode((job.directory.clone(), job.preset.clone(), job.job_id)), job, &db, false).await {
+                    if !dispatch_or_kill(&mut shrine, &Worker::Encode, WorkerMsg::Encode((job.directory.clone(), job.preset.clone(), job.job_id, job.server_id)), job, &db, false).await {
                         dead.push(job.job_id);
                         continue;
                     }
@@ -424,6 +424,7 @@ pub struct Job {
     pub probe_job_id: Option<u64>,
     pub probe_file_index: Option<u64>,
     pub lang: String,
+    pub server_id: Option<u64>,
 }
 
 impl PartialEq for Job {
@@ -435,7 +436,7 @@ impl PartialEq for Job {
 impl Job {
     pub fn new(author: u64, channel_id: u64, response_id: u64, job_type: JobType, job_id: u64,
             preset: Preset, torrent: TorrentType, attachment: Vec<u8>, context: Context, msg: Message,
-            lang: String) -> Self {
+            lang: String, server_id: Option<u64>) -> Self {
         let requested_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_secs(0));
         Self {
             author, channel_id, response_id, job_type, job_id, preset, torrent, attachment,
@@ -451,6 +452,7 @@ impl Job {
             probe_job_id: None,
             probe_file_index: None,
             lang,
+            server_id,
         }
     }
 }

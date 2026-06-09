@@ -56,6 +56,9 @@ struct Args {
     #[arg(short, long)]
     ass: Option<String>,
 
+    #[arg(long)]
+    fontconfig: Option<String>,
+
     /// Language to search in input file
     #[arg(short, long)]
     lang: Option<String>,
@@ -188,7 +191,13 @@ async fn main() {
             },
             FfmpegParams::BasicFilter(a) => {
                 if let Some(ref b) = args.ass {
-                    *i = FfmpegParams::BasicFilter(Cow::Owned(a.replace("INPUTFILEASS", b)));
+                    let ass = match args.fontconfig {
+                        Some(ref fontconfig) if !fontconfig.is_empty() => {
+                            format!("{}:fontsdir={}", b, fontconfig)
+                        }
+                        _ => b.to_string(),
+                    };
+                    *i = FfmpegParams::BasicFilter(Cow::Owned(a.replace("INPUTFILEASS", &ass)));
                 }
             }
             FfmpegParams::Output(a) => {

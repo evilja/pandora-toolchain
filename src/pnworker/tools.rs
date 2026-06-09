@@ -35,6 +35,7 @@ pub const PNMPEG_ENCODE: &[CliParam] = &[
     CliParam::Literal("--input"),       CliParam::Path("INPUT"),
     CliParam::Literal("--output"),      CliParam::Path("OUTPUT"),
     CliParam::Literal("--ass"),         CliParam::Path("ASS"),
+    CliParam::Literal("--fontconfig"),  CliParam::Path("FONTCONFIG"),
     CliParam::Path("PRESET"),
     CliParam::Literal("--negkey"),      CliParam::JobId("PNmpeg"),
     CliParam::Literal("--negotiator"),  CliParam::Literal("PNencdeworker"),

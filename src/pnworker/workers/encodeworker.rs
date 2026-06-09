@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use crate::pnworker::core::{Preset, Stage, WorkerMsg};
 use crate::pnworker::util::PathValue;
 use crate::pnworker::core::CommData;
-pub type EncodeData = (PathBuf, Preset, u64);
+pub type EncodeData = (PathBuf, Preset, u64, Option<u64>);
 
 
 #[cfg(target_os = "windows")]
@@ -34,7 +34,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
     let mut proto = Protocol::new(vec![1]);
     let pnmpeg_path = get_pandora_env().get(PNMPEG).cloned().unwrap_or_default();
     'll: loop {
-        if let Ok(WorkerMsg::Encode((directory, preset, job_id))) = rx.try_recv() {
+        if let Ok(WorkerMsg::Encode((directory, preset, job_id, server_id))) = rx.try_recv() {
             let (concat_value, insert) = match preset {
                 Preset::PseudoLossless(cc) => (cc, "pseudolossless"),
                 Preset::Gpu(cc)            => (cc, "gpu"),
@@ -42,6 +42,10 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 Preset::Dummy(cc)          => (cc, "dummy"),
             };
             let intro_q = if concat_value.is_some() { 2 } else { 1 };
+            let fontconfig_dir = PathBuf::from("DB").join("fontconfig").join(
+                server_id.map(|id| id.to_string()).unwrap_or_else(|| "global".to_string())
+            );
+            tokio::fs::create_dir_all(&fontconfig_dir).await.ok();
 
             let result = run_tool(
                 &pnmpeg_path,
@@ -50,6 +54,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     ("INPUT",      PathValue::from(path_to_ffmpeg(directory.join("contents").join("torrent").join("input.mkv").as_path()))),
                     ("OUTPUT",     PathValue::from(path_to_ffmpeg(directory.join("work").join("output_noconcat.mp4").as_path()))),
                     ("ASS",        PathValue::from(path_to_ffmpeg(directory.join("contents").join("subtitle.ass").as_path()))),
+                    ("FONTCONFIG", PathValue::from(path_to_ffmpeg(fontconfig_dir.as_path()))),
                     ("PRESET",     PathValue::from(format!("--{}", insert))),
                     ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),
                     ("LOGFILE",    PathValue::from(directory.join("log").join(format!("PNmpeg_Encode{}.log", job_id)).display().to_string())),

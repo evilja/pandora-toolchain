@@ -41,6 +41,7 @@ pub async fn handle_message(
         context.clone(),
         response_msg,
         read_lang(msg.guild_id),
+        msg.guild_id.map(|g| g.get()),
     ))
 }
 
@@ -70,6 +71,7 @@ pub async fn handle_probe(
         ctx.clone(),
         response_msg,
         read_lang(command.guild_id),
+        command.guild_id.map(|g| g.get()),
     ))
 }
 
@@ -99,6 +101,7 @@ pub async fn handle_backup(
         ctx.clone(),
         response_msg,
         read_lang(command.guild_id),
+        command.guild_id.map(|g| g.get()),
     ))
 }
 
@@ -128,6 +131,7 @@ pub async fn handle_scrape(
         ctx.clone(),
         response_msg,
         read_lang(command.guild_id),
+        command.guild_id.map(|g| g.get()),
     ))
 }
 pub async fn handle_smartcode(
@@ -397,6 +401,7 @@ pub async fn handle_smartcode(
         ctx.clone(),
         final_msg,
         read_lang(command.guild_id),
+        command.guild_id.map(|g| g.get()),
     ))
 }
 
@@ -1208,6 +1213,7 @@ pub async fn handle_gitcode(
         ctx.clone(),
         response_msg,
         read_lang(command.guild_id),
+        command.guild_id.map(|g| g.get()),
     ))
 }
 
@@ -1637,5 +1643,6 @@ pub async fn handle_interaction(
         ctx.clone(),
         response_msg,
         read_lang(command.guild_id),
+        command.guild_id.map(|g| g.get()),
     ))
 }
