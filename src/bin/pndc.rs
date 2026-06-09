@@ -1,6 +1,6 @@
 use serenity::{
     Client,
-    all::{ActivityData, ChannelType, CommandOptionType, Context, CreateEmbed, CreateMessage, EditMessage, GatewayIntents, Interaction, Message, OnlineStatus, Ready},
+    all::{ActivityData, ChannelType, CommandOptionType, Context, CreateEmbed, CreateMessage, EditInteractionResponse, EditMessage, GatewayIntents, Interaction, Message, OnlineStatus, Ready},
     builder::{CreateCommand, CreateCommandOption, CreateInteractionResponse, CreateInteractionResponseMessage, EditChannel},
     prelude::*,
 };

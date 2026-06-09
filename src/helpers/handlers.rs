@@ -1376,56 +1376,46 @@ pub async fn handle_font(
         return;
     }
 
+    if command.create_response(ctx, CreateInteractionResponse::Defer(
+        CreateInteractionResponseMessage::new().ephemeral(true)
+    )).await.is_err() {
+        return;
+    }
+
     let zip_bytes = if let Some(a) = attachment {
         let name = a.filename.to_lowercase();
         if !name.ends_with(".zip") {
-            command_error(ctx, command, "Error: `file` must be a .zip archive.").await;
+            font_response(ctx, command, "Error: `file` must be a .zip archive.").await;
             return;
         }
         match a.download().await {
             Ok(b) => b,
             Err(e) => {
-                command.create_response(ctx, CreateInteractionResponse::Message(
-                    CreateInteractionResponseMessage::new()
-                        .content(format!("Failed to download attachment: {}", e))
-                        .ephemeral(true)
-                )).await.ok();
+                font_response(ctx, command, format!("Failed to download attachment: {}", e)).await;
                 return;
             }
         }
     } else {
         let url = link.unwrap();
         if !(url.starts_with("http://") || url.starts_with("https://")) {
-            command_error(ctx, command, "Error: `link` must be an http(s) URL.").await;
+            font_response(ctx, command, "Error: `link` must be an http(s) URL.").await;
             return;
         }
         let resp = match reqwest::get(&url).await {
             Ok(r) => r,
             Err(e) => {
-                command.create_response(ctx, CreateInteractionResponse::Message(
-                    CreateInteractionResponseMessage::new()
-                        .content(format!("Failed to fetch zip: {}", e))
-                        .ephemeral(true)
-                )).await.ok();
+                font_response(ctx, command, format!("Failed to fetch zip: {}", e)).await;
                 return;
             }
         };
         if !resp.status().is_success() {
-            command.create_response(ctx, CreateInteractionResponse::Message(
-                CreateInteractionResponseMessage::new()
-                    .content(format!("Failed to fetch zip: HTTP {}", resp.status()))
-                    .ephemeral(true)
-            )).await.ok();
+            font_response(ctx, command, format!("Failed to fetch zip: HTTP {}", resp.status())).await;
             return;
         }
         match resp.bytes().await {
             Ok(b) => b.to_vec(),
             Err(e) => {
-                command.create_response(ctx, CreateInteractionResponse::Message(
-                    CreateInteractionResponseMessage::new()
-                        .content(format!("Failed to read zip body: {}", e))
-                        .ephemeral(true)
-                )).await.ok();
+                font_response(ctx, command, format!("Failed to read zip body: {}", e)).await;
                 return;
             }
         }
@@ -1435,32 +1425,28 @@ pub async fn handle_font(
         .join("fontconfig")
         .join(server_id.to_string());
     if let Err(e) = tokio::fs::create_dir_all(&dir).await {
-        command.create_response(ctx, CreateInteractionResponse::Message(
-            CreateInteractionResponseMessage::new()
-                .content(format!("Failed to create font dir: {}", e))
-                .ephemeral(true)
-        )).await.ok();
+        font_response(ctx, command, format!("Failed to create font dir: {}", e)).await;
         return;
     }
 
     let count = match extract_zip_to_dir(&zip_bytes, &dir).await {
         Ok(c) => c,
         Err(e) => {
-            command.create_response(ctx, CreateInteractionResponse::Message(
-                CreateInteractionResponseMessage::new()
-                    .content(format!("Failed to extract zip: {}", e))
-                    .ephemeral(true)
-            )).await.ok();
+            font_response(ctx, command, format!("Failed to extract zip: {}", e)).await;
             return;
         }
     };
 
     let source = if has_attachment { "attachment" } else { "link" };
-    command.create_response(ctx, CreateInteractionResponse::Message(
-        CreateInteractionResponseMessage::new()
-            .content(format!("Extracted {} file(s) from {} into `{}`.", count, source, dir.display()))
-            .ephemeral(true)
-    )).await.ok();
+    font_response(ctx, command, format!("Extracted {} file(s) from {} into `{}`.", count, source, dir.display())).await;
+}
+
+async fn font_response(
+    ctx: &Context,
+    command: &serenity::all::CommandInteraction,
+    content: impl Into<String>,
+) {
+    command.edit_response(ctx, EditInteractionResponse::new().content(content.into())).await.ok();
 }
 
 pub async fn handle_readmebase(
