@@ -347,6 +347,7 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                             .to_string();
                         let mut uploaded = false;
 
+                        let upload_job_id = job_id.saturating_mul(1000).saturating_add(idx as u64);
                         let result = run_tool(
                             &pncurl_path,
                             PNCURL_BACKUP,
@@ -354,7 +355,7 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                                 ("LINK", PathValue::from(file.display().to_string())),
                                 ("OPCODE", PathValue::from(out_name)),
                             ]),
-                            job_id,
+                            upload_job_id,
                             &mut proto,
                             |data| {
                                 let out: u16 = match data.get(0).and_then(|v| v.parse()) {
@@ -515,7 +516,12 @@ async fn find_mkv_files(root: &PathBuf) -> Vec<PathBuf> {
             let path = entry.path();
             if path.is_dir() {
                 stack.push(path);
-            } else if path.extension().and_then(|e| e.to_str()) == Some("mkv") {
+            } else if path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("mkv"))
+                .unwrap_or(false)
+            {
                 result.push(path);
             }
         }
