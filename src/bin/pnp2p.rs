@@ -83,14 +83,18 @@ async fn main() {
         return;
     }
     
-    if let Some(index) = args.select {
+    let result = if let Some(index) = args.select {
         p2pcp.download_selected(
             &args.opcode, &args.save.unwrap(),
             vec![index], proto, neg, !args.nomagnet && args.magnet
-        ).await.unwrap();
-        return;
+        ).await
+    } else {
+        p2pcp.download_and_remove(&args.opcode, &args.save.unwrap(), proto, neg, if args.nomagnet { false } else if args.magnet { true } else { false }).await
+    };
+
+    if let Err(e) = result {
+        eprintln!("[pnp2p] failed: {}", e);
+        std::process::exit(1);
     }
-    
-    p2pcp.download_and_remove(&args.opcode, &args.save.unwrap(), proto, neg, if args.nomagnet { false } else if args.magnet { true } else { false }).await.unwrap();
 
 }

@@ -311,25 +311,14 @@ impl P2p {
         println!("[pnp2p] download_and_remove: add_torrent succeeded, waiting 1s");
         sleep(Duration::from_secs(1)).await;
 
-        // FETCH BY PATH INSTEAD OF RECENCY
-        println!("[pnp2p] download_and_remove: fetching torrent list to find by path");
-        let torrents = self.api
+        println!("[pnp2p] download_and_remove: fetching torrent list to get hash");
+        let hash = self.api
             .get_torrent_list(GetTorrentListArg::builder().build())
-            .await?;
-
-        let hash = torrents
+            .await?
             .iter()
-            .find(|t| {
-                let found = t.content_path.as_ref().map_or(false, |p| {
-                    p.contains(save_path) && p.ends_with(".mkv")
-                });
-                if found {
-                    println!("[pnp2p] download_and_remove: matched torrent with content_path={:?}", t.content_path);
-                }
-                found
-            })
-            .map(|t| t.hash.clone().unwrap())
-            .ok_or("Could not find torrent at the specified save path")?;
+            .max_by_key(|t| t.added_on.unwrap_or(0))
+            .ok_or("No torrents found")?
+            .hash.clone().unwrap();
         println!("[pnp2p] download_and_remove: obtained hash = {}", hash);
 
         println!("[pnp2p] download_and_remove: entering progress monitoring loop");
