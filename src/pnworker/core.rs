@@ -26,6 +26,7 @@ pub enum WorkerMsg {
     Probe(ProbeData),
     Encode(EncodeData),
     Upload(UploadData),
+    UploadAll(UploadAllData),
 }
 
 pub const STRUCT: [&str; 3] = ["contents", "work", "log"];
@@ -62,7 +63,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                                 create_dir_all(job.directory.join(i)).await.unwrap();
                             }
                             write(job.directory.join("contents").join("subtitle.ass"), &job.attachment).await.unwrap();
-                            if !dispatch_or_kill(&mut shrine, &Worker::Download, WorkerMsg::Download((job.directory.clone(), job.torrent.clone(), job.job_id, None)), &mut job, &db, true).await {
+                            if !dispatch_or_kill(&mut shrine, &Worker::Download, WorkerMsg::Download((job.directory.clone(), job.torrent.clone(), job.job_id, None, false)), &mut job, &db, true).await {
                                 continue;
                             }
                             job.ready = Stage::Downloading;
@@ -103,6 +104,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                                 job.torrent.clone(),
                                 job.job_id,
                                 job.probe_file_index,
+                                false,
                             )), &mut job, &db, true).await {
                                 continue;
                             }
@@ -110,11 +112,35 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                             change_presence_job(&job.context.0, Presence::Downloading { idx: queue.len(), total: queue.len() + 1 }).await;
                         }
                         JobType::Backup => {
+                            let probe_dir = job.probe_job_id.map(|id| {
+                                env::current_dir().unwrap()
+                                    .join("DB").join("work")
+                                    .join(id.to_string())
+                            });
+
                             job.context.1.edit(&job.context.0, EditMessage::new().content("").embed(create_job_embed(&job, &MessagePayload::Static(QUEUED)))).await.unwrap();
                             for i in STRUCT {
                                 create_dir_all(job.directory.join(i)).await.unwrap();
                             }
-                            if !dispatch_or_kill(&mut shrine, &Worker::Download, WorkerMsg::Download((job.directory.clone(), job.torrent.clone(), job.job_id, None)), &mut job, &db, true).await {
+                            if let Some(probe_dir) = probe_dir {
+                                let torrent_src = probe_dir.join("contents").join("fetch.torrent");
+                                let torrent_dst = job.directory.join("contents").join("fetch.torrent");
+                                if tokio::fs::copy(&torrent_src, &torrent_dst).await.is_err() {
+                                    continue;
+                                }
+                            }
+                            if !dispatch_or_kill(&mut shrine, &Worker::Download, WorkerMsg::Download((job.directory.clone(), job.torrent.clone(), job.job_id, job.probe_file_index, false)), &mut job, &db, true).await {
+                                continue;
+                            }
+                            job.ready = Stage::Downloading;
+                            change_presence_job(&job.context.0, Presence::Downloading { idx: queue.len(), total: queue.len() + 1 }).await;
+                        }
+                        JobType::BackupAll => {
+                            job.context.1.edit(&job.context.0, EditMessage::new().content("").embed(create_job_embed(&job, &MessagePayload::Static(QUEUED)))).await.unwrap();
+                            for i in STRUCT {
+                                create_dir_all(job.directory.join(i)).await.unwrap();
+                            }
+                            if !dispatch_or_kill(&mut shrine, &Worker::Download, WorkerMsg::Download((job.directory.clone(), job.torrent.clone(), job.job_id, None, true)), &mut job, &db, true).await {
                                 continue;
                             }
                             job.ready = Stage::Downloading;
@@ -260,6 +286,14 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                     job.ready = Stage::Uploading;
                     db.update_stage(job.job_id, Stage::Uploading).await.unwrap();
                     change_presence_job(&job.context.0, Presence::Uploading { idx, total: qlen }).await;
+                } else if job.job_type == JobType::BackupAll {
+                    if !dispatch_or_kill(&mut shrine, &Worker::Upload, WorkerMsg::UploadAll((job.directory.clone(), job.job_id)), job, &db, false).await {
+                        dead.push(job.job_id);
+                        continue;
+                    }
+                    job.ready = Stage::Uploading;
+                    db.update_stage(job.job_id, Stage::Uploading).await.unwrap();
+                    change_presence_job(&job.context.0, Presence::Uploading { idx, total: qlen }).await;
                 } else {
                     if !dispatch_or_kill(&mut shrine, &Worker::Encode, WorkerMsg::Encode((job.directory.clone(), job.preset.clone(), job.job_id, job.server_id)), job, &db, false).await {
                         dead.push(job.job_id);
@@ -339,6 +373,7 @@ pub enum JobType {
     Pancode = 006,
     Scrape = 007,
     Backup = 008,
+    BackupAll = 009,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]

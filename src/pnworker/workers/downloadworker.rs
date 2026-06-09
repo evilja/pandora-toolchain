@@ -15,7 +15,7 @@ use crate::pnworker::util::PathValue;
 use crate::pnworker::util::string_byte_to_mb;
 use crate::pnworker::core::{CommData, WorkerMsg};
 
-pub type DownloadData = (PathBuf, TorrentType, u64, Option<u64>);
+pub type DownloadData = (PathBuf, TorrentType, u64, Option<u64>, bool);
 
 pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, pulse: Sender<()>) {
     let mut proto = Protocol::new(vec![1]);
@@ -23,7 +23,7 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
     let pncurl_path = env.get(PNCURL).cloned().unwrap_or_default();
     let pnp2p_path = env.get(PNP2P).cloned().unwrap_or_default();
     'll: loop {
-        if let Ok(WorkerMsg::Download((directory, torrent, job_id, file_index))) = rx.try_recv() {
+        if let Ok(WorkerMsg::Download((directory, torrent, job_id, file_index, preserve_all))) = rx.try_recv() {
             let arg_opcode: String;
             match torrent {
                 TorrentType::GDrive(ref link) => {
@@ -87,38 +87,41 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     continue 'll;
                 }
                 TorrentType::Link(ref link) => {
-                    let result = run_tool(
-                        &pncurl_path,
-                        PNCURL_TORRENT,
-                        &HashMap::from([
-                            ("LINK",    PathValue::from(link.clone())),
-                            ("OPCODE",  PathValue::from(directory.join("contents").join("fetch.torrent").display().to_string())),
-                            ("LOGFILE", PathValue::from(directory.join("log").join(format!("PNcurl{}.log", job_id)).display().to_string())),
-                        ]),
-                        job_id,
-                        &mut proto,
-                        |data| {
-                            let out: u16 = match data.get(0).and_then(|v| v.parse()) {
-                                Some(v) => v,
-                                None => return None,
-                            };
-                            match out {
-                                1 => { tx.try_send((job_id, MessagePayload::Static(CTORRENT_DONE), None)).ok(); }
-                                2 => return Some(ToolResult::Fail),
-                                _ => {}
-                            }
-                            None
-                        },
-                    ).await;
+                    let fetch_torrent = directory.join("contents").join("fetch.torrent");
+                    if !link.is_empty() || !fetch_torrent.exists() {
+                        let result = run_tool(
+                            &pncurl_path,
+                            PNCURL_TORRENT,
+                            &HashMap::from([
+                                ("LINK",    PathValue::from(link.clone())),
+                                ("OPCODE",  PathValue::from(fetch_torrent.display().to_string())),
+                                ("LOGFILE", PathValue::from(directory.join("log").join(format!("PNcurl{}.log", job_id)).display().to_string())),
+                            ]),
+                            job_id,
+                            &mut proto,
+                            |data| {
+                                let out: u16 = match data.get(0).and_then(|v| v.parse()) {
+                                    Some(v) => v,
+                                    None => return None,
+                                };
+                                match out {
+                                    1 => { tx.try_send((job_id, MessagePayload::Static(CTORRENT_DONE), None)).ok(); }
+                                    2 => return Some(ToolResult::Fail),
+                                    _ => {}
+                                }
+                                None
+                            },
+                        ).await;
 
-                    match result {
-                        ToolResult::Fail => {
-                            tx.send((job_id, MessagePayload::Static(CTORRENT_FAIL), Some(Stage::Failed))).await.unwrap();
-                            continue 'll;
+                        match result {
+                            ToolResult::Fail => {
+                                tx.send((job_id, MessagePayload::Static(CTORRENT_FAIL), Some(Stage::Failed))).await.unwrap();
+                                continue 'll;
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
-                    arg_opcode = directory.join("contents").join("fetch.torrent").display().to_string();
+                    arg_opcode = fetch_torrent.display().to_string();
                 }
                 TorrentType::Magnet(ref magnet) => {
                     arg_opcode = magnet.clone();
@@ -214,7 +217,6 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
 
             match result {
                 ToolResult::Success => {
-                    // Find all .mkv files recursively (no closure inside this block)
                     let mkv_files = find_mkv_files(&torrent_dir).await;
                     
                     if mkv_files.is_empty() {
@@ -222,8 +224,11 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                         tx.send((job_id, MessagePayload::Static(TORRENT_FAIL), Some(Stage::Failed))).await.unwrap();
                         continue 'll;
                     }
+                    if preserve_all {
+                        tx.send((job_id, MessagePayload::Static(TORRENT_DONE), Some(Stage::Downloaded))).await.unwrap();
+                        continue 'll;
+                    }
                     
-                    // Pick the largest file (simple heuristic)
                     let mut largest_path = mkv_files[0].clone();
                     let mut largest_size = tokio::fs::metadata(&largest_path).await.map(|m| m.len()).unwrap_or(0);
                     for path in &mkv_files[1..] {
@@ -236,7 +241,6 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     
                     let target = torrent_dir.join("input.mkv");
         
-                    // Use the captured filename if we have it, otherwise fallback to largest file scan
                     let source_path = if let Some(ref rel_path) = targeted_file {
                         let full_path = torrent_dir.join(rel_path);
                         if full_path.exists() {
@@ -251,7 +255,6 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     let final_source = match source_path {
                         Some(p) => p,
                         None => {
-                            // Fallback to your existing "Largest MKV" heuristic
                             let mkv_files = find_mkv_files(&torrent_dir).await;
                             if mkv_files.is_empty() {
                                 tx.send((job_id, MessagePayload::Static(TORRENT_FAIL), Some(Stage::Failed))).await.unwrap();

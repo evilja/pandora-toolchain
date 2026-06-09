@@ -26,6 +26,8 @@ pub const ENCODE_FAIL: &str = "ENCODE_FAIL";
 pub const UPLOAD_PROG: &str = "UPLOAD_PROG";
 pub const UPLOAD_DONE: &str = "UPLOAD_DONE";
 pub const UPLOAD_FAIL: &str = "UPLOAD_FAIL";
+pub const UPLOAD_BACKUP_PROG: &str = "UPLOAD_BACKUP_PROG";
+pub const BACKUPALL_PROG: &str = "BACKUPALL_PROG";
 pub const PROBE_DONE: &str = "PROBE_DONE";
 pub const PROBE_FAIL: &str = "PROBE_FAIL";
 pub const PROBE_ROW: &str = "PROBE_ROW";
@@ -62,7 +64,7 @@ static DEFAULT_ENTRIES: &[(&str, &str, usize)] = &[
     ("QUEUE_TOO_LONG", "\n\nŞu anda Pandora Toolchain'de biraz sıra var. \nLütfen daha sonra tekrar deneyin.", 0),
     ("QUEUED", "\n\nİsteğiniz alındı.", 0),
     ("JOB_CANCELLED", "\nİşlem iptal edildi.", 0),
-    ("PROBE_TIMEOUT", "Probe timed out. use /pancode within 3 minutes next time.", 0),
+    ("PROBE_TIMEOUT", "Probe timed out. use /pancode or /backup within 3 minutes next time.", 0),
     ("GITSYNC_PROGRESS", "Tüm işlemler kapatılıyor.", 0),
     ("GITSYNC_SUCCESS", "Kaynak kodlar git ile güncellendi.\nBot yeniden başlatılıyor.", 0),
     ("GITSYNC_FAIL", "Git güncellemesi başarısız oldu.\nBot yine de yeniden başlatılıyor.", 0),
@@ -79,6 +81,8 @@ static DEFAULT_ENTRIES: &[(&str, &str, usize)] = &[
     ("UPLOAD_PROG", "\n\nYükleme ilerlemesi:\n{}\n{}\n{}\n{}\n{}", 5),
     ("UPLOAD_DONE", "\n\nDosya yüklendi.\n{}\n{}\n{}\n{}\n{}", 5),
     ("UPLOAD_FAIL", "\n\nDosya yüklenemedi. \nBir yetkiliden botu yeniden başlatmasını isteyebilirsiniz.", 0),
+    ("UPLOAD_BACKUP_PROG", "\n\n{}", 1),
+    ("BACKUPALL_PROG", "\n\n{}", 1),
     ("PROBE_DONE", "\n\nBatch torrent incelendi.", 0),
     ("PROBE_FAIL", "\n\nBatch torrent incelenemedi.", 0),
     ("PROBE_ROW", "\n\nDosya numaraları:\n{}", 1),

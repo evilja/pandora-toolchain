@@ -69,7 +69,7 @@ fn has_level_at_least(id: u64, min_rank: u8) -> bool {
 
 fn min_rank_for_command(part: &str) -> u8 {
     match part {
-        "encode" | "pancode" | "probe" | "backup" | "scrape" | "gitcode" | "smartcode" | "source" => 0,
+        "encode" | "pancode" | "probe" | "backup" | "backupall" | "scrape" | "gitcode" | "smartcode" | "source" => 0,
         "!enc" | "!encode" => 0,
         "job" => 1,
         "auth" | "remove" | "gitsync" | "hearts" | "configure" | "readmebase" | "addapi" | "font" | "!ban" | "!some" => 2,
@@ -470,12 +470,50 @@ impl EventHandler for Handler {
                     }
                 }
                 "backup" => {
+                    let probe_job_id = match option_str(&command, "job_id") {
+                        Some(id) => match id.parse::<u64>() {
+                            Ok(x) => Some(x),
+                            Err(_) => {
+                                command_error(&ctx, &command, "Error: job_id must be a number").await;
+                                return;
+                            }
+                        },
+                        None => None,
+                    };
+
+                    let file_index = match probe_job_id {
+                        Some(_) => match option_i64(&command, "index") {
+                            Some(i) if i >= 0 => Some(i as u64),
+                            _ => {
+                                command_error(&ctx, &command, "Error: index is required when job_id is provided").await;
+                                return;
+                            }
+                        },
+                        None => None,
+                    };
+
+                    let torrent_url = match probe_job_id {
+                        Some(_) => String::new(),
+                        None => match required_trimmed_option(&ctx, &command, "torrent", "Torrent URL").await {
+                            Some(url) => url,
+                            None => return,
+                        },
+                    };
+
+                    if let Some(mut job) = handle_backup(&ctx, &command, torrent_url).await {
+                        job.probe_job_id = probe_job_id;
+                        job.probe_file_index = file_index;
+                        self.tx.send(JobClass::Job(job)).await.unwrap();
+                    }
+                }
+                "backupall" => {
                     let torrent_url = match required_trimmed_option(&ctx, &command, "torrent", "Torrent URL").await {
                         Some(url) => url,
                         None => return,
                     };
 
-                    if let Some(job) = handle_backup(&ctx, &command, torrent_url).await {
+                    if let Some(mut job) = handle_backup(&ctx, &command, torrent_url).await {
+                        job.job_type = JobType::BackupAll;
                         self.tx.send(JobClass::Job(job)).await.unwrap();
                     }
                 }
@@ -634,6 +672,20 @@ impl EventHandler for Handler {
                 .description("Sync with the git repo"),
             CreateCommand::new("backup")
                 .description("Download torrent and upload MKV to GDrive without release")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent URL or magnet link")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "job_id", "Job ID from /probe result")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "index", "File index from probe results")
+                        .required(false)
+                ),
+            CreateCommand::new("backupall")
+                .description("Download a torrent and upload every MKV to GDrive")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent URL or magnet link")
                         .required(true)
