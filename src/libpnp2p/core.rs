@@ -1,14 +1,14 @@
-use std::path::PathBuf;
-use std::str::FromStr;
-use qbit_rs::Qbit;
-use qbit_rs::model::{
-    AddTorrentArg, Credential, GetTorrentListArg, Sep, State, TorrentFile, TorrentSource
-};
-use qbit_rs::model::Priority;
-use tokio::time::{sleep, Duration};
-use tokio::fs::{self, try_exists};
-use crate::{lib_pn_data, lib_pn_emit, lib_pn_schema};
 use crate::libpnprotocol::core::{Protocol, Schema};
+use crate::{lib_pn_data, lib_pn_emit, lib_pn_schema};
+use qbit_rs::Qbit;
+use qbit_rs::model::Priority;
+use qbit_rs::model::{
+    AddTorrentArg, Credential, GetTorrentListArg, Sep, State, TorrentFile, TorrentSource,
+};
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
+use tokio::fs::{self, try_exists};
+use tokio::time::{Duration, sleep};
 
 pub struct P2p {
     api: Qbit,
@@ -17,7 +17,10 @@ pub struct P2p {
 
 impl P2p {
     pub async fn new(uname: &str, pass: &str, cfile: Option<String>) -> Self {
-        println!("[pnp2p] new() called with uname={}, cfile={:?}", uname, cfile);
+        println!(
+            "[pnp2p] new() called with uname={}, cfile={:?}",
+            uname, cfile
+        );
         let credential = Credential::new(uname, pass);
         Self {
             api: Qbit::new("http://localhost:8089", credential),
@@ -30,10 +33,15 @@ impl P2p {
         torrent_path: &str,
         srcmgn: bool,
     ) -> Result<Vec<(u64, String, u64)>, Box<dyn std::error::Error>> {
-        println!("[pnp2p] probe_torrent entry: torrent_path={}, srcmgn={}", torrent_path, srcmgn);
+        println!(
+            "[pnp2p] probe_torrent entry: torrent_path={}, srcmgn={}",
+            torrent_path, srcmgn
+        );
         let source = if srcmgn {
             println!("[pnp2p] probe_torrent: creating source from URL(s)");
-            TorrentSource::Urls { urls: Sep::<reqwest::Url, '\n'>::from_str(torrent_path)? }
+            TorrentSource::Urls {
+                urls: Sep::<reqwest::Url, '\n'>::from_str(torrent_path)?,
+            }
         } else {
             println!("[pnp2p] probe_torrent: reading torrent file from disk");
             let torrent_bytes = fs::read(torrent_path).await?;
@@ -48,8 +56,11 @@ impl P2p {
         let temp_dir = std::env::temp_dir().join(format!("qb_probe_{}", std::process::id()));
         println!("[pnp2p] probe_torrent: creating temp dir {:?}", temp_dir);
         tokio::fs::create_dir_all(&temp_dir).await?;
-        
-        println!("[pnp2p] probe_torrent: calling api.add_torrent with savepath {:?}", temp_dir);
+
+        println!(
+            "[pnp2p] probe_torrent: calling api.add_torrent with savepath {:?}",
+            temp_dir
+        );
         let add_args = AddTorrentArg::builder()
             .source(source)
             .paused("true".to_string())
@@ -80,7 +91,11 @@ impl P2p {
         for i in 0..30 {
             sleep(Duration::from_secs(1)).await;
             let contents = self.api.get_torrent_contents(&hash, None).await?;
-            println!("[pnp2p] probe_torrent: poll {} -> {} files", i, contents.len());
+            println!(
+                "[pnp2p] probe_torrent: poll {} -> {} files",
+                i,
+                contents.len()
+            );
             if !contents.is_empty() {
                 files = contents;
                 break;
@@ -91,7 +106,10 @@ impl P2p {
             self.api.delete_torrents(vec![hash], true).await?;
             return Err("Torrent metadata could not be fetched".into());
         }
-        println!("[pnp2p] probe_torrent: metadata fetched, {} total files", files.len());
+        println!(
+            "[pnp2p] probe_torrent: metadata fetched, {} total files",
+            files.len()
+        );
 
         // Filter .mkv files
         let mkv_files: Vec<(u64, String, u64)> = files
@@ -99,7 +117,10 @@ impl P2p {
             .filter(|f| f.name.to_lowercase().ends_with(".mkv"))
             .map(|f| (f.index, f.name.clone(), f.size))
             .collect();
-        println!("[pnp2p] probe_torrent: found {} .mkv files", mkv_files.len());
+        println!(
+            "[pnp2p] probe_torrent: found {} .mkv files",
+            mkv_files.len()
+        );
 
         println!("[pnp2p] probe_torrent: deleting torrent and cleaning up temp dir");
         self.api.delete_torrents(vec![hash], true).await?;
@@ -117,11 +138,15 @@ impl P2p {
         neg: String,
         srcmgn: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        println!("[pnp2p] download_selected entry: torrent_path={}, save_path={}, file_indices={:?}, srcmgn={}", 
-                 torrent_path, save_path, file_indices, srcmgn);
+        println!(
+            "[pnp2p] download_selected entry: torrent_path={}, save_path={}, file_indices={:?}, srcmgn={}",
+            torrent_path, save_path, file_indices, srcmgn
+        );
         let source = if srcmgn {
             println!("[pnp2p] download_selected: creating source from URL(s)");
-            TorrentSource::Urls { urls: Sep::<reqwest::Url, '\n'>::from_str(torrent_path)? }
+            TorrentSource::Urls {
+                urls: Sep::<reqwest::Url, '\n'>::from_str(torrent_path)?,
+            }
         } else {
             println!("[pnp2p] download_selected: reading torrent file from disk");
             let torrent_bytes = fs::read(torrent_path).await?;
@@ -143,16 +168,19 @@ impl P2p {
         self.api.add_torrent(add_args).await?;
         println!("[pnp2p] download_selected: add_torrent succeeded, waiting 1s");
         sleep(Duration::from_secs(1)).await;
-        
+
         println!("[pnp2p] download_selected: fetching torrent list to get hash");
-        let torrents = self.api
+        let torrents = self
+            .api
             .get_torrent_list(GetTorrentListArg::builder().build())
             .await?;
         let hash = torrents
             .iter()
             .max_by_key(|t| t.added_on.unwrap_or(0))
             .ok_or("No torrents found")?
-            .hash.clone().unwrap();
+            .hash
+            .clone()
+            .unwrap();
         println!("[pnp2p] download_selected: obtained hash = {}", hash);
 
         // Wait for metadata and get file list
@@ -161,37 +189,50 @@ impl P2p {
         for i in 0..30 {
             sleep(Duration::from_secs(1)).await;
             let contents = self.api.get_torrent_contents(&hash, None).await?;
-            println!("[pnp2p] download_selected: poll {} -> {} files", i, contents.len());
+            println!(
+                "[pnp2p] download_selected: poll {} -> {} files",
+                i,
+                contents.len()
+            );
             if !contents.is_empty() {
                 files = contents;
                 break;
             }
         }
-        
+
         if files.is_empty() {
             println!("[pnp2p] download_selected: metadata fetch failed, deleting torrent");
             self.api.delete_torrents(vec![hash.clone()], true).await?;
             return Err("Could not retrieve file list for priority setting".into());
         }
-        println!("[pnp2p] download_selected: metadata fetched, {} total files", files.len());
+        println!(
+            "[pnp2p] download_selected: metadata fetched, {} total files",
+            files.len()
+        );
 
         // Set priorities for selected files to NORMAL, others to DO_NOT_DOWNLOAD
         println!("[pnp2p] download_selected: setting file priorities");
         for file in &files {
             let priority = if file_indices.contains(&file.index) {
                 let name = file.name.clone();
-                println!("{}", lib_pn_emit!(
-                    protocol = proto,
-                    negkey = &neg,
-                    schema = [leaf, leaf],
-                    data = ["4", name]
-                ).unwrap());
+                println!(
+                    "{}",
+                    lib_pn_emit!(
+                        protocol = proto,
+                        negkey = &neg,
+                        schema = [leaf, leaf],
+                        data = ["4", name]
+                    )
+                    .unwrap()
+                );
                 Priority::Normal
             } else {
                 Priority::DoNotDownload
             };
-            println!("[pnp2p] download_selected: file index={} name={} priority={:?}", 
-                     file.index, file.name, priority);
+            println!(
+                "[pnp2p] download_selected: file index={} name={} priority={:?}",
+                file.index, file.name, priority
+            );
             self.api
                 .set_file_priority(&hash, Sep::from_str(&file.index.to_string())?, priority)
                 .await?;
@@ -199,7 +240,7 @@ impl P2p {
 
         println!("[pnp2p] download_selected: waiting 500ms for priorities to apply");
         sleep(Duration::from_millis(500)).await;
-        
+
         println!("[pnp2p] download_selected: starting torrent");
         self.api.start_torrents(vec![hash.clone()]).await?;
 
@@ -211,36 +252,54 @@ impl P2p {
                 if try_exists(cancelfile).await.unwrap_or(false) {
                     println!("[pnp2p] download_selected: cancel file detected, deleting torrent");
                     self.api.delete_torrents(vec![hash.clone()], true).await?;
-                    println!("{}", lib_pn_emit!(
-                        protocol = proto,
-                        negkey = &neg,
-                        schema = [leaf, leaf],
-                        data = ["3", "CANCELFILE"]
-                    ).unwrap());
+                    println!(
+                        "{}",
+                        lib_pn_emit!(
+                            protocol = proto,
+                            negkey = &neg,
+                            schema = [leaf, leaf],
+                            data = ["3", "CANCELFILE"]
+                        )
+                        .unwrap()
+                    );
                     return Ok(());
                 }
             }
 
-            let torrents = self.api
+            let torrents = self
+                .api
                 .get_torrent_list(GetTorrentListArg::builder().hashes(hash.clone()).build())
                 .await?;
             let torrent = torrents.first().ok_or("Torrent not found")?;
-            println!("[pnp2p] download_selected: state={:?}, progress={}", torrent.state, torrent.progress.unwrap_or(0.0));
+            println!(
+                "[pnp2p] download_selected: state={:?}, progress={}",
+                torrent.state,
+                torrent.progress.unwrap_or(0.0)
+            );
 
             match torrent.state {
-                Some(State::Uploading) | Some(State::StalledUP) | Some(State::ForcedUP) | Some(State::QueuedUP) => {
-                    println!("[pnp2p] download_selected: torrent reached uploading/seeding state, breaking");
+                Some(State::Uploading)
+                | Some(State::StalledUP)
+                | Some(State::ForcedUP)
+                | Some(State::QueuedUP) => {
+                    println!(
+                        "[pnp2p] download_selected: torrent reached uploading/seeding state, breaking"
+                    );
                     break;
                 }
                 Some(State::Error) | Some(State::MissingFiles) => {
                     println!("[pnp2p] download_selected: error state, deleting torrent");
                     self.api.delete_torrents(vec![hash.clone()], true).await?;
-                    println!("{}", lib_pn_emit!(
-                        protocol = proto,
-                        negkey = &neg,
-                        schema = [leaf, leaf],
-                        data = ["2", "ERROR"]
-                    ).unwrap());
+                    println!(
+                        "{}",
+                        lib_pn_emit!(
+                            protocol = proto,
+                            negkey = &neg,
+                            schema = [leaf, leaf],
+                            data = ["2", "ERROR"]
+                        )
+                        .unwrap()
+                    );
                     return Err("Torrent entered error state".into());
                 }
                 _ => {}
@@ -251,26 +310,38 @@ impl P2p {
                 let props = self.api.get_torrent_properties(&hash).await?;
                 let downloaded = (props.total_downloaded.unwrap_or(0) as f32).abs();
                 let total = (props.total_size.unwrap_or(1) as f32).abs();
-                println!("[pnp2p] download_selected: progress update: {}% ({}MB/{}MB)", percent, 
-                         downloaded as f64 / 1_048_576.0, total as f64 / 1_048_576.0);
-                println!("{}", lib_pn_emit!(
-                    protocol = proto,
-                    negkey = &neg,
-                    schema = [leaf, [leaf, leaf, leaf]],
-                    data = ["0", [percent, downloaded, total]]
-                ).unwrap());
+                println!(
+                    "[pnp2p] download_selected: progress update: {}% ({}MB/{}MB)",
+                    percent,
+                    downloaded as f64 / 1_048_576.0,
+                    total as f64 / 1_048_576.0
+                );
+                println!(
+                    "{}",
+                    lib_pn_emit!(
+                        protocol = proto,
+                        negkey = &neg,
+                        schema = [leaf, [leaf, leaf, leaf]],
+                        data = ["0", [percent, downloaded, total]]
+                    )
+                    .unwrap()
+                );
                 last_printed = percent;
             }
             sleep(Duration::from_secs(5)).await;
         }
 
         println!("[pnp2p] download_selected: download complete, sending DONE");
-        println!("{}", lib_pn_emit!(
-            protocol = proto,
-            negkey = &neg,
-            schema = [leaf, leaf],
-            data = ["1", "DONE"]
-        ).unwrap());
+        println!(
+            "{}",
+            lib_pn_emit!(
+                protocol = proto,
+                negkey = &neg,
+                schema = [leaf, leaf],
+                data = ["1", "DONE"]
+            )
+            .unwrap()
+        );
         println!("[pnp2p] download_selected: deleting torrent (keep files = false)");
         self.api.delete_torrents(vec![hash], false).await?;
         println!("[pnp2p] download_selected: success");
@@ -285,11 +356,15 @@ impl P2p {
         neg: String,
         srcmgn: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        println!("[pnp2p] download_and_remove entry: torrent_path={}, save_path={}, srcmgn={}", 
-                 torrent_path, save_path, srcmgn);
+        println!(
+            "[pnp2p] download_and_remove entry: torrent_path={}, save_path={}, srcmgn={}",
+            torrent_path, save_path, srcmgn
+        );
         let source = if srcmgn {
             println!("[pnp2p] download_and_remove: creating source from URL(s)");
-            TorrentSource::Urls { urls: Sep::<reqwest::Url, '\n'>::from_str(torrent_path)? }
+            TorrentSource::Urls {
+                urls: Sep::<reqwest::Url, '\n'>::from_str(torrent_path)?,
+            }
         } else {
             println!("[pnp2p] download_and_remove: reading torrent file from disk");
             let torrent_bytes = fs::read(torrent_path).await?;
@@ -312,13 +387,16 @@ impl P2p {
         sleep(Duration::from_secs(1)).await;
 
         println!("[pnp2p] download_and_remove: fetching torrent list to get hash");
-        let hash = self.api
+        let hash = self
+            .api
             .get_torrent_list(GetTorrentListArg::builder().build())
             .await?
             .iter()
             .max_by_key(|t| t.added_on.unwrap_or(0))
             .ok_or("No torrents found")?
-            .hash.clone().unwrap();
+            .hash
+            .clone()
+            .unwrap();
         println!("[pnp2p] download_and_remove: obtained hash = {}", hash);
 
         println!("[pnp2p] download_and_remove: entering progress monitoring loop");
@@ -329,36 +407,54 @@ impl P2p {
                 if try_exists(cancelfile).await.unwrap_or(false) {
                     println!("[pnp2p] download_and_remove: cancel file detected, deleting torrent");
                     self.api.delete_torrents(vec![hash.clone()], true).await?;
-                    println!("{}", lib_pn_emit!(
-                        protocol = proto,
-                        negkey = &neg,
-                        schema = [leaf, leaf],
-                        data   = ["3", "CANCELFILE"]
-                    ).unwrap());
+                    println!(
+                        "{}",
+                        lib_pn_emit!(
+                            protocol = proto,
+                            negkey = &neg,
+                            schema = [leaf, leaf],
+                            data = ["3", "CANCELFILE"]
+                        )
+                        .unwrap()
+                    );
                     return Ok(());
                 }
             }
 
-            let torrents = self.api
+            let torrents = self
+                .api
                 .get_torrent_list(GetTorrentListArg::builder().hashes(hash.clone()).build())
                 .await?;
             let torrent = torrents.first().ok_or("Torrent not found")?;
-            println!("[pnp2p] download_and_remove: state={:?}, progress={}", torrent.state, torrent.progress.unwrap_or(0.0));
+            println!(
+                "[pnp2p] download_and_remove: state={:?}, progress={}",
+                torrent.state,
+                torrent.progress.unwrap_or(0.0)
+            );
 
             match torrent.state {
-                Some(State::Uploading) | Some(State::StalledUP) | Some(State::ForcedUP) | Some(State::QueuedUP) => {
-                    println!("[pnp2p] download_and_remove: torrent reached uploading/seeding state, breaking");
+                Some(State::Uploading)
+                | Some(State::StalledUP)
+                | Some(State::ForcedUP)
+                | Some(State::QueuedUP) => {
+                    println!(
+                        "[pnp2p] download_and_remove: torrent reached uploading/seeding state, breaking"
+                    );
                     break;
                 }
                 Some(State::Error) | Some(State::MissingFiles) => {
                     println!("[pnp2p] download_and_remove: error state, deleting torrent");
                     self.api.delete_torrents(vec![hash.clone()], true).await?;
-                    println!("{}", lib_pn_emit!(
-                        protocol = proto,
-                        negkey = &neg,
-                        schema = [leaf, leaf],
-                        data   = ["2", "ERROR"]
-                    ).unwrap());
+                    println!(
+                        "{}",
+                        lib_pn_emit!(
+                            protocol = proto,
+                            negkey = &neg,
+                            schema = [leaf, leaf],
+                            data = ["2", "ERROR"]
+                        )
+                        .unwrap()
+                    );
                     return Err("Torrent entered error state".into());
                 }
                 _ => {}
@@ -368,30 +464,80 @@ impl P2p {
                 let props = self.api.get_torrent_properties(&hash).await?;
                 let downloaded = (props.total_downloaded.unwrap_or(0) as f32).abs();
                 let total = (props.total_size.unwrap_or(1) as f32).abs();
-                println!("[pnp2p] download_and_remove: progress update: {}% ({}MB/{}MB)", percent,
-                         downloaded as f64 / 1_048_576.0, total as f64 / 1_048_576.0);
-                println!("{}" , lib_pn_emit!(
-                    protocol = proto,
-                    negkey = &neg,
-                    schema = [leaf, [leaf, leaf, leaf]],
-                    data   = ["0", [percent, downloaded, total]]
-                ).unwrap());
+                println!(
+                    "[pnp2p] download_and_remove: progress update: {}% ({}MB/{}MB)",
+                    percent,
+                    downloaded as f64 / 1_048_576.0,
+                    total as f64 / 1_048_576.0
+                );
+                println!(
+                    "{}",
+                    lib_pn_emit!(
+                        protocol = proto,
+                        negkey = &neg,
+                        schema = [leaf, [leaf, leaf, leaf]],
+                        data = ["0", [percent, downloaded, total]]
+                    )
+                    .unwrap()
+                );
                 last_printed = percent;
             }
 
             sleep(Duration::from_secs(5)).await;
         }
 
+        let torrents = self
+            .api
+            .get_torrent_list(GetTorrentListArg::builder().hashes(hash.clone()).build())
+            .await?;
+        if let Some(content_path) = torrents.first().and_then(|t| t.content_path.clone()) {
+            copy_mkv_files_to_save_path(&PathBuf::from(content_path), Path::new(save_path)).await?;
+        }
+
         println!("[pnp2p] download_and_remove: download complete, sending DONE");
-        println!("{}", lib_pn_emit!(
-            protocol = proto,
-            negkey = &neg,
-            schema = [leaf, leaf],
-            data   = ["1", "DONE"]
-        ).unwrap());
+        println!(
+            "{}",
+            lib_pn_emit!(
+                protocol = proto,
+                negkey = &neg,
+                schema = [leaf, leaf],
+                data = ["1", "DONE"]
+            )
+            .unwrap()
+        );
         println!("[pnp2p] download_and_remove: deleting torrent (keep files = false)");
         self.api.delete_torrents(vec![hash], false).await?;
         println!("[pnp2p] download_and_remove: success");
         Ok(())
     }
+}
+
+async fn copy_mkv_files_to_save_path(
+    source: &Path,
+    save_path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !source.exists() {
+        return Ok(());
+    }
+    fs::create_dir_all(save_path).await?;
+    let mut stack = vec![source.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        if path.is_dir() {
+            let mut entries = fs::read_dir(&path).await?;
+            while let Some(entry) = entries.next_entry().await? {
+                stack.push(entry.path());
+            }
+        } else if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("mkv"))
+            .unwrap_or(false)
+        {
+            let target = save_path.join(path.file_name().unwrap_or_default());
+            if path != target {
+                fs::copy(&path, &target).await?;
+            }
+        }
+    }
+    Ok(())
 }
