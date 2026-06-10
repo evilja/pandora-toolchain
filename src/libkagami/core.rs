@@ -285,7 +285,7 @@ impl SubstationAlpha {
         for i in &self.events {
             sevent.push_str(&i.stringify());
         }
-        match file.write(sevent.as_bytes()).await {
+        match file.write_all(sevent.as_bytes()).await {
             Ok(_) => return Ok(()),
             Err(_) => return Err(())
         }
