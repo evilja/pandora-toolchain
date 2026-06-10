@@ -930,20 +930,16 @@ async fn zip_files(paths: &[PathBuf]) -> Result<Vec<u8>, String> {
     let mut out: Vec<u8> = Vec::new();
     {
         let mut writer = async_zip::base::write::ZipFileWriter::new(&mut out);
-        let mut used: HashMap<String, usize> = HashMap::new();
+        let mut used: HashSet<String> = HashSet::new();
         for path in paths {
             let data = tokio::fs::read(path).await.map_err(|e| e.to_string())?;
-            let base = path.file_name()
+            let name = path.file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("font")
                 .to_string();
-            let count = used.entry(base.clone()).or_insert(0);
-            let name = if *count == 0 {
-                base.clone()
-            } else {
-                format!("{}-{}", count, base)
-            };
-            *count += 1;
+            if !used.insert(name.clone()) {
+                continue;
+            }
             let entry = async_zip::ZipEntryBuilder::new(name.into(), async_zip::Compression::Deflate);
             writer.write_entry_whole(entry, &data).await.map_err(|e| e.to_string())?;
         }

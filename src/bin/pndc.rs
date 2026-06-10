@@ -21,7 +21,7 @@ use pandora_toolchain::libpnenv::standard::PNASS;
 use pandora_toolchain::libkagami::core::{SubstationAlpha, find_fonts_with_roots};
 use pandora_toolchain::libpnprotocol::core::Protocol;
 use tokio::sync::mpsc::{channel, Sender, Receiver};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use regex::Regex;
 use reqwest;
