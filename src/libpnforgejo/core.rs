@@ -124,8 +124,11 @@ impl Forgejo {
             "message": message,
             "branch": branch,
         });
-        let resp = self.client.post(url.clone())
-            .bearer_auth(&self.token)
+        let req = match self.provider {
+            GitProvider::Forgejo => self.client.post(url.clone()),
+            GitProvider::GitHub => self.client.put(url.clone()),
+        };
+        let resp = req.bearer_auth(&self.token)
             .json(&body)
             .send().await
             .map_err(|e| e.to_string())?;
