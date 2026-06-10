@@ -292,6 +292,11 @@ async fn bootstrap_repo(
     }
 
     let has_readme = existing.iter().any(|n| n.eq_ignore_ascii_case("README.md"));
+    let has_gitignore = existing.iter().any(|n| n.eq_ignore_ascii_case(".gitignore"));
+    if !has_gitignore {
+        fg.create_file(owner_repo, ".gitignore", &base64_encode("*.mkv\n"), "bootstrap gitignore").await?;
+        created.push(".gitignore".to_string());
+    }
     if let Some(readme) = base_md {
         let b64 = base64_encode(&readme);
         if has_readme {

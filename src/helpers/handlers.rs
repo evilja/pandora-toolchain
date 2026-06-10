@@ -355,6 +355,7 @@ async fn smartcode_merge_upload(
         match fg.upsert_file(&owner_repo, &source_path, &source_b64, &source_commit).await {
             Ok(()) => {
                 println!("[{}] uploaded {}", log_prefix, source_path);
+                remove_gitkeep_for_path(&fg, &owner_repo, &source_path).await;
             }
             Err(e) => {
                 println!("[{}] SOURCE.md upload failed for {}: {}", log_prefix, source_path, e);
@@ -490,6 +491,7 @@ pub async fn handle_source(ctx: &Context, command: &serenity::all::CommandIntera
     let source_b64 = base64_encode(&source_content);
     match fg.upsert_file(&owner_repo, &source_path, &source_b64, "Set source link").await {
         Ok(()) => {
+            remove_gitkeep_for_path(&fg, &owner_repo, &source_path).await;
             let _ = response_msg.edit(ctx, EditMessage::new()
                 .content(format!("Wrote `{}` with:\n```\n{}\n```", source_path, source_content.trim_end()))).await;
         }
@@ -906,10 +908,22 @@ async fn upsert_repo_ass(fg: &Forgejo, owner_repo: &str, ass_path: &str, bytes: 
         upload_path.ends_with(".zip"));
     let b64 = base64_encode_bytes(&upload_bytes);
     fg.upsert_file(owner_repo, &upload_path, &b64, message).await?;
+    remove_gitkeep_for_path(fg, owner_repo, &upload_path).await;
     if let Ok(Some(sha)) = fg.get_file_sha(owner_repo, &alternate_path).await {
         let _ = fg.delete_file(owner_repo, &alternate_path, &sha, &format!("Remove alternate {}", alternate_path)).await;
     }
     Ok(upload_path)
+}
+
+async fn remove_gitkeep_for_path(fg: &Forgejo, owner_repo: &str, path: &str) {
+    let folder = match path.rsplit_once('/') {
+        Some((folder, _)) if !folder.is_empty() => folder,
+        _ => return,
+    };
+    let gitkeep = format!("{}/.gitkeep", folder);
+    if let Ok(Some(sha)) = fg.get_file_sha(owner_repo, &gitkeep).await {
+        let _ = fg.delete_file(owner_repo, &gitkeep, &sha, "Remove .gitkeep").await;
+    }
 }
 
 async fn zip_files(paths: &[PathBuf]) -> Result<Vec<u8>, String> {
@@ -958,6 +972,7 @@ async fn upsert_fonts_zip(fg: &Forgejo, owner_repo: &str, server_id: u64, folder
     let b64 = base64_encode_bytes(&zip);
     let path = format!("{}/fonts.zip", folder);
     fg.upsert_file(owner_repo, &path, &b64, "Update fonts").await?;
+    remove_gitkeep_for_path(fg, owner_repo, &path).await;
     Ok(Some(path))
 }
 
