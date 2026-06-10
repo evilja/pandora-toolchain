@@ -884,6 +884,13 @@ async fn upsert_repo_ass(fg: &Forgejo, owner_repo: &str, ass_path: &str, bytes: 
     } else {
         (ass_path.to_string(), bytes.to_vec(), format!("{}.zip", ass_path))
     };
+    println!("[ass-upload] owner_repo={} ass_path={} upload_path={} raw_bytes={} upload_bytes={} zipped={}",
+        owner_repo,
+        ass_path,
+        upload_path,
+        bytes.len(),
+        upload_bytes.len(),
+        upload_path.ends_with(".zip"));
     let b64 = base64_encode_bytes(&upload_bytes);
     fg.upsert_file(owner_repo, &upload_path, &b64, message).await?;
     if let Ok(Some(sha)) = fg.get_file_sha(owner_repo, &alternate_path).await {
@@ -1070,6 +1077,12 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
     };
 
     let job_id = response_msg.id.get();
+    println!("[job] id={} kind={} episode={} attachment={} attachment_bytes={}",
+        job_id,
+        match job_kind { JobKind::TL => "TL", JobKind::TLC => "TLC", JobKind::TS => "TS" },
+        episode,
+        attachment.filename,
+        attachment_bytes.len());
     let job_dir = format!("DB/saved_data/{}", job_id);
     if let Err(e) = tokio::fs::create_dir_all(&job_dir).await {
         let _ = response_msg.edit(ctx, EditMessage::new()
@@ -1116,6 +1129,10 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
         let _ = response_msg.edit(ctx, EditMessage::new()
             .content("Error: unsupported subtitle file type. Use .ass or .zip.")).await;
         return;
+    }
+    match tokio::fs::metadata(&input_path).await {
+        Ok(m) => println!("[job] id={} input_ass_bytes={}", job_id, m.len()),
+        Err(e) => println!("[job] id={} input_ass_metadata_failed={}", job_id, e),
     }
 
     let mut warnings: Vec<String> = Vec::new();
@@ -1180,6 +1197,7 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
             return;
         }
     };
+    println!("[job] id={} output_ass_bytes={} zip_threshold={}", job_id, output_bytes.len(), ASS_ZIP_THRESHOLD_BYTES);
     let (file_type_label, prefix, default_msg) = match job_kind {
         JobKind::TL  => ("TL",  "TL",  "Translation"),
         JobKind::TLC => ("TL",  "TLC", "Edit"),
@@ -1205,6 +1223,7 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
     };
     match upsert_repo_ass(&fg, &owner_repo, &repo_path, &output_bytes, &commit_msg).await {
         Ok(uploaded_path) => {
+            println!("[job] id={} uploaded_path={} raw_bytes={}", job_id, uploaded_path, output_bytes.len());
             let embed = CreateEmbed::new()
                 .title("Job complete")
                 .field("Repo", format!("`{}`", owner_repo), true)
@@ -1294,6 +1313,8 @@ pub async fn handle_ts_message(ctx: &Context, msg: &Message, parts: &[&str]) {
     };
 
     let job_id = response_msg.id.get();
+    println!("[ts] id={} episode={} attachment={} attachment_bytes={}",
+        job_id, episode, attachment.filename, attachment_bytes.len());
     let job_dir = format!("DB/saved_data/{}", job_id);
     if let Err(e) = tokio::fs::create_dir_all(&job_dir).await {
         let _ = response_msg.edit(ctx, EditMessage::new()
@@ -1341,6 +1362,10 @@ pub async fn handle_ts_message(ctx: &Context, msg: &Message, parts: &[&str]) {
             .content("Error: unsupported subtitle file type. Use .ass or .zip.")).await;
         return;
     }
+    match tokio::fs::metadata(&input_path).await {
+        Ok(m) => println!("[ts] id={} input_ass_bytes={}", job_id, m.len()),
+        Err(e) => println!("[ts] id={} input_ass_metadata_failed={}", job_id, e),
+    }
 
     if let Err(e) = tokio::fs::copy(&input_path, &output_path).await {
         let _ = response_msg.edit(ctx, EditMessage::new()
@@ -1366,6 +1391,7 @@ pub async fn handle_ts_message(ctx: &Context, msg: &Message, parts: &[&str]) {
             return;
         }
     };
+    println!("[ts] id={} output_ass_bytes={} zip_threshold={}", job_id, output_bytes.len(), ASS_ZIP_THRESHOLD_BYTES);
     let safe_name = anime_name.replace('/', "-");
     let repo_path = format!("{}/TS - {} - E{:02}.ass", pad2(episode), safe_name, episode);
     let fg = match Forgejo::new(forgejo_base, api_key) {
@@ -1378,6 +1404,7 @@ pub async fn handle_ts_message(ctx: &Context, msg: &Message, parts: &[&str]) {
     };
     match upsert_repo_ass(&fg, &owner_repo, &repo_path, &output_bytes, "Typeset").await {
         Ok(uploaded_path) => {
+            println!("[ts] id={} uploaded_path={} raw_bytes={}", job_id, uploaded_path, output_bytes.len());
             let embed = CreateEmbed::new()
                 .title("TS complete")
                 .field("Repo", format!("`{}`", owner_repo), true)
