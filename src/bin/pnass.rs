@@ -67,6 +67,8 @@ async fn main() {
         }
     }
 
+    let warning_event_count = sub.events.len();
+
     if let Some(merge_path) = args.merge.as_deref() {
         let mut secondary = SubstationAlpha::load(PathBuf::from(merge_path), false).await;
         let overlap: std::collections::HashSet<String> = style_names(&sub)
@@ -80,7 +82,7 @@ async fn main() {
     }
 
     let mut run_count: usize = 0;
-    for (i, ev) in sub.events.iter().enumerate() {
+    for (i, ev) in sub.events.iter().take(warning_event_count).enumerate() {
         let is_drawing = ev.text.data.iter().any(|item| matches!(item, ASSText::Override(ASSOverride::P(1))));
         if is_drawing {
             continue;

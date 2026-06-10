@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use crate::libkagami::complex::overrides::ASSOverride;
 use crate::libkagami::tags::{ASSLine, ASSText};
 use crate::libkagami::complex::types::{AssColour, AssTime};
@@ -262,6 +263,16 @@ impl SubstationAlpha {
     pub fn add_event(&mut self, event: Event) {
         self.events.push(event);
     }
+    pub fn font_names(&self) -> Vec<String> {
+        let mut out = BTreeSet::new();
+        for style in &self.v4p_styles {
+            insert_font_name(&mut out, &style.fontname);
+        }
+        for event in &self.events {
+            collect_line_fonts(&event.text, &mut out);
+        }
+        out.into_iter().collect()
+    }
     pub async fn dump_to_file(&self, path: PathBuf) -> Result<(), ()> {
         let mut file = match File::create(path).await {
             Ok(f) => f,
@@ -290,4 +301,231 @@ impl SubstationAlpha {
             Err(_) => return Err(())
         }
     }
+}
+
+pub fn find_system_fonts(names: &[String]) -> Vec<PathBuf> {
+    find_fonts_with_roots(names, &[])
+}
+
+pub fn find_fonts_with_roots(names: &[String], extra_roots: &[PathBuf]) -> Vec<PathBuf> {
+    let wanted: BTreeSet<String> = names.iter()
+        .map(|n| normalize_font_name(n))
+        .filter(|n| !n.is_empty())
+        .collect();
+    if wanted.is_empty() {
+        return Vec::new();
+    }
+    let mut found: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut font_files = Vec::new();
+    for root in extra_roots {
+        collect_font_files(root, &mut font_files);
+    }
+    font_files.extend(system_font_files());
+    for path in font_files {
+        let font_names = match font_file_names(&path) {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        for name in font_names {
+            let normalized = normalize_font_name(&name);
+            if wanted.contains(&normalized) {
+                found.insert(path.clone());
+            }
+        }
+    }
+    let mut out: Vec<PathBuf> = found.into_iter().collect();
+    out.sort();
+    out
+}
+
+fn collect_line_fonts(line: &ASSLine, out: &mut BTreeSet<String>) {
+    for item in &line.data {
+        match item {
+            ASSText::Override(ov) => collect_override_fonts(ov, out),
+            ASSText::RawText(s) => collect_raw_fn_fonts(s, out),
+        }
+    }
+    for ov in &line.current_overrides {
+        collect_override_fonts(ov, out);
+    }
+}
+
+fn collect_override_fonts(ov: &ASSOverride, out: &mut BTreeSet<String>) {
+    match ov {
+        ASSOverride::Fn(name) => insert_font_name(out, name),
+        ASSOverride::TransformI(items) => collect_override_list_fonts(items, out),
+        ASSOverride::TransformII(_, items) => collect_override_list_fonts(items, out),
+        ASSOverride::TransformIII(_, _, items) => collect_override_list_fonts(items, out),
+        ASSOverride::TransformIV(_, _, _, items) => collect_override_list_fonts(items, out),
+        _ => {}
+    }
+}
+
+fn collect_override_list_fonts(items: &[ASSOverride], out: &mut BTreeSet<String>) {
+    for item in items {
+        collect_override_fonts(item, out);
+    }
+}
+
+fn collect_raw_fn_fonts(s: &str, out: &mut BTreeSet<String>) {
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    while i + 2 < bytes.len() {
+        if bytes[i] == b'\\' && bytes[i + 1] == b'f' && bytes[i + 2] == b'n' {
+            let start = i + 3;
+            let mut end = start;
+            while end < bytes.len() && bytes[end] != b'\\' && bytes[end] != b'}' {
+                end += 1;
+            }
+            insert_font_name(out, &s[start..end]);
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+}
+
+fn insert_font_name(out: &mut BTreeSet<String>, name: &str) {
+    let trimmed = name.trim();
+    if !trimmed.is_empty() {
+        out.insert(trimmed.to_string());
+    }
+}
+
+fn normalize_font_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| !c.is_whitespace() && *c != '-' && *c != '_')
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+fn system_font_files() -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if cfg!(windows) {
+        roots.push(PathBuf::from(r"C:\Windows\Fonts"));
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            roots.push(PathBuf::from(local).join("Microsoft").join("Windows").join("Fonts"));
+        }
+    } else if cfg!(target_os = "macos") {
+        roots.push(PathBuf::from("/System/Library/Fonts"));
+        roots.push(PathBuf::from("/Library/Fonts"));
+        if let Ok(home) = std::env::var("HOME") {
+            roots.push(PathBuf::from(home).join("Library").join("Fonts"));
+        }
+    } else {
+        roots.push(PathBuf::from("/usr/share/fonts"));
+        roots.push(PathBuf::from("/usr/local/share/fonts"));
+        if let Ok(home) = std::env::var("HOME") {
+            roots.push(PathBuf::from(&home).join(".fonts"));
+            roots.push(PathBuf::from(home).join(".local").join("share").join("fonts"));
+        }
+    }
+    let mut out = Vec::new();
+    for root in roots {
+        collect_font_files(&root, &mut out);
+    }
+    out
+}
+
+fn collect_font_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_font_files(&path, out);
+        } else if path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| matches!(e.to_ascii_lowercase().as_str(), "ttf" | "otf" | "ttc"))
+            .unwrap_or(false)
+        {
+            out.push(path);
+        }
+    }
+}
+
+fn font_file_names(path: &Path) -> Result<Vec<String>, ()> {
+    let data = std::fs::read(path).map_err(|_| ())?;
+    let mut offsets = Vec::new();
+    if data.get(0..4) == Some(b"ttcf") {
+        let count = read_u32(&data, 8).ok_or(())? as usize;
+        for i in 0..count {
+            if let Some(offset) = read_u32(&data, 12 + i * 4) {
+                offsets.push(offset as usize);
+            }
+        }
+    } else {
+        offsets.push(0);
+    }
+    let mut out = Vec::new();
+    for offset in offsets {
+        out.extend(sfnt_names(&data, offset).unwrap_or_default());
+    }
+    Ok(out)
+}
+
+fn sfnt_names(data: &[u8], base: usize) -> Result<Vec<String>, ()> {
+    let num_tables = read_u16(data, base + 4).ok_or(())? as usize;
+    let mut name_offset = None;
+    for i in 0..num_tables {
+        let rec = base + 12 + i * 16;
+        if data.get(rec..rec + 4) == Some(b"name") {
+            name_offset = read_u32(data, rec + 8).map(|o| base + o as usize);
+            break;
+        }
+    }
+    let name_offset = name_offset.ok_or(())?;
+    let count = read_u16(data, name_offset + 2).ok_or(())? as usize;
+    let string_offset = name_offset + read_u16(data, name_offset + 4).ok_or(())? as usize;
+    let mut out = Vec::new();
+    for i in 0..count {
+        let rec = name_offset + 6 + i * 12;
+        let platform = read_u16(data, rec).ok_or(())?;
+        let name_id = read_u16(data, rec + 6).ok_or(())?;
+        if !matches!(name_id, 1 | 4 | 6 | 16) {
+            continue;
+        }
+        let len = read_u16(data, rec + 8).ok_or(())? as usize;
+        let off = read_u16(data, rec + 10).ok_or(())? as usize;
+        let start = string_offset + off;
+        let raw = match data.get(start..start + len) {
+            Some(r) => r,
+            None => continue,
+        };
+        if let Some(s) = decode_name_string(platform, raw) {
+            if !s.trim().is_empty() {
+                out.push(s.trim().to_string());
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn decode_name_string(platform: u16, raw: &[u8]) -> Option<String> {
+    if platform == 0 || platform == 3 {
+        let mut units = Vec::new();
+        let mut i = 0usize;
+        while i + 1 < raw.len() {
+            units.push(u16::from_be_bytes([raw[i], raw[i + 1]]));
+            i += 2;
+        }
+        String::from_utf16(&units).ok()
+    } else {
+        Some(raw.iter().map(|b| *b as char).collect())
+    }
+}
+
+fn read_u16(data: &[u8], offset: usize) -> Option<u16> {
+    Some(u16::from_be_bytes([*data.get(offset)?, *data.get(offset + 1)?]))
+}
+
+fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
+    Some(u32::from_be_bytes([
+        *data.get(offset)?,
+        *data.get(offset + 1)?,
+        *data.get(offset + 2)?,
+        *data.get(offset + 3)?,
+    ]))
 }

@@ -18,7 +18,7 @@ use pandora_toolchain::libpnmal::{fetch_anime, AnimeMeta, AnimeKind};
 use pandora_toolchain::libpnforgejo::{Forgejo, base64_encode, base64_encode_bytes};
 use pandora_toolchain::pnworker::core::pn_worker;
 use pandora_toolchain::libpnenv::standard::PNASS;
-use pandora_toolchain::libkagami::core::SubstationAlpha;
+use pandora_toolchain::libkagami::core::{SubstationAlpha, find_fonts_with_roots};
 use pandora_toolchain::libpnprotocol::core::Protocol;
 use tokio::sync::mpsc::{channel, Sender, Receiver};
 use std::collections::HashMap;

@@ -140,6 +140,7 @@ struct SmartMergeResult {
     owner_repo: String,
     release_path: String,
     source_path: String,
+    fonts_path: Option<String>,
     warnings: Vec<String>,
 }
 
@@ -325,6 +326,8 @@ async fn smartcode_merge_upload(
             return None;
         }
     };
+    let merged_sub = SubstationAlpha::load(merged_local.clone(), true).await;
+    let font_names = merged_sub.font_names();
 
     let release_path = format!("{}/Release - {} - E{:02}.ass", folder, safe_name, episode);
     let release_commit = "Smartcode merge".to_string();
@@ -363,6 +366,14 @@ async fn smartcode_merge_upload(
     }
     }
 
+    let fonts_path = match upsert_fonts_zip(&fg, &owner_repo, server_id, &folder, &font_names).await {
+        Ok(p) => p,
+        Err(e) => {
+            println!("[{}] fonts.zip upload failed for {}: {}", log_prefix, folder, e);
+            None
+        }
+    };
+
     println!("[{}] repo={} episode={} tl={} ts_presence={} warnings={} merged_bytes={} release={} source_origin={}",
         log_prefix, owner_repo, episode, tl_path,
         if ts_bytes_opt.is_some() { "present" } else { "absent" },
@@ -377,6 +388,7 @@ async fn smartcode_merge_upload(
         owner_repo,
         release_path: uploaded_release_path,
         source_path,
+        fonts_path,
         warnings,
     })
 }
@@ -429,6 +441,7 @@ pub async fn handle_merge(ctx: &Context, command: &serenity::all::CommandInterac
         .field("Repo", format!("`{}`", result.owner_repo), true)
         .field("Release", format!("`{}`", result.release_path), true)
         .field("Source", format!("`{}`", result.source_path), true)
+        .field("Fonts", result.fonts_path.unwrap_or_else(|| "None found".to_string()), true)
         .field("Warnings", format_warnings_field(&result.warnings), false);
     let _ = response_msg.edit(ctx, EditMessage::new().content("").embed(embed)).await;
 }
@@ -899,6 +912,55 @@ async fn upsert_repo_ass(fg: &Forgejo, owner_repo: &str, ass_path: &str, bytes: 
     Ok(upload_path)
 }
 
+async fn zip_files(paths: &[PathBuf]) -> Result<Vec<u8>, String> {
+    let mut out: Vec<u8> = Vec::new();
+    {
+        let mut writer = async_zip::base::write::ZipFileWriter::new(&mut out);
+        let mut used: HashMap<String, usize> = HashMap::new();
+        for path in paths {
+            let data = tokio::fs::read(path).await.map_err(|e| e.to_string())?;
+            let base = path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("font")
+                .to_string();
+            let count = used.entry(base.clone()).or_insert(0);
+            let name = if *count == 0 {
+                base.clone()
+            } else {
+                format!("{}-{}", count, base)
+            };
+            *count += 1;
+            let entry = async_zip::ZipEntryBuilder::new(name.into(), async_zip::Compression::Deflate);
+            writer.write_entry_whole(entry, &data).await.map_err(|e| e.to_string())?;
+        }
+        writer.close().await.map_err(|e| e.to_string())?;
+    }
+    Ok(out)
+}
+
+async fn upsert_fonts_zip(fg: &Forgejo, owner_repo: &str, server_id: u64, folder: &str, font_names: &[String]) -> Result<Option<String>, String> {
+    let roots = vec![
+        PathBuf::from("DB").join("fontconfig").join(server_id.to_string()),
+        PathBuf::from("DB").join("fontconfig").join("global"),
+    ];
+    let font_files = find_fonts_with_roots(font_names, &roots);
+    println!("[fonts] owner_repo={} requested={} found={}", owner_repo, font_names.len(), font_files.len());
+    for name in font_names {
+        println!("[fonts] requested={}", name);
+    }
+    for path in &font_files {
+        println!("[fonts] found={}", path.display());
+    }
+    if font_files.is_empty() {
+        return Ok(None);
+    }
+    let zip = zip_files(&font_files).await?;
+    let b64 = base64_encode_bytes(&zip);
+    let path = format!("{}/fonts.zip", folder);
+    fg.upsert_file(owner_repo, &path, &b64, "Update fonts").await?;
+    Ok(Some(path))
+}
+
 async fn extract_zip_to_dir(bytes: &[u8], dest: &Path) -> Result<usize, String> {
     use async_zip::base::read::stream::ZipFileReader;
     use futures_lite::io::AsyncReadExt;
@@ -1188,6 +1250,7 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
             .content(format!("Failed to rewrite ASS title."))).await;
         return;
     }
+    let font_names = sub.font_names();
 
     let output_bytes = match tokio::fs::read(&output_path).await {
         Ok(b) => b,
@@ -1211,7 +1274,8 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
     let safe_name = name.replace('/', "-");
     let file_name = format!("{} - {} - E{:02}.ass",
         file_type_label, safe_name, episode);
-    let repo_path = format!("{}/{}", pad2(episode), file_name);
+    let folder = pad2(episode);
+    let repo_path = format!("{}/{}", folder, file_name);
 
     let fg = match Forgejo::new(forgejo_base, api_key) {
         Ok(f) => f,
@@ -1224,10 +1288,19 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
     match upsert_repo_ass(&fg, &owner_repo, &repo_path, &output_bytes, &commit_msg).await {
         Ok(uploaded_path) => {
             println!("[job] id={} uploaded_path={} raw_bytes={}", job_id, uploaded_path, output_bytes.len());
+            let fonts_text = match upsert_fonts_zip(&fg, &owner_repo, server_id, &folder, &font_names).await {
+                Ok(Some(path)) => path,
+                Ok(None) => "None found".to_string(),
+                Err(e) => {
+                    println!("[job] id={} fonts_upload_failed={}", job_id, e);
+                    format!("Failed: {}", e)
+                }
+            };
             let embed = CreateEmbed::new()
                 .title("Job complete")
                 .field("Repo", format!("`{}`", owner_repo), true)
                 .field("File", format!("`{}`", uploaded_path), true)
+                .field("Fonts", format!("`{}`", fonts_text), true)
                 .field("Job", format!("`{}`", job_id), true)
                 .field("Commit Message", format!("`{}`", commit_msg), false)
                 .field("Warnings", format_warnings_field(&warnings), false);
@@ -1382,6 +1455,7 @@ pub async fn handle_ts_message(ctx: &Context, msg: &Message, parts: &[&str]) {
             .content("Failed to rewrite ASS title.")).await;
         return;
     }
+    let font_names = sub.font_names();
 
     let output_bytes = match tokio::fs::read(&output_path).await {
         Ok(b) => b,
@@ -1405,10 +1479,20 @@ pub async fn handle_ts_message(ctx: &Context, msg: &Message, parts: &[&str]) {
     match upsert_repo_ass(&fg, &owner_repo, &repo_path, &output_bytes, "Typeset").await {
         Ok(uploaded_path) => {
             println!("[ts] id={} uploaded_path={} raw_bytes={}", job_id, uploaded_path, output_bytes.len());
+            let folder = pad2(episode);
+            let fonts_text = match upsert_fonts_zip(&fg, &owner_repo, server_id, &folder, &font_names).await {
+                Ok(Some(path)) => path,
+                Ok(None) => "None found".to_string(),
+                Err(e) => {
+                    println!("[ts] id={} fonts_upload_failed={}", job_id, e);
+                    format!("Failed: {}", e)
+                }
+            };
             let embed = CreateEmbed::new()
                 .title("TS complete")
                 .field("Repo", format!("`{}`", owner_repo), true)
                 .field("File", format!("`{}`", uploaded_path), true)
+                .field("Fonts", format!("`{}`", fonts_text), true)
                 .field("Job", format!("`{}`", job_id), true);
             let _ = response_msg.edit(ctx, EditMessage::new().content("").embed(embed)).await;
         }
