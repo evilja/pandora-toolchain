@@ -2,11 +2,18 @@ use reqwest::Client;
 use serde_json::Value;
 use std::time::Duration;
 
+#[derive(Clone, Copy, PartialEq)]
+enum GitProvider {
+    Forgejo,
+    GitHub,
+}
+
 pub struct Forgejo {
     pub host: String,
     pub org: String,
     pub token: String,
     pub client: Client,
+    provider: GitProvider,
 }
 
 impl Forgejo {
@@ -15,7 +22,13 @@ impl Forgejo {
             return Err("forgejo API key is empty. Run /configure with the `api_key` option.".to_string());
         }
         let token = api_key;
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::USER_AGENT,
+            reqwest::header::HeaderValue::from_static("pandora-toolchain"),
+        );
         let client = Client::builder()
+            .default_headers(headers)
             .timeout(Duration::from_secs(60))
             .build()
             .map_err(|e| e.to_string())?;
@@ -42,11 +55,19 @@ impl Forgejo {
                 trimmed, org
             ));
         }
-        Ok(Forgejo { host, org, token, client })
+        let provider = if host == "https://github.com" || host == "http://github.com" {
+            GitProvider::GitHub
+        } else {
+            GitProvider::Forgejo
+        };
+        Ok(Forgejo { host, org, token, client, provider })
     }
 
     pub async fn create_repo(&self, name: &str) -> Result<String, String> {
-        let url = format!("{}/api/v1/orgs/{}/repos", self.host, self.org);
+        let url = match self.provider {
+            GitProvider::Forgejo => format!("{}/api/v1/orgs/{}/repos", self.host, self.org),
+            GitProvider::GitHub => format!("https://api.github.com/orgs/{}/repos", self.org),
+        };
         let body = serde_json::json!({
             "name": name,
             "auto_init": true,
@@ -69,12 +90,8 @@ impl Forgejo {
     }
 
     pub async fn list_contents(&self, owner_repo: &str, path: &str) -> Result<Vec<String>, String> {
-        let url = if path.is_empty() {
-            format!("{}/api/v1/repos/{}/contents", self.host, owner_repo)
-        } else {
-            format!("{}/api/v1/repos/{}/contents/{}", self.host, owner_repo, path)
-        };
-        let resp = self.client.get(&url)
+        let url = contents_url(self.provider, &self.host, owner_repo, path)?;
+        let resp = self.client.get(url.clone())
             .bearer_auth(&self.token)
             .send().await
             .map_err(|e| e.to_string())?;
@@ -101,7 +118,7 @@ impl Forgejo {
 
     pub async fn create_file(&self, owner_repo: &str, path: &str, content_b64: &str, message: &str) -> Result<(), String> {
         let branch = self.default_branch(owner_repo).await?;
-        let url = contents_url(&self.host, owner_repo, path)?;
+        let url = contents_url(self.provider, &self.host, owner_repo, path)?;
         let body = serde_json::json!({
             "content": content_b64,
             "message": message,
@@ -121,7 +138,7 @@ impl Forgejo {
     }
 
     pub async fn get_file_sha(&self, owner_repo: &str, path: &str) -> Result<Option<String>, String> {
-        let url = contents_url(&self.host, owner_repo, path)?;
+        let url = contents_url(self.provider, &self.host, owner_repo, path)?;
         let resp = self.client.get(url.clone())
             .bearer_auth(&self.token)
             .send().await
@@ -141,7 +158,7 @@ impl Forgejo {
 
     pub async fn update_file(&self, owner_repo: &str, path: &str, content_b64: &str, sha: &str, message: &str) -> Result<(), String> {
         let branch = self.default_branch(owner_repo).await?;
-        let url = contents_url(&self.host, owner_repo, path)?;
+        let url = contents_url(self.provider, &self.host, owner_repo, path)?;
         let body = serde_json::json!({
             "content": content_b64,
             "message": message,
@@ -169,7 +186,7 @@ impl Forgejo {
     }
 
     async fn default_branch(&self, owner_repo: &str) -> Result<String, String> {
-        let url = format!("{}/api/v1/repos/{}", self.host, owner_repo);
+        let url = repo_api_url(self.provider, &self.host, owner_repo);
         let resp = self.client.get(&url)
             .bearer_auth(&self.token)
             .send().await
@@ -188,7 +205,7 @@ impl Forgejo {
     }
 
     pub async fn get_file_content(&self, owner_repo: &str, path: &str) -> Result<Option<(String, String)>, String> {
-        let url = contents_url(&self.host, owner_repo, path)?;
+        let url = contents_url(self.provider, &self.host, owner_repo, path)?;
         let resp = self.client.get(url.clone())
             .bearer_auth(&self.token)
             .send().await
@@ -228,7 +245,7 @@ impl Forgejo {
 
     pub async fn delete_file(&self, owner_repo: &str, path: &str, sha: &str, message: &str) -> Result<(), String> {
         let branch = self.default_branch(owner_repo).await?;
-        let url = contents_url(&self.host, owner_repo, path)?;
+        let url = contents_url(self.provider, &self.host, owner_repo, path)?;
         let body = serde_json::json!({
             "sha": sha,
             "message": message,
@@ -258,7 +275,7 @@ impl Forgejo {
     }
 
     pub async fn delete_repo(&self, owner_repo: &str) -> Result<(), String> {
-        let url = format!("{}/api/v1/repos/{}", self.host, owner_repo);
+        let url = repo_api_url(self.provider, &self.host, owner_repo);
         let resp = self.client.delete(&url)
             .bearer_auth(&self.token)
             .send().await
@@ -272,8 +289,18 @@ impl Forgejo {
     }
 }
 
-fn contents_url(host: &str, owner_repo: &str, path: &str) -> Result<reqwest::Url, String> {
-    let base = format!("{}/api/v1/repos/{}/contents/", host, owner_repo);
+fn repo_api_url(provider: GitProvider, host: &str, owner_repo: &str) -> String {
+    match provider {
+        GitProvider::Forgejo => format!("{}/api/v1/repos/{}", host, owner_repo),
+        GitProvider::GitHub => format!("https://api.github.com/repos/{}", owner_repo),
+    }
+}
+
+fn contents_url(provider: GitProvider, host: &str, owner_repo: &str, path: &str) -> Result<reqwest::Url, String> {
+    let base = match provider {
+        GitProvider::Forgejo => format!("{}/api/v1/repos/{}/contents/", host, owner_repo),
+        GitProvider::GitHub => format!("https://api.github.com/repos/{}/contents/", owner_repo),
+    };
     reqwest::Url::parse(&base)
         .and_then(|u| u.join(path))
         .map_err(|e| format!("invalid contents URL ({}): {}", path, e))
