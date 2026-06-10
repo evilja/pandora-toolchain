@@ -71,7 +71,7 @@ fn min_rank_for_command(part: &str) -> u8 {
     match part {
         "encode" | "pancode" | "probe" | "backup" | "backupall" | "scrape" | "gitcode" | "smartcode" | "merge" | "source" => 0,
         "!enc" | "!encode" => 0,
-        "job" => 1,
+        "job" | "!ts" => 1,
         "auth" | "remove" | "gitsync" | "hearts" | "configure" | "readmebase" | "addapi" | "font" | "!ban" | "!some" => 2,
         "attach" | "init" | "destruct" | "detach" => 3,
         _ => u8::MAX,
@@ -401,6 +401,9 @@ impl EventHandler for Handler {
         match parts[0] {
             "!enc" => {
                 msg.reply(context, "Lütfen yeni /encode komutunu kullanın.").await.unwrap();
+            }
+            "!ts" => {
+                handle_ts_message(&context, &msg, &parts).await;
             }
             _ => {}
         }
