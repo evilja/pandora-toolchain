@@ -203,13 +203,9 @@ impl Forgejo {
             return Err(format!("get_ref_sha failed ({}): {} {} (GET {})", git_ref, status, text, url));
         }
         let body: Value = resp.json().await.map_err(|e| e.to_string())?;
-        let sha = body.get("object")
-            .and_then(|v| v.get("sha"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        let sha = ref_sha_from_value(&body);
         if sha.is_empty() {
-            return Err(format!("get_ref_sha failed ({}): no object sha", git_ref));
+            return Err(format!("get_ref_sha failed ({}): no object sha in {}", git_ref, body));
         }
         Ok(sha)
     }
@@ -429,6 +425,24 @@ fn git_url(host: &str, owner_repo: &str, path: &str) -> Result<reqwest::Url, Str
     reqwest::Url::parse(&base)
         .and_then(|u| u.join(path))
         .map_err(|e| format!("invalid git URL ({}): {}", path, e))
+}
+
+fn ref_sha_from_value(value: &Value) -> String {
+    if let Some(arr) = value.as_array() {
+        return arr.iter()
+            .find_map(|v| {
+                let sha = ref_sha_from_value(v);
+                if sha.is_empty() { None } else { Some(sha) }
+            })
+            .unwrap_or_default();
+    }
+    value.get("object")
+        .and_then(|v| v.get("sha"))
+        .and_then(|v| v.as_str())
+        .or_else(|| value.get("sha").and_then(|v| v.as_str()))
+        .or_else(|| value.get("id").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .to_string()
 }
 
 pub fn base64_encode(input: &str) -> String {
