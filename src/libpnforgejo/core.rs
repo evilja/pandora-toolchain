@@ -222,13 +222,9 @@ impl Forgejo {
             return Err(format!("get_commit_tree failed ({}): {} {} (GET {})", commit_sha, status, text, url));
         }
         let body: Value = resp.json().await.map_err(|e| e.to_string())?;
-        let sha = body.get("tree")
-            .and_then(|v| v.get("sha"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        let sha = tree_sha_from_value(&body);
         if sha.is_empty() {
-            return Err(format!("get_commit_tree failed ({}): no tree sha", commit_sha));
+            return Err(format!("get_commit_tree failed ({}): no tree sha in {}", commit_sha, body));
         }
         Ok(sha)
     }
@@ -441,6 +437,20 @@ fn ref_sha_from_value(value: &Value) -> String {
         .and_then(|v| v.as_str())
         .or_else(|| value.get("sha").and_then(|v| v.as_str()))
         .or_else(|| value.get("id").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .to_string()
+}
+
+fn tree_sha_from_value(value: &Value) -> String {
+    value.get("tree")
+        .and_then(|v| v.get("sha").or_else(|| v.get("id")))
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            value.get("commit")
+                .and_then(|v| v.get("tree"))
+                .and_then(|v| v.get("sha").or_else(|| v.get("id")))
+                .and_then(|v| v.as_str())
+        })
         .unwrap_or("")
         .to_string()
 }
