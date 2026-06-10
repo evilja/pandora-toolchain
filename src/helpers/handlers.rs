@@ -143,6 +143,8 @@ struct SmartMergeResult {
     warnings: Vec<String>,
 }
 
+const ASS_ZIP_THRESHOLD_BYTES: usize = 1_500_000;
+
 async fn smartcode_merge_upload(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,
@@ -170,11 +172,11 @@ async fn smartcode_merge_upload(
     let tl_path = format!("{}/TL - {} - E{:02}.ass", folder, safe_name, episode);
     let ts_path = format!("{}/TS - {} - E{:02}.ass", folder, safe_name, episode);
 
-    let tl_b64 = match fg.get_file_content(&owner_repo, &tl_path).await {
+    let tl_bytes = match read_repo_ass(&fg, &owner_repo, &tl_path).await {
         Ok(Some((b, _))) => b,
         Ok(None) => {
             let _ = response_msg.edit(ctx, EditMessage::new()
-                .content(format!("TL file not found at `{}`.", tl_path))).await;
+                .content(format!("TL file not found at `{}` or `{}.zip`.", tl_path, tl_path))).await;
             return None;
         }
         Err(e) => {
@@ -183,16 +185,8 @@ async fn smartcode_merge_upload(
             return None;
         }
     };
-    let tl_bytes = match base64_decode_bytes(&tl_b64) {
-        Ok(b) => b,
-        Err(e) => {
-            let _ = response_msg.edit(ctx, EditMessage::new()
-                .content(format!("Failed to decode TL base64: {}", e))).await;
-            return None;
-        }
-    };
 
-    let ts_b64_opt = match fg.get_file_content(&owner_repo, &ts_path).await {
+    let ts_bytes_opt = match read_repo_ass(&fg, &owner_repo, &ts_path).await {
         Ok(Some((b, _))) => Some(b),
         Ok(None) => None,
         Err(e) => {
@@ -200,17 +194,6 @@ async fn smartcode_merge_upload(
                 .content(format!("Failed to fetch TS: {}", e))).await;
             return None;
         }
-    };
-    let ts_bytes_opt: Option<Vec<u8>> = match ts_b64_opt {
-        Some(b64) => match base64_decode_bytes(&b64) {
-            Ok(b) => Some(b),
-            Err(e) => {
-                let _ = response_msg.edit(ctx, EditMessage::new()
-                    .content(format!("Failed to decode TS base64: {}", e))).await;
-                return None;
-            }
-        },
-        None => None,
     };
 
     let link = match link_opt {
@@ -344,11 +327,11 @@ async fn smartcode_merge_upload(
     };
 
     let release_path = format!("{}/Release - {} - E{:02}.ass", folder, safe_name, episode);
-    let release_b64 = base64_encode_bytes(&merged_bytes);
     let release_commit = "Smartcode merge".to_string();
-    match fg.upsert_file(&owner_repo, &release_path, &release_b64, &release_commit).await {
-        Ok(()) => {
-            println!("[{}] uploaded {} ({} bytes)", log_prefix, release_path, merged_bytes.len());
+    let uploaded_release_path = match upsert_repo_ass(&fg, &owner_repo, &release_path, &merged_bytes, &release_commit).await {
+        Ok(uploaded_path) => {
+            println!("[{}] uploaded {} ({} bytes)", log_prefix, uploaded_path, merged_bytes.len());
+            uploaded_path
         }
         Err(e) => {
             println!("[{}] release upload failed for {}: {}", log_prefix, release_path, e);
@@ -357,7 +340,7 @@ async fn smartcode_merge_upload(
                     release_path, e))).await;
             return None;
         }
-    }
+    };
 
     let source_path = format!("{}/SOURCE.md", folder);
     if link_opt.is_none() {
@@ -392,7 +375,7 @@ async fn smartcode_merge_upload(
         link,
         merged_bytes,
         owner_repo,
-        release_path,
+        release_path: uploaded_release_path,
         source_path,
         warnings,
     })
@@ -851,6 +834,64 @@ async fn extract_zip_root_ass(bytes: &[u8], dest: &Path) -> Result<Option<PathBu
     result
 }
 
+async fn zip_single_ass(entry_name: &str, bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let mut out: Vec<u8> = Vec::new();
+    {
+        let mut writer = async_zip::base::write::ZipFileWriter::new(&mut out);
+        let entry = async_zip::ZipEntryBuilder::new(entry_name.to_string().into(), async_zip::Compression::Deflate);
+        writer.write_entry_whole(entry, bytes).await.map_err(|e| e.to_string())?;
+        writer.close().await.map_err(|e| e.to_string())?;
+    }
+    Ok(out)
+}
+
+async fn unzip_single_ass(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let dir = std::env::temp_dir().join(format!("pandora_repo_ass_zip_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos()));
+    let result = async {
+        tokio::fs::create_dir_all(&dir).await.map_err(|e| e.to_string())?;
+        let extracted = extract_zip_root_ass(bytes, &dir).await?
+            .ok_or_else(|| "zip must contain exactly one root .ass file".to_string())?;
+        tokio::fs::read(extracted).await.map_err(|e| e.to_string())
+    }.await;
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+    result
+}
+
+async fn read_repo_ass(fg: &Forgejo, owner_repo: &str, ass_path: &str) -> Result<Option<(Vec<u8>, String)>, String> {
+    let zip_path = format!("{}.zip", ass_path);
+    if let Some((b64, _)) = fg.get_file_content(owner_repo, &zip_path).await? {
+        let zip_bytes = base64_decode_bytes(&b64)?;
+        let ass_bytes = unzip_single_ass(&zip_bytes).await?;
+        return Ok(Some((ass_bytes, zip_path)));
+    }
+    match fg.get_file_content(owner_repo, ass_path).await? {
+        Some((b64, _)) => Ok(Some((base64_decode_bytes(&b64)?, ass_path.to_string()))),
+        None => Ok(None),
+    }
+}
+
+async fn upsert_repo_ass(fg: &Forgejo, owner_repo: &str, ass_path: &str, bytes: &[u8], message: &str) -> Result<String, String> {
+    let (upload_path, upload_bytes, alternate_path) = if bytes.len() > ASS_ZIP_THRESHOLD_BYTES {
+        let entry_name = Path::new(ass_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("subtitle.ass");
+        (format!("{}.zip", ass_path), zip_single_ass(entry_name, bytes).await?, ass_path.to_string())
+    } else {
+        (ass_path.to_string(), bytes.to_vec(), format!("{}.zip", ass_path))
+    };
+    let b64 = base64_encode_bytes(&upload_bytes);
+    fg.upsert_file(owner_repo, &upload_path, &b64, message).await?;
+    if let Ok(Some(sha)) = fg.get_file_sha(owner_repo, &alternate_path).await {
+        let _ = fg.delete_file(owner_repo, &alternate_path, &sha, &format!("Remove alternate {}", alternate_path)).await;
+    }
+    Ok(upload_path)
+}
+
 async fn extract_zip_to_dir(bytes: &[u8], dest: &Path) -> Result<usize, String> {
     use async_zip::base::read::stream::ZipFileReader;
     use futures_lite::io::AsyncReadExt;
@@ -1139,8 +1180,6 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
             return;
         }
     };
-    let b64 = base64_encode_bytes(&output_bytes);
-
     let (file_type_label, prefix, default_msg) = match job_kind {
         JobKind::TL  => ("TL",  "TL",  "Translation"),
         JobKind::TLC => ("TL",  "TLC", "Edit"),
@@ -1164,12 +1203,12 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
             return;
         }
     };
-    match fg.upsert_file(&owner_repo, &repo_path, &b64, &commit_msg).await {
-        Ok(()) => {
+    match upsert_repo_ass(&fg, &owner_repo, &repo_path, &output_bytes, &commit_msg).await {
+        Ok(uploaded_path) => {
             let embed = CreateEmbed::new()
                 .title("Job complete")
                 .field("Repo", format!("`{}`", owner_repo), true)
-                .field("File", format!("`{}`", repo_path), true)
+                .field("File", format!("`{}`", uploaded_path), true)
                 .field("Job", format!("`{}`", job_id), true)
                 .field("Commit Message", format!("`{}`", commit_msg), false)
                 .field("Warnings", format_warnings_field(&warnings), false);
