@@ -158,10 +158,180 @@ impl Forgejo {
     }
 
     pub async fn upsert_file(&self, owner_repo: &str, path: &str, content_b64: &str, message: &str) -> Result<(), String> {
-        match self.get_file_sha(owner_repo, path).await? {
-            Some(sha) => self.update_file(owner_repo, path, content_b64, &sha, message).await,
-            None => self.create_file(owner_repo, path, content_b64, message).await,
+        self.commit_file(owner_repo, path, content_b64, message).await
+    }
+
+    async fn commit_file(&self, owner_repo: &str, path: &str, content_b64: &str, message: &str) -> Result<(), String> {
+        let branch = self.default_branch(owner_repo).await?;
+        let head_ref = format!("heads/{}", branch);
+        let head_sha = self.get_ref_sha(owner_repo, &head_ref).await?;
+        let base_tree = self.get_commit_tree(owner_repo, &head_sha).await?;
+        let blob_sha = self.create_blob(owner_repo, content_b64).await?;
+        let tree_sha = self.create_tree(owner_repo, &base_tree, path, &blob_sha).await?;
+        let commit_sha = self.create_commit(owner_repo, message, &tree_sha, &head_sha).await?;
+        self.update_ref(owner_repo, &head_ref, &commit_sha).await
+    }
+
+    async fn default_branch(&self, owner_repo: &str) -> Result<String, String> {
+        let url = format!("{}/api/v1/repos/{}", self.host, owner_repo);
+        let resp = self.client.get(&url)
+            .bearer_auth(&self.token)
+            .send().await
+            .map_err(|e| e.to_string())?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("default_branch failed: {} {} (GET {})", status, text, url));
         }
+        let body: Value = resp.json().await.map_err(|e| e.to_string())?;
+        let branch = body.get("default_branch").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if branch.is_empty() {
+            return Err(format!("default_branch failed: no default_branch for {}", owner_repo));
+        }
+        Ok(branch)
+    }
+
+    async fn get_ref_sha(&self, owner_repo: &str, git_ref: &str) -> Result<String, String> {
+        let url = git_url(&self.host, owner_repo, &format!("refs/{}", git_ref))?;
+        let resp = self.client.get(url.clone())
+            .bearer_auth(&self.token)
+            .send().await
+            .map_err(|e| e.to_string())?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("get_ref_sha failed ({}): {} {} (GET {})", git_ref, status, text, url));
+        }
+        let body: Value = resp.json().await.map_err(|e| e.to_string())?;
+        let sha = body.get("object")
+            .and_then(|v| v.get("sha"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if sha.is_empty() {
+            return Err(format!("get_ref_sha failed ({}): no object sha", git_ref));
+        }
+        Ok(sha)
+    }
+
+    async fn get_commit_tree(&self, owner_repo: &str, commit_sha: &str) -> Result<String, String> {
+        let url = git_url(&self.host, owner_repo, &format!("commits/{}", commit_sha))?;
+        let resp = self.client.get(url.clone())
+            .bearer_auth(&self.token)
+            .send().await
+            .map_err(|e| e.to_string())?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("get_commit_tree failed ({}): {} {} (GET {})", commit_sha, status, text, url));
+        }
+        let body: Value = resp.json().await.map_err(|e| e.to_string())?;
+        let sha = body.get("tree")
+            .and_then(|v| v.get("sha"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if sha.is_empty() {
+            return Err(format!("get_commit_tree failed ({}): no tree sha", commit_sha));
+        }
+        Ok(sha)
+    }
+
+    async fn create_blob(&self, owner_repo: &str, content_b64: &str) -> Result<String, String> {
+        let url = git_url(&self.host, owner_repo, "blobs")?;
+        let body = serde_json::json!({
+            "content": content_b64,
+            "encoding": "base64",
+        });
+        let resp = self.client.post(url.clone())
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send().await
+            .map_err(|e| e.to_string())?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("create_blob failed: {} {} (POST {})", status, text, url));
+        }
+        let body: Value = resp.json().await.map_err(|e| e.to_string())?;
+        let sha = body.get("sha").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if sha.is_empty() {
+            return Err("create_blob failed: no sha".to_string());
+        }
+        Ok(sha)
+    }
+
+    async fn create_tree(&self, owner_repo: &str, base_tree: &str, path: &str, blob_sha: &str) -> Result<String, String> {
+        let url = git_url(&self.host, owner_repo, "trees")?;
+        let body = serde_json::json!({
+            "base_tree": base_tree,
+            "tree": [{
+                "path": path,
+                "mode": "100644",
+                "type": "blob",
+                "sha": blob_sha,
+            }],
+        });
+        let resp = self.client.post(url.clone())
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send().await
+            .map_err(|e| e.to_string())?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("create_tree failed ({}): {} {} (POST {})", path, status, text, url));
+        }
+        let body: Value = resp.json().await.map_err(|e| e.to_string())?;
+        let sha = body.get("sha").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if sha.is_empty() {
+            return Err(format!("create_tree failed ({}): no sha", path));
+        }
+        Ok(sha)
+    }
+
+    async fn create_commit(&self, owner_repo: &str, message: &str, tree_sha: &str, parent_sha: &str) -> Result<String, String> {
+        let url = git_url(&self.host, owner_repo, "commits")?;
+        let body = serde_json::json!({
+            "message": message,
+            "tree": tree_sha,
+            "parents": [parent_sha],
+        });
+        let resp = self.client.post(url.clone())
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send().await
+            .map_err(|e| e.to_string())?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("create_commit failed: {} {} (POST {})", status, text, url));
+        }
+        let body: Value = resp.json().await.map_err(|e| e.to_string())?;
+        let sha = body.get("sha").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if sha.is_empty() {
+            return Err("create_commit failed: no sha".to_string());
+        }
+        Ok(sha)
+    }
+
+    async fn update_ref(&self, owner_repo: &str, git_ref: &str, commit_sha: &str) -> Result<(), String> {
+        let url = git_url(&self.host, owner_repo, &format!("refs/{}", git_ref))?;
+        let body = serde_json::json!({
+            "sha": commit_sha,
+            "force": false,
+        });
+        let resp = self.client.patch(url.clone())
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send().await
+            .map_err(|e| e.to_string())?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("update_ref failed ({}): {} {} (PATCH {})", git_ref, status, text, url));
+        }
+        Ok(())
     }
 
     pub async fn get_file_content(&self, owner_repo: &str, path: &str) -> Result<Option<(String, String)>, String> {
@@ -252,6 +422,13 @@ fn contents_url(host: &str, owner_repo: &str, path: &str) -> Result<reqwest::Url
     reqwest::Url::parse(&base)
         .and_then(|u| u.join(path))
         .map_err(|e| format!("invalid contents URL ({}): {}", path, e))
+}
+
+fn git_url(host: &str, owner_repo: &str, path: &str) -> Result<reqwest::Url, String> {
+    let base = format!("{}/api/v1/repos/{}/git/", host, owner_repo);
+    reqwest::Url::parse(&base)
+        .and_then(|u| u.join(path))
+        .map_err(|e| format!("invalid git URL ({}): {}", path, e))
 }
 
 pub fn base64_encode(input: &str) -> String {
