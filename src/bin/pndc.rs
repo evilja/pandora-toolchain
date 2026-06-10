@@ -69,7 +69,7 @@ fn has_level_at_least(id: u64, min_rank: u8) -> bool {
 
 fn min_rank_for_command(part: &str) -> u8 {
     match part {
-        "encode" | "pancode" | "probe" | "backup" | "backupall" | "scrape" | "gitcode" | "smartcode" | "source" => 0,
+        "encode" | "pancode" | "probe" | "backup" | "backupall" | "scrape" | "gitcode" | "smartcode" | "merge" | "source" => 0,
         "!enc" | "!encode" => 0,
         "job" => 1,
         "auth" | "remove" | "gitsync" | "hearts" | "configure" | "readmebase" | "addapi" | "font" | "!ban" | "!some" => 2,
@@ -565,6 +565,9 @@ impl EventHandler for Handler {
                         self.tx.send(JobClass::Job(job)).await.unwrap();
                     }
                 }
+                "merge" => {
+                    handle_merge(&ctx, &command).await;
+                }
                 "source" => {
                     handle_source(&ctx, &command).await;
                 }
@@ -772,6 +775,17 @@ impl EventHandler for Handler {
                         .add_string_choice("DEV", "dummy")
                 )
                 .add_option(concat_option.clone()),
+            CreateCommand::new("merge")
+                .description("Merge the channel's attached TL and TS subtitles for an episode and upload the release ASS")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (1-based)")
+                        .required(true)
+                        .min_int_value(1)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "link", "Source link. Falls back to SOURCE.md if omitted.")
+                        .required(false)
+                ),
             CreateCommand::new("source")
                 .description("Write the SOURCE.md for an episode's folder in the attached repo")
                 .add_option(

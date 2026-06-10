@@ -134,20 +134,28 @@ pub async fn handle_scrape(
         command.guild_id.map(|g| g.get()),
     ))
 }
-pub async fn handle_smartcode(
+struct SmartMergeResult {
+    link: String,
+    merged_bytes: Vec<u8>,
+    owner_repo: String,
+    release_path: String,
+    source_path: String,
+    warnings: Vec<String>,
+}
+
+async fn smartcode_merge_upload(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,
-    intros: &IntrosConfig,
-) -> Option<Job> {
+    response_msg: &mut Message,
+    label: &str,
+    log_prefix: &str,
+) -> Option<SmartMergeResult> {
     let episode = positive_u32_option(ctx, command, "episode").await?;
     let link_opt = option_trimmed(command, "link");
-    let preset = resolve_preset(command, intros);
-    let server_id = command_server_id(ctx, command, "/smartcode").await?;
+    let server_id = command_server_id(ctx, command, label).await?;
     let (meta, owner_repo, _repo_url) = attached_repo(ctx, command, server_id, Some(episode)).await?;
     let name = meta.name.clone().unwrap_or_default();
     let (forgejo_base, api_key) = forgejo_config(ctx, command, server_id).await?;
-    let mut response_msg = working_response(ctx, command, "Working…").await?;
-
     let fg = match Forgejo::new(forgejo_base, api_key) {
         Ok(f) => f,
         Err(e) => {
@@ -340,10 +348,10 @@ pub async fn handle_smartcode(
     let release_commit = "Smartcode merge".to_string();
     match fg.upsert_file(&owner_repo, &release_path, &release_b64, &release_commit).await {
         Ok(()) => {
-            println!("[smartcode] uploaded {} ({} bytes)", release_path, merged_bytes.len());
+            println!("[{}] uploaded {} ({} bytes)", log_prefix, release_path, merged_bytes.len());
         }
         Err(e) => {
-            println!("[smartcode] release upload failed for {}: {}", release_path, e);
+            println!("[{}] release upload failed for {}: {}", log_prefix, release_path, e);
             let _ = response_msg.edit(ctx, EditMessage::new()
                 .content(format!("Merged ASS upload to `{}` failed: {}\nEncoding will continue with the local file.",
                     release_path, e))).await;
@@ -353,17 +361,17 @@ pub async fn handle_smartcode(
 
     let source_path = format!("{}/SOURCE.md", folder);
     if link_opt.is_none() {
-        println!("[smartcode] source from {} (skipping rewrite)", source_path);
+        println!("[{}] source from {} (skipping rewrite)", log_prefix, source_path);
     } else {
-        let source_content = format!("# {}\n", link.trim());
+        let source_content = format!("# {}\n", source_link(&link));
         let source_b64 = base64_encode(&source_content);
         let source_commit = "Smartcode source".to_string();
         match fg.upsert_file(&owner_repo, &source_path, &source_b64, &source_commit).await {
             Ok(()) => {
-                println!("[smartcode] uploaded {}", source_path);
+                println!("[{}] uploaded {}", log_prefix, source_path);
             }
             Err(e) => {
-                println!("[smartcode] SOURCE.md upload failed for {}: {}", source_path, e);
+                println!("[{}] SOURCE.md upload failed for {}: {}", log_prefix, source_path, e);
                 let _ = response_msg.edit(ctx, EditMessage::new()
                     .content(format!("SOURCE.md upload to `{}` failed: {}\nEncoding will continue with the local file.",
                         source_path, e))).await;
@@ -372,13 +380,32 @@ pub async fn handle_smartcode(
     }
     }
 
-    println!("[smartcode] repo={} episode={} tl={} ts_presence={} warnings={} merged_bytes={} release={} source_origin={}",
-        owner_repo, episode, tl_path,
+    println!("[{}] repo={} episode={} tl={} ts_presence={} warnings={} merged_bytes={} release={} source_origin={}",
+        log_prefix, owner_repo, episode, tl_path,
         if ts_bytes_opt.is_some() { "present" } else { "absent" },
         warnings.len(), merged_bytes.len(), release_path,
         if link_opt.is_some() { "argument" } else { "SOURCE.md" });
 
     let _ = tokio::fs::remove_dir_all(&work_dir).await;
+
+    Some(SmartMergeResult {
+        link,
+        merged_bytes,
+        owner_repo,
+        release_path,
+        source_path,
+        warnings,
+    })
+}
+
+pub async fn handle_smartcode(
+    ctx: &Context,
+    command: &serenity::all::CommandInteraction,
+    intros: &IntrosConfig,
+) -> Option<Job> {
+    let preset = resolve_preset(command, intros);
+    let mut response_msg = working_response(ctx, command, "Working…").await?;
+    let result = smartcode_merge_upload(ctx, command, &mut response_msg, "/smartcode", "smartcode").await?;
 
     let _ = response_msg.edit(ctx, EditMessage::new().content("...")).await;
 
@@ -396,13 +423,31 @@ pub async fn handle_smartcode(
         JobType::Encode,
         final_msg.id.get(),
         preset,
-        nyaaise(&link),
-        merged_bytes,
+        nyaaise(&result.link),
+        result.merged_bytes,
         ctx.clone(),
         final_msg,
         read_lang(command.guild_id),
         command.guild_id.map(|g| g.get()),
     ))
+}
+
+pub async fn handle_merge(ctx: &Context, command: &serenity::all::CommandInteraction) {
+    let mut response_msg = match working_response(ctx, command, "Working…").await {
+        Some(m) => m,
+        None => return,
+    };
+    let result = match smartcode_merge_upload(ctx, command, &mut response_msg, "/merge", "merge").await {
+        Some(r) => r,
+        None => return,
+    };
+    let embed = CreateEmbed::new()
+        .title("Merge complete")
+        .field("Repo", format!("`{}`", result.owner_repo), true)
+        .field("Release", format!("`{}`", result.release_path), true)
+        .field("Source", format!("`{}`", result.source_path), true)
+        .field("Warnings", format_warnings_field(&result.warnings), false);
+    let _ = response_msg.edit(ctx, EditMessage::new().content("").embed(embed)).await;
 }
 
 pub async fn handle_source(ctx: &Context, command: &serenity::all::CommandInteraction) {
@@ -445,7 +490,7 @@ pub async fn handle_source(ctx: &Context, command: &serenity::all::CommandIntera
 
     let folder = pad2(episode);
     let source_path = format!("{}/SOURCE.md", folder);
-    let source_content = format!("# {}\n", link);
+    let source_content = format!("# {}\n", source_link(&link));
     let source_b64 = base64_encode(&source_content);
     match fg.upsert_file(&owner_repo, &source_path, &source_b64, "Set source link").await {
         Ok(()) => {
@@ -920,6 +965,15 @@ fn base64_decode_bytes(input: &str) -> Result<Vec<u8>, String> {
         i += 4;
     }
     Ok(out)
+}
+
+fn source_link(link: &str) -> String {
+    let trimmed = link.trim();
+    let re = Regex::new(r"^(https://nyaa\.(?:si|land))/(?:download|view)/([0-9]+)(?:\.torrent|/torrent)?/?$").unwrap();
+    match re.captures(trimmed) {
+        Some(caps) => format!("{}/view/{}", caps.get(1).unwrap().as_str(), caps.get(2).unwrap().as_str()),
+        None => trimmed.to_string(),
+    }
 }
 
 pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteraction) {
