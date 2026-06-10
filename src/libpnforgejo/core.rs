@@ -166,8 +166,9 @@ impl Forgejo {
         let head_ref = format!("heads/{}", branch);
         let head_sha = self.get_ref_sha(owner_repo, &head_ref).await?;
         let base_tree = self.get_commit_tree(owner_repo, &head_sha).await?;
-        let blob_sha = self.create_blob(owner_repo, content_b64).await?;
-        let tree_sha = self.create_tree(owner_repo, &base_tree, path, &blob_sha).await?;
+        let content = String::from_utf8(base64_decode_bytes(content_b64)?)
+            .map_err(|e| format!("commit_file failed ({}): content is not UTF-8: {}", path, e))?;
+        let tree_sha = self.create_tree(owner_repo, &base_tree, path, &content).await?;
         let commit_sha = self.create_commit(owner_repo, message, &tree_sha, &head_sha).await?;
         self.update_ref(owner_repo, &head_ref, &commit_sha).await
     }
@@ -229,31 +230,7 @@ impl Forgejo {
         Ok(sha)
     }
 
-    async fn create_blob(&self, owner_repo: &str, content_b64: &str) -> Result<String, String> {
-        let url = git_url(&self.host, owner_repo, "blobs")?;
-        let body = serde_json::json!({
-            "content": content_b64,
-            "encoding": "base64",
-        });
-        let resp = self.client.post(url.clone())
-            .bearer_auth(&self.token)
-            .json(&body)
-            .send().await
-            .map_err(|e| e.to_string())?;
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("create_blob failed: {} {} (POST {})", status, text, url));
-        }
-        let body: Value = resp.json().await.map_err(|e| e.to_string())?;
-        let sha = body.get("sha").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        if sha.is_empty() {
-            return Err("create_blob failed: no sha".to_string());
-        }
-        Ok(sha)
-    }
-
-    async fn create_tree(&self, owner_repo: &str, base_tree: &str, path: &str, blob_sha: &str) -> Result<String, String> {
+    async fn create_tree(&self, owner_repo: &str, base_tree: &str, path: &str, content: &str) -> Result<String, String> {
         let url = git_url(&self.host, owner_repo, "trees")?;
         let body = serde_json::json!({
             "base_tree": base_tree,
@@ -261,7 +238,7 @@ impl Forgejo {
                 "path": path,
                 "mode": "100644",
                 "type": "blob",
-                "sha": blob_sha,
+                "content": content,
             }],
         });
         let resp = self.client.post(url.clone())
@@ -489,4 +466,57 @@ pub fn base64_encode_bytes(input: &[u8]) -> String {
         out.push('=');
     }
     out
+}
+
+fn base64_decode_bytes(input: &str) -> Result<Vec<u8>, String> {
+    const ALPH: [u8; 128] = {
+        let mut a = [255u8; 128];
+        let chars = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut i = 0;
+        while i < chars.len() {
+            a[chars[i] as usize] = i as u8;
+            i += 1;
+        }
+        a
+    };
+    let cleaned: Vec<u8> = input.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    if cleaned.len() % 4 != 0 {
+        return Err(format!("base64: invalid length {}", cleaned.len()));
+    }
+    let mut out: Vec<u8> = Vec::with_capacity(cleaned.len() / 4 * 3);
+    let mut i = 0;
+    while i < cleaned.len() {
+        let c0 = cleaned[i];
+        let c1 = cleaned[i + 1];
+        let c2 = cleaned[i + 2];
+        let c3 = cleaned[i + 3];
+        let pad2 = c2 == b'=';
+        let pad3 = c3 == b'=';
+        let v0 = if c0 < 128 { ALPH[c0 as usize] } else { 255 };
+        let v1 = if c1 < 128 { ALPH[c1 as usize] } else { 255 };
+        if v0 == 255 || v1 == 255 {
+            return Err(format!("base64: invalid char at {}", i));
+        }
+        if !pad2 {
+            let v2 = if c2 < 128 { ALPH[c2 as usize] } else { 255 };
+            if v2 == 255 {
+                return Err(format!("base64: invalid char at {}", i + 2));
+            }
+            out.push((v0 << 2) | (v1 >> 4));
+            if !pad3 {
+                let v3 = if c3 < 128 { ALPH[c3 as usize] } else { 255 };
+                if v3 == 255 {
+                    return Err(format!("base64: invalid char at {}", i + 3));
+                }
+                out.push((v1 << 4) | (v2 >> 2));
+                out.push((v2 << 6) | v3);
+            } else {
+                out.push((v1 << 4) | (v2 >> 2));
+            }
+        } else {
+            out.push((v0 << 2) | (v1 >> 4));
+        }
+        i += 4;
+    }
+    Ok(out)
 }
