@@ -71,7 +71,7 @@ fn min_rank_for_command(part: &str) -> u8 {
     match part {
         "encode" | "pancode" | "probe" | "backup" | "backupall" | "scrape" | "gitcode" | "smartcode" | "merge" | "source" => 0,
         "!enc" | "!encode" => 0,
-        "job" | "!ts" => 1,
+        "job" | "get" | "!ts" => 1,
         "auth" | "remove" | "gitsync" | "hearts" | "configure" | "readmebase" | "addapi" | "font" | "!ban" | "!some" => 2,
         "attach" | "init" | "destruct" | "detach" => 3,
         _ => u8::MAX,
@@ -579,6 +579,9 @@ impl EventHandler for Handler {
                 "source" => {
                     handle_source(&ctx, &command).await;
                 }
+                "get" => {
+                    handle_get(&ctx, &command).await;
+                }
                 "job" => {
                     handle_job(&ctx, &command).await;
                 }
@@ -804,6 +807,19 @@ impl EventHandler for Handler {
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "link", "Source link (torrent URL, magnet link, or Google Drive link)")
                         .required(true)
+                ),
+            CreateCommand::new("get")
+                .description("Get the download link for an episode's translation or typeset file")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "type", "File type")
+                        .required(true)
+                        .add_string_choice("Translation", "Translation")
+                        .add_string_choice("Typeset", "Typeset")
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (1-based)")
+                        .required(true)
+                        .min_int_value(1)
                 ),
             CreateCommand::new("gitcode")
                 .description("Encode with a subtitle fetched from a URL")

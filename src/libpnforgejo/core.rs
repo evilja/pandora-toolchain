@@ -159,6 +159,27 @@ impl Forgejo {
         Ok(Some(sha))
     }
 
+    pub async fn get_file_download_url(&self, owner_repo: &str, path: &str) -> Result<Option<String>, String> {
+        let url = contents_url(self.provider, &self.host, owner_repo, path)?;
+        let resp = self.client.get(url.clone())
+            .bearer_auth(&self.token)
+            .send().await
+            .map_err(|e| e.to_string())?;
+        let status = resp.status();
+        if status.as_u16() == 404 {
+            return Ok(None);
+        }
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("get_file_download_url failed ({}): {} {} (GET {})", path, status, text, url));
+        }
+        let body: Value = resp.json().await.map_err(|e| e.to_string())?;
+        match body.get("download_url").and_then(|v| v.as_str()) {
+            Some(download_url) if !download_url.is_empty() => Ok(Some(download_url.to_string())),
+            _ => Err(format!("get_file_download_url: no download_url for {}", path)),
+        }
+    }
+
     pub async fn update_file(&self, owner_repo: &str, path: &str, content_b64: &str, sha: &str, message: &str) -> Result<(), String> {
         let branch = self.default_branch(owner_repo).await?;
         let url = contents_url(self.provider, &self.host, owner_repo, path)?;
