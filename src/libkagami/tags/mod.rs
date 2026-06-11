@@ -104,6 +104,9 @@ impl ASSLine {
             data.push(ASSText::RawText(raw_buf));
         }
 
+        trim_tags_without_text_after(&mut data);
+        current_overrides = final_overrides(&data, &start);
+
         Self { current_overrides, data }
     }
 }
@@ -184,6 +187,9 @@ impl std::str::FromStr for ASSLine {
             data.push(ASSText::RawText(raw_buf));
         }
 
+        trim_tags_without_text_after(&mut data);
+        current_overrides = final_overrides(&data, &[]);
+
         Ok(Self { current_overrides, data })
     }
 }
@@ -237,6 +243,30 @@ fn mark_transform_tags(ov: &ASSOverride, transformed: &mut HashSet<Discriminant<
             transformed.insert(discriminant(tag));
         }
     }
+}
+
+fn trim_tags_without_text_after(data: &mut Vec<ASSText>) {
+    let Some(last_text) = data.iter().rposition(|item| matches!(item, ASSText::RawText(_))) else {
+        data.clear();
+        return;
+    };
+    data.truncate(last_text + 1);
+}
+
+fn final_overrides(data: &[ASSText], start: &[ASSOverride]) -> Vec<ASSOverride> {
+    let mut current = start.to_vec();
+    for item in data {
+        let ASSText::Override(ov) = item else {
+            continue;
+        };
+        match ov {
+            ASSOverride::BlockText(_) => {}
+            ASSOverride::R(None) => current = start.to_vec(),
+            ASSOverride::R(Some(_)) => current.clear(),
+            _ => upsert_override(&mut current, ov.clone()),
+        }
+    }
+    current
 }
 
 fn has_override_block_text(s: &str) -> bool {
@@ -478,5 +508,36 @@ mod tests {
             line.stringify(),
             r"{*\c&HEEEEEE&}A{\c&HB2D5DE&}B{\c&HEEEEEE&}C{\c&HEEEEEE&}D"
         );
+    }
+
+    #[test]
+    fn test_trailing_tags_without_text_are_removed() {
+        let line: ASSLine = r"{\b1}Hello{\i1}{\fs40}".parse().unwrap();
+        assert_eq!(line.stringify(), r"{\b1}Hello");
+        assert!(line.data.iter().any(|t| matches!(t, ASSText::Override(ASSOverride::Bold(true)))));
+        assert!(!line.data.iter().any(|t| matches!(t, ASSText::Override(ASSOverride::Italic(true)))));
+        assert!(!line.data.iter().any(|t| matches!(t, ASSText::Override(ASSOverride::Fs(40.0)))));
+        assert!(!line.current_overrides.iter().any(|t| matches!(t, ASSOverride::Italic(true))));
+        assert!(!line.current_overrides.iter().any(|t| matches!(t, ASSOverride::Fs(40.0))));
+    }
+
+    #[test]
+    fn test_only_tags_are_removed() {
+        let line: ASSLine = r"{\b1}{\fs40}".parse().unwrap();
+        assert_eq!(line.stringify(), "");
+        assert!(line.data.is_empty());
+        assert!(line.current_overrides.is_empty());
+    }
+
+    #[test]
+    fn test_trailing_tags_reset_to_style_baseline_after_store() {
+        let line = ASSLine::from_str_store(
+            r"{\fs80}Hello{\fnTrailing}",
+            vec![ASSOverride::Fn("DefaultFont".to_string()), ASSOverride::Fs(20.0)],
+        );
+        assert_eq!(line.stringify(), r"{\fs80}Hello");
+        assert!(line.current_overrides.iter().any(|t| matches!(t, ASSOverride::Fn(name) if name == "DefaultFont")));
+        assert!(line.current_overrides.iter().any(|t| matches!(t, ASSOverride::Fs(80.0))));
+        assert!(!line.current_overrides.iter().any(|t| matches!(t, ASSOverride::Fn(name) if name == "Trailing")));
     }
 }
