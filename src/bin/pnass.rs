@@ -68,6 +68,7 @@ async fn main() {
     }
 
     let warning_event_count = sub.events.len();
+    let prune_styles = args.merge.is_some() || args.negkey.as_deref() == Some("PNassMerge");
 
     if let Some(merge_path) = args.merge.as_deref() {
         let mut secondary = SubstationAlpha::load(PathBuf::from(merge_path), true).await;
@@ -113,7 +114,9 @@ async fn main() {
             schema = [leaf, leaf], data = ["4", more]).unwrap());
     }
 
-    prune_unused_styles(&mut sub);
+    if prune_styles {
+        prune_unused_styles(&mut sub);
+    }
 
     if sub.dump_to_file(PathBuf::from(&args.output)).await.is_err() {
         eprintln!("pnass: failed to write {}", args.output);
@@ -203,12 +206,40 @@ fn rename_overlapping_styles(sub: &mut SubstationAlpha, names: &std::collections
         if let Some(new) = mapping.get(&ev.style) {
             ev.style = new.clone();
         }
+        rename_style_refs_in_line(&mut ev.text, &mapping);
     }
 
     for style in &mut sub.v4p_styles {
         if let Some(new) = mapping.get(&style.name) {
             style.name = new.clone();
         }
+    }
+}
+
+fn rename_style_refs_in_line(line: &mut ASSLine, mapping: &std::collections::HashMap<String, String>) {
+    for item in &mut line.data {
+        if let ASSText::Override(ov) = item {
+            rename_style_refs_in_override(ov, mapping);
+        }
+    }
+}
+
+fn rename_style_refs_in_override(ov: &mut ASSOverride, mapping: &std::collections::HashMap<String, String>) {
+    match ov {
+        ASSOverride::R(Some(name)) => {
+            if let Some(new) = mapping.get(name) {
+                *name = new.clone();
+            }
+        }
+        ASSOverride::TransformI(tags)
+        | ASSOverride::TransformII(_, tags)
+        | ASSOverride::TransformIII(_, _, tags)
+        | ASSOverride::TransformIV(_, _, _, tags) => {
+            for tag in tags {
+                rename_style_refs_in_override(tag, mapping);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -349,5 +380,51 @@ mod tests {
 
         let names: Vec<String> = sub.v4p_styles.into_iter().map(|s| s.name).collect();
         assert_eq!(names, vec!["Default".to_string(), "Alt".to_string()]);
+    }
+
+    #[test]
+    fn renames_secondary_reset_style_references() {
+        let mut sub = SubstationAlpha {
+            script_info: ScriptInfo {
+                title: String::new(),
+                script_type: String::new(),
+                wrap_style: 0,
+                scaled_border_and_shadow: false,
+                playresx: 0,
+                playresy: 0,
+                ycbcr_matrix: String::new(),
+                layout_res_x: 0,
+                layout_res_y: 0,
+            },
+            v4p_styles: vec![style("Default"), style("Alt")],
+            events: vec![event(
+                "Default",
+                vec![
+                    ASSText::Override(ASSOverride::R(Some("Default".to_string()))),
+                    ASSText::Override(ASSOverride::TransformI(vec![
+                        ASSOverride::R(Some("Default".to_string())),
+                    ])),
+                ],
+            )],
+        };
+        let overlap = std::collections::HashSet::from(["Default".to_string()]);
+
+        rename_overlapping_styles(&mut sub, &overlap);
+
+        let renamed = sub.v4p_styles.iter()
+            .find(|style| style.name != "Alt")
+            .map(|style| style.name.clone())
+            .unwrap();
+        assert_ne!(renamed, "Default");
+        assert_eq!(sub.events[0].style, renamed);
+        assert!(matches!(
+            &sub.events[0].text.data[0],
+            ASSText::Override(ASSOverride::R(Some(name))) if name == &renamed
+        ));
+        assert!(matches!(
+            &sub.events[0].text.data[1],
+            ASSText::Override(ASSOverride::TransformI(tags))
+                if matches!(&tags[0], ASSOverride::R(Some(name)) if name == &renamed)
+        ));
     }
 }
