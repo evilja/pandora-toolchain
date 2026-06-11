@@ -70,7 +70,7 @@ async fn main() {
     let warning_event_count = sub.events.len();
 
     if let Some(merge_path) = args.merge.as_deref() {
-        let mut secondary = SubstationAlpha::load(PathBuf::from(merge_path), false).await;
+        let mut secondary = SubstationAlpha::load(PathBuf::from(merge_path), true).await;
         let overlap: std::collections::HashSet<String> = style_names(&sub)
             .intersection(&style_names(&secondary))
             .cloned()
@@ -112,6 +112,8 @@ async fn main() {
         println!("{}", pn_emit!(protocol = proto, negkey = &neg,
             schema = [leaf, leaf], data = ["4", more]).unwrap());
     }
+
+    prune_unused_styles(&mut sub);
 
     if sub.dump_to_file(PathBuf::from(&args.output)).await.is_err() {
         eprintln!("pnass: failed to write {}", args.output);
@@ -224,4 +226,128 @@ fn style_names(sub: &SubstationAlpha) -> std::collections::HashSet<String> {
 fn append_sub(dst: &mut SubstationAlpha, src: SubstationAlpha) {
     dst.v4p_styles.extend(src.v4p_styles);
     dst.events.extend(src.events);
+}
+
+fn prune_unused_styles(sub: &mut SubstationAlpha) {
+    let used = used_style_names(sub);
+    sub.v4p_styles.retain(|style| used.contains(&style.name));
+}
+
+fn used_style_names(sub: &SubstationAlpha) -> std::collections::HashSet<String> {
+    use std::collections::HashSet;
+    let mut used = HashSet::new();
+    for ev in &sub.events {
+        if !ev.style.is_empty() {
+            used.insert(ev.style.clone());
+        }
+        for item in &ev.text.data {
+            collect_style_names_from_text(item, &mut used);
+        }
+    }
+    used
+}
+
+fn collect_style_names_from_text(item: &ASSText, used: &mut std::collections::HashSet<String>) {
+    if let ASSText::Override(ov) = item {
+        collect_style_names_from_override(ov, used);
+    }
+}
+
+fn collect_style_names_from_override(ov: &ASSOverride, used: &mut std::collections::HashSet<String>) {
+    match ov {
+        ASSOverride::R(Some(name)) if !name.is_empty() => {
+            used.insert(name.clone());
+        }
+        ASSOverride::TransformI(tags)
+        | ASSOverride::TransformII(_, tags)
+        | ASSOverride::TransformIII(_, _, tags)
+        | ASSOverride::TransformIV(_, _, _, tags) => {
+            for tag in tags {
+                collect_style_names_from_override(tag, used);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pandora_toolchain::libkagami::complex::types::{AssColour, AssTime};
+    use pandora_toolchain::libkagami::core::{Event, V4pStyle};
+
+    fn style(name: &str) -> V4pStyle {
+        V4pStyle {
+            name: name.to_string(),
+            fontname: "Arial".to_string(),
+            fontsize: 60,
+            colours: [
+                AssColour::opaque_white(),
+                AssColour::opaque_white(),
+                AssColour::transparent(),
+                AssColour::transparent(),
+            ],
+            bold: false,
+            italic: false,
+            underline: false,
+            strikeout: false,
+            scale_x: 100,
+            scale_y: 100,
+            spacing: 0.0,
+            angle: 0.0,
+            border_style: 1,
+            outline: 0.0,
+            shadow: 0.0,
+            alignment: 2,
+            margin_l: 0,
+            margin_r: 0,
+            margin_v: 0,
+            encoding: 1,
+        }
+    }
+
+    fn event(style: &str, data: Vec<ASSText>) -> Event {
+        Event {
+            layer: 0,
+            start: AssTime { hours: 0, minutes: 0, seconds: 0, centiseconds: 0 },
+            end: AssTime { hours: 0, minutes: 0, seconds: 1, centiseconds: 0 },
+            style: style.to_string(),
+            name: String::new(),
+            margin_l: 0,
+            margin_r: 0,
+            margin_v: 0,
+            effect: String::new(),
+            text: ASSLine { current_overrides: Vec::new(), data },
+        }
+    }
+
+    #[test]
+    fn prunes_styles_not_referenced_by_events() {
+        let mut sub = SubstationAlpha {
+            script_info: ScriptInfo {
+                title: String::new(),
+                script_type: String::new(),
+                wrap_style: 0,
+                scaled_border_and_shadow: false,
+                playresx: 0,
+                playresy: 0,
+                ycbcr_matrix: String::new(),
+                layout_res_x: 0,
+                layout_res_y: 0,
+            },
+            v4p_styles: vec![style("Default"), style("Alt"), style("Unused")],
+            events: vec![event(
+                "Default",
+                vec![
+                    ASSText::Override(ASSOverride::R(Some("Alt".to_string()))),
+                    ASSText::RawText("line".to_string()),
+                ],
+            )],
+        };
+
+        prune_unused_styles(&mut sub);
+
+        let names: Vec<String> = sub.v4p_styles.into_iter().map(|s| s.name).collect();
+        assert_eq!(names, vec!["Default".to_string(), "Alt".to_string()]);
+    }
 }
