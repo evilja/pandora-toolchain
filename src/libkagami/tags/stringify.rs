@@ -2,6 +2,7 @@ use crate::libkagami::complex::overrides::ASSOverride;
 
 pub fn stringify_override(ov: &ASSOverride) -> String {
     match ov {
+        ASSOverride::BlockText(v)         => v.to_string(),
         ASSOverride::Bold(v)              => format!("b{}", *v as u8),
         ASSOverride::Italic(v)            => format!("i{}", *v as u8),
         ASSOverride::Underline(v)         => format!("u{}", *v as u8),
@@ -42,8 +43,10 @@ pub fn stringify_override(ov: &ASSOverride) -> String {
         ASSOverride::P(v)                 => format!("p{v}"),
         ASSOverride::ClipI(v)             => format!("clip({v})"),
         ASSOverride::ClipII(s, v)         => format!("clip({s},{v})"),
+        ASSOverride::ClipRect(x0,y0,x1,y1)=> format!("clip({x0},{y0},{x1},{y1})"),
         ASSOverride::IclipI(v)            => format!("iclip({v})"),
         ASSOverride::IclipII(s, v)        => format!("iclip({s},{v})"),
+        ASSOverride::IclipRect(x0,y0,x1,y1)=> format!("iclip({x0},{y0},{x1},{y1})"),
         ASSOverride::TransformI(v)        => format!("t({})", stringify_overrides(v)),
         ASSOverride::TransformII(a, v)    => format!("t({a},{})", stringify_overrides(v)),
         ASSOverride::TransformIII(a,b,v)  => format!("t({a},{b},{})", stringify_overrides(v)),
@@ -65,7 +68,13 @@ pub fn stringify_override(ov: &ASSOverride) -> String {
 
 pub fn stringify_overrides(v: &[ASSOverride]) -> String {
     v.iter()
-        .map(|o| format!("\\{}", stringify_override(o)))
+        .map(|o| {
+            if matches!(o, ASSOverride::BlockText(_)) {
+                stringify_override(o)
+            } else {
+                format!("\\{}", stringify_override(o))
+            }
+        })
         .collect::<Vec<_>>()
         .join("")
 }
@@ -73,6 +82,7 @@ pub fn stringify_overrides(v: &[ASSOverride]) -> String {
 /// Debug formatter for tests — human readable variant names with values
 pub fn fmt_override(ov: &ASSOverride) -> String {
     match ov {
+        ASSOverride::BlockText(v)         => format!("BlockText({v:?})"),
         ASSOverride::Bold(v)              => format!("Bold({v})"),
         ASSOverride::Italic(v)            => format!("Italic({v})"),
         ASSOverride::Underline(v)         => format!("Underline({v})"),
@@ -113,8 +123,10 @@ pub fn fmt_override(ov: &ASSOverride) -> String {
         ASSOverride::P(v)                 => format!("P({v})"),
         ASSOverride::ClipI(v)             => format!("ClipI({v:?})"),
         ASSOverride::ClipII(s, v)         => format!("ClipII({s}, {v:?})"),
+        ASSOverride::ClipRect(x0,y0,x1,y1)=> format!("ClipRect({x0}, {y0}, {x1}, {y1})"),
         ASSOverride::IclipI(v)            => format!("IclipI({v:?})"),
         ASSOverride::IclipII(s, v)        => format!("IclipII({s}, {v:?})"),
+        ASSOverride::IclipRect(x0,y0,x1,y1)=> format!("IclipRect({x0}, {y0}, {x1}, {y1})"),
         ASSOverride::TransformI(v)        => format!("TransformI([{}])", fmt_overrides(v)),
         ASSOverride::TransformII(a, v)    => format!("TransformII({a}, [{}])", fmt_overrides(v)),
         ASSOverride::TransformIII(a,b,v)  => format!("TransformIII({a}, {b}, [{}])", fmt_overrides(v)),

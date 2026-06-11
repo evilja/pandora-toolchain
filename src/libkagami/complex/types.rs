@@ -1,3 +1,5 @@
+use crate::libkagami::complex::helpers::parse_ass_int_prefix;
+
 #[derive(Debug, Clone, Copy)]
 pub struct AssColour(u32);
 
@@ -26,8 +28,10 @@ impl std::fmt::Display for AssColour {
 impl std::str::FromStr for AssColour {
     type Err = std::num::ParseIntError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let hex = s.trim_start_matches("&H");
-        Ok(Self(u32::from_str_radix(hex, 16)?))
+        match parse_ass_int_prefix(s) {
+            Some((val, _)) => Ok(Self(val)),
+            None => Ok(Self(s.parse::<u32>()?)),
+        }
     }
 }
 
@@ -50,5 +54,18 @@ impl std::str::FromStr for AssTime {
 impl std::fmt::Display for AssTime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}:{:02}:{:02}.{:02}", self.hours, self.minutes, self.seconds, self.centiseconds)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ass_colour_accepts_common_libass_forms() {
+        assert_eq!("&H00FFFFFF".parse::<AssColour>().unwrap().as_u32(), 0x00FFFFFF);
+        assert_eq!("&h00ffffff&".parse::<AssColour>().unwrap().as_u32(), 0x00FFFFFF);
+        assert_eq!("0x00ffffff".parse::<AssColour>().unwrap().as_u32(), 0x00FFFFFF);
+        assert_eq!("16777215".parse::<AssColour>().unwrap().as_u32(), 0x00FFFFFF);
     }
 }

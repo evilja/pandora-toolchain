@@ -1,33 +1,99 @@
 use crate::libkagami::complex::overrides::ASSOverride;
 use crate::libkagami::complex::helpers::{
-    take_parens, parse_bool_val, parse_f32_val, parse_hex_val, parse_csv_f32s,
+    parse_bool_val, parse_f32_val, parse_hex_val,
+    parse_parenthesized_args, parse_f32_prefix,
 };
 use crate::libkagami::complex::parse::parse_clip_args;
 
 /// Parse the interior of \t(...).
 /// Format: [\tag...] | [accel,\tag...] | [t1,t2,\tag...] | [t1,t2,accel,\tag...]
 pub fn parse_transform(inner: &str) -> Option<ASSOverride> {
-    let backslash_pos = inner.find('\\')?;
-    let prefix = &inner[..backslash_pos];
-    let style_str = &inner[backslash_pos..];
+    let (args, _after, has_backslash_arg) = parse_parenthesized_args(inner)?;
+    if !has_backslash_arg || args.is_empty() {
+        return None;
+    }
+
+    let cnt = args.len().checked_sub(1)?;
+    if cnt > 3 {
+        return None;
+    }
+
+    let style_str = args[cnt];
 
     let (style_overrides, _) = parse_override_block_content(style_str);
 
-    let nums: Vec<f32> = prefix
-        .split(',')
-        .filter_map(|p| {
-            let p = p.trim();
-            if p.is_empty() { None } else { p.parse::<f32>().ok() }
-        })
-        .collect();
-
-    let ov = match nums.len() {
+    let ov = match cnt {
         0 => ASSOverride::TransformI(style_overrides),
-        1 => ASSOverride::TransformII(nums[0], style_overrides),
-        2 => ASSOverride::TransformIII(nums[0], nums[1], style_overrides),
-        _ => ASSOverride::TransformIV(nums[0], nums[1], nums[2], style_overrides),
+        1 => ASSOverride::TransformII(parse_f32_prefix(args[0]).unwrap_or(0.0), style_overrides),
+        2 => ASSOverride::TransformIII(
+            parse_f32_prefix(args[0]).unwrap_or(0.0),
+            parse_f32_prefix(args[1]).unwrap_or(0.0),
+            style_overrides,
+        ),
+        _ => ASSOverride::TransformIV(
+            parse_f32_prefix(args[0]).unwrap_or(0.0),
+            parse_f32_prefix(args[1]).unwrap_or(0.0),
+            parse_f32_prefix(args[2]).unwrap_or(0.0),
+            style_overrides,
+        ),
     };
     Some(ov)
+}
+
+fn first_arg<'a>(rest: &'a str) -> Option<(&'a str, &'a str)> {
+    parse_parenthesized_args(rest)
+        .map(|(args, after, _)| (args.first().copied().unwrap_or(""), after))
+}
+
+fn parse_f32_arg(rest: &str) -> (f32, &str) {
+    match first_arg(rest) {
+        Some((arg, after)) => (parse_f32_prefix(arg).unwrap_or(0.0), after),
+        None => parse_f32_val(rest),
+    }
+}
+
+fn parse_bool_arg(rest: &str) -> (bool, &str) {
+    match first_arg(rest) {
+        Some((arg, after)) => (parse_bool_val(arg).0, after),
+        None => parse_bool_val(rest),
+    }
+}
+
+fn parse_hex_arg(rest: &str) -> (u32, &str) {
+    match first_arg(rest) {
+        Some((arg, after)) => (parse_hex_val(arg).0, after),
+        None => parse_hex_val(rest),
+    }
+}
+
+fn parse_text_arg(rest: &str) -> (String, &str) {
+    match first_arg(rest) {
+        Some((arg, after)) => (arg.to_string(), after),
+        None => {
+            let end = rest.find('\\').unwrap_or(rest.len());
+            (rest[..end].to_string(), &rest[end..])
+        }
+    }
+}
+
+fn parse_paren_numbers(rest: &str) -> Option<(Vec<f32>, &str)> {
+    parse_parenthesized_args(rest)
+        .map(|(args, after, _)| {
+            let nums = args.iter()
+                .map(|arg| parse_f32_prefix(arg).unwrap_or(0.0))
+                .collect();
+            (nums, after)
+        })
+}
+
+fn empty_transform(ov: &ASSOverride) -> bool {
+    matches!(ov,
+        ASSOverride::TransformI(v)
+        | ASSOverride::TransformII(_, v)
+        | ASSOverride::TransformIII(_, _, v)
+        | ASSOverride::TransformIV(_, _, _, v)
+        if v.is_empty()
+    )
 }
 
 /// Parse one override tag. `s` begins immediately after the leading backslash.
@@ -43,7 +109,7 @@ pub fn parse_one_tag(s: &str) -> Option<(ASSOverride, usize, bool)> {
     macro_rules! try_flag {
         ($prefix:literal, $variant:expr) => {
             if let Some(rest) = s.strip_prefix($prefix) {
-                let (val, rest2) = parse_bool_val(rest);
+                let (val, rest2) = parse_bool_arg(rest);
                 return Some(($variant(val), consumed!(rest2), false));
             }
         };
@@ -51,7 +117,7 @@ pub fn parse_one_tag(s: &str) -> Option<(ASSOverride, usize, bool)> {
     macro_rules! try_f32 {
         ($prefix:literal, $variant:expr) => {
             if let Some(rest) = s.strip_prefix($prefix) {
-                let (val, rest2) = parse_f32_val(rest);
+                let (val, rest2) = parse_f32_arg(rest);
                 return Some(($variant(val), consumed!(rest2), false));
             }
         };
@@ -59,7 +125,7 @@ pub fn parse_one_tag(s: &str) -> Option<(ASSOverride, usize, bool)> {
     macro_rules! try_hex {
         ($prefix:literal, $ctor:expr) => {
             if let Some(rest) = s.strip_prefix($prefix) {
-                let (val, rest2) = parse_hex_val(rest);
+                let (val, rest2) = parse_hex_arg(rest);
                 return Some(($ctor(val), consumed!(rest2), false));
             }
         };
@@ -67,9 +133,8 @@ pub fn parse_one_tag(s: &str) -> Option<(ASSOverride, usize, bool)> {
 
     // ── \fn — before anything else starting with 'f' ────────────────────────
     if let Some(rest) = s.strip_prefix("fn") {
-        let end = rest.find('\\').unwrap_or(rest.len());
-        let name = rest[..end].to_string();
-        return Some((ASSOverride::Fn(name), consumed!(&rest[end..]), false));
+        let (name, rest2) = parse_text_arg(rest);
+        return Some((ASSOverride::Fn(name), consumed!(rest2), false));
     }
 
     // ── float tags — longest prefix first ───────────────────────────────────
@@ -88,7 +153,7 @@ pub fn parse_one_tag(s: &str) -> Option<(ASSOverride, usize, bool)> {
     try_f32!("fay",   ASSOverride::Fay);
     try_f32!("fe",    ASSOverride::Fe);
     try_f32!("pbo",   ASSOverride::Pbo);
-    try_f32!("fr",    ASSOverride::Frz);  // alias — after frx/fry/frz
+    try_f32!("fr",    ASSOverride::Frz);
     try_f32!("blur",  ASSOverride::Blur);
     try_f32!("bord",  ASSOverride::Bord);
     try_f32!("shad",  ASSOverride::Shad);
@@ -97,13 +162,13 @@ pub fn parse_one_tag(s: &str) -> Option<(ASSOverride, usize, bool)> {
 
     // ── \an — before \alpha ──────────────────────────────────────────────────
     if let Some(rest) = s.strip_prefix("an") {
-        let (val, rest2) = parse_f32_val(rest);
+        let (val, rest2) = parse_f32_arg(rest);
         return Some((ASSOverride::An(val as u8), consumed!(rest2), false));
     }
 
     // ── \q ───────────────────────────────────────────────────────────────────
     if let Some(rest) = s.strip_prefix("q") {
-        let (val, rest2) = parse_f32_val(rest);
+        let (val, rest2) = parse_f32_arg(rest);
         return Some((ASSOverride::Q(val as u8), consumed!(rest2), false));
     }
 
@@ -128,19 +193,19 @@ pub fn parse_one_tag(s: &str) -> Option<(ASSOverride, usize, bool)> {
 
     // ── karaoke — ko/kf before k, K uppercase before k ───────────────────────
     if let Some(rest) = s.strip_prefix("ko") {
-        let (val, rest2) = parse_f32_val(rest);
+        let (val, rest2) = parse_f32_arg(rest);
         return Some((ASSOverride::Ko(val as u32), consumed!(rest2), false));
     }
     if let Some(rest) = s.strip_prefix("kf") {
-        let (val, rest2) = parse_f32_val(rest);
+        let (val, rest2) = parse_f32_arg(rest);
         return Some((ASSOverride::Kf(val as u32), consumed!(rest2), false));
     }
     if let Some(rest) = s.strip_prefix("K") {
-        let (val, rest2) = parse_f32_val(rest);
+        let (val, rest2) = parse_f32_arg(rest);
         return Some((ASSOverride::KSweep(val as u32), consumed!(rest2), false));
     }
     if let Some(rest) = s.strip_prefix("k") {
-        let (val, rest2) = parse_f32_val(rest);
+        let (val, rest2) = parse_f32_arg(rest);
         return Some((ASSOverride::K(val as u32), consumed!(rest2), false));
     }
 
@@ -155,128 +220,100 @@ pub fn parse_one_tag(s: &str) -> Option<(ASSOverride, usize, bool)> {
 
     if let Some(rest) = s.strip_prefix("fade") {
         if rest.starts_with('(') {
-            match take_parens(rest) {
-                None => return Some((ASSOverride::Fade(0.,0.,0.,0.,0.,0.,0.), 0, true)),
-                Some((inner, after)) => {
-                    let n = parse_csv_f32s(inner);
-                    let g = |i: usize| n.get(i).copied().unwrap_or(0.0);
-                    return Some((
-                        ASSOverride::Fade(g(0),g(1),g(2),g(3),g(4),g(5),g(6)),
-                        consumed!(after),
-                        false,
-                    ));
+            match parse_paren_numbers(rest) {
+                Some((n, after)) if n.len() == 2 => {
+                    return Some((ASSOverride::Fad(n[0], n[1]), consumed!(after), false));
                 }
+                Some((n, after)) if n.len() == 7 => {
+                    return Some((ASSOverride::Fade(n[0], n[1], n[2], n[3], n[4], n[5], n[6]), consumed!(after), false));
+                }
+                Some((_n, _after)) => return None,
+                None => return None,
             }
         }
     }
 
     if let Some(rest) = s.strip_prefix("move") {
         if rest.starts_with('(') {
-            match take_parens(rest) {
-                None => return Some((ASSOverride::MoveI(0.,0.,0.,0.), 0, true)),
-                Some((inner, after)) => {
-                    let n = parse_csv_f32s(inner);
-                    let g = |i: usize| n.get(i).copied().unwrap_or(0.0);
-                    let tag = if n.len() >= 6 {
-                        ASSOverride::MoveII(g(0),g(1),g(2),g(3),g(4),g(5))
-                    } else {
-                        ASSOverride::MoveI(g(0),g(1),g(2),g(3))
-                    };
-                    return Some((tag, consumed!(after), false));
+            match parse_paren_numbers(rest) {
+                Some((n, after)) if n.len() == 4 => {
+                    return Some((ASSOverride::MoveI(n[0], n[1], n[2], n[3]), consumed!(after), false));
                 }
+                Some((n, after)) if n.len() == 6 => {
+                    return Some((ASSOverride::MoveII(n[0], n[1], n[2], n[3], n[4], n[5]), consumed!(after), false));
+                }
+                Some((_n, _after)) => return None,
+                None => return None,
             }
         }
     }
 
     if let Some(rest) = s.strip_prefix("org") {
         if rest.starts_with('(') {
-            match take_parens(rest) {
-                None => return Some((ASSOverride::Org(0.,0.), 0, true)),
-                Some((inner, after)) => {
-                    let n = parse_csv_f32s(inner);
-                    return Some((
-                        ASSOverride::Org(
-                            n.get(0).copied().unwrap_or(0.0),
-                            n.get(1).copied().unwrap_or(0.0),
-                        ),
-                        consumed!(after),
-                        false,
-                    ));
+            match parse_paren_numbers(rest) {
+                Some((n, after)) if n.len() == 2 => {
+                    return Some((ASSOverride::Org(n[0], n[1]), consumed!(after), false));
                 }
+                Some((_n, _after)) => return None,
+                None => return None,
             }
         }
     }
 
     if let Some(rest) = s.strip_prefix("fad") {
         if rest.starts_with('(') {
-            match take_parens(rest) {
-                None => return Some((ASSOverride::Fad(0.0, 0.0), 0, true)),
-                Some((inner, after)) => {
-                    let n = parse_csv_f32s(inner);
-                    return Some((
-                        ASSOverride::Fad(
-                            n.get(0).copied().unwrap_or(0.0),
-                            n.get(1).copied().unwrap_or(0.0),
-                        ),
-                        consumed!(after),
-                        false,
-                    ));
+            match parse_paren_numbers(rest) {
+                Some((n, after)) if n.len() == 2 => {
+                    return Some((ASSOverride::Fad(n[0], n[1]), consumed!(after), false));
                 }
+                Some((n, after)) if n.len() == 7 => {
+                    return Some((ASSOverride::Fade(n[0], n[1], n[2], n[3], n[4], n[5], n[6]), consumed!(after), false));
+                }
+                Some((_n, _after)) => return None,
+                None => return None,
             }
         }
     }
 
     if let Some(rest) = s.strip_prefix("pos") {
         if rest.starts_with('(') {
-            match take_parens(rest) {
-                None => return Some((ASSOverride::Pos(0.0, 0.0), 0, true)),
-                Some((inner, after)) => {
-                    let n = parse_csv_f32s(inner);
-                    return Some((
-                        ASSOverride::Pos(
-                            n.get(0).copied().unwrap_or(0.0),
-                            n.get(1).copied().unwrap_or(0.0),
-                        ),
-                        consumed!(after),
-                        false,
-                    ));
+            match parse_paren_numbers(rest) {
+                Some((n, after)) if n.len() == 2 => {
+                    return Some((ASSOverride::Pos(n[0], n[1]), consumed!(after), false));
                 }
+                Some((_n, _after)) => return None,
+                None => return None,
             }
         }
     }
 
     if let Some(rest) = s.strip_prefix("t") {
         if rest.starts_with('(') {
-            match take_parens(rest) {
-                None => return None,
-                Some((inner, after)) => {
-                    if let Some(ov) = parse_transform(inner) {
-                        return Some((ov, consumed!(after), false));
-                    }
-                    return None;
+            match parse_parenthesized_args(rest) {
+                Some((_args, after, _has_backslash_arg)) => {
+                    let transform_source = &rest[..rest.len() - after.len()];
+                    let ov = parse_transform(transform_source).unwrap_or_else(|| ASSOverride::TransformI(Vec::new()));
+                    return Some((ov, consumed!(after), false));
                 }
+                None => return None,
             }
         }
     }
 
     if let Some(rest) = s.strip_prefix("iclip") {
         if rest.starts_with('(') {
-            match take_parens(rest) {
-                None => return Some((ASSOverride::IclipI(String::new()), 0, true)),
-                Some((inner, after)) => {
-                    return Some((parse_clip_args(inner, true), consumed!(after), false));
-                }
+            match parse_clip_args(rest, true) {
+                Some((ov, after)) => return Some((ov, consumed!(after), false)),
+                None => return None,
             }
         }
     }
 
     if let Some(rest) = s.strip_prefix("clip") {
         if rest.starts_with('(') {
-            match take_parens(rest) {
-                None => return Some((ASSOverride::ClipI(String::new()), 0, true)),
-                Some((inner, after)) => {
-                    return Some((parse_clip_args(inner, false), consumed!(after), false));
-                }
+            match parse_clip_args(rest, false) {
+                Some((ov, after)) => return Some((ov, consumed!(after), false)),
+                None => return None,
             }
         }
     }
@@ -288,7 +325,7 @@ pub fn parse_one_tag(s: &str) -> Option<(ASSOverride, usize, bool)> {
     try_flag!("s", ASSOverride::Strikeout);
 
     if let Some(rest) = s.strip_prefix("p") {
-        let (val, rest2) = parse_f32_val(rest);
+        let (val, rest2) = parse_f32_arg(rest);
         return Some((ASSOverride::P(val as u8), consumed!(rest2), false));
     }
 
@@ -306,6 +343,9 @@ pub fn parse_override_block_content(mut s: &str) -> (Vec<ASSOverride>, bool) {
             Some(i) => i,
             None => break,
         };
+        if bs > 0 {
+            result.push(ASSOverride::BlockText(s[..bs].to_string()));
+        }
         s = &s[bs + 1..];
 
         if s.is_empty() {
@@ -318,6 +358,10 @@ pub fn parse_override_block_content(mut s: &str) -> (Vec<ASSOverride>, bool) {
                 s = &s[next..];
             }
             Some((tag, consumed, is_malformed)) => {
+                if empty_transform(&tag) {
+                    s = &s[consumed..];
+                    continue;
+                }
                 result.push(tag);
                 if is_malformed {
                     return (result, true);
@@ -325,6 +369,10 @@ pub fn parse_override_block_content(mut s: &str) -> (Vec<ASSOverride>, bool) {
                 s = &s[consumed..];
             }
         }
+    }
+
+    if !s.is_empty() {
+        result.push(ASSOverride::BlockText(s.to_string()));
     }
 
     (result, false)

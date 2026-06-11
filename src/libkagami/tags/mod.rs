@@ -1,7 +1,8 @@
-use std::mem::discriminant;
+use std::collections::HashSet;
+use std::mem::{discriminant, Discriminant};
 use crate::libkagami::complex::overrides::ASSOverride;
 use crate::libkagami::tags::parse::parse_override_block_content;
-use crate::libkagami::tags::transform::apply_same_tag_after_transform;
+use crate::libkagami::tags::transform::{apply_same_tag_after_transform, transform_inner_tags};
 use crate::libkagami::tags::state::{already_active, upsert_override, is_first_wins};
 use crate::libkagami::tags::stringify::stringify_override;
 
@@ -24,6 +25,8 @@ impl ASSLine {
     pub fn from_str_store(s: &str, start: Vec<ASSOverride>) -> Self {
         let mut data: Vec<ASSText> = Vec::new();
         let mut current_overrides: Vec<ASSOverride> = start.clone();
+        let mut transformed_since_tag: HashSet<Discriminant<ASSOverride>> = HashSet::new();
+        let preserve_boundaries = has_override_block_text(s);
         let mut raw_buf = String::new();
 
         let bytes = s.as_bytes();
@@ -42,39 +45,18 @@ impl ASSLine {
                 }
 
                 let block_start = i + 1;
-                let mut depth = 1usize;
-                let mut block_end = s.len();
-                let mut nested = false;
-                let mut j = block_start;
-                while j < bytes.len() {
-                    if bytes[j] == b'\\' && j + 1 < bytes.len() && bytes[j + 1] == b'{' {
-                        j += 2;
-                        continue;
-                    }
-                    match bytes[j] {
-                        b'{' => { depth += 1; nested = true; }
-                        b'}' => {
-                            depth -= 1;
-                            if depth == 0 {
-                                block_end = j;
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                    j += 1;
-                }
-
-                if nested {
-                    i = block_end + 1;
-                    continue;
-                }
+                let block_end = find_block_end(bytes, block_start).unwrap();
 
                 let block_content = &s[block_start..block_end];
                 let (tags, _) = parse_override_block_content(block_content);
                 let tags = apply_same_tag_after_transform(tags);
 
                 for tag in tags {
+                    if matches!(&tag, ASSOverride::BlockText(_)) {
+                        data.push(ASSText::Override(tag));
+                        continue;
+                    }
+                    mark_transform_tags(&tag, &mut transformed_since_tag);
                     if let ASSOverride::R(ref name) = tag {
                         if name.is_none() {
                             // bare \r — reset to style baseline
@@ -83,10 +65,12 @@ impl ASSLine {
                             // named \r — can't resolve style here, just clear
                             current_overrides.clear();
                         }
+                        transformed_since_tag.clear();
                         data.push(ASSText::Override(tag));
                         continue;
                     }
-                    if already_active(&current_overrides, &tag) {
+                    let tag_disc = discriminant(&tag);
+                    if !preserve_boundaries && already_active(&current_overrides, &tag) && !transformed_since_tag.contains(&tag_disc) {
                         continue;
                     }
                     if is_first_wins(&tag) {
@@ -98,12 +82,14 @@ impl ASSLine {
                         }
                     }
                     upsert_override(&mut current_overrides, tag.clone());
+                    transformed_since_tag.remove(&tag_disc);
                     data.push(ASSText::Override(tag));
                 }
 
                 i = block_end + 1;
             } else {
                 if bytes[i] == b'\\' && i + 1 < bytes.len() && (bytes[i + 1] == b'{' || bytes[i + 1] == b'}') {
+                    raw_buf.push('\\');
                     raw_buf.push(bytes[i + 1] as char);
                     i += 2;
                     continue;
@@ -128,6 +114,8 @@ impl std::str::FromStr for ASSLine {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut data: Vec<ASSText> = Vec::new();
         let mut current_overrides: Vec<ASSOverride> = Vec::new();
+        let mut transformed_since_tag: HashSet<Discriminant<ASSOverride>> = HashSet::new();
+        let preserve_boundaries = has_override_block_text(s);
         let mut raw_buf = String::new();
 
         let bytes = s.as_bytes();
@@ -146,45 +134,26 @@ impl std::str::FromStr for ASSLine {
                 }
 
                 let block_start = i + 1;
-                let mut depth = 1usize;
-                let mut block_end = s.len();
-                let mut nested = false;
-                let mut j = block_start;
-                while j < bytes.len() {
-                    if bytes[j] == b'\\' && j + 1 < bytes.len() && bytes[j + 1] == b'{' {
-                        j += 2;
-                        continue;
-                    }
-                    match bytes[j] {
-                        b'{' => { depth += 1; nested = true; }
-                        b'}' => {
-                            depth -= 1;
-                            if depth == 0 {
-                                block_end = j;
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                    j += 1;
-                }
-
-                if nested {
-                    i = block_end + 1;
-                    continue;
-                }
+                let block_end = find_block_end(bytes, block_start).unwrap();
 
                 let block_content = &s[block_start..block_end];
                 let (tags, _) = parse_override_block_content(block_content);
                 let tags = apply_same_tag_after_transform(tags);
 
                 for tag in tags {
-                    if matches!(&tag, ASSOverride::R(_)) {
-                        current_overrides.clear();
+                    if matches!(&tag, ASSOverride::BlockText(_)) {
                         data.push(ASSText::Override(tag));
                         continue;
                     }
-                    if already_active(&current_overrides, &tag) {
+                    mark_transform_tags(&tag, &mut transformed_since_tag);
+                    if matches!(&tag, ASSOverride::R(_)) {
+                        current_overrides.clear();
+                        transformed_since_tag.clear();
+                        data.push(ASSText::Override(tag));
+                        continue;
+                    }
+                    let tag_disc = discriminant(&tag);
+                    if !preserve_boundaries && already_active(&current_overrides, &tag) && !transformed_since_tag.contains(&tag_disc) {
                         continue;
                     }
                     if is_first_wins(&tag) {
@@ -193,12 +162,14 @@ impl std::str::FromStr for ASSLine {
                         }
                     }
                     upsert_override(&mut current_overrides, tag.clone());
+                    transformed_since_tag.remove(&tag_disc);
                     data.push(ASSText::Override(tag));
                 }
 
                 i = block_end + 1;
             } else {
                 if bytes[i] == b'\\' && i + 1 < bytes.len() && (bytes[i + 1] == b'{' || bytes[i + 1] == b'}') {
+                    raw_buf.push('\\');
                     raw_buf.push(bytes[i + 1] as char);
                     i += 2;
                     continue;
@@ -226,7 +197,9 @@ impl ASSLine {
                 out.push('{');
                 while i < self.data.len() {
                     if let ASSText::Override(ov) = &self.data[i] {
-                        out.push('\\');
+                        if !matches!(ov, ASSOverride::BlockText(_)) {
+                            out.push('\\');
+                        }
                         out.push_str(&stringify_override(ov));
                         i += 1;
                     } else {
@@ -244,26 +217,47 @@ impl ASSLine {
 }
 
 fn find_block_end(bytes: &[u8], start: usize) -> Option<usize> {
-    let mut depth = 1usize;
     let mut j = start;
     while j < bytes.len() {
         if bytes[j] == b'\\' && j + 1 < bytes.len() && bytes[j + 1] == b'{' {
             j += 2;
             continue;
         }
-        match bytes[j] {
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(j);
-                }
-            }
-            _ => {}
+        if bytes[j] == b'}' {
+            return Some(j);
         }
         j += 1;
     }
     None
+}
+
+fn mark_transform_tags(ov: &ASSOverride, transformed: &mut HashSet<Discriminant<ASSOverride>>) {
+    if let Some(tags) = transform_inner_tags(ov) {
+        for tag in tags {
+            transformed.insert(discriminant(tag));
+        }
+    }
+}
+
+fn has_override_block_text(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] != b'{' {
+            i += 1;
+            continue;
+        }
+        let Some(end) = find_block_end(bytes, i + 1) else {
+            i += 1;
+            continue;
+        };
+        let (tags, _) = parse_override_block_content(&s[i + 1..end]);
+        if tags.iter().any(|tag| matches!(tag, ASSOverride::BlockText(text) if !text.is_empty())) {
+            return true;
+        }
+        i = end + 1;
+    }
+    false
 }
 
 #[cfg(test)]
@@ -378,5 +372,111 @@ mod tests {
             .filter(|o| matches!(o, ASSOverride::Fs(_)))
             .count();
         assert_eq!(fs_count, 1);
+    }
+
+    #[test]
+    fn test_raw_braces_are_escaped_on_stringify() {
+        let line: ASSLine = r"\{literal\}".parse().unwrap();
+        assert_eq!(line.stringify(), r"\{literal\}");
+    }
+
+    #[test]
+    fn test_raw_unescaped_braces_are_not_escaped_on_stringify() {
+        let line = ASSLine {
+            current_overrides: Vec::new(),
+            data: vec![ASSText::RawText(r"{\b1}raw".to_string())],
+        };
+        assert_eq!(line.stringify(), r"{\b1}raw");
+    }
+
+    #[test]
+    fn test_drawing_mode_can_change_later() {
+        let line: ASSLine = r"{\p1}m 0 0 l 10 10{\p0}text".parse().unwrap();
+        let p_values: Vec<u8> = line.data.iter()
+            .filter_map(|t| if let ASSText::Override(ASSOverride::P(v)) = t { Some(*v) } else { None })
+            .collect();
+        assert_eq!(p_values, vec![1, 0]);
+        assert_eq!(line.stringify(), r"{\p1}m 0 0 l 10 10{\p0}text");
+    }
+
+    #[test]
+    fn test_nested_block_keeps_tags_before_first_close() {
+        let line: ASSLine = r"{\b1{oops}\i1}text".parse().unwrap();
+        let bold_count = line.data.iter()
+            .filter(|t| matches!(t, ASSText::Override(ASSOverride::Bold(true))))
+            .count();
+        assert_eq!(bold_count, 1);
+        assert!(line.data.iter().any(|t| matches!(t, ASSText::RawText(s) if s == r"\i1}text")));
+    }
+
+    #[test]
+    fn test_missing_closing_paren_is_tolerated() {
+        let line: ASSLine = r"{\pos(10,20\b1}text".parse().unwrap();
+        assert!(line.data.iter().any(|t| matches!(t, ASSText::Override(ASSOverride::Pos(10.0, 20.0)))));
+        assert!(!line.data.iter().any(|t| matches!(t, ASSText::Override(ASSOverride::Bold(true)))));
+    }
+
+    #[test]
+    fn test_nested_parens_close_at_first_paren() {
+        let line: ASSLine = r"{\pos(10,(20),30)\b1}text".parse().unwrap();
+        assert!(line.data.iter().any(|t| matches!(t, ASSText::Override(ASSOverride::Pos(10.0, 0.0)))));
+        assert!(line.data.iter().any(|t| matches!(t, ASSText::Override(ASSOverride::Bold(true)))));
+    }
+
+    #[test]
+    fn test_clip_rect_parses_four_args() {
+        let line: ASSLine = r"{\clip(0,1,100,101)}text".parse().unwrap();
+        assert!(line.data.iter().any(|t| matches!(t, ASSText::Override(ASSOverride::ClipRect(0.0, 1.0, 100.0, 101.0)))));
+    }
+
+    #[test]
+    fn test_parenthesized_simple_tag_arg() {
+        let line: ASSLine = r"{\fs(42)}text".parse().unwrap();
+        assert!(line.data.iter().any(|t| matches!(t, ASSText::Override(ASSOverride::Fs(42.0)))));
+    }
+
+    #[test]
+    fn test_raw_tag_after_transform_affecting_same_property_is_kept() {
+        let line: ASSLine = r"{\c&HFFFFFF&\t(0,2500,\c&H5F5FFF&)}A{\c&HFFFFFF&}B".parse().unwrap();
+        let white_count = line.data.iter()
+            .filter(|t| matches!(t, ASSText::Override(ASSOverride::ColorI(0xFFFFFF))))
+            .count();
+        assert_eq!(white_count, 2);
+        assert_eq!(
+            line.stringify(),
+            r"{\c&HFFFFFF&\t(0,2500,\c&H5F5FFF&)}A{\c&HFFFFFF&}B"
+        );
+    }
+
+    #[test]
+    fn test_same_raw_tag_dedupes_after_transform_reset() {
+        let line: ASSLine = r"{\c&HFFFFFF&\t(0,2500,\c&H5F5FFF&)}A{\c&HFFFFFF&}B{\c&HFFFFFF&\t(0,2500,\c&H5F5FFF&)}C".parse().unwrap();
+        let white_count = line.data.iter()
+            .filter(|t| matches!(t, ASSText::Override(ASSOverride::ColorI(0xFFFFFF))))
+            .count();
+        assert_eq!(white_count, 2);
+        assert_eq!(
+            line.stringify(),
+            r"{\c&HFFFFFF&\t(0,2500,\c&H5F5FFF&)}A{\c&HFFFFFF&}B{\t(0,2500,\c&H5F5FFF&)}C"
+        );
+    }
+
+    #[test]
+    fn test_override_block_text_is_preserved() {
+        let line: ASSLine = r"I {*\c&H8F889F&\3c&H8F889F&}l".parse().unwrap();
+        assert_eq!(line.stringify(), r"I {*\c&H8F889F&\3c&H8F889F&}l");
+    }
+
+    #[test]
+    fn test_override_block_text_disables_line_dedup() {
+        let line: ASSLine = r"{*\c&HEEEEEE&}A{\c&HB2D5DE&}B{\c&HEEEEEE&}C{\c&HEEEEEE&}D".parse().unwrap();
+        let light_count = line.data.iter()
+            .filter(|t| matches!(t, ASSText::Override(ASSOverride::ColorI(0xEEEEEE))))
+            .count();
+        assert_eq!(light_count, 3);
+        assert_eq!(
+            line.stringify(),
+            r"{*\c&HEEEEEE&}A{\c&HB2D5DE&}B{\c&HEEEEEE&}C{\c&HEEEEEE&}D"
+        );
     }
 }

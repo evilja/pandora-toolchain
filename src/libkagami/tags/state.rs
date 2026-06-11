@@ -1,7 +1,11 @@
 use std::mem::discriminant;
 use crate::libkagami::complex::overrides::ASSOverride;
+use crate::libkagami::tags::transform::transform_inner_tags;
 
 pub fn already_active(current: &[ASSOverride], candidate: &ASSOverride) -> bool {
+    if transform_inner_tags(candidate).is_some() {
+        return false;
+    }
     current
         .iter()
         .any(|c| discriminant(c) == discriminant(candidate) && c == candidate)
@@ -21,7 +25,6 @@ pub fn is_first_wins(ov: &ASSOverride) -> bool {
     matches!(ov,
         ASSOverride::Pos(_, _)
         | ASSOverride::An(_)
-        | ASSOverride::P(_)
         | ASSOverride::MoveI(_, _, _, _)
         | ASSOverride::MoveII(_, _, _, _, _, _)
         | ASSOverride::Org(_, _)

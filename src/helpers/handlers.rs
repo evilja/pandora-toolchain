@@ -318,6 +318,14 @@ async fn smartcode_merge_upload(
         return None;
     }
 
+    let merged_sub = SubstationAlpha::load(merged_local.clone(), true).await;
+    let font_names = merged_sub.font_names();
+    if merged_sub.dump_to_file(merged_local.clone()).await.is_err() {
+        let _ = response_msg.edit(ctx, EditMessage::new()
+            .content("Failed to write advanced-parsed merged ASS.")).await;
+        return None;
+    }
+
     let merged_bytes = match tokio::fs::read(&merged_local).await {
         Ok(b) => b,
         Err(e) => {
@@ -326,8 +334,6 @@ async fn smartcode_merge_upload(
             return None;
         }
     };
-    let merged_sub = SubstationAlpha::load(merged_local.clone(), true).await;
-    let font_names = merged_sub.font_names();
 
     let release_path = format!("{}/Release - {} - E{:02}.ass", folder, safe_name, episode);
     let release_commit = "Smartcode merge".to_string();

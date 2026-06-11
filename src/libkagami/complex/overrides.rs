@@ -1,5 +1,6 @@
 #[derive(Clone, PartialEq)]
 pub enum ASSOverride {
+    BlockText(String),
     Bold(bool),
     Italic(bool),
     Underline(bool),
@@ -43,8 +44,10 @@ pub enum ASSOverride {
     P(u8),
     ClipI(String),
     ClipII(f32, String),
+    ClipRect(f32, f32, f32, f32),
     IclipI(String),
     IclipII(f32, String),
+    IclipRect(f32, f32, f32, f32),
     Fe(f32),
     MoveI(f32, f32, f32, f32),           // \move(x1,y1,x2,y2)
     MoveII(f32, f32, f32, f32, f32, f32), // \move(x1,y1,x2,y2,t1,t2)
