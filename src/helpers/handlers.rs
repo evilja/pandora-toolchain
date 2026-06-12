@@ -1340,8 +1340,6 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
             .content(format!("Failed to rewrite ASS title."))).await;
         return;
     }
-    let font_names = sub.font_names();
-
     let output_bytes = match tokio::fs::read(&output_path).await {
         Ok(b) => b,
         Err(e) => {
@@ -1378,19 +1376,10 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
     match upsert_repo_ass(&fg, &owner_repo, &repo_path, &output_bytes, &commit_msg).await {
         Ok(uploaded_path) => {
             println!("[job] id={} uploaded_path={} raw_bytes={}", job_id, uploaded_path, output_bytes.len());
-            let fonts_text = match upsert_fonts_zip(&fg, &owner_repo, server_id, &folder, &font_names).await {
-                Ok(Some(path)) => path,
-                Ok(None) => "None found".to_string(),
-                Err(e) => {
-                    println!("[job] id={} fonts_upload_failed={}", job_id, e);
-                    format!("Failed: {}", e)
-                }
-            };
             let embed = CreateEmbed::new()
                 .title("Job complete")
                 .field("Repo", format!("`{}`", owner_repo), true)
                 .field("File", format!("`{}`", uploaded_path), true)
-                .field("Fonts", format!("`{}`", fonts_text), true)
                 .field("Job", format!("`{}`", job_id), true)
                 .field("Commit Message", format!("`{}`", commit_msg), false)
                 .field("Warnings", format_warnings_field(&warnings), false);
@@ -1545,8 +1534,6 @@ pub async fn handle_ts_message(ctx: &Context, msg: &Message, parts: &[&str]) {
             .content("Failed to rewrite ASS title.")).await;
         return;
     }
-    let font_names = sub.font_names();
-
     let output_bytes = match tokio::fs::read(&output_path).await {
         Ok(b) => b,
         Err(e) => {
@@ -1569,20 +1556,10 @@ pub async fn handle_ts_message(ctx: &Context, msg: &Message, parts: &[&str]) {
     match upsert_repo_ass(&fg, &owner_repo, &repo_path, &output_bytes, "Typeset").await {
         Ok(uploaded_path) => {
             println!("[ts] id={} uploaded_path={} raw_bytes={}", job_id, uploaded_path, output_bytes.len());
-            let folder = pad2(episode);
-            let fonts_text = match upsert_fonts_zip(&fg, &owner_repo, server_id, &folder, &font_names).await {
-                Ok(Some(path)) => path,
-                Ok(None) => "None found".to_string(),
-                Err(e) => {
-                    println!("[ts] id={} fonts_upload_failed={}", job_id, e);
-                    format!("Failed: {}", e)
-                }
-            };
             let embed = CreateEmbed::new()
                 .title("TS complete")
                 .field("Repo", format!("`{}`", owner_repo), true)
                 .field("File", format!("`{}`", uploaded_path), true)
-                .field("Fonts", format!("`{}`", fonts_text), true)
                 .field("Job", format!("`{}`", job_id), true);
             let _ = response_msg.edit(ctx, EditMessage::new().content("").embed(embed)).await;
         }
