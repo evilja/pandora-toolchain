@@ -14,7 +14,6 @@ pub async fn handle_merge(ctx: &Context, command: &serenity::all::CommandInterac
         .field("Repo", format!("`{}`", result.owner_repo), true)
         .field("Release", format!("`{}`", result.release_path), true)
         .field("Source", format!("`{}`", result.source_path), true)
-        .field("Fonts", result.fonts_path.unwrap_or_else(|| "None found".to_string()), true)
         .field("Warnings", format_warnings_field(&result.warnings), false);
     let _ = response_msg.edit(ctx, EditMessage::new().content("").embed(embed)).await;
 }

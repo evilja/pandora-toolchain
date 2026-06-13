@@ -352,9 +352,6 @@ pub fn parse_override_block_content(mut s: &str) -> (Vec<ASSOverride>, bool) {
             Some(i) => i,
             None => break,
         };
-        if bs > 0 {
-            result.push(ASSOverride::BlockText(s[..bs].to_string()));
-        }
         s = &s[bs + 1..];
 
         if s.is_empty() {
@@ -378,10 +375,6 @@ pub fn parse_override_block_content(mut s: &str) -> (Vec<ASSOverride>, bool) {
                 s = &s[consumed..];
             }
         }
-    }
-
-    if !s.is_empty() {
-        result.push(ASSOverride::BlockText(s.to_string()));
     }
 
     (result, false)

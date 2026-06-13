@@ -69,7 +69,7 @@ fn has_level_at_least(id: u64, min_rank: u8) -> bool {
 
 fn min_rank_for_command(part: &str) -> u8 {
     match part {
-        "encode" | "pancode" | "probe" | "backup" | "backupall" | "scrape" | "gitcode" | "smartcode" | "merge" | "source" => 0,
+        "encode" | "pancode" | "probe" | "backup" | "backupall" | "scrape" | "gitcode" | "smartcode" | "merge" | "release" | "source" => 0,
         "!enc" | "!encode" => 0,
         "job" | "get" | "!ts" => 1,
         "auth" | "remove" | "gitsync" | "hearts" | "configure" | "readmebase" | "addapi" | "font" | "!ban" | "!some" => 2,
@@ -157,6 +157,13 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Merge TL and TS subtitles for an attached episode.",
             usage: "/merge episode:<n> [link]",
             details: "Requires an attached anime repo. Produces and uploads the release ASS for the episode without starting an encode.",
+        },
+        HelpCommand {
+            name: "release",
+            rank: 0,
+            summary: "Upload release fonts for an attached episode.",
+            usage: "/release episode:<n>",
+            details: "Requires an attached anime repo and an existing release ASS. Reads the release ASS font list and uploads only fonts.zip for that episode folder.",
         },
         HelpCommand {
             name: "source",
@@ -878,6 +885,9 @@ impl EventHandler for Handler {
                 "merge" => {
                     handle_merge(&ctx, &command).await;
                 }
+                "release" => {
+                    handle_release(&ctx, &command).await;
+                }
                 "source" => {
                     handle_source(&ctx, &command).await;
                 }
@@ -1104,6 +1114,13 @@ impl EventHandler for Handler {
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "link", "Source link. Falls back to SOURCE.md if omitted.")
                         .required(false)
+                ),
+            CreateCommand::new("release")
+                .description("Upload fonts.zip for an existing episode release ASS")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (1-based)")
+                        .required(true)
+                        .min_int_value(1)
                 ),
             CreateCommand::new("source")
                 .description("Write the SOURCE.md for an episode's folder in the attached repo")

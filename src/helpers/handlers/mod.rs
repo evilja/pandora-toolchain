@@ -6,6 +6,7 @@ mod backup;
 mod scrape;
 mod smartcode;
 mod merge;
+mod release;
 mod source;
 mod get;
 mod init;
@@ -30,6 +31,7 @@ pub use self::backup::handle_backup;
 pub use self::scrape::handle_scrape;
 pub use self::smartcode::handle_smartcode;
 pub use self::merge::handle_merge;
+pub use self::release::handle_release;
 pub use self::source::handle_source;
 pub use self::get::handle_get;
 pub use self::init::handle_init;
@@ -53,7 +55,6 @@ struct SmartMergeResult {
     owner_repo: String,
     release_path: String,
     source_path: String,
-    fonts_path: Option<String>,
     warnings: Vec<String>,
 }
 
@@ -232,7 +233,6 @@ async fn smartcode_merge_upload(
     }
 
     let merged_sub = SubstationAlpha::load(merged_local.clone(), true).await;
-    let font_names = merged_sub.font_names();
     if merged_sub.dump_to_file(merged_local.clone()).await.is_err() {
         let _ = response_msg.edit(ctx, EditMessage::new()
             .content("Failed to write advanced-parsed merged ASS.")).await;
@@ -286,14 +286,6 @@ async fn smartcode_merge_upload(
     }
     }
 
-    let fonts_path = match upsert_fonts_zip(&fg, &owner_repo, server_id, &folder, &font_names).await {
-        Ok(p) => p,
-        Err(e) => {
-            println!("[{}] fonts.zip upload failed for {}: {}", log_prefix, folder, e);
-            None
-        }
-    };
-
     println!("[{}] repo={} episode={} tl={} ts_presence={} warnings={} merged_bytes={} release={} source_origin={}",
         log_prefix, owner_repo, episode, tl_path,
         if ts_bytes_opt.is_some() { "present" } else { "absent" },
@@ -308,7 +300,6 @@ async fn smartcode_merge_upload(
         owner_repo,
         release_path: uploaded_release_path,
         source_path,
-        fonts_path,
         warnings,
     })
 }

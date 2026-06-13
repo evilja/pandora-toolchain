@@ -23,10 +23,13 @@ pub struct ASSLine {
 
 impl ASSLine {
     pub fn from_str_store(s: &str, start: Vec<ASSOverride>) -> Self {
+        if has_star_in_override_block(s) {
+            return Self { current_overrides: start, data: vec![ASSText::RawText(s.to_string())] };
+        }
+
         let mut data: Vec<ASSText> = Vec::new();
         let mut current_overrides: Vec<ASSOverride> = start.clone();
         let mut transformed_since_tag: HashSet<Discriminant<ASSOverride>> = HashSet::new();
-        let preserve_boundaries = has_override_block_text(s);
         let mut raw_buf = String::new();
 
         let bytes = s.as_bytes();
@@ -74,7 +77,7 @@ impl ASSLine {
                         data.push(ASSText::Override(tag));
                         continue;
                     }
-                    if !preserve_boundaries && already_active(&current_overrides, &tag) && !transformed_since_tag.contains(&tag_disc) {
+                    if already_active(&current_overrides, &tag) && !transformed_since_tag.contains(&tag_disc) {
                         continue;
                     }
                     if is_first_wins(&tag) {
@@ -119,10 +122,13 @@ impl std::str::FromStr for ASSLine {
     type Err = std::convert::Infallible;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if has_star_in_override_block(s) {
+            return Ok(Self { current_overrides: Vec::new(), data: vec![ASSText::RawText(s.to_string())] });
+        }
+
         let mut data: Vec<ASSText> = Vec::new();
         let mut current_overrides: Vec<ASSOverride> = Vec::new();
         let mut transformed_since_tag: HashSet<Discriminant<ASSOverride>> = HashSet::new();
-        let preserve_boundaries = has_override_block_text(s);
         let mut raw_buf = String::new();
 
         let bytes = s.as_bytes();
@@ -164,7 +170,7 @@ impl std::str::FromStr for ASSLine {
                         data.push(ASSText::Override(tag));
                         continue;
                     }
-                    if !preserve_boundaries && already_active(&current_overrides, &tag) && !transformed_since_tag.contains(&tag_disc) {
+                    if already_active(&current_overrides, &tag) && !transformed_since_tag.contains(&tag_disc) {
                         continue;
                     }
                     if is_first_wins(&tag) {
@@ -278,10 +284,14 @@ fn final_overrides(data: &[ASSText], start: &[ASSOverride]) -> Vec<ASSOverride> 
     current
 }
 
-fn has_override_block_text(s: &str) -> bool {
+fn has_star_in_override_block(s: &str) -> bool {
     let bytes = s.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+            i += 2;
+            continue;
+        }
         if bytes[i] != b'{' {
             i += 1;
             continue;
@@ -290,8 +300,7 @@ fn has_override_block_text(s: &str) -> bool {
             i += 1;
             continue;
         };
-        let (tags, _) = parse_override_block_content(&s[i + 1..end]);
-        if tags.iter().any(|tag| matches!(tag, ASSOverride::BlockText(text) if !text.is_empty())) {
+        if s[i + 1..end].contains('*') {
             return true;
         }
         i = end + 1;
@@ -533,21 +542,22 @@ mod tests {
     }
 
     #[test]
-    fn test_override_block_text_is_preserved() {
+    fn test_star_in_override_block_preserves_line() {
         let line: ASSLine = r"I {*\c&H8F889F&\3c&H8F889F&}l".parse().unwrap();
         assert_eq!(line.stringify(), r"I {*\c&H8F889F&\3c&H8F889F&}l");
+        assert!(matches!(line.data.as_slice(), [ASSText::RawText(s)] if s == r"I {*\c&H8F889F&\3c&H8F889F&}l"));
     }
 
     #[test]
-    fn test_override_block_text_disables_line_dedup() {
-        let line: ASSLine = r"{*\c&HEEEEEE&}A{\c&HB2D5DE&}B{\c&HEEEEEE&}C{\c&HEEEEEE&}D".parse().unwrap();
+    fn test_non_tag_override_block_text_is_discarded() {
+        let line: ASSLine = r"{x\c&HEEEEEE&}A{\c&HB2D5DE&}B{\c&HEEEEEE&}C{\c&HEEEEEE&}D".parse().unwrap();
         let light_count = line.data.iter()
             .filter(|t| matches!(t, ASSText::Override(ASSOverride::ColorI(0xEEEEEE))))
             .count();
-        assert_eq!(light_count, 3);
+        assert_eq!(light_count, 2);
         assert_eq!(
             line.stringify(),
-            r"{*\c&HEEEEEE&}A{\c&HB2D5DE&}B{\c&HEEEEEE&}C{\c&HEEEEEE&}D"
+            r"{\c&HEEEEEE&}A{\c&HB2D5DE&}B{\c&HEEEEEE&}CD"
         );
     }
 
