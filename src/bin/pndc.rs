@@ -1,7 +1,7 @@
 use serenity::{
     Client,
-    all::{ActivityData, ChannelType, CommandOptionType, Context, CreateEmbed, CreateMessage, EditInteractionResponse, EditMessage, GatewayIntents, Interaction, Message, OnlineStatus, Ready},
-    builder::{CreateCommand, CreateCommandOption, CreateInteractionResponse, CreateInteractionResponseMessage, EditChannel},
+    all::{ActivityData, ChannelType, CommandOptionType, ComponentInteraction, ComponentInteractionDataKind, Context, CreateEmbed, CreateMessage, EditInteractionResponse, EditMessage, GatewayIntents, Interaction, Message, OnlineStatus, Ready},
+    builder::{CreateActionRow, CreateCommand, CreateCommandOption, CreateInteractionResponse, CreateInteractionResponseMessage, CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, EditChannel},
     prelude::*,
 };
 use pandora_toolchain::libpnp2p::nyaaise::nyaaise;
@@ -79,9 +79,308 @@ fn min_rank_for_command(part: &str) -> u8 {
 }
 
 fn is_authorized(part: &str, id: u64) -> bool {
+    if part == "help" { return true; }
     let min_rank = min_rank_for_command(part);
     if min_rank == u8::MAX { return false; }
     has_level_at_least(id, min_rank)
+}
+
+struct HelpCommand {
+    name: &'static str,
+    rank: u8,
+    summary: &'static str,
+    usage: &'static str,
+    details: &'static str,
+}
+
+fn help_catalog() -> &'static [HelpCommand] {
+    &[
+        HelpCommand {
+            name: "help",
+            rank: 0,
+            summary: "Show command help.",
+            usage: "/help",
+            details: "Opens this private command guide. Pick a command from the menu to see its required inputs and workflow notes.",
+        },
+        HelpCommand {
+            name: "encode",
+            rank: 0,
+            summary: "Encode a torrent or Google Drive source with an ASS subtitle.",
+            usage: "/encode torrent:<link> subtitle:<ass> [preset] [concat]",
+            details: "Accepts torrent URLs, magnet links, and Google Drive links. The attached subtitle must be ASS. Optional presets control encoder mode; concat selects an intro group.",
+        },
+        HelpCommand {
+            name: "probe",
+            rank: 0,
+            summary: "Inspect a torrent and list selectable files.",
+            usage: "/probe torrent:<link>",
+            details: "Downloads and probes a torrent or magnet link, then returns file indexes. Use the resulting job id and index with /pancode or /backup. Google Drive links are not supported here.",
+        },
+        HelpCommand {
+            name: "pancode",
+            rank: 0,
+            summary: "Encode one file from a previous /probe job.",
+            usage: "/pancode job_id:<probe_job> index:<file_index> subtitle:<ass> [preset] [concat]",
+            details: "Uses the torrent data saved by /probe and encodes the selected file with the provided ASS subtitle.",
+        },
+        HelpCommand {
+            name: "backup",
+            rank: 0,
+            summary: "Upload a downloaded source to Drive without release encoding.",
+            usage: "/backup torrent:<link> or /backup job_id:<probe_job> index:<file_index>",
+            details: "Can download a direct torrent/magnet/Google Drive source, or reuse a probed torrent file when job_id and index are supplied.",
+        },
+        HelpCommand {
+            name: "backupall",
+            rank: 0,
+            summary: "Upload every MKV from a torrent to Drive.",
+            usage: "/backupall torrent:<link>",
+            details: "Downloads the torrent or magnet link and backs up all MKV outputs instead of selecting a single file.",
+        },
+        HelpCommand {
+            name: "gitcode",
+            rank: 0,
+            summary: "Encode with a subtitle fetched from a URL.",
+            usage: "/gitcode torrent:<link> subtitle_url:<url> [preset] [concat]",
+            details: "Fetches the ASS file from a URL. GitHub blob links are rewritten to raw GitHub links automatically.",
+        },
+        HelpCommand {
+            name: "smartcode",
+            rank: 0,
+            summary: "Merge attached repo subtitles and encode an episode.",
+            usage: "/smartcode episode:<n> [link] [preset] [concat]",
+            details: "Requires this channel to be attached to an anime repo. Reads TL and TS files for the episode, merges them, then encodes using the source link or SOURCE.md.",
+        },
+        HelpCommand {
+            name: "merge",
+            rank: 0,
+            summary: "Merge TL and TS subtitles for an attached episode.",
+            usage: "/merge episode:<n> [link]",
+            details: "Requires an attached anime repo. Produces and uploads the release ASS for the episode without starting an encode.",
+        },
+        HelpCommand {
+            name: "source",
+            rank: 0,
+            summary: "Write SOURCE.md for an attached episode folder.",
+            usage: "/source episode:<n> link:<source_link>",
+            details: "Stores the episode source link in the attached Forgejo repo. Source links can be torrent URLs, magnet links, or Google Drive links.",
+        },
+        HelpCommand {
+            name: "job",
+            rank: 1,
+            summary: "Upload one episode work file to the attached repo.",
+            usage: "/job type:<TL|TLC|TS> episode:<n> subtitle:<ass_or_zip> [commit]",
+            details: "Requires a channel attachment. Normalizes the uploaded ASS or root-level ASS zip, then uploads it under the selected job type.",
+        },
+        HelpCommand {
+            name: "get",
+            rank: 1,
+            summary: "Get a download link for an episode work file.",
+            usage: "/get type:<Translation|Typeset> episode:<n>",
+            details: "Returns a repo download link for the requested attached episode file.",
+        },
+        HelpCommand {
+            name: "hearts",
+            rank: 2,
+            summary: "Show worker health.",
+            usage: "/hearts",
+            details: "Reports shrine worker liveness, heartbeat age, and reboot counts.",
+        },
+        HelpCommand {
+            name: "gitsync",
+            rank: 2,
+            summary: "Fast-forward the bot repo and restart workers.",
+            usage: "/gitsync",
+            details: "Runs the configured git sync workflow, archives active work, stops the shrine, and exits for restart.",
+        },
+        HelpCommand {
+            name: "configure",
+            rank: 2,
+            summary: "Configure server language, Forgejo base, and API key.",
+            usage: "/configure language:<EN|TR|JP> [forgejo] [api_key]",
+            details: "Writes server metadata. Run this before /init if the server needs a Forgejo org/base configured.",
+        },
+        HelpCommand {
+            name: "addapi",
+            rank: 2,
+            summary: "Write or update a toolchain environment token.",
+            usage: "/addapi key_name:<name> token:<value>",
+            details: "Updates the global pntools environment file with the provided token value.",
+        },
+        HelpCommand {
+            name: "font",
+            rank: 2,
+            summary: "Install a font zip for this server.",
+            usage: "/font [file:<zip>] [link:<zip_url>]",
+            details: "Accepts either an attached zip or an HTTP(S) zip link and extracts fonts to this server's fontconfig directory.",
+        },
+        HelpCommand {
+            name: "readmebase",
+            rank: 2,
+            summary: "Set the server README template.",
+            usage: "/readmebase file:<base.md>",
+            details: "Stores base.md for repo bootstrapping. /init and /attach can use it when creating or updating README.md.",
+        },
+        HelpCommand {
+            name: "auth",
+            rank: 2,
+            summary: "Authorize a user for a permission level.",
+            usage: "/auth user_id:<discord_id> [level]",
+            details: "Adds a user id to an allowlist. If level is omitted, authorize.pandora is used.",
+        },
+        HelpCommand {
+            name: "remove",
+            rank: 2,
+            summary: "Remove a user from a permission level.",
+            usage: "/remove user_id:<discord_id> level:<allowlist>",
+            details: "Removes a user id from the chosen allowlist.",
+        },
+        HelpCommand {
+            name: "attach",
+            rank: 3,
+            summary: "Attach this channel to an existing Forgejo anime repo.",
+            usage: "/attach mal:<mal_url> repo:<forgejo_repo> [season] [tl] [tlc] [ts] [qc]",
+            details: "Fetches MAL metadata, writes channel metadata, and bootstraps episode folders plus repo helper files.",
+        },
+        HelpCommand {
+            name: "init",
+            rank: 3,
+            summary: "Create and attach a new Forgejo repo for an anime.",
+            usage: "/init mal:<mal_url> [season] [tl] [tlc] [ts] [qc]",
+            details: "Uses the configured Forgejo org, creates a public repo from MAL metadata, bootstraps folders, and attaches this channel.",
+        },
+        HelpCommand {
+            name: "destruct",
+            rank: 3,
+            summary: "Delete the attached Forgejo repo and detach this channel.",
+            usage: "/destruct",
+            details: "Deletes the repo configured for this channel and removes the channel attachment.",
+        },
+        HelpCommand {
+            name: "detach",
+            rank: 3,
+            summary: "Detach this channel without deleting the repo.",
+            usage: "/detach",
+            details: "Removes this channel's anime attachment metadata. The Forgejo repo is left untouched.",
+        },
+    ]
+}
+
+fn user_help_commands(user_id: u64) -> Vec<&'static HelpCommand> {
+    help_catalog().iter()
+        .filter(|cmd| cmd.name == "help" || has_level_at_least(user_id, cmd.rank))
+        .collect()
+}
+
+fn help_command(name: &str) -> Option<&'static HelpCommand> {
+    help_catalog().iter().find(|cmd| cmd.name == name)
+}
+
+fn help_rank_label(rank: u8) -> &'static str {
+    match rank {
+        0 => "Authorize",
+        1 => "Fansubber",
+        2 => "Admin",
+        3 => "Upper",
+        _ => "Unknown",
+    }
+}
+
+fn help_components(user_id: u64, selected: Option<&str>) -> Vec<CreateActionRow> {
+    let options = user_help_commands(user_id).into_iter()
+        .map(|cmd| {
+            let option = CreateSelectMenuOption::new(format!("/{}", cmd.name), cmd.name)
+                .description(cmd.summary);
+            if Some(cmd.name) == selected {
+                option.default_selection(true)
+            } else {
+                option
+            }
+        })
+        .collect();
+
+    vec![CreateActionRow::SelectMenu(
+        CreateSelectMenu::new(
+            format!("pnhelp:{}", user_id),
+            CreateSelectMenuKind::String { options },
+        )
+            .placeholder("Choose a command")
+            .min_values(1)
+            .max_values(1)
+    )]
+}
+
+fn help_overview_embed(user_id: u64) -> CreateEmbed {
+    let commands = user_help_commands(user_id);
+    let command_list = commands.iter()
+        .map(|cmd| format!("`/{}`", cmd.name))
+        .collect::<Vec<_>>()
+        .join(" ");
+    CreateEmbed::new()
+        .title("Pandora command help")
+        .description("Select a command below to see usage, required inputs, and workflow notes.")
+        .field("Available commands", command_list, false)
+}
+
+fn help_detail_embed(cmd: &HelpCommand) -> CreateEmbed {
+    let access = if cmd.name == "help" { "Everyone" } else { help_rank_label(cmd.rank) };
+    CreateEmbed::new()
+        .title(format!("/{}", cmd.name))
+        .description(cmd.summary)
+        .field("Usage", format!("`{}`", cmd.usage), false)
+        .field("Access", access, true)
+        .field("Details", cmd.details, false)
+}
+
+async fn handle_help_command(ctx: &Context, command: &serenity::all::CommandInteraction) {
+    command.create_response(ctx, CreateInteractionResponse::Message(
+        CreateInteractionResponseMessage::new()
+            .embed(help_overview_embed(command.user.id.get()))
+            .components(help_components(command.user.id.get(), None))
+            .ephemeral(true)
+    )).await.ok();
+}
+
+async fn handle_help_component(ctx: &Context, component: &ComponentInteraction) {
+    let Some(owner) = component.data.custom_id.strip_prefix("pnhelp:") else {
+        return;
+    };
+    let owner_id = owner.parse::<u64>().unwrap_or(0);
+    if owner_id != component.user.id.get() {
+        component.create_response(ctx, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content("Run `/help` to open your own command guide.")
+                .ephemeral(true)
+        )).await.ok();
+        return;
+    }
+
+    let selected = match &component.data.kind {
+        ComponentInteractionDataKind::StringSelect { values } => values.first().map(String::as_str),
+        _ => None,
+    };
+    let Some(name) = selected else {
+        component.create_response(ctx, CreateInteractionResponse::Acknowledge).await.ok();
+        return;
+    };
+    let Some(cmd) = help_command(name) else {
+        component.create_response(ctx, CreateInteractionResponse::Acknowledge).await.ok();
+        return;
+    };
+    if cmd.name != "help" && !has_level_at_least(component.user.id.get(), cmd.rank) {
+        component.create_response(ctx, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content("You do not have access to that command.")
+                .ephemeral(true)
+        )).await.ok();
+        return;
+    }
+
+    component.create_response(ctx, CreateInteractionResponse::UpdateMessage(
+        CreateInteractionResponseMessage::new()
+            .embed(help_detail_embed(cmd))
+            .components(help_components(component.user.id.get(), Some(cmd.name)))
+    )).await.ok();
 }
 
 fn read_lang(guild_id: Option<serenity::all::GuildId>) -> String {
@@ -427,6 +726,9 @@ impl EventHandler for Handler {
             }
             println!("[gate] ALLOWED user={} cmd={}", command.user.id.get(), command.data.name.as_str());
             match command.data.name.as_str() {
+                "help" => {
+                    handle_help_command(&ctx, &command).await;
+                }
                 "encode" => {
                     let torrent_url = match required_trimmed_option(&ctx, &command, "torrent", "Torrent URL").await {
                         Some(url) => url,
@@ -611,6 +913,10 @@ impl EventHandler for Handler {
                 }
                 _ => {}
             }
+        } else if let Interaction::Component(component) = interaction {
+            if component.data.custom_id.starts_with("pnhelp:") {
+                handle_help_component(&ctx, &component).await;
+            }
         }
     }
 
@@ -632,6 +938,8 @@ impl EventHandler for Handler {
         }
 
         let commands = vec![
+            CreateCommand::new("help")
+                .description("Open an interactive command guide"),
             CreateCommand::new("encode")
                 .description("Encode a video with subtitle")
                 .add_option(

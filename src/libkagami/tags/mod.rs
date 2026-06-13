@@ -3,7 +3,7 @@ use std::mem::{discriminant, Discriminant};
 use crate::libkagami::complex::overrides::ASSOverride;
 use crate::libkagami::tags::parse::parse_override_block_content;
 use crate::libkagami::tags::transform::{apply_same_tag_after_transform, transform_inner_tags};
-use crate::libkagami::tags::state::{already_active, upsert_override, is_first_wins};
+use crate::libkagami::tags::state::{already_active, upsert_override, is_first_wins, same_override_kind, is_repeatable_effect};
 use crate::libkagami::tags::stringify::stringify_override;
 
 pub mod parse;
@@ -70,11 +70,15 @@ impl ASSLine {
                         continue;
                     }
                     let tag_disc = discriminant(&tag);
+                    if is_repeatable_effect(&tag) {
+                        data.push(ASSText::Override(tag));
+                        continue;
+                    }
                     if !preserve_boundaries && already_active(&current_overrides, &tag) && !transformed_since_tag.contains(&tag_disc) {
                         continue;
                     }
                     if is_first_wins(&tag) {
-                        if let Some(existing) = current_overrides.iter().find(|c| discriminant(*c) == discriminant(&tag)) {
+                        if let Some(existing) = current_overrides.iter().find(|c| same_override_kind(c, &tag)) {
                             // suppress only if the existing value came from an explicit tag, not the style base
                             if !start.iter().any(|s| s == existing) {
                                 continue;
@@ -156,11 +160,15 @@ impl std::str::FromStr for ASSLine {
                         continue;
                     }
                     let tag_disc = discriminant(&tag);
+                    if is_repeatable_effect(&tag) {
+                        data.push(ASSText::Override(tag));
+                        continue;
+                    }
                     if !preserve_boundaries && already_active(&current_overrides, &tag) && !transformed_since_tag.contains(&tag_disc) {
                         continue;
                     }
                     if is_first_wins(&tag) {
-                        if current_overrides.iter().any(|c| discriminant(c) == discriminant(&tag)) {
+                        if current_overrides.iter().any(|c| same_override_kind(c, &tag)) {
                             continue;
                         }
                     }
@@ -263,6 +271,7 @@ fn final_overrides(data: &[ASSText], start: &[ASSOverride]) -> Vec<ASSOverride> 
             ASSOverride::BlockText(_) => {}
             ASSOverride::R(None) => current = start.to_vec(),
             ASSOverride::R(Some(_)) => current.clear(),
+            _ if is_repeatable_effect(ov) => {}
             _ => upsert_override(&mut current, ov.clone()),
         }
     }
@@ -463,6 +472,38 @@ mod tests {
     fn test_parenthesized_simple_tag_arg() {
         let line: ASSLine = r"{\fs(42)}text".parse().unwrap();
         assert!(line.data.iter().any(|t| matches!(t, ASSText::Override(ASSOverride::Fs(42.0)))));
+    }
+
+    #[test]
+    fn test_legacy_alignment_tag_is_preserved() {
+        let line: ASSLine = r"{\a5}text".parse().unwrap();
+        assert!(line.data.iter().any(|t| matches!(t, ASSText::Override(ASSOverride::A(5)))));
+        assert_eq!(line.stringify(), r"{\a5}text");
+    }
+
+    #[test]
+    fn test_legacy_alignment_conflicts_with_an() {
+        let line: ASSLine = r"{\a5\an7}text".parse().unwrap();
+        assert!(line.data.iter().any(|t| matches!(t, ASSText::Override(ASSOverride::A(5)))));
+        assert!(!line.data.iter().any(|t| matches!(t, ASSText::Override(ASSOverride::An(7)))));
+        assert_eq!(line.stringify(), r"{\a5}text");
+    }
+
+    #[test]
+    fn test_kt_tag_is_preserved() {
+        let line: ASSLine = r"{\kt30}text".parse().unwrap();
+        assert!(line.data.iter().any(|t| matches!(t, ASSText::Override(ASSOverride::Kt(30)))));
+        assert_eq!(line.stringify(), r"{\kt30}text");
+    }
+
+    #[test]
+    fn test_repeated_karaoke_tags_are_preserved() {
+        let line: ASSLine = r"{\k20}a{\k20}b{\kt30\kf20}c".parse().unwrap();
+        let k_count = line.data.iter()
+            .filter(|t| matches!(t, ASSText::Override(ASSOverride::K(20))))
+            .count();
+        assert_eq!(k_count, 2);
+        assert_eq!(line.stringify(), r"{\k20}a{\k20}b{\kt30\kf20}c");
     }
 
     #[test]

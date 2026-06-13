@@ -40,6 +40,7 @@ pub enum ASSOverride {
     ColorII(u32),
     ColorIII(u32),
     ColorIV(u32),
+    A(u8),
     An(u8),
     P(u8),
     ClipI(String),
@@ -57,6 +58,7 @@ pub enum ASSOverride {
     Q(u8),
     R(Option<String>),                    // None = reset to default, Some = named style
     K(u32),
+    Kt(u32),
     KSweep(u32),                          // \K
     Kf(u32),
     Ko(u32),

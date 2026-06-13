@@ -191,7 +191,16 @@ pub fn parse_one_tag(s: &str) -> Option<(ASSOverride, usize, bool)> {
     try_hex!("3c",    ASSOverride::ColorIII);
     try_hex!("4c",    ASSOverride::ColorIV);
 
+    if let Some(rest) = s.strip_prefix("a") {
+        let (val, rest2) = parse_f32_arg(rest);
+        return Some((ASSOverride::A(val as u8), consumed!(rest2), false));
+    }
+
     // ── karaoke — ko/kf before k, K uppercase before k ───────────────────────
+    if let Some(rest) = s.strip_prefix("kt") {
+        let (val, rest2) = parse_f32_arg(rest);
+        return Some((ASSOverride::Kt(val as u32), consumed!(rest2), false));
+    }
     if let Some(rest) = s.strip_prefix("ko") {
         let (val, rest2) = parse_f32_arg(rest);
         return Some((ASSOverride::Ko(val as u32), consumed!(rest2), false));
