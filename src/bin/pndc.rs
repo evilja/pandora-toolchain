@@ -30,7 +30,7 @@ use reqwest;
 mod pndc_helpers;
 use pndc_helpers::*;
 #[allow(dead_code)]
-#[path = "../helpers/handlers.rs"]
+#[path = "../helpers/handlers/mod.rs"]
 mod handlers;
 use handlers::*;
 
