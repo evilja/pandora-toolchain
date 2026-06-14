@@ -56,7 +56,7 @@ struct Args {
     #[arg(short, long)]
     ass: Option<String>,
 
-    #[arg(long)]
+    #[arg(long, alias = "fontdir")]
     fontconfig: Option<String>,
 
     /// Language to search in input file
@@ -191,12 +191,7 @@ async fn main() {
             },
             FfmpegParams::BasicFilter(a) => {
                 if let Some(ref b) = args.ass {
-                    let ass = match args.fontconfig {
-                        Some(ref fontconfig) if !fontconfig.is_empty() => {
-                            format!("{}:fontsdir={}", b, fontconfig)
-                        }
-                        _ => b.to_string(),
-                    };
+                    let ass = quote_filter_value(b);
                     *i = FfmpegParams::BasicFilter(Cow::Owned(a.replace("INPUTFILEASS", &ass)));
                 }
             }
@@ -317,5 +312,36 @@ fn select_subinput(input: &String, candidates: &Vec<String>, subinput: &Option<S
         }
     } else {
         subinput.clone()
+    }
+}
+
+fn quote_filter_value(value: &str) -> String {
+    format!("'{}'", escape_filter_value(value))
+}
+
+fn escape_filter_value(value: &str) -> String {
+    let mut out = String::new();
+    for ch in value.chars() {
+        match ch {
+            '\\' | '\'' | ':' | ',' | '[' | ']' | ';' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::quote_filter_value;
+
+    #[test]
+    fn quote_filter_value_escapes_filter_specials() {
+        assert_eq!(
+            quote_filter_value("C:\\work,subs\\a'b.ass"),
+            "'C\\:\\\\work\\,subs\\\\a\\'b.ass'"
+        );
     }
 }
