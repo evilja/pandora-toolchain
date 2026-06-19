@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use crate::libkagami::complex::overrides::ASSOverride;
+use crate::libkagami::drawing::parse::Drawing;
 use crate::libkagami::tags::{ASSLine, ASSText};
 use crate::libkagami::complex::types::{AssColour, AssTime};
 use tokio::{fs::File, io::{AsyncReadExt, AsyncWriteExt}};
@@ -127,6 +128,57 @@ pub struct SubstationAlpha {
 }
 
 impl SubstationAlpha {
+    pub fn scale(&mut self, target_x: u16, target_y: u16) -> Result<(), String> {
+        let source_x = self.script_info.playresx;
+        let source_y = self.script_info.playresy;
+        if source_x == 0 || source_y == 0 {
+            return Err("source PlayRes must be non-zero".to_string());
+        }
+        if target_x == 0 || target_y == 0 {
+            return Err("target PlayRes must be non-zero".to_string());
+        }
+        if source_x as u32 * target_y as u32 != source_y as u32 * target_x as u32 {
+            return Err(format!(
+                "incompatible aspect ratio: {}x{} cannot scale to {}x{}",
+                source_x, source_y, target_x, target_y
+            ));
+        }
+
+        let sx = target_x as f32 / source_x as f32;
+        let sy = target_y as f32 / source_y as f32;
+        let layout_sx = sx;
+        let layout_sy = sy;
+
+        self.script_info.playresx = target_x;
+        self.script_info.playresy = target_y;
+        if self.script_info.layout_res_x != 0 {
+            self.script_info.layout_res_x = scale_u16(self.script_info.layout_res_x, sx);
+        }
+        if self.script_info.layout_res_y != 0 {
+            self.script_info.layout_res_y = scale_u16(self.script_info.layout_res_y, sy);
+        }
+
+        for style in &mut self.v4p_styles {
+            style.fontsize = scale_u16(style.fontsize, sy);
+            style.spacing *= sx;
+            style.outline *= border_scalar(self.script_info.scaled_border_and_shadow, sx, layout_sx);
+            style.shadow *= border_scalar(self.script_info.scaled_border_and_shadow, sx, layout_sx);
+            style.margin_l = scale_u16(style.margin_l, sx);
+            style.margin_r = scale_u16(style.margin_r, sx);
+            style.margin_v = scale_u16(style.margin_v, sy);
+        }
+
+        for event in &mut self.events {
+            event.margin_l = scale_u16(event.margin_l, sx);
+            event.margin_r = scale_u16(event.margin_r, sx);
+            event.margin_v = scale_u16(event.margin_v, sy);
+            event.effect = scale_effect(&event.effect, sx, sy);
+            scale_line(&mut event.text, sx, sy, layout_sx, layout_sy, self.script_info.scaled_border_and_shadow);
+        }
+
+        Ok(())
+    }
+
     /// Loads an ASS file from path. If adv_parsing is true, lib also parses Override Tags, and optimises no-op ones.
     /// If adv_parsing is false, entire text is an ASSLine vector with a single ASSText::RawText
     pub async fn load(path: PathBuf, adv_parsing: bool) -> Self {
@@ -303,6 +355,165 @@ impl SubstationAlpha {
     }
 }
 
+fn border_scalar(scaled_border_and_shadow: bool, screen_scale: f32, layout_scale: f32) -> f32 {
+    if scaled_border_and_shadow { screen_scale } else { layout_scale }
+}
+
+fn scale_u16(v: u16, scale: f32) -> u16 {
+    let scaled = (v as f32 * scale).round();
+    if !scaled.is_finite() || scaled <= 0.0 {
+        0
+    } else if scaled >= u16::MAX as f32 {
+        u16::MAX
+    } else {
+        scaled as u16
+    }
+}
+
+fn scale_line(line: &mut ASSLine, sx: f32, sy: f32, layout_sx: f32, layout_sy: f32, scaled_border_and_shadow: bool) {
+    let mut drawing = 0;
+
+    for ov in &mut line.current_overrides {
+        scale_override(ov, sx, sy, layout_sx, layout_sy, scaled_border_and_shadow);
+    }
+
+    for item in &mut line.data {
+        match item {
+            ASSText::Override(ov) => {
+                scale_override(ov, sx, sy, layout_sx, layout_sy, scaled_border_and_shadow);
+                if let ASSOverride::P(v) = ov {
+                    drawing = *v;
+                }
+            }
+            ASSText::RawText(text) if drawing > 0 => {
+                *text = scale_drawing_text(text, sx, sy);
+            }
+            ASSText::Drawing(drawing) => {
+                drawing.scale(sx, sy);
+            }
+            ASSText::RawText(_) => {}
+        }
+    }
+}
+
+fn scale_override(ov: &mut ASSOverride, sx: f32, sy: f32, layout_sx: f32, layout_sy: f32, scaled_border_and_shadow: bool) {
+    let border_x = border_scalar(scaled_border_and_shadow, sx, layout_sx);
+    let border_y = border_scalar(scaled_border_and_shadow, sy, layout_sy);
+    match ov {
+        ASSOverride::Bord(v) | ASSOverride::Shad(v) => *v *= border_y,
+        ASSOverride::Xbord(v) | ASSOverride::Xshad(v) => *v *= border_x,
+        ASSOverride::Ybord(v) | ASSOverride::Yshad(v) => *v *= border_y,
+        ASSOverride::Fs(v) => *v *= sy,
+        ASSOverride::Fsp(v) => *v *= sx,
+        ASSOverride::Blur(v) => *v *= layout_y_scalar(layout_sx, layout_sy),
+        ASSOverride::Pos(x, y) | ASSOverride::Org(x, y) => {
+            *x *= sx;
+            *y *= sy;
+        }
+        ASSOverride::ClipRect(x0, y0, x1, y1) | ASSOverride::IclipRect(x0, y0, x1, y1) => {
+            *x0 *= sx;
+            *x1 *= sx;
+            *y0 *= sy;
+            *y1 *= sy;
+        }
+        ASSOverride::ClipI(d) | ASSOverride::IclipI(d) => {
+            *d = scale_drawing_text(d, sx, sy);
+        }
+        ASSOverride::ClipII(_, d) | ASSOverride::IclipII(_, d) => {
+            *d = scale_drawing_text(d, sx, sy);
+        }
+        ASSOverride::MoveI(x0, y0, x1, y1) => {
+            *x0 *= sx;
+            *x1 *= sx;
+            *y0 *= sy;
+            *y1 *= sy;
+        }
+        ASSOverride::MoveII(x0, y0, x1, y1, _, _) => {
+            *x0 *= sx;
+            *x1 *= sx;
+            *y0 *= sy;
+            *y1 *= sy;
+        }
+        ASSOverride::Pbo(v) => *v *= sy,
+        ASSOverride::TransformI(tags) => scale_overrides(tags, sx, sy, layout_sx, layout_sy, scaled_border_and_shadow),
+        ASSOverride::TransformII(_, tags) => scale_overrides(tags, sx, sy, layout_sx, layout_sy, scaled_border_and_shadow),
+        ASSOverride::TransformIII(_, _, tags) => scale_overrides(tags, sx, sy, layout_sx, layout_sy, scaled_border_and_shadow),
+        ASSOverride::TransformIV(_, _, _, tags) => scale_overrides(tags, sx, sy, layout_sx, layout_sy, scaled_border_and_shadow),
+        _ => {}
+    }
+}
+
+fn scale_overrides(tags: &mut [ASSOverride], sx: f32, sy: f32, layout_sx: f32, layout_sy: f32, scaled_border_and_shadow: bool) {
+    for tag in tags {
+        scale_override(tag, sx, sy, layout_sx, layout_sy, scaled_border_and_shadow);
+    }
+}
+
+fn layout_y_scalar(layout_sx: f32, layout_sy: f32) -> f32 {
+    if (layout_sx - layout_sy).abs() < 0.0001 { layout_sy } else { (layout_sx + layout_sy) / 2.0 }
+}
+
+fn scale_drawing_text(s: &str, sx: f32, sy: f32) -> String {
+    let mut drawing: Drawing = s.parse().unwrap();
+    if drawing.commands.is_empty() {
+        s.to_string()
+    } else {
+        drawing.scale(sx, sy);
+        drawing.stringify()
+    }
+}
+
+fn format_scaled(v: f32) -> String {
+    let rounded = v.round();
+    if (v - rounded).abs() < 0.0001 {
+        format!("{}", rounded as i64)
+    } else {
+        let mut s = format!("{:.4}", v);
+        while s.contains('.') && s.ends_with('0') {
+            s.pop();
+        }
+        if s.ends_with('.') {
+            s.pop();
+        }
+        s
+    }
+}
+
+fn scale_effect(effect: &str, sx: f32, sy: f32) -> String {
+    let mut parts: Vec<String> = effect.split(';').map(|p| p.to_string()).collect();
+    let Some(name) = parts.first().map(|p| p.as_str()) else {
+        return effect.to_string();
+    };
+
+    if name == "Banner" {
+        scale_effect_part_inverse(&mut parts, 1, sx);
+        scale_effect_part(&mut parts, 3, sx);
+    } else if name == "Scroll up" || name == "Scroll down" {
+        scale_effect_part(&mut parts, 1, sy);
+        scale_effect_part(&mut parts, 2, sy);
+        scale_effect_part_inverse(&mut parts, 3, sy);
+        scale_effect_part(&mut parts, 4, sy);
+    }
+
+    parts.join(";")
+}
+
+fn scale_effect_part(parts: &mut [String], index: usize, scale: f32) {
+    if let Some(part) = parts.get_mut(index) {
+        if let Ok(v) = part.trim().parse::<f32>() {
+            *part = format_scaled(v * scale);
+        }
+    }
+}
+
+fn scale_effect_part_inverse(parts: &mut [String], index: usize, scale: f32) {
+    if let Some(part) = parts.get_mut(index) {
+        if let Ok(v) = part.trim().parse::<f32>() {
+            *part = format_scaled(v / scale);
+        }
+    }
+}
+
 pub fn find_system_fonts(names: &[String]) -> Vec<PathBuf> {
     find_fonts_with_roots(names, &[])
 }
@@ -343,6 +554,7 @@ fn collect_line_fonts(line: &ASSLine, out: &mut BTreeSet<String>) {
         match item {
             ASSText::Override(ov) => collect_override_fonts(ov, out),
             ASSText::RawText(s) => collect_raw_fn_fonts(s, out),
+            ASSText::Drawing(_) => {}
         }
     }
     for ov in &line.current_overrides {
@@ -528,4 +740,133 @@ fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
         *data.get(offset + 2)?,
         *data.get(offset + 3)?,
     ]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_sub(text: &str) -> SubstationAlpha {
+        SubstationAlpha {
+            script_info: ScriptInfo {
+                title: String::new(),
+                script_type: "v4.00+".to_string(),
+                wrap_style: 2,
+                scaled_border_and_shadow: true,
+                playresx: 640,
+                playresy: 480,
+                ycbcr_matrix: "TV.709".to_string(),
+                layout_res_x: 640,
+                layout_res_y: 480,
+            },
+            v4p_styles: vec![V4pStyle {
+                name: "Default".to_string(),
+                fontname: "Arial".to_string(),
+                fontsize: 20,
+                colours: [
+                    AssColour::opaque_white(),
+                    AssColour::opaque_white(),
+                    AssColour::transparent(),
+                    AssColour::transparent(),
+                ],
+                bold: false,
+                italic: false,
+                underline: false,
+                strikeout: false,
+                scale_x: 100,
+                scale_y: 100,
+                spacing: 1.5,
+                angle: 0.0,
+                border_style: 1,
+                outline: 2.0,
+                shadow: 3.0,
+                alignment: 2,
+                margin_l: 10,
+                margin_r: 20,
+                margin_v: 30,
+                encoding: 1,
+            }],
+            events: vec![Event {
+                layer: 0,
+                start: AssTime { hours: 0, minutes: 0, seconds: 0, centiseconds: 0 },
+                end: AssTime { hours: 0, minutes: 0, seconds: 1, centiseconds: 0 },
+                style: "Default".to_string(),
+                name: String::new(),
+                margin_l: 5,
+                margin_r: 6,
+                margin_v: 7,
+                effect: String::new(),
+                text: text.parse().unwrap(),
+            }],
+        }
+    }
+
+    #[test]
+    fn scale_rejects_incompatible_ratio() {
+        let mut sub = test_sub("text");
+
+        let err = sub.scale(1280, 720).unwrap_err();
+
+        assert!(err.contains("incompatible aspect ratio"));
+        assert_eq!(sub.script_info.playresx, 640);
+        assert_eq!(sub.script_info.playresy, 480);
+    }
+
+    #[test]
+    fn scale_updates_script_style_event_and_tags() {
+        let mut sub = test_sub(r"{\pos(100,200)\move(10,20,30,40)\clip(0,1,50,60)\bord4\shad2\fs10\fsp1\pbo5}text");
+
+        sub.scale(1280, 960).unwrap();
+
+        assert_eq!(sub.script_info.playresx, 1280);
+        assert_eq!(sub.script_info.playresy, 960);
+        assert_eq!(sub.script_info.layout_res_x, 1280);
+        assert_eq!(sub.script_info.layout_res_y, 960);
+        assert_eq!(sub.v4p_styles[0].fontsize, 40);
+        assert_eq!(sub.v4p_styles[0].margin_l, 20);
+        assert_eq!(sub.v4p_styles[0].margin_r, 40);
+        assert_eq!(sub.v4p_styles[0].margin_v, 60);
+        assert_eq!(sub.events[0].margin_l, 10);
+        assert_eq!(sub.events[0].margin_r, 12);
+        assert_eq!(sub.events[0].margin_v, 14);
+
+        let out = sub.events[0].text.stringify();
+        assert!(out.contains(r"\pos(200,400)"));
+        assert!(out.contains(r"\move(20,40,60,80)"));
+        assert!(out.contains(r"\clip(0,2,100,120)"));
+        assert!(out.contains(r"\bord8"));
+        assert!(out.contains(r"\shad4"));
+        assert!(out.contains(r"\fs20"));
+        assert!(out.contains(r"\fsp2"));
+        assert!(out.contains(r"\pbo10"));
+    }
+
+    #[test]
+    fn scale_updates_drawings_and_transform_contents() {
+        let mut sub = test_sub(r"{\p1}m 10 20 l 30 40{\p0\clip(m 0 0 l 10 10)\t(0,100,\bord2\fs3)}text");
+
+        sub.scale(1280, 960).unwrap();
+
+        let out = sub.events[0].text.stringify();
+        assert!(out.contains("m 20 40 l 60 80"));
+        assert!(out.contains(r"\clip(m 0 0 l 20 20)"));
+        assert!(out.contains(r"\t(0,100,\bord4\fs6)"));
+    }
+
+    #[test]
+    fn scale_updates_transition_effect_coordinates_and_delay() {
+        let mut banner = test_sub("text");
+        banner.events[0].effect = "Banner;20;1;30".to_string();
+
+        banner.scale(1280, 960).unwrap();
+
+        assert_eq!(banner.events[0].effect, "Banner;10;1;60");
+
+        let mut scroll = test_sub("text");
+        scroll.events[0].effect = "Scroll up;10;100;40;20".to_string();
+
+        scroll.scale(1280, 960).unwrap();
+
+        assert_eq!(scroll.events[0].effect, "Scroll up;20;200;20;40");
+    }
 }

@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::mem::{discriminant, Discriminant};
 use crate::libkagami::complex::overrides::ASSOverride;
+use crate::libkagami::drawing::parse::Drawing;
 use crate::libkagami::tags::parse::parse_override_block_content;
 use crate::libkagami::tags::transform::{apply_same_tag_after_transform, transform_inner_tags};
 use crate::libkagami::tags::state::{already_active, upsert_override, is_first_wins, same_override_kind, is_repeatable_effect};
@@ -13,6 +14,7 @@ pub mod transform;
 
 pub enum ASSText {
     Override(ASSOverride),
+    Drawing(Drawing),
     RawText(String),
 }
 
@@ -31,6 +33,10 @@ impl ASSLine {
         let mut current_overrides: Vec<ASSOverride> = start.clone();
         let mut transformed_since_tag: HashSet<Discriminant<ASSOverride>> = HashSet::new();
         let mut raw_buf = String::new();
+        let mut drawing_mode = start.iter()
+            .rev()
+            .find_map(|ov| if let ASSOverride::P(v) = ov { Some(*v) } else { None })
+            .unwrap_or(0);
 
         let bytes = s.as_bytes();
         let mut i = 0;
@@ -38,7 +44,7 @@ impl ASSLine {
         while i < bytes.len() {
             if bytes[i] == b'{' {
                 if !raw_buf.is_empty() {
-                    data.push(ASSText::RawText(std::mem::take(&mut raw_buf)));
+                    push_text(&mut data, std::mem::take(&mut raw_buf), drawing_mode);
                 }
 
                 if find_block_end(bytes, i + 1).is_none() {
@@ -64,13 +70,21 @@ impl ASSLine {
                         if name.is_none() {
                             // bare \r — reset to style baseline
                             current_overrides = start.clone();
+                            drawing_mode = start.iter()
+                                .rev()
+                                .find_map(|ov| if let ASSOverride::P(v) = ov { Some(*v) } else { None })
+                                .unwrap_or(0);
                         } else {
                             // named \r — can't resolve style here, just clear
                             current_overrides.clear();
+                            drawing_mode = 0;
                         }
                         transformed_since_tag.clear();
                         data.push(ASSText::Override(tag));
                         continue;
+                    }
+                    if let ASSOverride::P(v) = &tag {
+                        drawing_mode = *v;
                     }
                     let tag_disc = discriminant(&tag);
                     if is_repeatable_effect(&tag) {
@@ -108,7 +122,7 @@ impl ASSLine {
         }
 
         if !raw_buf.is_empty() {
-            data.push(ASSText::RawText(raw_buf));
+            push_text(&mut data, raw_buf, drawing_mode);
         }
 
         trim_tags_without_text_after(&mut data);
@@ -130,6 +144,7 @@ impl std::str::FromStr for ASSLine {
         let mut current_overrides: Vec<ASSOverride> = Vec::new();
         let mut transformed_since_tag: HashSet<Discriminant<ASSOverride>> = HashSet::new();
         let mut raw_buf = String::new();
+        let mut drawing_mode = 0;
 
         let bytes = s.as_bytes();
         let mut i = 0;
@@ -137,7 +152,7 @@ impl std::str::FromStr for ASSLine {
         while i < bytes.len() {
             if bytes[i] == b'{' {
                 if !raw_buf.is_empty() {
-                    data.push(ASSText::RawText(std::mem::take(&mut raw_buf)));
+                    push_text(&mut data, std::mem::take(&mut raw_buf), drawing_mode);
                 }
 
                 if find_block_end(bytes, i + 1).is_none() {
@@ -161,9 +176,13 @@ impl std::str::FromStr for ASSLine {
                     mark_transform_tags(&tag, &mut transformed_since_tag);
                     if matches!(&tag, ASSOverride::R(_)) {
                         current_overrides.clear();
+                        drawing_mode = 0;
                         transformed_since_tag.clear();
                         data.push(ASSText::Override(tag));
                         continue;
+                    }
+                    if let ASSOverride::P(v) = &tag {
+                        drawing_mode = *v;
                     }
                     let tag_disc = discriminant(&tag);
                     if is_repeatable_effect(&tag) {
@@ -198,7 +217,7 @@ impl std::str::FromStr for ASSLine {
         }
 
         if !raw_buf.is_empty() {
-            data.push(ASSText::RawText(raw_buf));
+            push_text(&mut data, raw_buf, drawing_mode);
         }
 
         trim_tags_without_text_after(&mut data);
@@ -230,10 +249,24 @@ impl ASSLine {
             } else if let ASSText::RawText(t) = &self.data[i] {
                 out.push_str(t);
                 i += 1;
+            } else if let ASSText::Drawing(d) = &self.data[i] {
+                out.push_str(&d.stringify());
+                i += 1;
             }
         }
         out
     }
+}
+
+fn push_text(data: &mut Vec<ASSText>, text: String, drawing_mode: u8) {
+    if drawing_mode > 0 {
+        let drawing: Drawing = text.parse().unwrap();
+        if !drawing.commands.is_empty() {
+            data.push(ASSText::Drawing(drawing));
+            return;
+        }
+    }
+    data.push(ASSText::RawText(text));
 }
 
 fn find_block_end(bytes: &[u8], start: usize) -> Option<usize> {
@@ -260,7 +293,7 @@ fn mark_transform_tags(ov: &ASSOverride, transformed: &mut HashSet<Discriminant<
 }
 
 fn trim_tags_without_text_after(data: &mut Vec<ASSText>) {
-    let Some(last_text) = data.iter().rposition(|item| matches!(item, ASSText::RawText(_))) else {
+    let Some(last_text) = data.iter().rposition(|item| matches!(item, ASSText::RawText(_) | ASSText::Drawing(_))) else {
         data.clear();
         return;
     };
@@ -319,6 +352,7 @@ mod tests {
             match item {
                 ASSText::RawText(t) => println!("  RawText({t:?})"),
                 ASSText::Override(ov) => println!("  Override({})", fmt_override(ov)),
+                ASSText::Drawing(d) => println!("  Drawing({})", d.stringify()),
             }
         }
         println!("  current_overrides: [{}]",
@@ -444,6 +478,7 @@ mod tests {
             .filter_map(|t| if let ASSText::Override(ASSOverride::P(v)) = t { Some(*v) } else { None })
             .collect();
         assert_eq!(p_values, vec![1, 0]);
+        assert!(line.data.iter().any(|t| matches!(t, ASSText::Drawing(_))));
         assert_eq!(line.stringify(), r"{\p1}m 0 0 l 10 10{\p0}text");
     }
 

@@ -1,5 +1,6 @@
 use std::convert::Infallible;
-#[derive(Debug)]
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum DrawingCommand {
     Move(f32,f32),
     MoveN(f32,f32),
@@ -48,10 +49,75 @@ impl DrawingCommand {
             _ => Self::Invalid,
         }
     }
+    pub fn scale(&mut self, sx: f32, sy: f32) {
+        match self {
+            DrawingCommand::Move(x, y)
+            | DrawingCommand::MoveN(x, y)
+            | DrawingCommand::Line(x, y)
+            | DrawingCommand::ExtendBSpline(x, y) => {
+                *x *= sx;
+                *y *= sy;
+            }
+            DrawingCommand::CubicBezier(x0, y0, x1, y1, x2, y2)
+            | DrawingCommand::CubicBSpline(x0, y0, x1, y1, x2, y2) => {
+                *x0 *= sx;
+                *x1 *= sx;
+                *x2 *= sx;
+                *y0 *= sy;
+                *y1 *= sy;
+                *y2 *= sy;
+            }
+            DrawingCommand::CloseBSpline | DrawingCommand::Invalid => {}
+        }
+    }
+    pub fn stringify(&self) -> String {
+        match self {
+            DrawingCommand::Move(x, y) => format!("m {} {}", format_drawing_num(*x), format_drawing_num(*y)),
+            DrawingCommand::MoveN(x, y) => format!("n {} {}", format_drawing_num(*x), format_drawing_num(*y)),
+            DrawingCommand::Line(x, y) => format!("l {} {}", format_drawing_num(*x), format_drawing_num(*y)),
+            DrawingCommand::CubicBezier(x0, y0, x1, y1, x2, y2) => format!(
+                "b {} {} {} {} {} {}",
+                format_drawing_num(*x0),
+                format_drawing_num(*y0),
+                format_drawing_num(*x1),
+                format_drawing_num(*y1),
+                format_drawing_num(*x2),
+                format_drawing_num(*y2),
+            ),
+            DrawingCommand::CubicBSpline(x0, y0, x1, y1, x2, y2) => format!(
+                "s {} {} {} {} {} {}",
+                format_drawing_num(*x0),
+                format_drawing_num(*y0),
+                format_drawing_num(*x1),
+                format_drawing_num(*y1),
+                format_drawing_num(*x2),
+                format_drawing_num(*y2),
+            ),
+            DrawingCommand::ExtendBSpline(x, y) => format!("p {} {}", format_drawing_num(*x), format_drawing_num(*y)),
+            DrawingCommand::CloseBSpline => "c".to_string(),
+            DrawingCommand::Invalid => String::new(),
+        }
+    }
 }
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct Drawing {
     pub commands: Vec<DrawingCommand>
+}
+
+impl Drawing {
+    pub fn scale(&mut self, sx: f32, sy: f32) {
+        for command in &mut self.commands {
+            command.scale(sx, sy);
+        }
+    }
+    pub fn stringify(&self) -> String {
+        self.commands.iter()
+            .map(|c| c.stringify())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
 }
 
 impl std::str::FromStr for Drawing {
@@ -60,7 +126,7 @@ impl std::str::FromStr for Drawing {
         let mut out = Self { commands: vec![] };
         let mut mode = 999;
         let mut cvtgv: Vec<f32> = vec![];
-        for i in s.trim().split(" ") {
+        for i in s.split_whitespace() {
             let c_m = DrawingCommand::drawmode(i);
             if c_m == 999 {
                 if mode == 999 {
@@ -85,9 +151,24 @@ impl std::str::FromStr for Drawing {
                     out.commands.push(DrawingCommand::build_command(mode, &vec![]));
                 }
             }
-            println!("i: {} mode: {} cvtgv: {:?}", i, mode, cvtgv);
         }
         return Ok(out);
+    }
+}
+
+fn format_drawing_num(v: f32) -> String {
+    let rounded = v.round();
+    if (v - rounded).abs() < 0.0001 {
+        format!("{}", rounded as i64)
+    } else {
+        let mut s = format!("{:.4}", v);
+        while s.contains('.') && s.ends_with('0') {
+            s.pop();
+        }
+        if s.ends_with('.') {
+            s.pop();
+        }
+        s
     }
 }
 
@@ -191,6 +272,13 @@ mod tests {
     fn test_empty_string() {
         let d = Drawing::from_str("").unwrap();
         assert_eq!(d.commands.len(), 0);
+    }
+
+    #[test]
+    fn test_stringify_and_scale() {
+        let mut d = Drawing::from_str("m 10 20 l 30.5 40").unwrap();
+        d.scale(2.0, 3.0);
+        assert_eq!(d.stringify(), "m 20 60 l 61 120");
     }
 
     #[test]

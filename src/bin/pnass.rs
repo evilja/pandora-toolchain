@@ -72,6 +72,12 @@ async fn main() {
 
     if let Some(merge_path) = args.merge.as_deref() {
         let mut secondary = SubstationAlpha::load(PathBuf::from(merge_path), true).await;
+        fill_script_info_defaults(&mut secondary.script_info);
+        if let Err(e) = normalize_merge_resolutions(&mut sub, &mut secondary) {
+            println!("{}", pn_emit!(protocol = proto, negkey = &neg,
+                schema = [leaf, leaf], data = ["4", e]).unwrap());
+            std::process::exit(1);
+        }
         let overlap: std::collections::HashSet<String> = style_names(&sub)
             .intersection(&style_names(&secondary))
             .cloned()
@@ -170,6 +176,31 @@ fn fill_script_info_defaults(si: &mut ScriptInfo) {
     }
     if si.layout_res_y == 0 {
         si.layout_res_y = si.playresy;
+    }
+}
+
+fn normalize_merge_resolutions(primary: &mut SubstationAlpha, secondary: &mut SubstationAlpha) -> Result<(), String> {
+    let px = primary.script_info.playresx;
+    let py = primary.script_info.playresy;
+    let sx = secondary.script_info.playresx;
+    let sy = secondary.script_info.playresy;
+
+    if px == sx && py == sy {
+        return Ok(());
+    }
+    if px as u32 * sy as u32 != py as u32 * sx as u32 {
+        return Err(format!(
+            "ASS merge rejected: incompatible PlayRes ratios (input {}x{}, merge {}x{})",
+            px, py, sx, sy
+        ));
+    }
+
+    let primary_area = px as u32 * py as u32;
+    let secondary_area = sx as u32 * sy as u32;
+    if primary_area >= secondary_area {
+        secondary.scale(px, py)
+    } else {
+        primary.scale(sx, sy)
     }
 }
 
@@ -352,6 +383,30 @@ mod tests {
         }
     }
 
+    fn sub_with_res(x: u16, y: u16) -> SubstationAlpha {
+        SubstationAlpha {
+            script_info: ScriptInfo {
+                title: String::new(),
+                script_type: "v4.00+".to_string(),
+                wrap_style: 2,
+                scaled_border_and_shadow: true,
+                playresx: x,
+                playresy: y,
+                ycbcr_matrix: "TV.709".to_string(),
+                layout_res_x: x,
+                layout_res_y: y,
+            },
+            v4p_styles: vec![style("Default")],
+            events: vec![event(
+                "Default",
+                vec![
+                    ASSText::Override(ASSOverride::Pos(10.0, 20.0)),
+                    ASSText::RawText("line".to_string()),
+                ],
+            )],
+        }
+    }
+
     #[test]
     fn prunes_styles_not_referenced_by_events() {
         let mut sub = SubstationAlpha {
@@ -426,5 +481,51 @@ mod tests {
             ASSText::Override(ASSOverride::TransformI(tags))
                 if matches!(&tags[0], ASSOverride::R(Some(name)) if name == &renamed)
         ));
+    }
+
+    #[test]
+    fn merge_resolution_scales_secondary_to_primary_when_primary_is_larger() {
+        let mut primary = sub_with_res(1920, 1080);
+        let mut secondary = sub_with_res(1280, 720);
+
+        normalize_merge_resolutions(&mut primary, &mut secondary).unwrap();
+
+        assert_eq!(primary.script_info.playresx, 1920);
+        assert_eq!(primary.script_info.playresy, 1080);
+        assert_eq!(secondary.script_info.playresx, 1920);
+        assert_eq!(secondary.script_info.playresy, 1080);
+        assert!(matches!(
+            secondary.events[0].text.data[0],
+            ASSText::Override(ASSOverride::Pos(x, y)) if x == 15.0 && y == 30.0
+        ));
+    }
+
+    #[test]
+    fn merge_resolution_scales_primary_to_secondary_when_secondary_is_larger() {
+        let mut primary = sub_with_res(640, 480);
+        let mut secondary = sub_with_res(1440, 1080);
+
+        normalize_merge_resolutions(&mut primary, &mut secondary).unwrap();
+
+        assert_eq!(primary.script_info.playresx, 1440);
+        assert_eq!(primary.script_info.playresy, 1080);
+        assert_eq!(secondary.script_info.playresx, 1440);
+        assert_eq!(secondary.script_info.playresy, 1080);
+        assert!(matches!(
+            primary.events[0].text.data[0],
+            ASSText::Override(ASSOverride::Pos(x, y)) if x == 22.5 && y == 45.0
+        ));
+    }
+
+    #[test]
+    fn merge_resolution_rejects_different_ratios() {
+        let mut primary = sub_with_res(1440, 1080);
+        let mut secondary = sub_with_res(1920, 1080);
+
+        let err = normalize_merge_resolutions(&mut primary, &mut secondary).unwrap_err();
+
+        assert!(err.contains("incompatible PlayRes ratios"));
+        assert_eq!(primary.script_info.playresx, 1440);
+        assert_eq!(secondary.script_info.playresx, 1920);
     }
 }
