@@ -43,6 +43,7 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     let mut voesx_done = false;
                     let mut abyss_link = "Abyss Bekleniyor".to_string();
                     let mut abyss_done = false;
+                    let expected_hosts = if release { 5 } else { 1 };
 
                     let result = run_tool(
                         &pncurl_path,
@@ -177,7 +178,7 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                                         }
                                         _ => {}
                                     }
-                                    let stage = if completed >= 6 {
+                                    let stage = if completed >= expected_hosts {
                                         Some(Stage::Uploaded)
                                     } else {
                                         None
@@ -194,7 +195,7 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                                         stage,
                                     ))
                                     .ok();
-                                    if completed >= 6 {
+                                    if completed >= expected_hosts {
                                         return Some(ToolResult::Success);
                                     }
                                 }
@@ -225,7 +226,7 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                                         }
                                         _ => {}
                                     }
-                                    let stage = if completed >= 5 {
+                                    let stage = if completed >= expected_hosts {
                                         Some(Stage::Uploaded)
                                     } else {
                                         None
@@ -242,7 +243,7 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                                         stage,
                                     ))
                                     .ok();
-                                    if completed >= 6 {
+                                    if completed >= expected_hosts {
                                         return Some(ToolResult::Success);
                                     }
                                 }

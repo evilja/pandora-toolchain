@@ -93,15 +93,20 @@ async fn main() {
             ).unwrap()
         )
     } else if !args.drive {
-        request.send(args.opcode).await;
+        let ok = request.send(args.opcode).await;
+        let code = if ok { "1" } else { "2" };
+        let msg = if ok { "DONE" } else { "FAIL" };
         println!("{}",
             pn_emit!(
                 protocol = proto,
                 negkey = &neg,
                 schema = [leaf, leaf],
-                data   = ["1", "DONE"]
+                data   = [code, msg]
             ).unwrap()
-        )
+        );
+        if !ok {
+            std::process::exit(1);
+        }
     } else if let Some(a) = args.env {
         let (tx, rx): (Sender<RpbData>, Receiver<RpbData>) = mpsc::channel();
 

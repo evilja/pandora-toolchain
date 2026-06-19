@@ -24,6 +24,7 @@ pub const PNCURL_GSCRAPE: &[CliParam] = &[
 
 pub const PNP2P_TORRENT: &[CliParam] = &[
     CliParam::Literal("--opcode"),      CliParam::Path("OPCODE"),
+    CliParam::Path("TORRENTTYPE"),
     CliParam::Literal("--save"),        CliParam::Path("SAVE"),
     CliParam::Literal("--negkey"),      CliParam::JobId("PNp2pT"),
     CliParam::Literal("--negotiator"),  CliParam::Literal("PNdloadworker"),
@@ -79,6 +80,7 @@ pub const PNCURL_BACKUP: &[CliParam] = &[
 
 pub const PNP2P_PROBE: &[CliParam] = &[
     CliParam::Literal("--opcode"),      CliParam::Path("OPCODE"),
+    CliParam::Path("TORRENTTYPE"),
     CliParam::Literal("--negkey"),      CliParam::JobId("PNp2pP"),
     CliParam::Literal("--negotiator"),  CliParam::Literal("PNprobeworker"),
     CliParam::Literal("--negver"),      CliParam::NegVer("1"),
@@ -87,6 +89,7 @@ pub const PNP2P_PROBE: &[CliParam] = &[
 
 pub const PNP2P_SELECT: &[CliParam] = &[
     CliParam::Literal("--opcode"),      CliParam::Path("OPCODE"),
+    CliParam::Path("TORRENTTYPE"),
     CliParam::Literal("--save"),        CliParam::Path("SAVE"),
     CliParam::Literal("--select"),      CliParam::Path("INDEX"),
     CliParam::Literal("--negkey"),      CliParam::JobId("PNp2pS"),

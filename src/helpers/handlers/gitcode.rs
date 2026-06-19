@@ -25,8 +25,18 @@ pub async fn handle_gitcode(
     };
 
     let attachment_bytes = match client.get(&normalized).send().await {
-        Ok(resp) => match resp.bytes().await {
-            Ok(b) => b.to_vec(),
+        Ok(resp) => match resp.error_for_status() {
+            Ok(resp) => match resp.bytes().await {
+                Ok(b) => b.to_vec(),
+                Err(e) => {
+                    command.create_response(ctx, CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content(format!("Failed to fetch subtitle: {}", e))
+                            .ephemeral(true)
+                    )).await.ok();
+                    return None;
+                }
+            },
             Err(e) => {
                 command.create_response(ctx, CreateInteractionResponse::Message(
                     CreateInteractionResponseMessage::new()

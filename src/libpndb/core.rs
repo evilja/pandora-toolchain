@@ -1,4 +1,4 @@
-use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
+use sqlx::{Row, SqlitePool, sqlite::SqlitePoolOptions};
 use std::path::PathBuf;
 use crate::pnworker::core::{Job, Stage, Preset};
 
@@ -65,22 +65,35 @@ impl JobDb {
             "ALTER TABLE jobs ADD COLUMN candidates TEXT"
         ).await?;
 
-        // Convert old preset_concat integer to group name string.
-        // Only known mapping: 1 -> "SomeSubs"
-        sqlx::query(
-            r#"
-            UPDATE jobs
-            SET candidates = CASE preset_concat
-                WHEN 1 THEN 'SomeSubs'
-                ELSE NULL
-            END
-            WHERE candidates IS NULL AND preset_concat IS NOT NULL
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
+        if self.column_exists("jobs", "preset_concat").await? {
+            sqlx::query(
+                r#"
+                UPDATE jobs
+                SET candidates = CASE preset_concat
+                    WHEN 1 THEN 'SomeSubs'
+                    ELSE NULL
+                END
+                WHERE candidates IS NULL AND preset_concat IS NOT NULL
+                "#,
+            )
+            .execute(&self.pool)
+            .await?;
+        }
 
         Ok(())
+    }
+
+    async fn column_exists(&self, table: &str, column: &str) -> Result<bool, sqlx::Error> {
+        let rows = sqlx::query(&format!("PRAGMA table_info({})", table))
+            .fetch_all(&self.pool)
+            .await?;
+        for row in rows {
+            let name: String = row.try_get("name")?;
+            if name == column {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     async fn add_column_if_missing(&self, alter_sql: &str) -> Result<(), sqlx::Error> {

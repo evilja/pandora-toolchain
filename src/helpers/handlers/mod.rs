@@ -538,10 +538,17 @@ async fn extract_zip_root_ass(bytes: &[u8], dest: &Path) -> Result<Option<PathBu
             let filename = entry.reader().entry().filename().as_str()
                 .map_err(|e| format!("zip filename: {}", e))?
                 .to_string();
-            let is_root = !filename.contains('/');
             let is_ass = filename.to_lowercase().ends_with(".ass");
 
-            if is_root && is_ass {
+            if is_ass {
+                if filename.contains('\\') {
+                    return Err(format!("zip contains unsafe .ass path: {}", filename));
+                }
+                let mut components = Path::new(&filename).components();
+                let safe_name = match (components.next(), components.next()) {
+                    (Some(std::path::Component::Normal(name)), None) => name.to_owned(),
+                    _ => return Err(format!("zip contains unsafe .ass path: {}", filename)),
+                };
                 count += 1;
                 if count > 1 {
                     return Ok(None);
@@ -549,7 +556,7 @@ async fn extract_zip_root_ass(bytes: &[u8], dest: &Path) -> Result<Option<PathBu
                 let mut data = Vec::new();
                 entry.reader_mut().read_to_end(&mut data).await
                     .map_err(|e| format!("zip read: {}", e))?;
-                let out_path = dest.join(&filename);
+                let out_path = dest.join(safe_name);
                 tokio::fs::write(&out_path, &data).await.map_err(|e| e.to_string())?;
                 found = Some(out_path);
             }
