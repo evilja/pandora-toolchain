@@ -1288,6 +1288,7 @@ impl EventHandler for Handler {
 #[tokio::main]
 async fn main() {
     migrate_pandora_files().await;
+    pandora_toolchain::libpnbin::ensure_startup_binaries().await;
     let env = get_pandora_env();
     let (tx, rx): (Sender<JobClass>, Receiver<JobClass>) = channel(5);
     tokio::spawn(pn_worker(rx));

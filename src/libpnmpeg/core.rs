@@ -1,6 +1,7 @@
 use std::str::FromStr;
 use std::string::String;
 use std::borrow::Cow;
+use crate::libpnbin::resolve_runtime_binary;
 use crate::libpnlogging::core::LoggingHandle;
 use crate::log;
 use std::process::{Command, Stdio};
@@ -124,7 +125,7 @@ impl AsMut<FFmpeg> for FFmpeg {
 impl FFmpeg {
     pub fn new() -> Self {
         Self {
-            out: Command::new("ffmpeg")
+            out: Command::new(resolve_runtime_binary("ffmpeg"))
         }
     }
 }

@@ -1,5 +1,6 @@
 use std::process::Command;
 use serde::Deserialize;
+use crate::libpnbin::resolve_runtime_binary;
 
 #[derive(Debug, Deserialize)]
 struct FfprobeOutput {
@@ -19,7 +20,7 @@ struct Tags {
 
 
 pub fn ffprobe_lang(path: &str, f_lang: &str) -> Option<u32> {
-    let output = Command::new("ffprobe")
+    let output = Command::new(resolve_runtime_binary("ffprobe"))
         .args([
             "-v", "error",
             "-select_streams", "a",
@@ -48,7 +49,7 @@ pub fn ffprobe_lang(path: &str, f_lang: &str) -> Option<u32> {
  *   -show_entries stream=nb_read_packets -of csv=p=0 input.mp4
  */
 pub fn ffprobe_frame(path: &str) -> Option<u64> {
-     let output = Command::new("ffprobe")
+     let output = Command::new(resolve_runtime_binary("ffprobe"))
          .args([
              "-v", "error",
              "-select_streams", "v:0",
@@ -83,7 +84,7 @@ struct SamplerateStream {
 
 // Returns (numerator, denominator) e.g. (24000, 1001) or (24, 1)
 pub fn ffprobe_framerate(path: &str) -> Option<(u32, u32)> {
-    let output = Command::new("ffprobe")
+    let output = Command::new(resolve_runtime_binary("ffprobe"))
         .args([
             "-v", "error",
             "-select_streams", "v:0",
@@ -101,7 +102,7 @@ pub fn ffprobe_framerate(path: &str) -> Option<(u32, u32)> {
 }
 
 pub fn ffprobe_samplerate(path: &str) -> Option<u32> {
-    let output = Command::new("ffprobe")
+    let output = Command::new(resolve_runtime_binary("ffprobe"))
         .args([
             "-v", "error",
             "-select_streams", "a:0",
