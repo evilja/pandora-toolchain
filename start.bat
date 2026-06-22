@@ -1,2 +1,7 @@
 pushd %~dp0
-py script.py
+
+:loop
+cargo clean -p pandora-toolchain
+cargo build --timings
+target\debug\pndc.exe
+goto loop
