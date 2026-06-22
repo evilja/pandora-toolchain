@@ -5,6 +5,11 @@ use std::time::Duration;
 use crate::libpnenv::core::{get_pandora_env, upsert_env};
 use crate::libpnenv::standard::{ENV_PATH, PNASS, PNCURL, PNMPEG, PNP2P};
 
+enum ArchiveKind {
+    TarXz,
+    Zip,
+}
+
 pub fn runtime_binary_path(name: &str) -> PathBuf {
     PathBuf::from("DB").join("bin").join(platform_binary_name(name))
 }
@@ -127,7 +132,7 @@ fn find_sibling_tool(name: &str) -> Option<PathBuf> {
 }
 
 async fn download_portable_ffmpeg() -> Result<(), Box<dyn std::error::Error>> {
-    let url = portable_ffmpeg_url().ok_or_else(|| {
+    let (url, kind, archive_name) = portable_ffmpeg_download().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::Unsupported,
             format!("portable ffmpeg download is not configured for {}-{}", std::env::consts::OS, std::env::consts::ARCH),
@@ -136,7 +141,7 @@ async fn download_portable_ffmpeg() -> Result<(), Box<dyn std::error::Error>> {
 
     let cache_dir = PathBuf::from("DB/bin/cache");
     let extract_dir = cache_dir.join("ffmpeg_extract");
-    let archive = cache_dir.join("ffmpeg.tar.xz");
+    let archive = cache_dir.join(archive_name);
     let _ = tokio::fs::remove_dir_all(&extract_dir).await;
     tokio::fs::create_dir_all(&extract_dir).await?;
 
@@ -152,40 +157,108 @@ async fn download_portable_ffmpeg() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     tokio::fs::write(&archive, &bytes).await?;
 
+    match kind {
+        ArchiveKind::TarXz => {
+            extract_tar_xz(&archive, &extract_dir).await?;
+            copy_extracted_binaries(&extract_dir).await?;
+        }
+        ArchiveKind::Zip => {
+            extract_zip_binaries(&archive).await?;
+        }
+    }
+
+    let _ = tokio::fs::remove_dir_all(&extract_dir).await;
+    Ok(())
+}
+
+fn portable_ffmpeg_download() -> Option<(&'static str, ArchiveKind, &'static str)> {
+    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        Some(("https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz", ArchiveKind::TarXz, "ffmpeg.tar.xz"))
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        Some(("https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz", ArchiveKind::TarXz, "ffmpeg.tar.xz"))
+    } else if cfg!(all(target_os = "linux", target_arch = "arm")) {
+        Some(("https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-armhf-static.tar.xz", ArchiveKind::TarXz, "ffmpeg.tar.xz"))
+    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        Some(("https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip", ArchiveKind::Zip, "ffmpeg.zip"))
+    } else {
+        None
+    }
+}
+
+async fn extract_tar_xz(archive: &Path, extract_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let status = tokio::process::Command::new("tar")
         .arg("-xJf")
-        .arg(&archive)
+        .arg(archive)
         .arg("-C")
-        .arg(&extract_dir)
+        .arg(extract_dir)
         .status()
         .await?;
     if !status.success() {
         return Err(std::io::Error::new(std::io::ErrorKind::Other, "tar failed to extract ffmpeg archive").into());
     }
+    Ok(())
+}
 
-    let ffmpeg = find_file_named(&extract_dir, "ffmpeg")
+async fn copy_extracted_binaries(extract_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let ffmpeg_name = platform_binary_name("ffmpeg");
+    let ffprobe_name = platform_binary_name("ffprobe");
+    let ffmpeg = find_file_named(extract_dir, &ffmpeg_name)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "ffmpeg missing from archive"))?;
-    let ffprobe = find_file_named(&extract_dir, "ffprobe")
+    let ffprobe = find_file_named(extract_dir, &ffprobe_name)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "ffprobe missing from archive"))?;
 
     tokio::fs::copy(ffmpeg, runtime_binary_path("ffmpeg")).await?;
     tokio::fs::copy(ffprobe, runtime_binary_path("ffprobe")).await?;
     make_executable(&runtime_binary_path("ffmpeg"))?;
     make_executable(&runtime_binary_path("ffprobe"))?;
-    let _ = tokio::fs::remove_dir_all(&extract_dir).await;
     Ok(())
 }
 
-fn portable_ffmpeg_url() -> Option<&'static str> {
-    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        Some("https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz")
-    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
-        Some("https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz")
-    } else if cfg!(all(target_os = "linux", target_arch = "arm")) {
-        Some("https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-armhf-static.tar.xz")
-    } else {
-        None
+async fn extract_zip_binaries(archive: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    use async_zip::base::read::stream::ZipFileReader;
+    use futures_lite::io::AsyncReadExt;
+    use tokio::io::{AsyncWriteExt, BufReader};
+
+    let f = tokio::fs::File::open(archive).await?;
+    let mut zip = ZipFileReader::with_tokio(BufReader::new(f));
+    let ffmpeg_name = platform_binary_name("ffmpeg").to_lowercase();
+    let ffprobe_name = platform_binary_name("ffprobe").to_lowercase();
+    let mut ffmpeg_found = false;
+    let mut ffprobe_found = false;
+
+    loop {
+        let mut entry = match zip.next_with_entry().await? {
+            Some(e) => e,
+            None => break,
+        };
+        let filename = entry.reader().entry().filename().as_str()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("zip filename: {}", e)))?
+            .replace('\\', "/");
+        let leaf = filename.rsplit('/').next().unwrap_or("").to_lowercase();
+
+        if leaf == ffmpeg_name || leaf == ffprobe_name {
+            let mut data = Vec::new();
+            entry.reader_mut().read_to_end(&mut data).await?;
+            let target = if leaf == ffmpeg_name {
+                ffmpeg_found = true;
+                runtime_binary_path("ffmpeg")
+            } else {
+                ffprobe_found = true;
+                runtime_binary_path("ffprobe")
+            };
+            let mut out = tokio::fs::File::create(&target).await?;
+            out.write_all(&data).await?;
+            out.sync_all().await?;
+            make_executable(&target)?;
+        }
+
+        zip = entry.skip().await?;
     }
+
+    if !ffmpeg_found || !ffprobe_found {
+        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "ffmpeg or ffprobe missing from zip archive").into());
+    }
+    Ok(())
 }
 
 fn find_file_named(root: &Path, name: &str) -> Option<PathBuf> {
