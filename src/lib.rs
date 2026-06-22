@@ -9,6 +9,7 @@ pub mod libkagami;
 pub mod libpnlogging;
 pub mod libpnmal;
 pub mod libpnforgejo;
+pub mod libpnanisub;
 pub mod libpnbin;
 
 #[macro_export]

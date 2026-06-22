@@ -21,3 +21,4 @@ pub const LULU: &str = "lulu";
 pub const VOESX: &str = "voesx";
 pub const ABYSS: &str = "abyss";
 pub const PNASS: &str = "pnass";
+pub const ANISUB: &str = "anisub";

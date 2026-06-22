@@ -16,8 +16,9 @@ use pandora_toolchain::libpnenv::{
 };
 use pandora_toolchain::libpnmal::{fetch_anime, AnimeMeta, AnimeKind};
 use pandora_toolchain::libpnforgejo::{Forgejo, base64_encode, base64_encode_bytes};
+use pandora_toolchain::libpnanisub::{AniSub, DEFAULT_FPS};
 use pandora_toolchain::pnworker::core::pn_worker;
-use pandora_toolchain::libpnenv::standard::PNASS;
+use pandora_toolchain::libpnenv::standard::{PNASS, ANISUB};
 use pandora_toolchain::libkagami::core::{SubstationAlpha, find_fonts_with_roots};
 use pandora_toolchain::libpnprotocol::core::Protocol;
 use tokio::sync::mpsc::{channel, Sender, Receiver};
@@ -72,7 +73,7 @@ fn min_rank_for_command(part: &str) -> u8 {
         "encode" | "pancode" | "probe" | "backup" | "backupall" | "scrape" | "gitcode" | "smartcode" | "merge" | "release" | "source" => 0,
         "!enc" | "!encode" => 0,
         "job" | "get" | "!ts" => 1,
-        "auth" | "remove" | "gitsync" | "hearts" | "configure" | "readmebase" | "addapi" | "font" | "!ban" | "!some" => 2,
+        "auth" | "remove" | "gitsync" | "hearts" | "configure" | "edit" | "readmebase" | "addapi" | "font" | "!ban" | "!some" => 2,
         "attach" | "init" | "destruct" | "detach" => 3,
         _ => u8::MAX,
     }
@@ -206,6 +207,13 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Configure server language, Forgejo, and Google Drive credentials.",
             usage: "/configure language:<EN|TR|JP> [forgejo] [api_key] [gdrive_client_id] [gdrive_client_secret] [gdrive_refresh_token] [gdrive_folder_id]",
             details: "Writes server metadata. Run this before /init if the server needs a Forgejo org/base or per-guild Google Drive upload credentials configured.",
+        },
+        HelpCommand {
+            name: "edit",
+            rank: 2,
+            summary: "Edit individual server metadata fields, leaving the rest untouched.",
+            usage: "/edit [language] [forgejo] [api_key] [gdrive_client_id] [gdrive_client_secret] [gdrive_refresh_token] [gdrive_folder_id] [announcement_channel]",
+            details: "Like /configure but every field is optional — omitted fields keep their current value. Pass `-` to clear a text field. Set announcement_channel:true to point announcements at the current channel. Requires the server to already be configured.",
         },
         HelpCommand {
             name: "addapi",
@@ -837,6 +845,9 @@ impl EventHandler for Handler {
                 "configure" => {
                     handle_configure(&ctx, &command).await;
                 }
+                "edit" => {
+                    handle_edit(&ctx, &command).await;
+                }
                 "addapi" => {
                     handle_addapi(&ctx, &command).await;
                 }
@@ -1196,6 +1207,43 @@ impl EventHandler for Handler {
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "gdrive_folder_id", "Google Drive upload folder id. Omit to keep the existing one.")
+                        .required(false)
+                ),
+            CreateCommand::new("edit")
+                .description("Edit individual server metadata fields, leaving the rest untouched")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "language", "Bot language. Omit to keep the existing one.")
+                        .required(false)
+                        .add_string_choice("English", "EN")
+                        .add_string_choice("Türkçe", "TR")
+                        .add_string_choice("日本語", "JP")
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "forgejo", "Forgejo base link. Omit to keep, `-` to unset.")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "api_key", "Forgejo API token. Omit to keep, `-` to unset.")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "gdrive_client_id", "Google Drive OAuth client id. Omit to keep, `-` to unset.")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "gdrive_client_secret", "Google Drive OAuth client secret. Omit to keep, `-` to unset.")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "gdrive_refresh_token", "Google Drive OAuth refresh token. Omit to keep, `-` to unset.")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "gdrive_folder_id", "Google Drive upload folder id. Omit to keep, `-` to unset.")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Boolean, "announcement_channel", "Set the announcement channel to this channel.")
                         .required(false)
                 ),
             CreateCommand::new("addapi")

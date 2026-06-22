@@ -34,6 +34,12 @@ pub(super) fn option_i64(command: &serenity::all::CommandInteraction, name: &str
         .and_then(|opt| opt.value.as_i64())
 }
 
+pub(super) fn option_bool(command: &serenity::all::CommandInteraction, name: &str) -> Option<bool> {
+    command.data.options.iter()
+        .find(|opt| opt.name == name)
+        .and_then(|opt| opt.value.as_bool())
+}
+
 pub(super) fn option_attachment<'a>(
     command: &'a serenity::all::CommandInteraction,
     name: &str,

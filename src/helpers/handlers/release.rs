@@ -78,11 +78,55 @@ pub async fn handle_release(ctx: &Context, command: &serenity::all::CommandInter
     };
     let _ = tokio::fs::remove_dir_all(&work_dir).await;
 
+    let anisub_field = anisub_release_upload(&meta, &owner_repo, &safe_name, episode, &release_bytes).await;
+
     let embed = CreateEmbed::new()
         .title("Release fonts uploaded")
         .field("Repo", format!("`{}`", owner_repo), true)
         .field("Release", format!("`{}`", release_path), true)
         .field("Fonts", fonts_path.unwrap_or_else(|| "No matching local fonts found".to_string()), true)
-        .field("Requested", format!("`{}`", font_names.len()), true);
+        .field("Requested", format!("`{}`", font_names.len()), true)
+        .field("AniSub", anisub_field, false);
     let _ = response_msg.edit(ctx, EditMessage::new().content("").embed(embed)).await;
+}
+
+async fn anisub_release_upload(
+    meta: &ChannelMeta,
+    owner_repo: &str,
+    safe_name: &str,
+    episode: u32,
+    release_bytes: &[u8],
+) -> String {
+    let key = match get_pandora_env().get(ANISUB).filter(|k| !k.is_empty()).cloned() {
+        Some(k) => k,
+        None => return "Skipped — `anisub` not set".to_string(),
+    };
+    let anisub = match AniSub::new(key) {
+        Ok(a) => a,
+        Err(e) => return format!("Init failed: {}", e),
+    };
+
+    let anime_name = meta.name.clone().unwrap_or_default();
+    if anime_name.trim().is_empty() {
+        return "Skipped — anime name unknown".to_string();
+    }
+
+    let anime = match anisub.resolve_anilist(&anime_name).await {
+        Ok(Some(m)) => m,
+        Ok(None) => return format!("No AniList match for `{}`", anime_name),
+        Err(e) => return format!("Search failed: {}", e),
+    };
+
+    let release_name = owner_repo.split('/').next().unwrap_or(owner_repo).to_string();
+    let zip_entry = format!("Release - {} - E{:02}.ass", safe_name, episode);
+    let zip_name = format!("{} - E{:02}.zip", safe_name, episode);
+    let zip_bytes = match zip_single_ass(&zip_entry, release_bytes).await {
+        Ok(b) => b,
+        Err(e) => return format!("Zip failed: {}", e),
+    };
+
+    match anisub.upload_subtitle(zip_bytes, &zip_name, anime.media_id, &release_name, episode, &meta.tl, DEFAULT_FPS).await {
+        Ok(res) => format!("Uploaded id `{}` — AniList `{}`, release `{}`", res.subtitle_id, anime.media_id, release_name),
+        Err(e) => format!("Upload failed: {}", e),
+    }
 }
