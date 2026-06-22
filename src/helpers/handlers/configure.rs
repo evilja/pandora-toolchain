@@ -43,18 +43,46 @@ pub async fn handle_configure(
         return;
     }
 
-    let existing_api_key = std::fs::read_to_string(dir.join("meta.pandora"))
-        .ok()
-        .and_then(|s| s.lines().nth(3).map(str::to_string))
-        .unwrap_or_default();
+    let existing_meta = std::fs::read_to_string(dir.join("meta.pandora")).unwrap_or_default();
+    let existing_lines: Vec<&str> = existing_meta.lines().collect();
+    let existing_api_key = existing_lines.get(3).copied().unwrap_or("").to_string();
+    let existing_gdrive_client_id = existing_lines.get(4).copied().unwrap_or("").to_string();
+    let existing_gdrive_client_secret = existing_lines.get(5).copied().unwrap_or("").to_string();
+    let existing_gdrive_refresh_token = existing_lines.get(6).copied().unwrap_or("").to_string();
+    let existing_gdrive_folder_id = existing_lines.get(7).copied().unwrap_or("").to_string();
 
     let new_api_key = option_str(command, "api_key")
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or(&existing_api_key)
         .to_string();
+    let gdrive_client_id = option_str(command, "gdrive_client_id")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&existing_gdrive_client_id)
+        .to_string();
+    let gdrive_client_secret = option_str(command, "gdrive_client_secret")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&existing_gdrive_client_secret)
+        .to_string();
+    let gdrive_refresh_token = option_str(command, "gdrive_refresh_token")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&existing_gdrive_refresh_token)
+        .to_string();
+    let gdrive_folder_id = option_str(command, "gdrive_folder_id")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&existing_gdrive_folder_id)
+        .to_string();
+    let gdrive_parts = [&gdrive_client_id, &gdrive_client_secret, &gdrive_refresh_token, &gdrive_folder_id];
+    if gdrive_parts.iter().any(|s| !s.is_empty()) && gdrive_parts.iter().any(|s| s.is_empty()) {
+        command_error(ctx, command, "Error: Google Drive config requires client id, client secret, refresh token, and folder id.").await;
+        return;
+    }
 
-    let body = format!("{}\n{}\n{}\n{}\n", language, forgejo, command.channel_id.get(), new_api_key);
+    let body = format!("{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n", language, forgejo, command.channel_id.get(), new_api_key, gdrive_client_id, gdrive_client_secret, gdrive_refresh_token, gdrive_folder_id);
     let path = dir.join("meta.pandora");
     if let Err(e) = tokio::fs::write(&path, body).await {
         command.create_response(ctx, CreateInteractionResponse::Message(
@@ -67,10 +95,11 @@ pub async fn handle_configure(
 
     let forgejo_display = if forgejo.is_empty() { "(unset)".to_string() } else { format!("`{}`", forgejo) };
     let api_key_display = if new_api_key.is_empty() { "(unset)".to_string() } else { "(set)".to_string() };
+    let gdrive_display = if gdrive_client_id.is_empty() && gdrive_client_secret.is_empty() && gdrive_refresh_token.is_empty() && gdrive_folder_id.is_empty() { "(unset)".to_string() } else { "(set)".to_string() };
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
-            .content(format!("Configured server `{}` — language: {}, forgejo: {}, forgejo api_key: {}, announcement channel: <#{}>",
-                server_id, language, forgejo_display, api_key_display, command.channel_id.get()))
+            .content(format!("Configured server `{}` — language: {}, forgejo: {}, forgejo api_key: {}, gdrive: {}, announcement channel: <#{}>",
+                server_id, language, forgejo_display, api_key_display, gdrive_display, command.channel_id.get()))
             .ephemeral(true)
     )).await.ok();
 }

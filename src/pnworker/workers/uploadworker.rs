@@ -1,5 +1,5 @@
 use crate::libpnenv::core::get_pandora_env;
-use crate::libpnenv::standard::PNCURL;
+use crate::libpnenv::standard::{CLIENT_ID, CLIENT_SECRET, ENV_PATH, ENV_SEP, PARENTID, PNCURL, REFRESH_TOKEN};
 use crate::libpnprotocol::core::Protocol;
 use crate::pnworker::core::CommData;
 use crate::pnworker::core::{Stage, WorkerMsg};
@@ -17,8 +17,8 @@ use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::sleep;
 
-pub type UploadData = (PathBuf, String, bool, u64);
-pub type UploadAllData = (PathBuf, u64);
+pub type UploadData = (PathBuf, String, bool, u64, Option<u64>);
+pub type UploadAllData = (PathBuf, u64, Option<u64>);
 
 pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, pulse: Sender<()>) {
     let mut proto = Protocol::new(vec![1]);
@@ -26,7 +26,7 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
     'll: loop {
         if let Ok(msg) = rx.try_recv() {
             match msg {
-                WorkerMsg::Upload((directory, out_name, release, job_id)) => {
+                WorkerMsg::Upload((directory, out_name, release, job_id, server_id)) => {
                     let output_path = directory
                         .join("work")
                         .join("output.mp4")
@@ -55,6 +55,7 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                         &HashMap::from([
                             ("LINK", PathValue::from(output_path.clone())),
                             ("OPCODE", PathValue::from(out_name.clone())),
+                            ("ENV", PathValue::from(drive_env_path(&directory, server_id).await)),
                         ]),
                         job_id,
                         &mut proto,
@@ -310,7 +311,7 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     println!("[Pandora Uploader] End of Session");
                     continue 'll;
                 }
-                WorkerMsg::UploadAll((directory, job_id)) => {
+                WorkerMsg::UploadAll((directory, job_id, server_id)) => {
                     let mut files =
                         find_mkv_files(&directory.join("contents").join("torrent")).await;
                     files.sort_by(|a, b| a.display().to_string().cmp(&b.display().to_string()));
@@ -355,6 +356,7 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                             &HashMap::from([
                                 ("LINK", PathValue::from(file.display().to_string())),
                                 ("OPCODE", PathValue::from(out_name)),
+                                ("ENV", PathValue::from(drive_env_path(&directory, server_id).await)),
                             ]),
                             upload_job_id,
                             &mut proto,
@@ -502,6 +504,45 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
         }
         sleep(Duration::from_secs(5)).await;
         pulse.try_send(()).ok();
+    }
+}
+
+async fn drive_env_path(directory: &PathBuf, server_id: Option<u64>) -> String {
+    let Some(server_id) = server_id else {
+        return ENV_PATH.to_string();
+    };
+    let meta_path = PathBuf::from("DB").join("config").join(server_id.to_string()).join("meta.pandora");
+    let meta = match tokio::fs::read_to_string(meta_path).await {
+        Ok(s) => s,
+        Err(_) => return ENV_PATH.to_string(),
+    };
+    let mut lines = meta.lines();
+    for _ in 0..4 {
+        lines.next();
+    }
+    let client_id = lines.next().unwrap_or("").trim().to_string();
+    let client_secret = lines.next().unwrap_or("").trim().to_string();
+    let refresh_token = lines.next().unwrap_or("").trim().to_string();
+    let parent_id = lines.next().unwrap_or("").trim().to_string();
+    if client_id.is_empty() && client_secret.is_empty() && refresh_token.is_empty() && parent_id.is_empty() {
+        return ENV_PATH.to_string();
+    }
+
+    let mut env = get_pandora_env();
+    env.insert(CLIENT_ID.to_string(), client_id);
+    env.insert(CLIENT_SECRET.to_string(), client_secret);
+    env.insert(REFRESH_TOKEN.to_string(), refresh_token);
+    env.insert(PARENTID.to_string(), parent_id);
+
+    let path = directory.join("work").join("gdrive_env.pandora");
+    let mut out = String::new();
+    for (key, value) in env {
+        out.push_str(&format!("{}{}{}\n", key, ENV_SEP, value));
+    }
+    if tokio::fs::write(&path, out).await.is_ok() {
+        path.display().to_string()
+    } else {
+        ENV_PATH.to_string()
     }
 }
 

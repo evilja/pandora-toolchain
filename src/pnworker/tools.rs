@@ -1,5 +1,4 @@
 // pnworker/tools.rs
-use crate::libpnenv::standard::ENV_PATH;
 use crate::pnworker::util::CliParam;
 
 pub const PNCURL_TORRENT: &[CliParam] = &[
@@ -61,7 +60,7 @@ pub const PNCURL_UPLOAD: &[CliParam] = &[
     CliParam::Literal("--link"),        CliParam::Path("LINK"),
     CliParam::Literal("--opcode"),      CliParam::Path("OPCODE"),
     CliParam::Literal("--drive"),
-    CliParam::Literal("--env"),         CliParam::Literal(ENV_PATH),
+    CliParam::Literal("--env"),         CliParam::Path("ENV"),
     CliParam::Literal("--negkey"),      CliParam::JobId("PNcurlG"),
     CliParam::Literal("--negotiator"),  CliParam::Literal("PNuloadworker"),
     CliParam::Literal("--negver"),      CliParam::NegVer("1"),
@@ -71,7 +70,7 @@ pub const PNCURL_BACKUP: &[CliParam] = &[
     CliParam::Literal("--link"),        CliParam::Path("LINK"),
     CliParam::Literal("--opcode"),      CliParam::Path("OPCODE"),
     CliParam::Literal("--drive"),
-    CliParam::Literal("--env"),         CliParam::Literal(ENV_PATH),
+    CliParam::Literal("--env"),         CliParam::Path("ENV"),
     CliParam::Literal("--negkey"),      CliParam::JobId("PNcurlG"),
     CliParam::Literal("--negotiator"),  CliParam::Literal("PNuloadworker"),
     CliParam::Literal("--negver"),      CliParam::NegVer("1"),

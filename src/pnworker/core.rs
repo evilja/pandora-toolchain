@@ -278,7 +278,8 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                         job.directory.clone(),
                         format!("{}.mkv", job.directory.file_name().unwrap_or_default().display()),
                         false,
-                        job.job_id
+                        job.job_id,
+                        job.server_id
                     )), job, &db, false).await {
                         dead.push(job.job_id);
                         continue;
@@ -287,7 +288,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                     db.update_stage(job.job_id, Stage::Uploading).await.unwrap();
                     change_presence_job(&job.context.0, Presence::Uploading { idx, total: qlen }).await;
                 } else if job.job_type == JobType::BackupAll {
-                    if !dispatch_or_kill(&mut shrine, &Worker::Upload, WorkerMsg::UploadAll((job.directory.clone(), job.job_id)), job, &db, false).await {
+                    if !dispatch_or_kill(&mut shrine, &Worker::Upload, WorkerMsg::UploadAll((job.directory.clone(), job.job_id, job.server_id)), job, &db, false).await {
                         dead.push(job.job_id);
                         continue;
                     }
@@ -309,7 +310,8 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                         Preset::Dummy(_) => false,
                         _ => true,
                     },
-                 job.job_id)), job, &db, false).await {
+                 job.job_id,
+                 job.server_id)), job, &db, false).await {
                     dead.push(job.job_id);
                     continue;
                 }

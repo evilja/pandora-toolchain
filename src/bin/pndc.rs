@@ -203,9 +203,9 @@ fn help_catalog() -> &'static [HelpCommand] {
         HelpCommand {
             name: "configure",
             rank: 2,
-            summary: "Configure server language, Forgejo base, and API key.",
-            usage: "/configure language:<EN|TR|JP> [forgejo] [api_key]",
-            details: "Writes server metadata. Run this before /init if the server needs a Forgejo org/base configured.",
+            summary: "Configure server language, Forgejo, and Google Drive credentials.",
+            usage: "/configure language:<EN|TR|JP> [forgejo] [api_key] [gdrive_client_id] [gdrive_client_secret] [gdrive_refresh_token] [gdrive_folder_id]",
+            details: "Writes server metadata. Run this before /init if the server needs a Forgejo org/base or per-guild Google Drive upload credentials configured.",
         },
         HelpCommand {
             name: "addapi",
@@ -1166,7 +1166,7 @@ impl EventHandler for Handler {
                 )
                 .add_option(concat_option.clone()),
             CreateCommand::new("configure")
-                .description("Configure this server (language, Forgejo base link, Forgejo API key)")
+                .description("Configure this server (language, Forgejo, Google Drive)")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "language", "Bot language")
                         .required(true)
@@ -1180,6 +1180,22 @@ impl EventHandler for Handler {
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "api_key", "Forgejo API token. Omit to keep the existing one.")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "gdrive_client_id", "Google Drive OAuth client id. Omit to keep the existing one.")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "gdrive_client_secret", "Google Drive OAuth client secret. Omit to keep the existing one.")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "gdrive_refresh_token", "Google Drive OAuth refresh token. Omit to keep the existing one.")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "gdrive_folder_id", "Google Drive upload folder id. Omit to keep the existing one.")
                         .required(false)
                 ),
             CreateCommand::new("addapi")
