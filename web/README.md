@@ -40,6 +40,27 @@ submit, cancel) still requires a valid bearer token, so the exposed surface is t
 a liveness check. Mint tokens with `/gentoken` (upper-only) and revoke by deleting their line
 from `api.pandora`.
 
+## Deploying with Docker + Cloudflare Tunnel
+
+The repo ships a `Dockerfile` and `docker-compose.yml` that run the bot and a `cloudflared`
+sidecar on a shared network — no published ports, no inbound firewall holes, TLS handled by
+Cloudflare.
+
+1. Set `api_port|pntools|8787` in `env.pandora` (leave `api_host` **unset** so it binds
+   `0.0.0.0` and the sidecar can reach it). Mint a token with `/gentoken`.
+2. In the Cloudflare Zero Trust dashboard, create a tunnel and set its Public Hostname service to
+   **`http://pndc:8787`** — the compose service name, **not** `localhost` (inside the
+   `cloudflared` container `localhost` is the container itself, not the bot).
+3. Put the tunnel token in a `.env` file beside the compose file: `TUNNEL_TOKEN=...`.
+4. `docker compose up -d --build`.
+
+`DB/` is bind-mounted (`./DB:/app/DB`) so the database, `env.pandora`, and `api.pandora` tokens
+persist across redeploys. The runtime image bundles `ffmpeg` for the encode pipeline. The image
+builds **Linux** containers, so the host must run Docker's Linux engine.
+
+If instead you run `cloudflared` directly on the host, publish the port (`-p 8787:8787`) and the
+dashboard service becomes `http://localhost:8787`.
+
 ## Optional: TLS via a reverse proxy
 
 If you later want HTTPS on a domain, set `api_host|pntools|127.0.0.1` and front the bot with a

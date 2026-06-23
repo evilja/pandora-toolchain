@@ -1,0 +1,25 @@
+services:
+  pndc:
+    build: .
+    restart: unless-stopped
+    # No published ports: cloudflared reaches it over the internal network only.
+    # The bot binds 0.0.0.0:8787 (set api_port|pntools|8787 in env.pandora).
+    volumes:
+      - ./DB:/app/DB
+    networks:
+      - pandora
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      # Token from the dashboard-created tunnel (Zero Trust > Networks > Tunnels).
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+    depends_on:
+      - pndc
+    networks:
+      - pandora
+
+networks:
+  pandora:

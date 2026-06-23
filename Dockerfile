@@ -1,0 +1,18 @@
+FROM rust:1-bookworm AS build
+WORKDIR /src
+COPY . .
+RUN cargo build --release --bins
+
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates ffmpeg curl \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=build /src/target/release/pndc   /usr/local/bin/pndc
+COPY --from=build /src/target/release/pnmpeg  /usr/local/bin/pnmpeg
+COPY --from=build /src/target/release/pnp2p   /usr/local/bin/pnp2p
+COPY --from=build /src/target/release/pncurl  /usr/local/bin/pncurl
+COPY --from=build /src/target/release/pnass   /usr/local/bin/pnass
+# DB/ (database, env.pandora, api.pandora tokens) comes from a mounted volume.
+EXPOSE 8787
+CMD ["pndc"]
