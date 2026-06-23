@@ -1,0 +1,38 @@
+myisha [GJM],  — 7.06.2026 11:50
+Myanimelist APIı var mı peki
+TMDB sezon başına bölümleri ayırmadığı için kullanmamız pek convenient olmadı
+ [CİX], 
+myisha [GJM],  — 7.06.2026 13:03
+Şu da olur
+ [GJM], 
+helen [CİX],  — 7.06.2026 17:14
+Hayır
+Myanimelist API sunmuyoruz
+myisha [GJM],  — 7.06.2026 17:17
+ben çözdüm search atıp çıkan sonuçlardan mal id eşleşeni alacağım
+search api lazım sadece
+helen [CİX],  — 7.06.2026 17:18
+De buna gerek var mi ki
+Altı üstü sezon numarası
+Bölüm numarası gireceksiniz
+ki zaten bunu desteklememekteyiz
+Myanimelist'de bölüm sırası farklıyken TMDB'de bölüm sıralaması farklı
+Bu durumda size API vermemin hiçbir anlamı kalmıyor
+TMDB'de iki sezon ayrı ayrı iken Myanimelist'de ikinci sezon birinci sezonun devami diye birinci sezondan devam edebiliyor
+ [CİX], 
+myisha [GJM],  — 7.06.2026 17:21
+e öyle yapacağım zaten de seçtiği anime gerçekten MAL'daki mi diye kontrol etmek istiyorum
+https://animecix.tv/secure/search/<name>?limit=20
+"mal_id": 31240,
+"tmdb_id": 65942,
+"id": 7325,
+böyle IDler geliyor aratınca
+ [GJM], 
+myisha [GJM],  — 7.06.2026 17:23
+.
+ [GJM], 
+helen [CİX],  — 7.06.2026 17:24
+bu zaten
+search apisi
+myisha [GJM],  — 7.06.2026 17:24
+okey böyleyse tamamdir

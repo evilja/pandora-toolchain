@@ -72,8 +72,8 @@ fn min_rank_for_command(part: &str) -> u8 {
     match part {
         "encode" | "pancode" | "probe" | "backup" | "backupall" | "scrape" | "gitcode" | "smartcode" | "merge" | "release" | "source" => 0,
         "!enc" | "!encode" => 0,
-        "job" | "get" | "!ts" => 1,
-        "auth" | "remove" | "gitsync" | "hearts" | "configure" | "edit" | "readmebase" | "addapi" | "font" | "!ban" | "!some" => 2,
+        "job" | "get" | "acixconfirm" | "!ts" => 1,
+        "auth" | "remove" | "gitsync" | "hearts" | "configure" | "edit" | "acixtemplate" | "readmebase" | "addapi" | "font" | "!ban" | "!some" => 2,
         "attach" | "init" | "destruct" | "detach" | "gentoken" => 3,
         _ => u8::MAX,
     }
@@ -228,6 +228,20 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Generate a new API bearer token.",
             usage: "/gentoken [label:<note>]",
             details: "Mints a random bearer token for the HTTP API and appends it to the token file. The token is shown once, privately. Upper only.",
+        },
+        HelpCommand {
+            name: "acixconfirm",
+            rank: 1,
+            summary: "Publish a finished encode to AnimeciX.",
+            usage: "/acixconfirm job_id:<id>",
+            details: "Confirms the pending AnimeciX publish for an uploaded job and pushes it to AnimeciX (the multishare upload).",
+        },
+        HelpCommand {
+            name: "acixtemplate",
+            rank: 2,
+            summary: "Set this channel's AnimeciX fansub id.",
+            usage: "/acixtemplate template:<id>",
+            details: "Stores the AnimeciX fansub template id (e.g. AkiraSubs=50, SomeSubs=218) on this channel so smartcode publishes are attributed correctly.",
         },
         HelpCommand {
             name: "font",
@@ -455,6 +469,8 @@ struct ChannelMeta {
     ts: String,
     #[serde(default = "default_credit")]
     qc: String,
+    #[serde(default)]
+    acix_template: Option<i64>,
 }
 
 fn default_season() -> u16 { 1 }
@@ -555,6 +571,9 @@ fn meta_to_toml(m: &ChannelMeta) -> String {
             }
             if let Some(c) = m.episode_count_at_git {
                 out.push_str(&format!("episode_count_at_git = {}\n", c));
+            }
+            if let Some(t) = m.acix_template {
+                out.push_str(&format!("acix_template = {}\n", t));
             }
             out
         }
@@ -860,6 +879,12 @@ impl EventHandler for Handler {
                 }
                 "gentoken" => {
                     handle_gentoken(&ctx, &command).await;
+                }
+                "acixconfirm" => {
+                    handle_acixconfirm(&ctx, &command).await;
+                }
+                "acixtemplate" => {
+                    handle_acixtemplate(&ctx, &command).await;
                 }
                 "font" => {
                     handle_font(&ctx, &command).await;
@@ -1271,6 +1296,18 @@ impl EventHandler for Handler {
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "label", "Optional note stored beside the token")
                         .required(false)
+                ),
+            CreateCommand::new("acixconfirm")
+                .description("Confirm and publish a finished encode to AnimeciX")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "job_id", "The job id (from the upload message)")
+                        .required(true)
+                ),
+            CreateCommand::new("acixtemplate")
+                .description("Set this channel's AnimeciX fansub template id")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "template", "Fansub id (e.g. AkiraSubs=50, SomeSubs=218)")
+                        .required(true)
                 ),
             CreateCommand::new("font")
                 .description("Download a font zip and extract it to this server's fontconfig directory")

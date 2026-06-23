@@ -14,6 +14,8 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc::Sender;
 
 use crate::pnworker::core::{HalfJob, Job, JobClass, JobType, Preset};
+use crate::pnworker::acix::confirm_acix;
+use crate::libacix::{AnimeCix, MediaType, MixedUpload};
 use crate::libpndb::core::{JobDb, JobStatus};
 use crate::libpnp2p::nyaaise::nyaaise;
 use crate::libpnenv::core::{get_pandora_env, get_perm};
@@ -46,7 +48,15 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/jobs/:id", get(get_job))
         .route("/jobs/encode", post(submit_encode))
         .route("/jobs/backup", post(submit_backup))
+        .route("/jobs/probe", post(submit_probe))
+        .route("/jobs/pancode", post(submit_pancode))
+        .route("/jobs/gitcode", post(submit_gitcode))
         .route("/jobs/:id/cancel", post(cancel_job))
+        .route("/jobs/:id/acix/confirm", post(acix_confirm))
+        .route("/acix/search", get(acix_search))
+        .route("/acix/tmdb", post(acix_tmdb))
+        .route("/acix/translators", get(acix_translators))
+        .route("/acix/publish", post(acix_publish))
         .layer(DefaultBodyLimit::max(8 * 1024 * 1024))
         .layer(middleware::from_fn(auth));
 
@@ -183,6 +193,112 @@ async fn submit_backup(State(st): State<AppState>, Json(req): Json<BackupReq>) -
     submit(&st, job).await
 }
 
+#[derive(Deserialize)]
+struct ProbeReq {
+    torrent: String,
+}
+
+async fn submit_probe(State(st): State<AppState>, Json(req): Json<ProbeReq>) -> Response {
+    let job = Job::new_api(
+        st.api_author,
+        0,
+        JobType::Probe,
+        Preset::Dummy(None),
+        nyaaise(&req.torrent),
+        vec![],
+        "EN".to_string(),
+        None,
+    );
+    submit(&st, job).await
+}
+
+#[derive(Deserialize)]
+struct PancodeReq {
+    probe_job_id: String,
+    file_index: u64,
+    subtitle_b64: String,
+    #[serde(default)]
+    preset: Option<String>,
+}
+
+async fn submit_pancode(State(st): State<AppState>, Json(req): Json<PancodeReq>) -> Response {
+    let subtitle = match base64_decode_bytes(&req.subtitle_b64) {
+        Ok(b) => b,
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("subtitle_b64: {e}")).into_response(),
+    };
+    let probe_id = match req.probe_job_id.trim().parse::<u64>() {
+        Ok(v) => v,
+        Err(_) => return (StatusCode::BAD_REQUEST, "probe_job_id must be a numeric string").into_response(),
+    };
+    let probe = match st.db.get_job(probe_id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => return (StatusCode::NOT_FOUND, "no such probe job").into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let mut job = Job::new_api(
+        st.api_author,
+        0,
+        JobType::Pancode,
+        preset_from_str(req.preset.as_deref()),
+        nyaaise(&probe.link),
+        subtitle,
+        "EN".to_string(),
+        None,
+    );
+    job.probe_job_id = Some(probe_id);
+    job.probe_file_index = Some(req.file_index);
+    submit(&st, job).await
+}
+
+#[derive(Deserialize)]
+struct GitcodeReq {
+    torrent: String,
+    subtitle_url: String,
+    #[serde(default)]
+    preset: Option<String>,
+}
+
+async fn submit_gitcode(State(st): State<AppState>, Json(req): Json<GitcodeReq>) -> Response {
+    let url = github_blob_to_raw(&req.subtitle_url);
+    let subtitle = match fetch_subtitle(&url).await {
+        Ok(b) => b,
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("subtitle_url: {e}")).into_response(),
+    };
+    let job = Job::new_api(
+        st.api_author,
+        0,
+        JobType::Encode,
+        preset_from_str(req.preset.as_deref()),
+        nyaaise(&req.torrent),
+        subtitle,
+        "EN".to_string(),
+        None,
+    );
+    submit(&st, job).await
+}
+
+fn github_blob_to_raw(url: &str) -> String {
+    if let Some(rest) = url.strip_prefix("https://github.com/") {
+        if let Some((repo, path)) = rest.split_once("/blob/") {
+            return format!("https://raw.githubusercontent.com/{}/{}", repo, path);
+        }
+    }
+    url.to_string()
+}
+
+async fn fetch_subtitle(url: &str) -> Result<Vec<u8>, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("status {}", resp.status()));
+    }
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    Ok(bytes.to_vec())
+}
+
 async fn cancel_job(State(st): State<AppState>, Path(id): Path<u64>) -> Response {
     let hj = HalfJob::new_cancel(st.api_author, 0, id);
     if st.tx.send(JobClass::HalfJob(hj)).await.is_err() {
@@ -197,6 +313,90 @@ async fn submit(st: &AppState, job: Job) -> Response {
         return (StatusCode::SERVICE_UNAVAILABLE, "worker channel closed").into_response();
     }
     (StatusCode::ACCEPTED, Json(json!({ "job_id": job_id.to_string() }))).into_response()
+}
+
+async fn acix_confirm(State(st): State<AppState>, Path(id): Path<u64>) -> Response {
+    match confirm_acix(&st.db, id).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
+    }
+}
+
+fn acix_default_limit() -> u32 { 20 }
+
+#[derive(Deserialize)]
+struct AcixSearchQuery {
+    q: String,
+    #[serde(default = "acix_default_limit")]
+    limit: u32,
+}
+
+async fn acix_search(Query(q): Query<AcixSearchQuery>) -> Response {
+    let client = match AnimeCix::from_env() {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, e).into_response(),
+    };
+    match client.search(&q.q, q.limit).await {
+        Ok(hits) => Json(hits).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct AcixTmdbReq {
+    tmdb_id: String,
+    #[serde(default)]
+    media_type: Option<String>,
+}
+
+async fn acix_tmdb(Json(req): Json<AcixTmdbReq>) -> Response {
+    let mt = match req.media_type.as_deref() {
+        Some("movies") | Some("movie") => MediaType::Movies,
+        _ => MediaType::Series,
+    };
+    let client = match AnimeCix::from_env() {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, e).into_response(),
+    };
+    match client.tmdb_to_acix(&req.tmdb_id, mt).await {
+        Ok(r) => Json(json!({ "status": r.status, "acix_id": r.acix_id, "body": r.body })).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
+    }
+}
+
+async fn acix_translators() -> Response {
+    let client = match AnimeCix::from_env() {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, e).into_response(),
+    };
+    match client.translators().await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct AcixPublishReq {
+    extra: String,
+    url: String,
+    template: i64,
+    title_id: i64,
+    #[serde(default)]
+    season_num: Option<i64>,
+    #[serde(default)]
+    episode_num: Option<i64>,
+}
+
+async fn acix_publish(Json(req): Json<AcixPublishReq>) -> Response {
+    let client = match AnimeCix::from_env() {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, e).into_response(),
+    };
+    let up = MixedUpload::new(req.extra, req.url, req.template, req.title_id, req.season_num, req.episode_num);
+    match client.multishare_mixed(&up).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
+    }
 }
 
 fn preset_from_str(s: Option<&str>) -> Preset {

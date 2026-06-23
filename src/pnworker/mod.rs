@@ -1,4 +1,5 @@
 pub mod core;
+pub mod acix;
 pub mod messages;
 pub mod util;
 pub mod tools;

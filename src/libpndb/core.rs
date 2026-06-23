@@ -37,6 +37,9 @@ impl JobDb {
                 directory    TEXT NOT NULL,
                 stage        INTEGER NOT NULL,
                 archived     INTEGER DEFAULT 0,
+                progress     TEXT,
+                uploaded_links TEXT,
+                acix_pending TEXT,
                 created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             "#,
@@ -65,6 +68,16 @@ impl JobDb {
         // Add candidates column if missing
         self.add_column_if_missing(
             "ALTER TABLE jobs ADD COLUMN candidates TEXT"
+        ).await?;
+
+        self.add_column_if_missing(
+            "ALTER TABLE jobs ADD COLUMN progress TEXT"
+        ).await?;
+        self.add_column_if_missing(
+            "ALTER TABLE jobs ADD COLUMN uploaded_links TEXT"
+        ).await?;
+        self.add_column_if_missing(
+            "ALTER TABLE jobs ADD COLUMN acix_pending TEXT"
         ).await?;
 
         if self.column_exists("jobs", "preset_concat").await? {
@@ -164,6 +177,33 @@ impl JobDb {
         Ok(())
     }
 
+    pub async fn update_progress(&self, job_id: u64, progress: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE jobs SET progress = ? WHERE job_id = ?")
+            .bind(progress)
+            .bind(job_id as i64)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn update_links(&self, job_id: u64, links: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE jobs SET uploaded_links = ? WHERE job_id = ?")
+            .bind(links)
+            .bind(job_id as i64)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn set_acix_pending(&self, job_id: u64, pending: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE jobs SET acix_pending = ? WHERE job_id = ?")
+            .bind(pending)
+            .bind(job_id as i64)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn archive_job(&self, job_id: u64) -> Result<(), sqlx::Error> {
         sqlx::query("UPDATE jobs SET archived = 1 WHERE job_id = ?")
             .bind(job_id as i64)
@@ -185,7 +225,8 @@ impl JobDb {
         sqlx::query_as::<_, JobRow>(
             r#"
             SELECT job_id, author, channel_id, response_id, requested_at,
-                   job_type, preset_type, candidates, link, directory, stage, archived
+                   job_type, preset_type, candidates, link, directory, stage, archived,
+                   progress, uploaded_links, acix_pending
             FROM jobs WHERE job_id = ?
             "#,
         )
@@ -198,7 +239,8 @@ impl JobDb {
         sqlx::query_as::<_, JobRow>(
             r#"
             SELECT job_id, author, channel_id, response_id, requested_at,
-                   job_type, preset_type, candidates, link, directory, stage, archived
+                   job_type, preset_type, candidates, link, directory, stage, archived,
+                   progress, uploaded_links, acix_pending
             FROM jobs WHERE archived = 0 ORDER BY requested_at ASC
             "#,
         )
@@ -210,7 +252,8 @@ impl JobDb {
         sqlx::query_as::<_, JobRow>(
             r#"
             SELECT job_id, author, channel_id, response_id, requested_at,
-                   job_type, preset_type, candidates, link, directory, stage, archived
+                   job_type, preset_type, candidates, link, directory, stage, archived,
+                   progress, uploaded_links, acix_pending
             FROM jobs WHERE archived = 0 AND stage NOT IN (6, 7, 8, 9) ORDER BY requested_at ASC
             "#,
         )
@@ -222,7 +265,8 @@ impl JobDb {
         sqlx::query_as::<_, JobRow>(
             r#"
             SELECT job_id, author, channel_id, response_id, requested_at,
-                   job_type, preset_type, candidates, link, directory, stage, archived
+                   job_type, preset_type, candidates, link, directory, stage, archived,
+                   progress, uploaded_links, acix_pending
             FROM jobs WHERE author = ? ORDER BY requested_at DESC
             "#,
         )
@@ -246,6 +290,9 @@ pub struct JobRow {
     pub directory:    String,
     pub stage:        i64,
     pub archived:     i64,
+    pub progress:        Option<String>,
+    pub uploaded_links:  Option<String>,
+    pub acix_pending:    Option<String>,
 }
 
 impl JobRow {
@@ -266,6 +313,9 @@ pub struct JobStatus {
     pub stage:      String,
     pub link:       String,
     pub archived:   bool,
+    pub progress:   Option<serde_json::Value>,
+    pub links:      Option<serde_json::Value>,
+    pub acix:       Option<serde_json::Value>,
 }
 
 impl JobStatus {
@@ -279,6 +329,9 @@ impl JobStatus {
             stage:      stage_label(row.stage).to_string(),
             link:       row.link.clone(),
             archived:   row.archived != 0,
+            progress:   row.progress.as_deref().and_then(|s| serde_json::from_str(s).ok()),
+            links:      row.uploaded_links.as_deref().and_then(|s| serde_json::from_str(s).ok()),
+            acix:       row.acix_pending.as_deref().and_then(|s| serde_json::from_str(s).ok()),
         }
     }
 }

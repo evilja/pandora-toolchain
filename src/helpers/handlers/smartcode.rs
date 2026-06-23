@@ -18,7 +18,7 @@ pub async fn handle_smartcode(
         Err(_) => return None,
     };
 
-    Some(Job::new(
+    let mut job = Job::new(
         command.user.id.get(),
         command.channel_id.get(),
         final_msg.id.get(),
@@ -31,5 +31,42 @@ pub async fn handle_smartcode(
         final_msg,
         read_lang(command.guild_id),
         command.guild_id.map(|g| g.get()),
-    ))
+    );
+    job.acix = build_acix_publish(ctx, command).await;
+    Some(job)
+}
+
+async fn build_acix_publish(
+    ctx: &Context,
+    command: &serenity::all::CommandInteraction,
+) -> Option<pandora_toolchain::pnworker::core::AcixPublish> {
+    let server_id = command.guild_id?.get();
+    let channel_id = command.channel_id.get();
+    let meta = read_channel_meta(server_id, channel_id);
+    let template = meta.acix_template?;
+    let name = meta.name.clone()?;
+    let mal_id = meta.mal_id? as i64;
+    let episode = positive_u32_option(ctx, command, "episode").await? as i64;
+    let (season_num, episode_num) = if meta.kind.as_deref() == Some("Movie") {
+        (None, None)
+    } else {
+        (Some(meta.season as i64), Some(episode))
+    };
+    Some(pandora_toolchain::pnworker::core::AcixPublish {
+        name,
+        mal_id,
+        season_num,
+        episode_num,
+        template,
+        extra: build_extra(&meta),
+    })
+}
+
+fn build_extra(meta: &ChannelMeta) -> String {
+    let mut parts = Vec::new();
+    if meta.tl != "---" { parts.push(format!("Çeviri: {}", meta.tl)); }
+    if meta.tlc != "---" { parts.push(format!("Redaktör: {}", meta.tlc)); }
+    if meta.ts != "---" { parts.push(format!("Tipset: {}", meta.ts)); }
+    if meta.qc != "---" { parts.push(format!("Kalite Kontrol: {}", meta.qc)); }
+    parts.join(" ")
 }

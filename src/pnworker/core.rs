@@ -4,7 +4,8 @@ use tokio::time::sleep;
 use tokio::time::Duration;
 use crate::libpnp2p::nyaaise::TorrentType;
 use crate::pnworker::heartbeat::core::{TypedShrine, Worker};
-use crate::pnworker::messages::{MessagePayload, PROBE_TIMEOUT, QUEUE_TOO_LONG, QUEUED};
+use crate::pnworker::messages::{MessagePayload, PROBE_TIMEOUT, QUEUE_TOO_LONG, QUEUED,
+    ENCODE_PROG, ENCODE_CONCAT_PROG, PROBE_ROW, UPLOAD_DONE, UPLOAD_BACKUP_PROG, BACKUPALL_PROG};
 use crate::libpndb::core::JobDb;
 use crate::pnworker::presence::{presence_from_queue, Presence};
 use crate::pnworker::frontend::Frontend;
@@ -226,6 +227,23 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                     i.ready = a;
                     db.update_stage(i.job_id, i.ready).await.unwrap();
                 }
+                if commdata.2 == Some(Stage::Uploaded) {
+                    if let Some(acix) = i.acix.clone() {
+                        if let Some(drive) = drive_link_from_payload(&commdata.1) {
+                            if drive.starts_with("http") {
+                                let pending = crate::pnworker::acix::AcixPending {
+                                    status: "pending".to_string(),
+                                    acix,
+                                    drive,
+                                };
+                                if let Ok(j) = serde_json::to_string(&pending) {
+                                    db.set_acix_pending(i.job_id, &j).await.ok();
+                                }
+                            }
+                        }
+                    }
+                }
+                persist_side_effects(&db, i.job_id, &commdata.1, commdata.2).await;
                 render(i, commdata.1).await;
 
                 let finished = matches!(i.ready, Stage::Uploaded | Stage::Failed | Stage::Cancelled);
@@ -324,6 +342,58 @@ async fn render(job: &mut Job, payload: MessagePayload) {
     let mut fe = std::mem::replace(&mut job.frontend, Frontend::None);
     fe.update(job, &payload).await;
     job.frontend = fe;
+}
+
+async fn persist_side_effects(db: &JobDb, job_id: u64, payload: &MessagePayload, stage: Option<Stage>) {
+    let MessagePayload::Progress(id, args) = payload else { return; };
+    if *id == ENCODE_PROG {
+        let frame = args.get(1).cloned().unwrap_or_default();
+        let total = args.get(2).cloned().unwrap_or_default();
+        let v = serde_json::json!({
+            "type": "encode", "frame": frame, "total": total,
+            "fps": args.get(3), "kbps": args.get(4),
+            "percent": encode_percent(&frame, &total),
+        });
+        db.update_progress(job_id, &v.to_string()).await.ok();
+    } else if *id == ENCODE_CONCAT_PROG {
+        let frame = args.get(0).cloned().unwrap_or_default();
+        let total = args.get(1).cloned().unwrap_or_default();
+        let v = serde_json::json!({
+            "type": "encode", "frame": frame, "total": total,
+            "fps": args.get(2), "percent": encode_percent(&frame, &total),
+        });
+        db.update_progress(job_id, &v.to_string()).await.ok();
+    } else if *id == PROBE_ROW {
+        let v = serde_json::json!({ "type": "probe", "files": args.get(0) });
+        db.update_progress(job_id, &v.to_string()).await.ok();
+    } else if *id == UPLOAD_DONE {
+        let v = serde_json::json!({
+            "drive": args.get(0), "doodstream": args.get(1), "lulustream": args.get(2),
+            "voe": args.get(3), "abyss": args.get(4),
+        });
+        db.update_links(job_id, &v.to_string()).await.ok();
+    } else if *id == UPLOAD_BACKUP_PROG && stage == Some(Stage::Uploaded) {
+        let v = serde_json::json!({ "drive": args.get(0) });
+        db.update_links(job_id, &v.to_string()).await.ok();
+    } else if *id == BACKUPALL_PROG && stage == Some(Stage::Uploaded) {
+        let v = serde_json::json!({ "episodes": args.get(0) });
+        db.update_links(job_id, &v.to_string()).await.ok();
+    }
+}
+
+fn encode_percent(frame: &str, total: &str) -> u64 {
+    let f = frame.parse::<f64>().unwrap_or(0.0);
+    let t = total.parse::<f64>().unwrap_or(0.0);
+    if t <= 0.0 { return 0; }
+    ((f / t) * 100.0).clamp(0.0, 100.0) as u64
+}
+
+fn drive_link_from_payload(payload: &MessagePayload) -> Option<String> {
+    let MessagePayload::Progress(id, args) = payload else { return None; };
+    if *id == UPLOAD_DONE || *id == UPLOAD_BACKUP_PROG {
+        return args.get(0).cloned();
+    }
+    None
 }
 
 async fn cleanup_job(source: &PathBuf, dest: &PathBuf) {
@@ -444,6 +514,16 @@ impl HalfJob {
     }
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct AcixPublish {
+    pub name: String,
+    pub mal_id: i64,
+    pub season_num: Option<i64>,
+    pub episode_num: Option<i64>,
+    pub template: i64,
+    pub extra: String,
+}
+
 #[derive(Clone)]
 pub struct Job {
     pub author: u64,
@@ -464,6 +544,7 @@ pub struct Job {
     pub probe_file_index: Option<u64>,
     pub lang: String,
     pub server_id: Option<u64>,
+    pub acix: Option<AcixPublish>,
 }
 
 impl PartialEq for Job {
@@ -492,6 +573,7 @@ impl Job {
             probe_file_index: None,
             lang,
             server_id,
+            acix: None,
         }
     }
 
@@ -514,6 +596,7 @@ impl Job {
             probe_file_index: None,
             lang,
             server_id,
+            acix: None,
         }
     }
 }

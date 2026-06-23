@@ -20,6 +20,8 @@ mod configure;
 mod edit;
 mod addapi;
 mod gentoken;
+mod acixconfirm;
+mod acixtemplate;
 mod font;
 mod readmebase;
 mod auth;
@@ -47,6 +49,8 @@ pub use self::configure::handle_configure;
 pub use self::edit::handle_edit;
 pub use self::addapi::handle_addapi;
 pub use self::gentoken::handle_gentoken;
+pub use self::acixconfirm::handle_acixconfirm;
+pub use self::acixtemplate::handle_acixtemplate;
 pub use self::font::handle_font;
 pub use self::readmebase::handle_readmebase;
 pub use self::auth::handle_auth;
@@ -477,6 +481,7 @@ async fn run_attach_or_init(
         tlc: tlc.clone(),
         ts: ts.clone(),
         qc: qc.clone(),
+        acix_template: existing.acix_template,
     };
     if let Err(e) = write_channel_meta(server_id, channel_id, &new_meta).await {
         let _ = response_msg.edit(ctx, EditMessage::new().content(format!("Failed to save channel meta: {}", e))).await;

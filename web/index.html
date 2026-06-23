@@ -324,6 +324,28 @@
   @keyframes ksweep { from { background-position: 200% 0; } to { background-position: 0 0; } }
   .accepted { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 12px 0; font-size: 13px; }
 
+  /* encode progress + uploaded links */
+  .prog { margin: 2px 0 14px; }
+  .prog-bar { height: 10px; border-radius: 999px; background: var(--line); overflow: hidden; }
+  .prog-bar span {
+    display: block; height: 100%; border-radius: 999px;
+    background: linear-gradient(90deg, var(--k1), var(--k2));
+    box-shadow: 0 0 14px -3px var(--k2);
+    transition: width .45s ease;
+  }
+  .prog-meta { margin-top: 8px; font-size: 12px; color: var(--ink-2); }
+  .prog-label {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+    color: var(--faint); margin: 14px 0 6px;
+  }
+  .link-row {
+    display: flex; gap: 12px; align-items: baseline; padding: 5px 0;
+    border-bottom: 1px solid var(--line); font-size: 12.5px; word-break: break-all;
+  }
+  .link-host { color: var(--k1); min-width: 88px; flex-shrink: 0; }
+  .link-row a { color: var(--cool); text-decoration: none; }
+  .link-row a:hover { text-decoration: underline; }
+
   .footer {
     display: flex;
     align-items: flex-end;
@@ -463,6 +485,19 @@
       },
       render: renderResult
     },
+    gitcode: {
+      label: "Git Encode",
+      desc: "Encode with a subtitle fetched from a URL (GitHub blob links are auto-rewritten).",
+      fields: [
+        { name: "torrent",      label: "Torrent / Magnet / GDrive", type: "text", required: true, placeholder: "magnet:?... or https://..." },
+        { name: "subtitle_url", label: "Subtitle URL (.ass)", type: "text", required: true, placeholder: "https://.../sub.ass" },
+        { name: "preset",       label: "Preset", type: "select", options: ["standard", "gpu", "pseudolossless", "dummy"] }
+      ],
+      run: function (v) {
+        return api("POST", "/api/v1/jobs/gitcode", { torrent: v.torrent, subtitle_url: v.subtitle_url, preset: v.preset });
+      },
+      render: renderResult
+    },
     backup: {
       label: "Backup",
       desc: "Archive the raw release to storage without re-encoding.",
@@ -472,6 +507,34 @@
       ],
       run: function (v) {
         return api("POST", "/api/v1/jobs/backup", { torrent: v.torrent, all: !!v.all });
+      },
+      render: renderResult
+    },
+    probe: {
+      label: "Probe",
+      desc: "List the files inside a torrent so you can pick one to Pancode.",
+      fields: [
+        { name: "torrent", label: "Torrent / Magnet", type: "text", required: true, placeholder: "magnet:?... or https://..." }
+      ],
+      run: function (v) { return api("POST", "/api/v1/jobs/probe", { torrent: v.torrent }); },
+      render: renderResult
+    },
+    pancode: {
+      label: "Pancode",
+      desc: "Re-encode one file from a probed torrent. Probe first, read its file list, then pick the index.",
+      fields: [
+        { name: "probe_job_id", label: "Probe job", type: "jobselect", required: true },
+        { name: "file_index",   label: "File index (from the probe list)", type: "number", required: true, placeholder: "0" },
+        { name: "subtitle",     label: "Subtitle (.ass)", type: "file", required: true, accept: ".ass" },
+        { name: "preset",       label: "Preset", type: "select", options: ["standard", "gpu", "pseudolossless", "dummy"] }
+      ],
+      run: function (v) {
+        return api("POST", "/api/v1/jobs/pancode", {
+          probe_job_id: v.probe_job_id,
+          file_index: parseInt(v.file_index, 10) || 0,
+          subtitle_b64: v.subtitle,
+          preset: v.preset
+        });
       },
       render: renderResult
     },
@@ -502,7 +565,7 @@
       render: renderResult
     }
   };
-  var ORDER = ["encode", "backup", "jobs", "getjob", "cancel"];
+  var ORDER = ["encode", "gitcode", "backup", "probe", "pancode", "jobs", "getjob", "cancel"];
 
   // ---- render command list ----
   var rail = document.createElement("div");
@@ -704,6 +767,34 @@
     return '<div class="pipe">' + segs + "</div>";
   }
 
+  function progressBlock(p) {
+    if (!p || typeof p !== "object") return "";
+    if (p.type === "encode") {
+      var pct = Math.max(0, Math.min(100, Number(p.percent) || 0));
+      var meta = pct + "% · frame " + esc(p.frame) + "/" + esc(p.total) + " · " + esc(p.fps) + " fps";
+      if (p.kbps) meta += " · " + esc(p.kbps) + " kbit/s";
+      return '<div class="prog"><div class="prog-bar"><span style="width:' + pct + '%"></span></div>' +
+             '<div class="prog-meta mono">' + meta + "</div></div>";
+    }
+    if (p.type === "probe") {
+      return '<div class="prog-label">Files</div><pre>' + esc(p.files) + "</pre>";
+    }
+    return "";
+  }
+  function linksBlock(l) {
+    if (!l || typeof l !== "object") return "";
+    var rows = Object.keys(l).map(function (host) {
+      var val = l[host];
+      if (val === null || val === undefined || val === "") return "";
+      var s = String(val);
+      var cell = /^https?:\/\//.test(s)
+        ? '<a href="' + esc(s) + '" target="_blank" rel="noopener">' + esc(s) + "</a>"
+        : esc(s);
+      return '<div class="link-row"><span class="link-host mono">' + esc(host) + "</span><span>" + cell + "</span></div>";
+    }).join("");
+    if (!rows) return "";
+    return '<div class="prog-label">Links</div>' + rows;
+  }
   function renderResult(res) {
     if (res.ok && isJobStatus(res.data)) {
       var d = res.data;
@@ -711,7 +802,8 @@
                  '<span class="stat-id mono">#' + esc(d.job_id) + "</span>" +
                  '<span class="stat-type">' + esc(d.job_type) + "</span></div>";
       var pipe = (MAIN.indexOf(d.stage) !== -1 || d.stage === "Uploaded") ? renderPipeline(d.stage) : "";
-      outputEl.innerHTML = head + pipe + "<pre>" + esc(JSON.stringify(d, null, 2)) + "</pre>";
+      outputEl.innerHTML = head + pipe + progressBlock(d.progress) + linksBlock(d.links) +
+        "<pre>" + esc(JSON.stringify(d, null, 2)) + "</pre>";
       return;
     }
     if (res.status === 202 && res.data && res.data.job_id) {

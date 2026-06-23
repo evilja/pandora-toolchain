@@ -22,6 +22,7 @@ pub const VOESX: &str = "voesx";
 pub const ABYSS: &str = "abyss";
 pub const PNASS: &str = "pnass";
 pub const ANISUB: &str = "anisub";
+pub const ANIMECIX: &str = "animecix";
 
 pub const API_PORT: &str = "api_port";
 pub const API_HOST: &str = "api_host";
