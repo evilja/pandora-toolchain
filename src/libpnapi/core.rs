@@ -2,7 +2,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, Request, State},
+    extract::{DefaultBodyLimit, Path, Query, Request, State},
     http::{StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -98,8 +98,18 @@ async fn auth(req: Request, next: Next) -> Response {
     next.run(req).await
 }
 
-async fn list_jobs(State(st): State<AppState>) -> Response {
-    match st.db.get_active_jobs().await {
+#[derive(Deserialize)]
+struct JobsQuery {
+    #[serde(default)]
+    status: Option<String>,
+}
+
+async fn list_jobs(State(st): State<AppState>, Query(q): Query<JobsQuery>) -> Response {
+    let result = match q.status.as_deref() {
+        Some("ongoing") => st.db.get_ongoing_jobs().await,
+        _ => st.db.get_active_jobs().await,
+    };
+    match result {
         Ok(rows) => Json(rows.iter().map(JobStatus::from_row).collect::<Vec<_>>()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }

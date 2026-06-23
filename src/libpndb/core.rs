@@ -206,6 +206,18 @@ impl JobDb {
         .await
     }
 
+    pub async fn get_ongoing_jobs(&self) -> Result<Vec<JobRow>, sqlx::Error> {
+        sqlx::query_as::<_, JobRow>(
+            r#"
+            SELECT job_id, author, channel_id, response_id, requested_at,
+                   job_type, preset_type, candidates, link, directory, stage, archived
+            FROM jobs WHERE archived = 0 AND stage NOT IN (6, 7, 8, 9) ORDER BY requested_at ASC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+    }
+
     pub async fn get_jobs_by_author(&self, author: u64) -> Result<Vec<JobRow>, sqlx::Error> {
         sqlx::query_as::<_, JobRow>(
             r#"

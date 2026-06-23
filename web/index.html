@@ -411,10 +411,10 @@
 
   function loadJobOptions(sel) {
     sel.innerHTML = '<option value="">Loading…</option>';
-    api("GET", "/api/v1/jobs").then(function (res) {
+    api("GET", "/api/v1/jobs?status=ongoing").then(function (res) {
       if (res.status === 401) { sel.innerHTML = '<option value="">Enter a valid token below</option>'; return; }
       if (!res.ok || !Array.isArray(res.data)) { sel.innerHTML = '<option value="">Could not load jobs</option>'; return; }
-      if (!res.data.length) { sel.innerHTML = '<option value="">No active jobs</option>'; return; }
+      if (!res.data.length) { sel.innerHTML = '<option value="">No ongoing jobs</option>'; return; }
       sel.innerHTML = res.data.map(function (j) {
         return '<option value="' + esc(j.job_id) + '">' + esc(j.job_id) + " — " + esc(j.job_type) + " · " + esc(j.stage) + "</option>";
       }).join("");
