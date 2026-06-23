@@ -1,5 +1,5 @@
 use super::*;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 const TOKENS_PATH: &str = pandora_toolchain::libpnenv::standard::API_TOKENS_PATH;
 
@@ -15,7 +15,7 @@ pub async fn handle_gentoken(
         }
     }
 
-    let token = match generate_token().await {
+    let token = match generate_token() {
         Ok(t) => t,
         Err(e) => {
             command_error(ctx, command, format!("Failed to generate token: {}", e)).await;
@@ -67,14 +67,9 @@ pub async fn handle_gentoken(
     )).await.ok();
 }
 
-async fn generate_token() -> Result<String, String> {
-    let mut f = tokio::fs::File::open("/dev/urandom")
-        .await
-        .map_err(|e| format!("could not open entropy source: {}", e))?;
+fn generate_token() -> Result<String, String> {
     let mut buf = [0u8; 32];
-    f.read_exact(&mut buf)
-        .await
-        .map_err(|e| format!("could not read entropy: {}", e))?;
+    getrandom::getrandom(&mut buf).map_err(|e| format!("entropy source failed: {}", e))?;
     let mut out = String::with_capacity(64);
     for b in buf {
         out.push_str(&format!("{:02x}", b));

@@ -1748,6 +1748,7 @@ dependencies = [
  "axum",
  "clap",
  "futures-lite",
+ "getrandom 0.2.17",
  "git2",
  "md5",
  "qbit-rs",

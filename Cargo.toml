@@ -21,3 +21,4 @@ md5 = "0.7"
 async_zip = { version = "0.0.17", features = ["tokio", "deflate"] }
 futures-lite = "2"
 axum = "0.7"
+getrandom = "0.2"
