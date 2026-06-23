@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pandora</title>
+<style>
+  :root {
+    --bg0: #11111b;
+    --bg1: #181825;
+    --surface: #1e1e2e;
+    --surface2: #313244;
+    --border: #313244;
+    --text: #cdd6f4;
+    --muted: #a6adc8;
+    --accent: #89b4fa;
+    --green: #a6e3a1;
+    --yellow: #f9e2af;
+    --red: #f38ba8;
+    --mauve: #cba6f7;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: var(--text);
+    background: radial-gradient(1200px 800px at 70% -10%, #1b1b2e 0%, var(--bg1) 45%, var(--bg0) 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+
+  .window {
+    width: 92%;
+    max-width: 860px;
+    max-height: 88vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: 0 24px 70px rgba(0,0,0,0.55), 0 2px 8px rgba(0,0,0,0.4);
+    overflow: hidden;
+  }
+
+  .titlebar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 14px;
+    height: 40px;
+    background: var(--bg1);
+    border-bottom: 1px solid var(--border);
+    user-select: none;
+  }
+  .title { font-size: 13px; font-weight: 600; letter-spacing: 0.3px; color: var(--muted); }
+  .title b { color: var(--text); }
+
+  .grid {
+    display: flex;
+    min-height: 230px;
+  }
+
+  .commands {
+    width: 168px;
+    flex-shrink: 0;
+    padding: 12px;
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    background: rgba(0,0,0,0.12);
+  }
+  .cmd {
+    text-align: left;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--muted);
+    padding: 9px 12px;
+    border-radius: 10px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: background .12s, color .12s, border-color .12s;
+  }
+  .cmd:hover { background: var(--surface2); color: var(--text); }
+  .cmd.active {
+    background: rgba(137,180,250,0.15);
+    color: var(--text);
+    border-color: rgba(137,180,250,0.5);
+  }
+
+  .options {
+    flex: 1;
+    padding: 18px;
+    overflow-y: auto;
+  }
+  .opt-title { font-size: 15px; font-weight: 600; margin: 0 0 14px; }
+  .field { margin-bottom: 13px; }
+  .field label {
+    display: block;
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 5px;
+  }
+  .field .opt { color: #6c7086; font-weight: 400; }
+  input[type=text], input[type=number], input[type=password], select, input[type=file] {
+    width: 100%;
+    background: var(--bg0);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 9px;
+    padding: 9px 11px;
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+    transition: border-color .12s, box-shadow .12s;
+  }
+  input:focus, select:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(137,180,250,0.15);
+  }
+  .hint { font-size: 12px; color: var(--muted); }
+
+  /* custom checkbox */
+  .check { display: flex; align-items: center; gap: 10px; cursor: pointer; user-select: none; font-size: 13px; color: var(--text); }
+  .check input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .check .box {
+    width: 18px; height: 18px; flex-shrink: 0;
+    border: 1px solid var(--border);
+    background: var(--bg0);
+    border-radius: 6px;
+    display: inline-flex; align-items: center; justify-content: center;
+    transition: border-color .12s, background .12s;
+  }
+  .check .box::after {
+    content: ""; width: 9px; height: 9px; border-radius: 2px;
+    background: var(--accent); transform: scale(0); transition: transform .12s;
+  }
+  .check input:checked + .box { border-color: var(--accent); }
+  .check input:checked + .box::after { transform: scale(1); }
+  .check input:focus-visible + .box { box-shadow: 0 0 0 3px rgba(137,180,250,0.18); }
+
+  /* custom file picker */
+  .filepick { display: flex; align-items: center; gap: 11px; cursor: pointer; }
+  .filepick input[type=file] { display: none; }
+  .filebtn {
+    background: var(--surface2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 9px;
+    padding: 8px 14px; font-size: 13px; white-space: nowrap;
+    transition: border-color .12s, background .12s;
+  }
+  .filepick:hover .filebtn { border-color: var(--accent); }
+  .filename {
+    font-size: 12.5px; color: var(--muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .filename.has { color: var(--text); }
+
+  /* job-id select row + refresh */
+  .selrow { display: flex; gap: 8px; }
+  .selrow select { flex: 1; }
+  .mini {
+    border: 1px solid var(--border); background: var(--surface2);
+    color: var(--muted); border-radius: 9px; padding: 0 13px;
+    font-size: 15px; cursor: pointer; line-height: 1;
+    transition: border-color .12s, color .12s;
+  }
+  .mini:hover { border-color: var(--accent); color: var(--text); }
+
+  .output {
+    border-top: 1px solid var(--border);
+    padding: 14px 18px;
+    max-height: 34vh;
+    overflow: auto;
+    background: rgba(0,0,0,0.18);
+  }
+  .output:empty { display: none; }
+  pre {
+    margin: 8px 0 0;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text);
+  }
+  .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .muted { color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12.5px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; }
+  td.trunc { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .pill { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
+  .pill.ok { background: rgba(166,227,161,0.16); color: var(--green); }
+  .pill.err { background: rgba(243,139,168,0.16); color: var(--red); }
+  .badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--surface2); color: var(--text); }
+  .badge.active { background: rgba(137,180,250,0.18); color: var(--accent); }
+  .badge.done { background: rgba(166,227,161,0.18); color: var(--green); }
+  .badge.bad { background: rgba(243,139,168,0.18); color: var(--red); }
+
+  .footer {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+    background: var(--bg1);
+  }
+  .footer .tok { flex: 1; display: flex; flex-direction: column; gap: 3px; }
+  .footer .toklabel { font-size: 11px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+  .saved { color: var(--green); opacity: 0; transition: opacity .2s; }
+  .saved.show { opacity: 1; }
+  .run {
+    background: var(--accent);
+    color: #11111b;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    padding: 9px 22px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    align-self: flex-end;
+    transition: filter .12s, opacity .12s;
+  }
+  .run:hover { filter: brightness(1.07); }
+  .run:disabled { opacity: 0.55; cursor: default; }
+
+  @media (max-width: 560px) {
+    .grid { flex-direction: column; }
+    .commands { width: auto; flex-direction: row; flex-wrap: wrap; border-right: none; border-bottom: 1px solid var(--border); }
+  }
+</style>
+</head>
+<body>
+  <div class="window">
+    <div class="titlebar">
+      <div class="title"><b>pandora</b> &nbsp;·&nbsp; job console</div>
+    </div>
+
+    <div class="grid">
+      <div class="commands" id="commands"></div>
+      <div class="options" id="options"></div>
+    </div>
+
+    <div class="output" id="output"></div>
+
+    <div class="footer">
+      <div class="tok">
+        <div class="toklabel">API token <span class="saved" id="saved">saved ✓</span></div>
+        <input type="password" id="token" placeholder="Bearer token" autocomplete="off" spellcheck="false">
+      </div>
+      <button class="run" id="run">Run</button>
+    </div>
+  </div>
+
+<script>
+(function () {
+  "use strict";
+
+  var API = "";              // same origin; nginx proxies /api/v1
+  var TERMINAL = ["Uploaded", "Failed", "Declined", "Cancelled"];
+
+  var commandsEl = document.getElementById("commands");
+  var optionsEl  = document.getElementById("options");
+  var outputEl   = document.getElementById("output");
+  var tokenEl    = document.getElementById("token");
+  var savedEl    = document.getElementById("saved");
+  var runEl      = document.getElementById("run");
+
+  var pollTimer = null;
+  var active = "encode";
+
+  // ---- token persistence (lives in footer, never cleared on command switch) ----
+  tokenEl.value = localStorage.getItem("pandora_token") || "";
+  var savedT;
+  tokenEl.addEventListener("input", function () {
+    localStorage.setItem("pandora_token", tokenEl.value);
+    savedEl.classList.add("show");
+    clearTimeout(savedT);
+    savedT = setTimeout(function () { savedEl.classList.remove("show"); }, 900);
+  });
+
+  // ---- command specs ----
+  var COMMANDS = {
+    encode: {
+      label: "Encode",
+      fields: [
+        { name: "torrent",  label: "Torrent / Magnet / GDrive", type: "text", required: true, placeholder: "magnet:?... or https://..." },
+        { name: "subtitle", label: "Subtitle (.ass)", type: "file", required: true, accept: ".ass" },
+        { name: "preset",   label: "Preset", type: "select", options: ["standard", "gpu", "pseudolossless", "dummy"] }
+      ],
+      run: function (v) {
+        return api("POST", "/api/v1/jobs/encode", { torrent: v.torrent, subtitle_b64: v.subtitle, preset: v.preset });
+      },
+      render: renderResult
+    },
+    backup: {
+      label: "Backup",
+      fields: [
+        { name: "torrent", label: "Torrent / Magnet / GDrive", type: "text", required: true, placeholder: "magnet:?... or https://..." },
+        { name: "all",     label: "Back up every file in the torrent", type: "checkbox" }
+      ],
+      run: function (v) {
+        return api("POST", "/api/v1/jobs/backup", { torrent: v.torrent, all: !!v.all });
+      },
+      render: renderResult
+    },
+    jobs: {
+      label: "Jobs",
+      fields: [],
+      note: "List all active (non-archived) jobs.",
+      run: function () { return api("GET", "/api/v1/jobs"); },
+      render: renderJobs
+    },
+    getjob: {
+      label: "Get Job",
+      fields: [
+        { name: "job_id",  label: "Job", type: "jobselect", required: true },
+        { name: "refresh", label: "Auto-refresh every 2s until the job finishes", type: "checkbox" }
+      ],
+      run: function (v) { return api("GET", "/api/v1/jobs/" + encodeURIComponent(v.job_id)); },
+      render: renderResult
+    },
+    cancel: {
+      label: "Cancel",
+      fields: [
+        { name: "job_id", label: "Job", type: "jobselect", required: true }
+      ],
+      run: function (v) { return api("POST", "/api/v1/jobs/" + encodeURIComponent(v.job_id) + "/cancel"); },
+      render: renderResult
+    }
+  };
+  var ORDER = ["encode", "backup", "jobs", "getjob", "cancel"];
+
+  // ---- render command list ----
+  ORDER.forEach(function (key) {
+    var b = document.createElement("button");
+    b.className = "cmd" + (key === active ? " active" : "");
+    b.textContent = COMMANDS[key].label;
+    b.addEventListener("click", function () { select(key); });
+    commandsEl.appendChild(b);
+  });
+
+  function select(key) {
+    active = key;
+    stopPoll();
+    Array.prototype.forEach.call(commandsEl.children, function (c, i) {
+      c.classList.toggle("active", ORDER[i] === key);
+    });
+    renderOptions(key);
+  }
+
+  function renderOptions(key) {
+    var cmd = COMMANDS[key];
+    var html = '<div class="opt-title">' + esc(cmd.label) + "</div>";
+    if (cmd.note) html += '<p class="hint" style="margin-top:-6px">' + esc(cmd.note) + "</p>";
+    (cmd.fields || []).forEach(function (f) {
+      var id = "f_" + f.name;
+      if (f.type === "checkbox") {
+        html += '<div class="field"><label class="check"><input type="checkbox" id="' + id +
+                '"><span class="box"></span><span>' + esc(f.label) + "</span></label></div>";
+        return;
+      }
+      var optTag = f.optional ? ' <span class="opt">(optional)</span>' : "";
+      html += '<div class="field"><label for="' + id + '">' + esc(f.label) + optTag + "</label>";
+      if (f.type === "select") {
+        html += '<select id="' + id + '">' + f.options.map(function (o) {
+          return '<option value="' + esc(o) + '">' + esc(o) + "</option>";
+        }).join("") + "</select>";
+      } else if (f.type === "jobselect") {
+        html += '<div class="selrow"><select id="' + id + '"><option value="">Loading…</option></select>' +
+                '<button type="button" class="mini" id="r_' + f.name + '" title="Refresh">↻</button></div>';
+      } else if (f.type === "file") {
+        html += '<label class="filepick"><input type="file" id="' + id + '" accept="' + esc(f.accept || "") + '">' +
+                '<span class="filebtn">Choose file</span>' +
+                '<span class="filename" id="' + id + '_name">No file selected</span></label>';
+      } else {
+        html += '<input type="' + (f.type === "number" ? "number" : "text") + '" id="' + id +
+                '" placeholder="' + esc(f.placeholder || "") + '">';
+      }
+      html += "</div>";
+    });
+    optionsEl.innerHTML = html;
+
+    // wire up controls that need behaviour after they're in the DOM
+    (cmd.fields || []).forEach(function (f) {
+      if (f.type === "file") {
+        var fin = document.getElementById("f_" + f.name);
+        var nm = document.getElementById("f_" + f.name + "_name");
+        fin.addEventListener("change", function () {
+          var file = fin.files[0];
+          nm.textContent = file ? file.name : "No file selected";
+          nm.classList.toggle("has", !!file);
+        });
+      } else if (f.type === "jobselect") {
+        var sel = document.getElementById("f_" + f.name);
+        loadJobOptions(sel);
+        var btn = document.getElementById("r_" + f.name);
+        if (btn) btn.addEventListener("click", function () { loadJobOptions(sel); });
+      }
+    });
+  }
+
+  function loadJobOptions(sel) {
+    sel.innerHTML = '<option value="">Loading…</option>';
+    api("GET", "/api/v1/jobs").then(function (res) {
+      if (res.status === 401) { sel.innerHTML = '<option value="">Enter a valid token below</option>'; return; }
+      if (!res.ok || !Array.isArray(res.data)) { sel.innerHTML = '<option value="">Could not load jobs</option>'; return; }
+      if (!res.data.length) { sel.innerHTML = '<option value="">No active jobs</option>'; return; }
+      sel.innerHTML = res.data.map(function (j) {
+        return '<option value="' + esc(j.job_id) + '">' + esc(j.job_id) + " — " + esc(j.job_type) + " · " + esc(j.stage) + "</option>";
+      }).join("");
+    }).catch(function () { sel.innerHTML = '<option value="">Could not load jobs</option>'; });
+  }
+
+  // ---- run ----
+  runEl.addEventListener("click", doRun);
+
+  function doRun() {
+    stopPoll();
+    var cmd = COMMANDS[active];
+    gather(cmd).then(function (vals) {
+      busy(true);
+      return cmd.run(vals).then(function (res) {
+        cmd.render(res);
+        if (active === "getjob" && document.getElementById("f_refresh") &&
+            document.getElementById("f_refresh").checked && !isTerminal(res)) {
+          startPoll(cmd, vals);
+        }
+      });
+    }).catch(function (e) {
+      showError(e && e.message ? e.message : String(e));
+    }).then(function () { busy(false); });
+  }
+
+  function startPoll(cmd, vals) {
+    pollTimer = setInterval(function () {
+      cmd.run(vals).then(function (res) {
+        cmd.render(res);
+        if (isTerminal(res)) stopPoll();
+      }).catch(function () { stopPoll(); });
+    }, 2000);
+  }
+  function stopPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+
+  function isTerminal(res) {
+    return res && res.data && typeof res.data === "object" && TERMINAL.indexOf(res.data.stage) !== -1;
+  }
+
+  // ---- collect field values (reads files to base64) ----
+  function gather(cmd) {
+    var fields = cmd.fields || [];
+    var jobs = fields.map(function (f) {
+      var el = document.getElementById("f_" + f.name);
+      if (!el) return Promise.resolve([f.name, undefined]);
+      if (f.type === "checkbox") return Promise.resolve([f.name, el.checked]);
+      if (f.type === "file") {
+        var file = el.files[0];
+        if (!file) {
+          if (f.required) return Promise.reject(new Error(f.label + " is required"));
+          return Promise.resolve([f.name, ""]);
+        }
+        return fileToB64(file).then(function (b64) { return [f.name, b64]; });
+      }
+      var val = el.value.trim();
+      if (f.required && !val) return Promise.reject(new Error(f.label + " is required"));
+      return Promise.resolve([f.name, val]);
+    });
+    return Promise.all(jobs).then(function (pairs) {
+      var out = {};
+      pairs.forEach(function (p) { out[p[0]] = p[1]; });
+      return out;
+    });
+  }
+
+  function fileToB64(file) {
+    return new Promise(function (res, rej) {
+      var r = new FileReader();
+      r.onload = function () { res(String(r.result).split(",")[1] || ""); };
+      r.onerror = function () { rej(new Error("could not read file")); };
+      r.readAsDataURL(file);
+    });
+  }
+
+  // ---- API call ----
+  function api(method, path, body) {
+    var token = tokenEl.value.trim();
+    var opts = { method: method, headers: {} };
+    if (token) opts.headers["Authorization"] = "Bearer " + token;
+    if (body !== undefined) {
+      opts.headers["Content-Type"] = "application/json";
+      opts.body = JSON.stringify(body);
+    }
+    return fetch(API + path, opts).then(function (resp) {
+      return resp.text().then(function (text) {
+        var data;
+        try { data = JSON.parse(text); } catch (e) { data = text; }
+        return { status: resp.status, ok: resp.ok, data: data };
+      });
+    });
+  }
+
+  // ---- renderers ----
+  function pill(res) {
+    return '<span class="pill ' + (res.ok ? "ok" : "err") + '">' + res.status + "</span>";
+  }
+  function renderResult(res) {
+    var note = "";
+    if (res.status === 401) note = '<p class="muted">Invalid or missing token — check the field below.</p>';
+    if (res.status === 202 && (!res.data || res.data === "")) {
+      outputEl.innerHTML = pill(res) + '<p class="muted">Accepted.</p>';
+      return;
+    }
+    var txt = typeof res.data === "string" ? res.data : JSON.stringify(res.data, null, 2);
+    outputEl.innerHTML = pill(res) + note + "<pre>" + esc(txt) + "</pre>";
+  }
+  function renderJobs(res) {
+    if (!res.ok || !Array.isArray(res.data)) { renderResult(res); return; }
+    if (!res.data.length) { outputEl.innerHTML = pill(res) + '<p class="muted">No active jobs.</p>'; return; }
+    var html = pill(res) + "<table><thead><tr><th>Job ID</th><th>Type</th><th>Stage</th><th>Link</th></tr></thead><tbody>";
+    res.data.forEach(function (j) {
+      html += "<tr><td class='mono'>" + esc(j.job_id) + "</td><td>" + esc(j.job_type) +
+              "</td><td>" + stageBadge(j.stage) + "</td><td class='mono trunc' title='" + esc(j.link) + "'>" + esc(j.link) + "</td></tr>";
+    });
+    html += "</tbody></table>";
+    outputEl.innerHTML = html;
+  }
+  function stageBadge(stage) {
+    var cls = "active";
+    if (stage === "Uploaded") cls = "done";
+    else if (stage === "Failed" || stage === "Declined" || stage === "Cancelled") cls = "bad";
+    else if (stage === "Queued") cls = "";
+    return '<span class="badge ' + cls + '">' + esc(stage) + "</span>";
+  }
+  function showError(msg) {
+    outputEl.innerHTML = '<span class="pill err">err</span><pre>' + esc(msg) + "</pre>";
+  }
+
+  function busy(on) { runEl.disabled = on; runEl.textContent = on ? "Running…" : "Run"; }
+  function esc(s) {
+    return String(s === undefined || s === null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+
+  // ---- boot ----
+  renderOptions(active);
+})();
+</script>
+</body>
+</html>

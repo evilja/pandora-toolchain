@@ -1,18 +1,18 @@
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::{Receiver};
 use tokio::time::sleep;
 use tokio::time::Duration;
 use crate::libpnp2p::nyaaise::TorrentType;
 use crate::pnworker::heartbeat::core::{TypedShrine, Worker};
-use crate::pnworker::messages::{MessagePayload, PROBE_TIMEOUT, QUEUE_TOO_LONG, QUEUED, create_job_embed};
+use crate::pnworker::messages::{MessagePayload, PROBE_TIMEOUT, QUEUE_TOO_LONG, QUEUED};
 use crate::libpndb::core::JobDb;
-use crate::pnworker::presence::{change_presence_job, presence_from_queue, Presence};
+use crate::pnworker::presence::{presence_from_queue, Presence};
+use crate::pnworker::frontend::Frontend;
 use crate::pnworker::pull::git_pull;
 use tokio::fs::{File, create_dir_all, remove_dir_all, rename, write};
 use std::path::PathBuf;
 use std::env;
-use serenity::all::{ActivityData, Context, EditMessage, Message, OnlineStatus};
+use serenity::all::{Context, Message};
 use crate::pnworker::workers::downloadworker::*;
 use crate::pnworker::workers::encodeworker::*;
 use crate::pnworker::workers::uploadworker::*;
@@ -35,6 +35,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
     let db = JobDb::new().await.unwrap();
     db.init_schema().await.unwrap();
     db.migrate().await.unwrap();
+    db.fail_stale_active().await.unwrap();
 
     let mut queue: Vec<Job> = vec![];
     let mut shrine: TypedShrine<WorkerMsg> = TypedShrine::new();
@@ -53,12 +54,12 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                 JobClass::Job(mut job) => {
                     if queue.len() > 4 {
                         job.ready = Stage::Declined;
-                        job.context.1.edit(&job.context.0, EditMessage::new().content("").embed(create_job_embed(&job, &MessagePayload::Static(QUEUE_TOO_LONG)))).await.unwrap();
+                        render(&mut job, MessagePayload::Static(QUEUE_TOO_LONG)).await;
                         continue;
                     }
                     match job.job_type {
                         JobType::Encode => {
-                            job.context.1.edit(&job.context.0, EditMessage::new().content("").embed(create_job_embed(&job, &MessagePayload::Static(QUEUED)))).await.unwrap();
+                            render(&mut job, MessagePayload::Static(QUEUED)).await;
                             for i in STRUCT {
                                 create_dir_all(job.directory.join(i)).await.unwrap();
                             }
@@ -67,24 +68,24 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                                 continue;
                             }
                             job.ready = Stage::Downloading;
-                            change_presence_job(&job.context.0, Presence::Downloading { idx: queue.len(), total: queue.len() + 1 }).await;
+                            job.frontend.set_presence(Presence::Downloading { idx: queue.len(), total: queue.len() + 1 }).await;
                         }
                         JobType::Probe => {
-                            job.context.1.edit(&job.context.0, EditMessage::new().content("").embed(create_job_embed(&job, &MessagePayload::Static(QUEUED)))).await.unwrap();
+                            render(&mut job, MessagePayload::Static(QUEUED)).await;
                             for i in STRUCT { create_dir_all(job.directory.join(i)).await.unwrap(); }
                             // no subtitle to write
                             if !dispatch_or_kill(&mut shrine, &Worker::Probe, WorkerMsg::Probe((job.directory.clone(), job.torrent.clone(), job.job_id)), &mut job, &db, true).await {
                                 continue;
                             }
                             job.ready = Stage::Probing;
-                            change_presence_job(&job.context.0, Presence::Probing { idx: queue.len(), total: queue.len() + 1 }).await;
+                            job.frontend.set_presence(Presence::Probing { idx: queue.len(), total: queue.len() + 1 }).await;
                         }
                         JobType::Pancode => {
                             let probe_dir = env::current_dir().unwrap()
                                 .join("DB").join("work")
                                 .join(job.probe_job_id.unwrap().to_string());
 
-                            job.context.1.edit(&job.context.0, EditMessage::new().content("").embed(create_job_embed(&job, &MessagePayload::Static(QUEUED)))).await.unwrap();
+                            render(&mut job, MessagePayload::Static(QUEUED)).await;
                             for i in STRUCT { create_dir_all(job.directory.join(i)).await.unwrap(); }
                             write(job.directory.join("contents").join("subtitle.ass"), &job.attachment).await.unwrap();
 
@@ -109,7 +110,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                                 continue;
                             }
                             job.ready = Stage::Downloading;
-                            change_presence_job(&job.context.0, Presence::Downloading { idx: queue.len(), total: queue.len() + 1 }).await;
+                            job.frontend.set_presence(Presence::Downloading { idx: queue.len(), total: queue.len() + 1 }).await;
                         }
                         JobType::Backup => {
                             let probe_dir = job.probe_job_id.map(|id| {
@@ -118,7 +119,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                                     .join(id.to_string())
                             });
 
-                            job.context.1.edit(&job.context.0, EditMessage::new().content("").embed(create_job_embed(&job, &MessagePayload::Static(QUEUED)))).await.unwrap();
+                            render(&mut job, MessagePayload::Static(QUEUED)).await;
                             for i in STRUCT {
                                 create_dir_all(job.directory.join(i)).await.unwrap();
                             }
@@ -133,10 +134,10 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                                 continue;
                             }
                             job.ready = Stage::Downloading;
-                            change_presence_job(&job.context.0, Presence::Downloading { idx: queue.len(), total: queue.len() + 1 }).await;
+                            job.frontend.set_presence(Presence::Downloading { idx: queue.len(), total: queue.len() + 1 }).await;
                         }
                         JobType::BackupAll => {
-                            job.context.1.edit(&job.context.0, EditMessage::new().content("").embed(create_job_embed(&job, &MessagePayload::Static(QUEUED)))).await.unwrap();
+                            render(&mut job, MessagePayload::Static(QUEUED)).await;
                             for i in STRUCT {
                                 create_dir_all(job.directory.join(i)).await.unwrap();
                             }
@@ -144,7 +145,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                                 continue;
                             }
                             job.ready = Stage::Downloading;
-                            change_presence_job(&job.context.0, Presence::Downloading { idx: queue.len(), total: queue.len() + 1 }).await;
+                            job.frontend.set_presence(Presence::Downloading { idx: queue.len(), total: queue.len() + 1 }).await;
                         }
                         _ => {}
                     }
@@ -161,40 +162,38 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                             }
                         }
                         JobType::Hearts => {
-                            if let Some(mut ctx) = halfjob.context {
-                                let statuses = shrine.hearts();
-                                let mut embed_text = String::new();
-                                for status in statuses {
-                                    let beat = if status.alive {
-                                        format!("✅ Last beat {}s ago", status.last_beat_secs)
-                                    } else {
-                                        format!("❌ Dead")
-                                    };
-                                    embed_text.push_str(&format!(
-                                        "**{:?}** — {} | Reboots: {}\n",
-                                        status.worker, beat, status.reboot_count
-                                    ));
-                                }
-                                ctx.1.edit(&ctx.0, EditMessage::new().content(embed_text)).await.unwrap();
+                            let mut frontend = halfjob.frontend;
+                            let statuses = shrine.hearts();
+                            let mut embed_text = String::new();
+                            for status in statuses {
+                                let beat = if status.alive {
+                                    format!("✅ Last beat {}s ago", status.last_beat_secs)
+                                } else {
+                                    format!("❌ Dead")
+                                };
+                                embed_text.push_str(&format!(
+                                    "**{:?}** — {} | Reboots: {}\n",
+                                    status.worker, beat, status.reboot_count
+                                ));
                             }
+                            frontend.set_text(&embed_text).await;
                         }
                         JobType::GitSync => {
-                            if let Some(mut ctx) = halfjob.context {
-                                ctx.0.set_presence(Some(ActivityData::custom("Recompiling Pandora.")), OnlineStatus::Idle);
-                                shrine.kill().await;
-                                let repo_path = std::env::current_dir().unwrap().to_str().unwrap().to_owned();
-                                println!("{}", repo_path);
-                                match git_pull(&repo_path) {
-                                    Ok(_) => ctx.1.edit(&ctx.0, EditMessage::new().content("Kaynak kodlar git ile güncellendi.\nBot yeniden başlatılıyor.")).await.unwrap(),
-                                    Err(e) => {
-                                        println!("{}", e);
-                                        ctx.1.edit(&ctx.0, EditMessage::new().content("Git güncellemesi başarısız oldu.\nBot yine de yeniden başlatılıyor.")).await.unwrap()
-                                    },
-                                }
-                                let _ = remove_dir_all(PathBuf::from("DB").join("work")).await;
-                                tokio::time::sleep(Duration::from_secs(1)).await;
-                                std::process::exit(0);
+                            let mut frontend = halfjob.frontend;
+                            frontend.notify_recompiling();
+                            shrine.kill().await;
+                            let repo_path = std::env::current_dir().unwrap().to_str().unwrap().to_owned();
+                            println!("{}", repo_path);
+                            match git_pull(&repo_path) {
+                                Ok(_) => frontend.set_text("Kaynak kodlar git ile güncellendi.\nBot yeniden başlatılıyor.").await,
+                                Err(e) => {
+                                    println!("{}", e);
+                                    frontend.set_text("Git güncellemesi başarısız oldu.\nBot yine de yeniden başlatılıyor.").await
+                                },
                             }
+                            let _ = remove_dir_all(PathBuf::from("DB").join("work")).await;
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            std::process::exit(0);
                         }
                         _ => {}
                     }
@@ -210,34 +209,31 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
         for id in timed_out {
             if let Some(pos) = queue.iter().position(|j| j.job_id == id) {
                 let directory = queue[pos].directory.clone();
-                let context_0 = queue[pos].context.0.clone();
-                let mut context_1 = queue[pos].context.1.clone();
+                let mut frontend = queue[pos].frontend.clone();
 
-                context_1.edit(&*context_0, EditMessage::new().content("").embed(
-                    create_job_embed(&queue[pos], &MessagePayload::Static(PROBE_TIMEOUT))
-                )).await.unwrap();
+                frontend.update(&queue[pos], &MessagePayload::Static(PROBE_TIMEOUT)).await;
 
                 cleanup_job(&directory, &PathBuf::from("DB").join("saved_data").join(id.to_string())).await;
                 db.archive_job(id).await.unwrap();
                 queue.remove(pos);
-                change_presence_job(&context_0, presence_from_queue(&queue)).await;
+                frontend.set_presence(presence_from_queue(&queue)).await;
             }
         }
         if let Some((_, commdata)) = shrine.receive(500).await {
-            let mut finished_ctx: Option<Arc<Context>> = None;
+            let mut finished_fe: Option<Frontend> = None;
             if let Some(i) = queue.iter_mut().find(|j| j.job_id == commdata.0) {
                 if let Some(a) = commdata.2 {
                     i.ready = a;
                     db.update_stage(i.job_id, i.ready).await.unwrap();
                 }
-                let _ = i.context.1.edit(&*i.context.0, EditMessage::new().content("").embed(create_job_embed(&i, &commdata.1))).await;
+                render(i, commdata.1).await;
 
                 let finished = matches!(i.ready, Stage::Uploaded | Stage::Failed | Stage::Cancelled);
                 let probe_job_id = i.probe_job_id;
                 let job_id = i.job_id;
                 let directory = i.directory.clone();
                 if finished {
-                    finished_ctx = Some(i.context.0.clone());
+                    finished_fe = Some(i.frontend.clone());
                 }
 
                 if finished {
@@ -256,8 +252,8 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                     queue.retain(|j| j.job_id != job_id);
                 }
             }
-            if let Some(ctx) = finished_ctx {
-                change_presence_job(&ctx, presence_from_queue(&queue)).await;
+            if let Some(fe) = finished_fe {
+                fe.set_presence(presence_from_queue(&queue)).await;
             }
         }
         let qlen = queue.len();
@@ -286,7 +282,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                     }
                     job.ready = Stage::Uploading;
                     db.update_stage(job.job_id, Stage::Uploading).await.unwrap();
-                    change_presence_job(&job.context.0, Presence::Uploading { idx, total: qlen }).await;
+                    job.frontend.set_presence(Presence::Uploading { idx, total: qlen }).await;
                 } else if job.job_type == JobType::BackupAll {
                     if !dispatch_or_kill(&mut shrine, &Worker::Upload, WorkerMsg::UploadAll((job.directory.clone(), job.job_id, job.server_id)), job, &db, false).await {
                         dead.push(job.job_id);
@@ -294,7 +290,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                     }
                     job.ready = Stage::Uploading;
                     db.update_stage(job.job_id, Stage::Uploading).await.unwrap();
-                    change_presence_job(&job.context.0, Presence::Uploading { idx, total: qlen }).await;
+                    job.frontend.set_presence(Presence::Uploading { idx, total: qlen }).await;
                 } else {
                     if !dispatch_or_kill(&mut shrine, &Worker::Encode, WorkerMsg::Encode((job.directory.clone(), job.preset.clone(), job.job_id, job.server_id)), job, &db, false).await {
                         dead.push(job.job_id);
@@ -302,7 +298,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                     }
                     job.ready = Stage::Encoding;
                     db.update_stage(job.job_id, Stage::Encoding).await.unwrap();
-                    change_presence_job(&job.context.0, Presence::Encoding { idx, total: qlen }).await;
+                    job.frontend.set_presence(Presence::Encoding { idx, total: qlen }).await;
                 }
             } else if job.ready == Stage::Encoded {
                 if !dispatch_or_kill(&mut shrine, &Worker::Upload, WorkerMsg::Upload((job.directory.clone(), format!("{}.mp4", job.directory.file_name().unwrap_or_default().display()),
@@ -317,11 +313,17 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                 }
                 job.ready = Stage::Uploading;
                 db.update_stage(job.job_id, Stage::Uploading).await.unwrap();
-                change_presence_job(&job.context.0, Presence::Uploading { idx, total: qlen }).await;
+                job.frontend.set_presence(Presence::Uploading { idx, total: qlen }).await;
             }
         }
         queue.retain(|j| !dead.contains(&j.job_id));
     }
+}
+
+async fn render(job: &mut Job, payload: MessagePayload) {
+    let mut fe = std::mem::replace(&mut job.frontend, Frontend::None);
+    fe.update(job, &payload).await;
+    job.frontend = fe;
 }
 
 async fn cleanup_job(source: &PathBuf, dest: &PathBuf) {
@@ -342,7 +344,7 @@ async fn dispatch_or_kill(
 ) -> bool {
     if let Err(e) = shrine.send(worker, msg).await {
         eprintln!("[Pandora] job {} dispatch failed: {}", job.job_id, e);
-        let _ = job.context.1.react(&job.context.0, '☠').await;
+        job.frontend.mark_failed().await;
         if needs_insert {
             let _ = db.insert_job(job).await;
         }
@@ -406,7 +408,7 @@ pub struct HalfJob {
     pub requested_at: Duration,
     pub job_id: u64,
     pub job_type: JobType,
-    pub context: Option<(Arc<Context>, Message)>,
+    pub frontend: Frontend,
 }
 
 impl HalfJob {
@@ -417,7 +419,7 @@ impl HalfJob {
             job_id,
             requested_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_secs(0)),
             job_type: JobType::Cancel,
-            context: None,
+            frontend: Frontend::None,
         }
     }
     pub fn new_hearts(author: u64, channel_id: u64, job_id: u64, context: Context, msg: Message) -> Self {
@@ -427,7 +429,7 @@ impl HalfJob {
             job_id,
             requested_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_secs(0)),
             job_type: JobType::Hearts,
-            context: Some((Arc::new(context), msg)),
+            frontend: Frontend::discord(context, msg),
         }
     }
     pub fn new_gitsync(author: u64, channel_id: u64, job_id: u64, context: Context, msg: Message) -> Self {
@@ -437,7 +439,7 @@ impl HalfJob {
             job_id,
             requested_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_secs(0)),
             job_type: JobType::GitSync,
-            context: Some((Arc::new(context), msg)),
+            frontend: Frontend::discord(context, msg),
         }
     }
 }
@@ -453,7 +455,7 @@ pub struct Job {
     pub preset: Preset,
     pub torrent: TorrentType,
     pub attachment: Vec<u8>,
-    pub context: (Arc<Context>, Message),
+    pub frontend: Frontend,
     pub directory: PathBuf,
     pub ready: Stage,
     pub probe_files: Option<Vec<(u64, String, u64)>>,  // (index, name, size)
@@ -477,7 +479,29 @@ impl Job {
         let requested_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_secs(0));
         Self {
             author, channel_id, response_id, job_type, job_id, preset, torrent, attachment,
-            context: (Arc::new(context), msg),
+            frontend: Frontend::discord(context, msg),
+            directory: env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+                .join("DB")
+                .join("work")
+                .join(format!("{}", job_id)),
+            requested_at,
+            ready: Stage::Queued,
+            probe_files: None,
+            probe_torrent_path: None,
+            probe_job_id: None,
+            probe_file_index: None,
+            lang,
+            server_id,
+        }
+    }
+
+    pub fn new_api(author: u64, channel_id: u64, job_type: JobType, preset: Preset,
+            torrent: TorrentType, attachment: Vec<u8>, lang: String, server_id: Option<u64>) -> Self {
+        let requested_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_secs(0));
+        let job_id = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
+        Self {
+            author, channel_id, response_id: 0, job_type, job_id, preset, torrent, attachment,
+            frontend: Frontend::Web,
             directory: env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
                 .join("DB")
                 .join("work")

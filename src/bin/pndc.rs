@@ -18,7 +18,7 @@ use pandora_toolchain::libpnmal::{fetch_anime, AnimeMeta, AnimeKind};
 use pandora_toolchain::libpnforgejo::{Forgejo, base64_encode, base64_encode_bytes};
 use pandora_toolchain::libpnanisub::{AniSub, DEFAULT_FPS};
 use pandora_toolchain::pnworker::core::pn_worker;
-use pandora_toolchain::libpnenv::standard::{PNASS, ANISUB};
+use pandora_toolchain::libpnenv::standard::{PNASS, ANISUB, API_PORT};
 use pandora_toolchain::libkagami::core::{SubstationAlpha, find_fonts_with_roots};
 use pandora_toolchain::libpnprotocol::core::Protocol;
 use tokio::sync::mpsc::{channel, Sender, Receiver};
@@ -1356,6 +1356,14 @@ async fn main() {
     let env = get_pandora_env();
     let (tx, rx): (Sender<JobClass>, Receiver<JobClass>) = channel(5);
     tokio::spawn(pn_worker(rx));
+    if let Some(port) = env.get(API_PORT).and_then(|s| s.trim().parse::<u16>().ok()).filter(|p| *p != 0) {
+        let api_tx = tx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = pandora_toolchain::libpnapi::serve(api_tx, port).await {
+                eprintln!("[Pandora API] {e}");
+            }
+        });
+    }
     let intros = IntrosConfig::load();
     println!("{:?}", intros);
     pandora_toolchain::pnworker::messages::init_language_files();

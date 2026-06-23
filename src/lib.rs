@@ -11,6 +11,7 @@ pub mod libpnmal;
 pub mod libpnforgejo;
 pub mod libpnanisub;
 pub mod libpnbin;
+pub mod libpnapi;
 
 #[macro_export]
 macro_rules! pn_schema {

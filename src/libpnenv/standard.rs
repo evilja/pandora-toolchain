@@ -22,3 +22,7 @@ pub const VOESX: &str = "voesx";
 pub const ABYSS: &str = "abyss";
 pub const PNASS: &str = "pnass";
 pub const ANISUB: &str = "anisub";
+
+pub const API_PORT: &str = "api_port";
+pub const API_AUTHOR_ID: &str = "api_author_id";
+pub const API_TOKENS_PATH: &str = "DB/config/global/environment/api.pandora";

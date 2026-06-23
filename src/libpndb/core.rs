@@ -16,6 +16,8 @@ impl JobDb {
             .connect(&format!("sqlite:{}?mode=rwc", db_path.display()))
             .await?;
 
+        sqlx::query("PRAGMA journal_mode=WAL;").execute(&pool).await?;
+
         Ok(Self { pool })
     }
 
@@ -170,6 +172,15 @@ impl JobDb {
         Ok(())
     }
 
+    pub async fn fail_stale_active(&self) -> Result<u64, sqlx::Error> {
+        let res = sqlx::query(
+            "UPDATE jobs SET stage = 7 WHERE archived = 0 AND stage NOT IN (6, 7, 8, 9)"
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected())
+    }
+
     pub async fn get_job(&self, job_id: u64) -> Result<Option<JobRow>, sqlx::Error> {
         sqlx::query_as::<_, JobRow>(
             r#"
@@ -230,6 +241,76 @@ impl JobRow {
         self.candidates.as_ref().map(|s| {
             s.split(',').map(|p| p.to_string()).collect()
         })
+    }
+}
+
+#[derive(serde::Serialize, Debug)]
+pub struct JobStatus {
+    pub job_id:     i64,
+    pub author:     i64,
+    pub channel_id: i64,
+    pub job_type:   String,
+    pub preset:     String,
+    pub stage:      String,
+    pub link:       String,
+    pub archived:   bool,
+}
+
+impl JobStatus {
+    pub fn from_row(row: &JobRow) -> Self {
+        Self {
+            job_id:     row.job_id,
+            author:     row.author,
+            channel_id: row.channel_id,
+            job_type:   job_type_label(row.job_type).to_string(),
+            preset:     preset_label(row.preset_type).to_string(),
+            stage:      stage_label(row.stage).to_string(),
+            link:       row.link.clone(),
+            archived:   row.archived != 0,
+        }
+    }
+}
+
+pub fn stage_label(stage: i64) -> &'static str {
+    match stage {
+        0  => "Queued",
+        1  => "Downloading",
+        2  => "Downloaded",
+        3  => "Encoding",
+        4  => "Encoded",
+        5  => "Uploading",
+        6  => "Uploaded",
+        7  => "Failed",
+        8  => "Declined",
+        9  => "Cancelled",
+        20 => "Probing",
+        21 => "Probed",
+        _  => "Unknown",
+    }
+}
+
+pub fn job_type_label(job_type: i64) -> &'static str {
+    match job_type {
+        1 => "Encode",
+        2 => "Cancel",
+        3 => "Hearts",
+        4 => "GitSync",
+        5 => "Probe",
+        6 => "Pancode",
+        7 => "Scrape",
+        8 => "Backup",
+        9 => "BackupAll",
+        _ => "Unknown",
+    }
+}
+
+pub fn preset_label(preset_type: i64) -> &'static str {
+    match preset_type {
+        0 => "PseudoLossless",
+        1 => "Standard",
+        2 => "Gpu",
+        3 => "Dummy",
+        _ => "Unknown",
     }
 }
 
