@@ -2,63 +2,62 @@
 
 A single self-contained page (`index.html`, no build step, no dependencies) that drives the
 pndc HTTP API: submit encode/backup jobs, list/inspect jobs, and cancel them. Auth is the
-same bearer token as the API (`DB/config/global/environment/api.pandora`), entered in the
-footer and stored in the browser's `localStorage`.
+same bearer token as the API (mint one with `/gentoken`, stored in
+`DB/config/global/environment/api.pandora`), entered in the footer and saved in the browser.
 
-## How it talks to the API
+## The bot serves this page itself
 
-The page calls **relative** paths (`/api/v1/...`), so it must be served from the **same
-origin** as the API. The intended setup: one nginx vhost on `api.<domain>.com` that serves
-these static files at `/` and reverse-proxies the API paths to the bot's loopback port.
+`index.html` is **baked into the `pndc` binary** (`include_str!`) and served by the API server.
+When `api_port` is set in `env.pandora`, the bot listens on that port and answers:
 
-```nginx
-server {
-    server_name api.<domain>.com;
-    root /var/www/pandora-ui;        # deploy web/index.html here
-    index index.html;
+- `GET /`            → this console
+- `GET /api/v1/...`  → the JSON API (same origin, so no CORS)
+- `GET /health`      → liveness
 
-    location / { try_files $uri $uri/ /index.html; }
+So there is **nothing else to install or host** — no nginx, no Caddy, no admin rights. Point a
+browser at the bot's port and you get the UI. Editing this file requires rebuilding `pndc`.
 
-    location /api/ {                 # proxies /api/v1/... unchanged
-        proxy_pass http://127.0.0.1:8787;
-        proxy_set_header Host $host;
-        proxy_set_header Authorization $http_authorization;
-    }
-    location = /health { proxy_pass http://127.0.0.1:8787; }
+### Binding
 
-    # TLS: certbot / your existing cert setup
+By default the server binds **all interfaces** (`0.0.0.0`), so the machine's public IP reaches
+it directly, e.g. `http://<server-ip>:<api_port>/`. To restrict it to loopback (e.g. when you
+*do* put a reverse proxy in front), set `api_host` in `env.pandora`:
+
+```
+api_host|pntools|127.0.0.1
+```
+
+### Reachability
+
+Binding to `0.0.0.0` is necessary but not always sufficient: the port must also be allowed
+through any host/cloud firewall (on Hetzner, the Cloud Firewall in the web console; on Windows,
+the Defender Firewall). Ports above 1024 don't need admin to *listen*, but firewall rules might.
+
+## Security note
+
+With `0.0.0.0`, the console and `/health` are public. Every **job** operation (list, get,
+submit, cancel) still requires a valid bearer token, so the exposed surface is the static UI and
+a liveness check. Mint tokens with `/gentoken` (upper-only) and revoke by deleting their line
+from `api.pandora`.
+
+## Optional: TLS via a reverse proxy
+
+If you later want HTTPS on a domain, set `api_host|pntools|127.0.0.1` and front the bot with a
+proxy that terminates TLS and forwards to `127.0.0.1:<api_port>` — e.g. Caddy:
+
+```
+api.<domain>.com {
+    reverse_proxy 127.0.0.1:8787
 }
 ```
 
-Replace `8787` with the bot's `api_port` (from `env.pandora`).
-
-## Deploy
-
-```sh
-cp web/index.html /var/www/pandora-ui/index.html
-```
-
-That's it — no other assets.
-
-## Local testing (same-origin without nginx)
-
-Run `pndc` with `api_port` set and a token in `api.pandora`, then put the UI and API behind a
-tiny proxy so they share an origin. With Caddy:
-
-```
-:8080 {
-  handle /api/* { reverse_proxy 127.0.0.1:8787 }
-  handle /health { reverse_proxy 127.0.0.1:8787 }
-  handle { root * ./web; file_server }
-}
-```
-
-Visit `http://localhost:8080`, paste a token, and run a command.
+Caddy fetches a Let's Encrypt cert automatically (needs DNS + ports 80/443). This is purely
+optional — the bot works standalone without it.
 
 ## Notes
 
-- `job_id` is a numeric **string** (it exceeds JS's safe-integer range); copy it as-is from a
-  submit response into **Get Job** / **Cancel**.
+- `job_id` is a numeric **string** (it exceeds JS's safe-integer range); the Get Job / Cancel
+  dropdowns pull live ids from the API so you don't have to copy them by hand.
 - **Get Job** has an optional "auto-refresh every 2s" toggle that polls until the job reaches a
   terminal stage (Uploaded / Failed / Declined / Cancelled).
 - Encode reads the `.ass` file in the browser and base64-encodes it before sending.

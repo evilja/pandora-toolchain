@@ -17,7 +17,7 @@ use crate::pnworker::core::{HalfJob, Job, JobClass, JobType, Preset};
 use crate::libpndb::core::{JobDb, JobStatus};
 use crate::libpnp2p::nyaaise::nyaaise;
 use crate::libpnenv::core::{get_pandora_env, get_perm};
-use crate::libpnenv::standard::{API_AUTHOR_ID, API_TOKENS_PATH};
+use crate::libpnenv::standard::{API_AUTHOR_ID, API_HOST, API_TOKENS_PATH};
 
 #[derive(Clone)]
 struct AppState {
@@ -27,11 +27,18 @@ struct AppState {
 }
 
 pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let env = get_pandora_env();
     let db = Arc::new(JobDb::new().await?);
-    let api_author = get_pandora_env()
+    let api_author = env
         .get(API_AUTHOR_ID)
         .and_then(|s| s.trim().parse::<u64>().ok())
         .unwrap_or(0);
+    // Default to all interfaces so the public IP can reach it directly (no reverse
+    // proxy required). Set `api_host` to `127.0.0.1` to keep it loopback-only.
+    let host = env
+        .get(API_HOST)
+        .and_then(|s| s.trim().parse::<IpAddr>().ok())
+        .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
     let state = AppState { tx, db, api_author };
 
     let protected = Router::new()
@@ -44,15 +51,22 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .layer(middleware::from_fn(auth));
 
     let app = Router::new()
+        .route("/", get(index))
         .route("/health", get(health))
         .nest("/api/v1", protected)
         .with_state(state);
 
-    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+    let addr = SocketAddr::new(host, port);
     let listener = TcpListener::bind(addr).await?;
-    println!("[Pandora API] listening on http://{}", addr);
+    println!("[Pandora API] serving console + API on http://{}", addr);
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+const INDEX_HTML: &str = include_str!("../../web/index.html");
+
+async fn index() -> axum::response::Html<&'static str> {
+    axum::response::Html(INDEX_HTML)
 }
 
 async fn health() -> &'static str {
