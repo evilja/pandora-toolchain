@@ -55,7 +55,12 @@
     border-bottom: 1px solid var(--border);
     user-select: none;
   }
-  .title { font-size: 13px; font-weight: 600; letter-spacing: 0.3px; color: var(--muted); }
+  .dots { display: flex; gap: 7px; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .dot.r { background: var(--red); }
+  .dot.y { background: var(--yellow); }
+  .dot.g { background: var(--green); }
+  .title { font-size: 13px; font-weight: 600; letter-spacing: 0.3px; color: var(--muted); margin-left: 6px; }
   .title b { color: var(--text); }
 
   .grid {
@@ -236,6 +241,7 @@
 <body>
   <div class="window">
     <div class="titlebar">
+      <div class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></div>
       <div class="title"><b>pandora</b> &nbsp;·&nbsp; job console</div>
     </div>
 

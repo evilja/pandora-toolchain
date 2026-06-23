@@ -74,7 +74,7 @@ fn min_rank_for_command(part: &str) -> u8 {
         "!enc" | "!encode" => 0,
         "job" | "get" | "!ts" => 1,
         "auth" | "remove" | "gitsync" | "hearts" | "configure" | "edit" | "readmebase" | "addapi" | "font" | "!ban" | "!some" => 2,
-        "attach" | "init" | "destruct" | "detach" => 3,
+        "attach" | "init" | "destruct" | "detach" | "gentoken" => 3,
         _ => u8::MAX,
     }
 }
@@ -221,6 +221,13 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Write or update a toolchain environment token.",
             usage: "/addapi key_name:<name> token:<value>",
             details: "Updates the global pntools environment file with the provided token value.",
+        },
+        HelpCommand {
+            name: "gentoken",
+            rank: 3,
+            summary: "Generate a new API bearer token.",
+            usage: "/gentoken [label:<note>]",
+            details: "Mints a random bearer token for the HTTP API and appends it to the token file. The token is shown once, privately. Upper only.",
         },
         HelpCommand {
             name: "font",
@@ -851,6 +858,9 @@ impl EventHandler for Handler {
                 "addapi" => {
                     handle_addapi(&ctx, &command).await;
                 }
+                "gentoken" => {
+                    handle_gentoken(&ctx, &command).await;
+                }
                 "font" => {
                     handle_font(&ctx, &command).await;
                 }
@@ -1255,6 +1265,12 @@ impl EventHandler for Handler {
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "token", "Token value to write")
                         .required(true)
+                ),
+            CreateCommand::new("gentoken")
+                .description("Generate a new API bearer token (upper only)")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "label", "Optional note stored beside the token")
+                        .required(false)
                 ),
             CreateCommand::new("font")
                 .description("Download a font zip and extract it to this server's fontconfig directory")
