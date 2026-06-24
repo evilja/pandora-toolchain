@@ -16,14 +16,14 @@ pub struct P2p {
 }
 
 impl P2p {
-    pub async fn new(uname: &str, pass: &str, cfile: Option<String>) -> Self {
+    pub async fn new(host: &str, uname: &str, pass: &str, cfile: Option<String>) -> Self {
         println!(
-            "[pnp2p] new() called with uname={}, cfile={:?}",
-            uname, cfile
+            "[pnp2p] new() called with host={}, uname={}, cfile={:?}",
+            host, uname, cfile
         );
         let credential = Credential::new(uname, pass);
         Self {
-            api: Qbit::new("http://localhost:8089", credential),
+            api: Qbit::new(host, credential),
             cfile: cfile.map(PathBuf::from),
         }
     }

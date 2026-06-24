@@ -58,6 +58,25 @@ Cloudflare.
 persist across redeploys. The runtime image bundles `ffmpeg` for the encode pipeline. The image
 builds **Linux** containers, so the host must run Docker's Linux engine.
 
+### qBittorrent (torrent/magnet jobs)
+
+Torrent and magnet downloads go through `pnp2p`, which drives a **qBittorrent WebUI**. Google
+Drive jobs use `pncurl --gscrape` and do **not** need qBittorrent, but anything that resolves to a
+torrent does. The container talks to the **host's** qBittorrent (the provider-managed instance),
+not a bundled one:
+
+- `pnp2p` connects to `PNP2P_QBIT_HOST` (default `http://localhost:8089`), with
+  `PNP2P_QBIT_USER` / `PNP2P_QBIT_PASS` (defaults `admin` / `adminadmin`).
+- The compose file sets `PNP2P_QBIT_HOST=http://host.docker.internal:8089` and maps
+  `host.docker.internal` to the host gateway, so the container reaches the host's WebUI. This
+  requires the host's qBittorrent WebUI to listen on the host's bridge/LAN IP (not loopback-only).
+- In qBittorrent **WebUI settings**, either disable *"Enable Host header validation"* or add
+  `host.docker.internal` to the allowed host list — otherwise the cross-host request is rejected
+  with `403`.
+
+If qBittorrent is unreachable, torrent jobs fail at the download stage (Drive jobs are
+unaffected).
+
 If instead you run `cloudflared` directly on the host, publish the port (`-p 8787:8787`) and the
 dashboard service becomes `http://localhost:8787`.
 

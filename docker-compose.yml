@@ -4,6 +4,13 @@ services:
     restart: unless-stopped
     # No published ports: cloudflared reaches it over the internal network only.
     # The bot binds 0.0.0.0:8787 (set api_port|pntools|8787 in env.pandora).
+    environment:
+      # Reach the host's provider-managed qBittorrent WebUI from inside the
+      # container. host.docker.internal resolves to the host via the gateway
+      # mapping below. Override creds with PNP2P_QBIT_USER/PNP2P_QBIT_PASS.
+      - PNP2P_QBIT_HOST=http://host.docker.internal:8089
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./DB:/app/DB
       - .:/repo

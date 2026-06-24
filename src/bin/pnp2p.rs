@@ -61,7 +61,10 @@ async fn main() {
                       None => "PNp2pCLI".to_string(),
                   });
 
-    let p2pcp = P2p::new("admin", "adminadmin", args.cancelfile).await;
+    let qbit_host = std::env::var("PNP2P_QBIT_HOST").unwrap_or_else(|_| "http://localhost:8089".to_string());
+    let qbit_user = std::env::var("PNP2P_QBIT_USER").unwrap_or_else(|_| "admin".to_string());
+    let qbit_pass = std::env::var("PNP2P_QBIT_PASS").unwrap_or_else(|_| "adminadmin".to_string());
+    let p2pcp = P2p::new(&qbit_host, &qbit_user, &qbit_pass, args.cancelfile).await;
 
     if args.probe {
         // probe mode: list mkv files, emit them as protocol output
