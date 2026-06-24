@@ -16,11 +16,11 @@ RUN apt-get update \
 WORKDIR /app
 ENV PANDORA_GITSYNC_REPO=/repo
 ENV PANDORA_GITSYNC_REQUEST=/app/DB/gitsync.request
-COPY --from=build /src/target/release/pndc   /usr/local/bin/pndc
-COPY --from=build /src/target/release/pnmpeg  /usr/local/bin/pnmpeg
-COPY --from=build /src/target/release/pnp2p   /usr/local/bin/pnp2p
-COPY --from=build /src/target/release/pncurl  /usr/local/bin/pncurl
-COPY --from=build /src/target/release/pnass   /usr/local/bin/pnass
+COPY --from=build /out/pndc   /usr/local/bin/pndc
+COPY --from=build /out/pnmpeg  /usr/local/bin/pnmpeg
+COPY --from=build /out/pnp2p   /usr/local/bin/pnp2p
+COPY --from=build /out/pncurl  /usr/local/bin/pncurl
+COPY --from=build /out/pnass   /usr/local/bin/pnass
 # DB/ (database, env.pandora, api.pandora tokens) comes from a mounted volume.
 EXPOSE 8787
 CMD ["pndc"]

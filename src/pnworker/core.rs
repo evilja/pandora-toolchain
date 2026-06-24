@@ -186,6 +186,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                             let repo_path = env::var("PANDORA_GITSYNC_REPO")
                                 .unwrap_or_else(|_| std::env::current_dir().unwrap().to_str().unwrap().to_owned());
                             println!("{}", repo_path);
+                            let mut rebuild_requested = false;
                             match git_pull(&repo_path) {
                                 Ok(_) => {
                                     if let Ok(request_path) = env::var("PANDORA_GITSYNC_REQUEST") {
@@ -193,7 +194,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                                         if let Some(parent) = request_path.parent() {
                                             let _ = create_dir_all(parent).await;
                                         }
-                                        let _ = write(request_path, b"rebuild\n").await;
+                                        rebuild_requested = write(request_path, b"rebuild\n").await.is_ok();
                                     }
                                     frontend.set_text("Kaynak kodlar git ile güncellendi.\nBot yeniden başlatılıyor.").await
                                 },
@@ -203,7 +204,11 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                                 },
                             }
                             let _ = remove_dir_all(PathBuf::from("DB").join("work")).await;
-                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            if rebuild_requested {
+                                tokio::time::sleep(Duration::from_secs(3600)).await;
+                            } else {
+                                tokio::time::sleep(Duration::from_secs(1)).await;
+                            }
                             std::process::exit(0);
                         }
                         _ => {}
