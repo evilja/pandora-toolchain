@@ -303,8 +303,16 @@ impl JobRow {
     }
 }
 
+fn serialize_id_as_str<S>(id: &i64, s: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    s.serialize_str(&id.to_string())
+}
+
 #[derive(serde::Serialize, Debug)]
 pub struct JobStatus {
+    #[serde(serialize_with = "serialize_id_as_str")]
     pub job_id:     i64,
     pub author:     i64,
     pub channel_id: i64,

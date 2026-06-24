@@ -1,7 +1,13 @@
+# syntax=docker/dockerfile:1.7
 FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY . .
-RUN cargo build --release --bins
+RUN --mount=type=cache,id=pandora-cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=pandora-cargo-git,target=/usr/local/cargo/git \
+    --mount=type=cache,id=pandora-target,target=/src/target \
+    cargo build --release --bins \
+    && mkdir -p /out \
+    && cp target/release/pndc target/release/pnmpeg target/release/pnp2p target/release/pncurl target/release/pnass /out/
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
