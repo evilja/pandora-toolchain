@@ -183,10 +183,20 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                             let mut frontend = halfjob.frontend;
                             frontend.notify_recompiling();
                             shrine.kill().await;
-                            let repo_path = std::env::current_dir().unwrap().to_str().unwrap().to_owned();
+                            let repo_path = env::var("PANDORA_GITSYNC_REPO")
+                                .unwrap_or_else(|_| std::env::current_dir().unwrap().to_str().unwrap().to_owned());
                             println!("{}", repo_path);
                             match git_pull(&repo_path) {
-                                Ok(_) => frontend.set_text("Kaynak kodlar git ile güncellendi.\nBot yeniden başlatılıyor.").await,
+                                Ok(_) => {
+                                    if let Ok(request_path) = env::var("PANDORA_GITSYNC_REQUEST") {
+                                        let request_path = PathBuf::from(request_path);
+                                        if let Some(parent) = request_path.parent() {
+                                            let _ = create_dir_all(parent).await;
+                                        }
+                                        let _ = write(request_path, b"rebuild\n").await;
+                                    }
+                                    frontend.set_text("Kaynak kodlar git ile güncellendi.\nBot yeniden başlatılıyor.").await
+                                },
                                 Err(e) => {
                                     println!("{}", e);
                                     frontend.set_text("Git güncellemesi başarısız oldu.\nBot yine de yeniden başlatılıyor.").await

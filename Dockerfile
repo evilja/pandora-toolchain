@@ -8,6 +8,8 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates ffmpeg curl \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
+ENV PANDORA_GITSYNC_REPO=/repo
+ENV PANDORA_GITSYNC_REQUEST=/app/DB/gitsync.request
 COPY --from=build /src/target/release/pndc   /usr/local/bin/pndc
 COPY --from=build /src/target/release/pnmpeg  /usr/local/bin/pnmpeg
 COPY --from=build /src/target/release/pnp2p   /usr/local/bin/pnp2p

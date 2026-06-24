@@ -6,6 +6,7 @@ services:
     # The bot binds 0.0.0.0:8787 (set api_port|pntools|8787 in env.pandora).
     volumes:
       - ./DB:/app/DB
+      - .:/repo
     networks:
       - pandora
 
