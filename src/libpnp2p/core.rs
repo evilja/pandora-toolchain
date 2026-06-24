@@ -327,6 +327,9 @@ impl P2p {
             sleep(Duration::from_secs(5)).await;
         }
 
+        println!("[pnp2p] download_selected: deleting torrent (keep files = false)");
+        self.api.delete_torrents(vec![hash], false).await?;
+        sleep(Duration::from_millis(500)).await;
         println!("[pnp2p] download_selected: download complete, sending DONE");
         println!(
             "{}",
@@ -338,8 +341,6 @@ impl P2p {
             )
             .unwrap()
         );
-        println!("[pnp2p] download_selected: deleting torrent (keep files = false)");
-        self.api.delete_torrents(vec![hash], false).await?;
         println!("[pnp2p] download_selected: success");
         Ok(())
     }
@@ -486,6 +487,9 @@ impl P2p {
             copy_mkv_files_to_save_path(&PathBuf::from(content_path), Path::new(save_path)).await?;
         }
 
+        println!("[pnp2p] download_and_remove: deleting torrent (keep files = false)");
+        self.api.delete_torrents(vec![hash], false).await?;
+        sleep(Duration::from_millis(500)).await;
         println!("[pnp2p] download_and_remove: download complete, sending DONE");
         println!(
             "{}",
@@ -497,8 +501,6 @@ impl P2p {
             )
             .unwrap()
         );
-        println!("[pnp2p] download_and_remove: deleting torrent (keep files = false)");
-        self.api.delete_torrents(vec![hash], false).await?;
         println!("[pnp2p] download_and_remove: success");
         Ok(())
     }
