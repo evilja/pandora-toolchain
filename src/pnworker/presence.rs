@@ -1,5 +1,16 @@
+use std::sync::OnceLock;
 use serenity::all::{ActivityData, Context, OnlineStatus};
 use crate::pnworker::core::{Job, Stage};
+
+static DISCORD_CTX: OnceLock<Context> = OnceLock::new();
+
+pub fn set_global_context(ctx: Context) {
+    let _ = DISCORD_CTX.set(ctx);
+}
+
+pub fn global_context() -> Option<&'static Context> {
+    DISCORD_CTX.get()
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum Presence {

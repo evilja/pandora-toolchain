@@ -540,9 +540,9 @@
     },
     jobs: {
       label: "Jobs",
-      desc: "Everything currently queued or rendering.",
+      desc: "Recent jobs — queued, rendering, finished, and failed.",
       fields: [],
-      run: function () { return api("GET", "/api/v1/jobs"); },
+      run: function () { return api("GET", "/api/v1/jobs?status=recent"); },
       render: renderJobs
     },
     getjob: {

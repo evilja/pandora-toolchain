@@ -117,6 +117,7 @@ struct JobsQuery {
 async fn list_jobs(State(st): State<AppState>, Query(q): Query<JobsQuery>) -> Response {
     let result = match q.status.as_deref() {
         Some("ongoing") => st.db.get_ongoing_jobs().await,
+        Some("recent") => st.db.get_recent_jobs(50).await,
         _ => st.db.get_active_jobs().await,
     };
     match result {

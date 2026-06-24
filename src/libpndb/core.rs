@@ -261,6 +261,20 @@ impl JobDb {
         .await
     }
 
+    pub async fn get_recent_jobs(&self, limit: i64) -> Result<Vec<JobRow>, sqlx::Error> {
+        sqlx::query_as::<_, JobRow>(
+            r#"
+            SELECT job_id, author, channel_id, response_id, requested_at,
+                   job_type, preset_type, candidates, link, directory, stage, archived,
+                   progress, uploaded_links, acix_pending
+            FROM jobs ORDER BY requested_at DESC LIMIT ?
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+    }
+
     pub async fn get_jobs_by_author(&self, author: u64) -> Result<Vec<JobRow>, sqlx::Error> {
         sqlx::query_as::<_, JobRow>(
             r#"

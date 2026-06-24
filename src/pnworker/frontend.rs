@@ -2,7 +2,7 @@ use std::sync::Arc;
 use serenity::all::{ActivityData, Context, EditMessage, Message, OnlineStatus};
 use crate::pnworker::core::Job;
 use crate::pnworker::messages::{MessagePayload, create_job_embed};
-use crate::pnworker::presence::{change_presence_job, Presence};
+use crate::pnworker::presence::{change_presence_job, global_context, Presence};
 
 #[derive(Clone)]
 pub enum Frontend {
@@ -49,7 +49,11 @@ impl Frontend {
     pub async fn set_presence(&self, presence: Presence) {
         match self {
             Frontend::Discord { ctx, .. } => change_presence_job(ctx, presence).await,
-            Frontend::Web => {}
+            Frontend::Web => {
+                if let Some(ctx) = global_context() {
+                    change_presence_job(ctx, presence).await;
+                }
+            }
             Frontend::None => {}
         }
     }
