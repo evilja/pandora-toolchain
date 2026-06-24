@@ -505,7 +505,6 @@ impl P2p {
 }
 
 fn download_finished(t: &Torrent) -> bool {
-    // Still verifying or relocating data — not safe to read the files yet.
     if matches!(
         t.state,
         Some(State::CheckingUP)
@@ -515,8 +514,6 @@ fn download_finished(t: &Torrent) -> bool {
     ) {
         return false;
     }
-    // A post-download state: actively seeding, stalled, forced, queued for
-    // seeding, or stopped after completion (qBit5 stoppedUP -> PausedUP).
     if matches!(
         t.state,
         Some(State::Uploading)
@@ -527,8 +524,6 @@ fn download_finished(t: &Torrent) -> bool {
     ) {
         return true;
     }
-    // Fallback: qBittorrent recorded a completion timestamp, so the download
-    // reached 100% regardless of the current seeding/queue configuration.
     t.completion_on.map_or(false, |c| c > 0)
 }
 
