@@ -303,12 +303,12 @@
   .stat-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
   .stat-id { font-size: 12.5px; color: var(--ink); }
   .stat-type { font-size: 12.5px; color: var(--dim); }
-  .pipe { display: flex; gap: 8px; margin: 4px 0 14px; }
-  .seg { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
-  .seg-fill { height: 6px; border-radius: 999px; background: var(--line); display: block; transition: background .2s; }
+  .pipe { display: flex; gap: 10px; margin: 6px 0 16px; }
+  .seg { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 9px; }
+  .seg-fill { height: 8px; border-radius: 999px; background: var(--line); display: block; transition: background .2s; }
   .seg-name {
-    font-family: var(--mono); font-size: 10px; color: var(--faint);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0.2px;
+    font-family: var(--mono); font-size: 11px; color: var(--faint);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0.4px;
   }
   .seg.done .seg-fill { background: var(--cool); }
   .seg.done .seg-name { color: var(--ink-2); }
@@ -345,6 +345,11 @@
   .link-host { color: var(--k1); min-width: 88px; flex-shrink: 0; }
   .link-row a { color: var(--cool); text-decoration: none; }
   .link-row a:hover { text-decoration: underline; }
+
+  .up-hosts { margin-top: 9px; display: flex; flex-direction: column; gap: 4px; }
+  .up-host { font-size: 12px; color: var(--ink-2); word-break: break-all; }
+  .up-host a { color: var(--cool); text-decoration: none; }
+  .up-host a:hover { text-decoration: underline; }
 
   .footer {
     display: flex;
@@ -426,7 +431,10 @@
 
   var API = "";              // same origin; cloudflared/nginx proxies /api/v1
   var TERMINAL = ["Uploaded", "Failed", "Declined", "Cancelled"];
-  var MAIN = ["Queued", "Downloading", "Downloaded", "Encoding", "Encoded", "Uploading", "Uploaded"];
+  var PHASES = ["Queue", "Download", "Encode", "Upload"];
+  var PIPELINE_STAGES = ["Queued", "Downloading", "Downloaded", "Encoding", "Encoded", "Uploading", "Uploaded"];
+  var PHASE_ACTIVE = { Queued: 0, Downloading: 1, Encoding: 2, Uploading: 3 };
+  var PHASE_DONE = { Queued: -1, Downloading: 0, Downloaded: 1, Encoding: 1, Encoded: 2, Uploading: 2, Uploaded: 3 };
 
   var commandsEl = document.getElementById("commands");
   var optionsEl  = document.getElementById("options");
@@ -755,26 +763,48 @@
   function chip(stage) { return '<span class="chip ' + chipClass(stage) + '">' + esc(stage) + "</span>"; }
 
   function renderPipeline(stage) {
-    var idx = MAIN.indexOf(stage);
-    var uploaded = stage === "Uploaded";
-    var segs = MAIN.map(function (name, i) {
+    var fin = stage === "Uploaded";
+    var doneUpTo = PHASE_DONE.hasOwnProperty(stage) ? PHASE_DONE[stage] : -1;
+    var active = PHASE_ACTIVE.hasOwnProperty(stage) ? PHASE_ACTIVE[stage] : -1;
+    var segs = PHASES.map(function (name, i) {
       var cls = "todo";
-      if (uploaded) cls = "fin";
-      else if (idx !== -1 && i < idx) cls = "done";
-      else if (idx !== -1 && i === idx) cls = "active";
+      if (fin) cls = "fin";
+      else if (i <= doneUpTo) cls = "done";
+      else if (i === active) cls = "active";
       return '<div class="seg ' + cls + '"><span class="seg-fill"></span><span class="seg-name">' + esc(name) + "</span></div>";
     }).join("");
     return '<div class="pipe">' + segs + "</div>";
   }
 
+  function pct(v) { return Math.max(0, Math.min(100, Math.round(Number(v) || 0))); }
+  function progBar(p, meta) {
+    return '<div class="prog"><div class="prog-bar"><span style="width:' + p + '%"></span></div>' +
+           '<div class="prog-meta mono">' + esc(meta) + "</div></div>";
+  }
   function progressBlock(p) {
     if (!p || typeof p !== "object") return "";
     if (p.type === "encode") {
-      var pct = Math.max(0, Math.min(100, Number(p.percent) || 0));
-      var meta = pct + "% · frame " + esc(p.frame) + "/" + esc(p.total) + " · " + esc(p.fps) + " fps";
+      var pe = pct(p.percent);
+      var meta = pe + "% · frame " + esc(p.frame) + "/" + esc(p.total) + " · " + esc(p.fps) + " fps";
       if (p.kbps) meta += " · " + esc(p.kbps) + " kbit/s";
-      return '<div class="prog"><div class="prog-bar"><span style="width:' + pct + '%"></span></div>' +
-             '<div class="prog-meta mono">' + meta + "</div></div>";
+      return progBar(pe, meta);
+    }
+    if (p.type === "download") {
+      var pd = pct(p.percent);
+      var meta = pd + "%";
+      if (p.done != null && p.total != null) meta += " · " + esc(p.done) + "/" + esc(p.total) + " MB";
+      else if (p.done != null) meta += " · " + esc(p.done) + " MB";
+      return progBar(pd, meta);
+    }
+    if (p.type === "upload") {
+      var pu = pct(p.percent);
+      var hosts = Array.isArray(p.hosts) ? p.hosts : [];
+      var detail = hosts.filter(function (h) {
+        return h && String(h).trim() && !/^https?:\/\//.test(String(h));
+      }).map(function (h) {
+        return '<div class="up-host mono">' + esc(h) + "</div>";
+      }).join("");
+      return progBar(pu, pu + "%") + (detail ? '<div class="up-hosts">' + detail + "</div>" : "");
     }
     if (p.type === "probe") {
       return '<div class="prog-label">Files</div><pre>' + esc(p.files) + "</pre>";
@@ -801,7 +831,7 @@
       var head = '<div class="stat-head">' + pill(res) + chip(d.stage) +
                  '<span class="stat-id mono">#' + esc(d.job_id) + "</span>" +
                  '<span class="stat-type">' + esc(d.job_type) + "</span></div>";
-      var pipe = (MAIN.indexOf(d.stage) !== -1 || d.stage === "Uploaded") ? renderPipeline(d.stage) : "";
+      var pipe = PIPELINE_STAGES.indexOf(d.stage) !== -1 ? renderPipeline(d.stage) : "";
       outputEl.innerHTML = head + pipe + progressBlock(d.progress) + linksBlock(d.links) +
         "<pre>" + esc(JSON.stringify(d, null, 2)) + "</pre>";
       return;

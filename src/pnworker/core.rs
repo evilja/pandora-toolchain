@@ -5,7 +5,8 @@ use tokio::time::Duration;
 use crate::libpnp2p::nyaaise::TorrentType;
 use crate::pnworker::heartbeat::core::{TypedShrine, Worker};
 use crate::pnworker::messages::{MessagePayload, PROBE_TIMEOUT, QUEUE_TOO_LONG, QUEUED,
-    ENCODE_PROG, ENCODE_CONCAT_PROG, PROBE_ROW, UPLOAD_DONE, UPLOAD_BACKUP_PROG, BACKUPALL_PROG};
+    ENCODE_PROG, ENCODE_CONCAT_PROG, PROBE_ROW, UPLOAD_DONE, UPLOAD_BACKUP_PROG, BACKUPALL_PROG,
+    TORRENT_PROG, TORRENT_PROG_SELECT, UPLOAD_PROG};
 use crate::libpndb::core::JobDb;
 use crate::pnworker::presence::{presence_from_queue, Presence};
 use crate::pnworker::frontend::Frontend;
@@ -378,6 +379,27 @@ async fn persist_side_effects(db: &JobDb, job_id: u64, payload: &MessagePayload,
             "fps": args.get(2), "percent": encode_percent(&frame, &total),
         });
         db.update_progress(job_id, &v.to_string()).await.ok();
+    } else if *id == TORRENT_PROG {
+        let v = serde_json::json!({
+            "type": "download",
+            "percent": args.get(0).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0),
+            "done": args.get(1), "total": args.get(2),
+        });
+        db.update_progress(job_id, &v.to_string()).await.ok();
+    } else if *id == TORRENT_PROG_SELECT {
+        let v = serde_json::json!({
+            "type": "download",
+            "percent": args.get(0).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0),
+            "done": args.get(1),
+        });
+        db.update_progress(job_id, &v.to_string()).await.ok();
+    } else if *id == UPLOAD_PROG {
+        let v = serde_json::json!({
+            "type": "upload",
+            "percent": upload_percent(args),
+            "hosts": args,
+        });
+        db.update_progress(job_id, &v.to_string()).await.ok();
     } else if *id == PROBE_ROW {
         let v = serde_json::json!({ "type": "probe", "files": args.get(0) });
         db.update_progress(job_id, &v.to_string()).await.ok();
@@ -401,6 +423,34 @@ fn encode_percent(frame: &str, total: &str) -> u64 {
     let t = total.parse::<f64>().unwrap_or(0.0);
     if t <= 0.0 { return 0; }
     ((f / t) * 100.0).clamp(0.0, 100.0) as u64
+}
+
+fn upload_percent(hosts: &[String]) -> u64 {
+    let mut sum = 0.0;
+    let mut n = 0.0;
+    for h in hosts {
+        let h = h.trim();
+        if h.is_empty() {
+            continue;
+        }
+        if h.starts_with("http") {
+            sum += 100.0;
+            n += 1.0;
+            continue;
+        }
+        for tok in h.split_whitespace() {
+            if let Some((a, b)) = tok.split_once('/') {
+                if let (Ok(a), Ok(b)) = (a.parse::<f64>(), b.parse::<f64>()) {
+                    if b > 0.0 {
+                        sum += (a / b * 100.0).min(100.0);
+                        n += 1.0;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    if n > 0.0 { (sum / n).round() as u64 } else { 0 }
 }
 
 fn drive_link_from_payload(payload: &MessagePayload) -> Option<String> {
