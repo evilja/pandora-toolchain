@@ -248,7 +248,7 @@ fn help_catalog() -> &'static [HelpCommand] {
             rank: 2,
             summary: "Install a font zip for this server.",
             usage: "/font [file:<zip>] [link:<zip_url>]",
-            details: "Accepts either an attached zip or an HTTP(S) zip link and extracts fonts to this server's fontconfig directory.",
+            details: "Accepts either an attached zip or an HTTP(S) zip link, extracts fonts to this server's fontconfig directory, and installs them into the Linux font folder when running on Linux.",
         },
         HelpCommand {
             name: "readmebase",
@@ -1311,7 +1311,7 @@ impl EventHandler for Handler {
                         .required(true)
                 ),
             CreateCommand::new("font")
-                .description("Download a font zip and extract it to this server's fontconfig directory")
+                .description("Download a font zip and install it for this server")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::Attachment, "file", "A .zip archive of fonts")
                         .required(false)
