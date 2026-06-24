@@ -162,7 +162,7 @@ impl P2p {
         let add_args = AddTorrentArg::builder()
             .source(source)
             .paused("true".to_string())
-            .savepath(save_path.to_string())
+            .savepath(host_save_path(save_path))
             .build();
 
         self.api.add_torrent(add_args).await?;
@@ -375,7 +375,7 @@ impl P2p {
         println!("[pnp2p] download_and_remove: adding torrent (not paused)");
         let add_args = AddTorrentArg::builder()
             .source(source)
-            .savepath(save_path.to_string())
+            .savepath(host_save_path(save_path))
             .build();
 
         self.api.add_torrent(add_args).await?;
@@ -525,6 +525,26 @@ fn download_finished(t: &Torrent) -> bool {
         return true;
     }
     t.completion_on.map_or(false, |c| c > 0)
+}
+
+fn host_save_path(container_path: &str) -> String {
+    let host_prefix = match std::env::var("PNP2P_QBIT_SAVE_HOST") {
+        Ok(v) if !v.trim().is_empty() => v,
+        _ => return container_path.to_string(),
+    };
+    let container_prefix =
+        std::env::var("PNP2P_QBIT_SAVE_CONTAINER").unwrap_or_else(|_| "/app/DB".to_string());
+    let rest = container_path
+        .strip_prefix(&container_prefix)
+        .unwrap_or(container_path);
+    let host_prefix = host_prefix.trim_end_matches(['/', '\\']);
+    let windows = host_prefix.contains('\\') || host_prefix.as_bytes().get(1) == Some(&b':');
+    let joined = format!("{}{}", host_prefix, rest);
+    if windows {
+        joined.replace('/', "\\")
+    } else {
+        joined
+    }
 }
 
 async fn copy_mkv_files_to_save_path(

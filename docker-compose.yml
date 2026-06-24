@@ -9,6 +9,13 @@ services:
       # container. host.docker.internal resolves to the host via the gateway
       # mapping below. Override creds with PNP2P_QBIT_USER/PNP2P_QBIT_PASS.
       - PNP2P_QBIT_HOST=http://host.docker.internal:8089
+      # The host qBittorrent writes to the HOST filesystem, but the container
+      # reads from the bind-mounted ./DB. Set PNP2P_QBIT_SAVE_HOST in .env to
+      # the host's absolute path to ./DB so downloads land where the container
+      # can see them (e.g. Windows: C:\Users\you\pandora-toolchain\DB). The
+      # container's /app/DB prefix is swapped for this when telling qBittorrent
+      # where to save. Leave empty for a same-host (non-Docker) qBittorrent.
+      - PNP2P_QBIT_SAVE_HOST=${PNP2P_QBIT_SAVE_HOST:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

@@ -77,6 +77,26 @@ not a bundled one:
 If qBittorrent is unreachable, torrent jobs fail at the download stage (Drive jobs are
 unaffected).
 
+#### Save-path mapping (critical for a host qBittorrent)
+
+The host qBittorrent writes downloaded files to the **host** filesystem, but the container reads
+them from the bind-mounted `./DB`. If you hand qBittorrent the container path
+(`/app/DB/work/...`), it writes to the wrong place on the host and the container reports
+`No .mkv file found in downloaded torrent`.
+
+Set **`PNP2P_QBIT_SAVE_HOST`** (in `.env`) to the host's absolute path to `./DB`. `pnp2p` swaps
+the container's `/app/DB` prefix for it when telling qBittorrent where to save, so files land in
+the bind-mounted directory the container can read. Example on a Windows host where the repo is at
+`C:\Users\you\pandora-toolchain`:
+
+```
+PNP2P_QBIT_SAVE_HOST=C:\Users\you\pandora-toolchain\DB
+```
+
+Backslashes vs forward slashes are detected automatically. Leave it empty when qBittorrent runs
+on the **same** machine as `pndc` (non-Docker), where the paths already match. The container's
+prefix defaults to `/app/DB` and can be overridden with `PNP2P_QBIT_SAVE_CONTAINER`.
+
 If instead you run `cloudflared` directly on the host, publish the port (`-p 8787:8787`) and the
 dashboard service becomes `http://localhost:8787`.
 
