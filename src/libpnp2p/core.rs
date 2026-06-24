@@ -3,7 +3,7 @@ use crate::{lib_pn_data, lib_pn_emit, lib_pn_schema};
 use qbit_rs::Qbit;
 use qbit_rs::model::Priority;
 use qbit_rs::model::{
-    AddTorrentArg, Credential, GetTorrentListArg, Sep, State, TorrentFile, TorrentSource,
+    AddTorrentArg, Credential, GetTorrentListArg, Sep, State, Torrent, TorrentFile, TorrentSource,
 };
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -277,32 +277,28 @@ impl P2p {
                 torrent.progress.unwrap_or(0.0)
             );
 
-            match torrent.state {
-                Some(State::Uploading)
-                | Some(State::StalledUP)
-                | Some(State::ForcedUP)
-                | Some(State::QueuedUP) => {
-                    println!(
-                        "[pnp2p] download_selected: torrent reached uploading/seeding state, breaking"
-                    );
-                    break;
-                }
-                Some(State::Error) | Some(State::MissingFiles) => {
-                    println!("[pnp2p] download_selected: error state, deleting torrent");
-                    self.api.delete_torrents(vec![hash.clone()], true).await?;
-                    println!(
-                        "{}",
-                        lib_pn_emit!(
-                            protocol = proto,
-                            negkey = &neg,
-                            schema = [leaf, leaf],
-                            data = ["2", "ERROR"]
-                        )
-                        .unwrap()
-                    );
-                    return Err("Torrent entered error state".into());
-                }
-                _ => {}
+            if let Some(State::Error) | Some(State::MissingFiles) = torrent.state {
+                println!("[pnp2p] download_selected: error state, deleting torrent");
+                self.api.delete_torrents(vec![hash.clone()], true).await?;
+                println!(
+                    "{}",
+                    lib_pn_emit!(
+                        protocol = proto,
+                        negkey = &neg,
+                        schema = [leaf, leaf],
+                        data = ["2", "ERROR"]
+                    )
+                    .unwrap()
+                );
+                return Err("Torrent entered error state".into());
+            }
+
+            if download_finished(torrent) {
+                println!(
+                    "[pnp2p] download_selected: download complete (state={:?}), breaking",
+                    torrent.state
+                );
+                break;
             }
 
             let percent = (torrent.progress.unwrap_or(0.0) * 100.0).ceil();
@@ -432,32 +428,28 @@ impl P2p {
                 torrent.progress.unwrap_or(0.0)
             );
 
-            match torrent.state {
-                Some(State::Uploading)
-                | Some(State::StalledUP)
-                | Some(State::ForcedUP)
-                | Some(State::QueuedUP) => {
-                    println!(
-                        "[pnp2p] download_and_remove: torrent reached uploading/seeding state, breaking"
-                    );
-                    break;
-                }
-                Some(State::Error) | Some(State::MissingFiles) => {
-                    println!("[pnp2p] download_and_remove: error state, deleting torrent");
-                    self.api.delete_torrents(vec![hash.clone()], true).await?;
-                    println!(
-                        "{}",
-                        lib_pn_emit!(
-                            protocol = proto,
-                            negkey = &neg,
-                            schema = [leaf, leaf],
-                            data = ["2", "ERROR"]
-                        )
-                        .unwrap()
-                    );
-                    return Err("Torrent entered error state".into());
-                }
-                _ => {}
+            if let Some(State::Error) | Some(State::MissingFiles) = torrent.state {
+                println!("[pnp2p] download_and_remove: error state, deleting torrent");
+                self.api.delete_torrents(vec![hash.clone()], true).await?;
+                println!(
+                    "{}",
+                    lib_pn_emit!(
+                        protocol = proto,
+                        negkey = &neg,
+                        schema = [leaf, leaf],
+                        data = ["2", "ERROR"]
+                    )
+                    .unwrap()
+                );
+                return Err("Torrent entered error state".into());
+            }
+
+            if download_finished(torrent) {
+                println!(
+                    "[pnp2p] download_and_remove: download complete (state={:?}), breaking",
+                    torrent.state
+                );
+                break;
             }
             let percent = (torrent.progress.unwrap_or(0.0) * 100.0).ceil();
             if (percent - last_printed).abs() >= 0.1 {
@@ -510,6 +502,34 @@ impl P2p {
         println!("[pnp2p] download_and_remove: success");
         Ok(())
     }
+}
+
+fn download_finished(t: &Torrent) -> bool {
+    // Still verifying or relocating data — not safe to read the files yet.
+    if matches!(
+        t.state,
+        Some(State::CheckingUP)
+            | Some(State::CheckingDL)
+            | Some(State::CheckingResumeData)
+            | Some(State::Moving)
+    ) {
+        return false;
+    }
+    // A post-download state: actively seeding, stalled, forced, queued for
+    // seeding, or stopped after completion (qBit5 stoppedUP -> PausedUP).
+    if matches!(
+        t.state,
+        Some(State::Uploading)
+            | Some(State::StalledUP)
+            | Some(State::ForcedUP)
+            | Some(State::QueuedUP)
+            | Some(State::PausedUP)
+    ) {
+        return true;
+    }
+    // Fallback: qBittorrent recorded a completion timestamp, so the download
+    // reached 100% regardless of the current seeding/queue configuration.
+    t.completion_on.map_or(false, |c| c > 0)
 }
 
 async fn copy_mkv_files_to_save_path(
