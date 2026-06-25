@@ -443,6 +443,10 @@
   var watchedJobId = "";
   var activeEncodeJobId = "";
   var busyFlag = false;
+  var pancodeProbeJobId = "";
+  var pancodeProbeTorrent = "";
+  var pancodeProbeReady = false;
+  var pancodeProbeFiles = "";
   var active = "encode";
 
   // ---- ambient timecode in the titlebar (reads like an .ass event line) ----
@@ -516,27 +520,18 @@
       },
       render: renderResult
     },
-    probe: {
-      label: "Probe",
-      desc: "List the files inside a torrent so you can pick one to Pancode.",
-      fields: [
-        { name: "torrent", label: "Torrent / Magnet", type: "text", required: true, placeholder: "magnet:?... or https://..." }
-      ],
-      run: function (v) { return api("POST", "/api/v1/jobs/probe", { torrent: v.torrent }); },
-      render: renderResult
-    },
     pancode: {
       label: "Pancode",
-      desc: "Re-encode one file from a probed torrent. Probe first, read its file list, then pick the index.",
+      desc: "Probe a torrent, choose the file index, then re-encode that file with subtitles.",
       fields: [
-        { name: "probe_job_id", label: "Probe job", type: "jobselect", required: true },
-        { name: "file_index",   label: "File index (from the probe list)", type: "number", required: true, placeholder: "0" },
-        { name: "subtitle",     label: "Subtitle (.ass)", type: "file", required: true, accept: ".ass" },
-        { name: "preset",       label: "Preset", type: "select", options: ["standard", "gpu", "pseudolossless", "dummy"] }
+        { name: "torrent",    label: "Torrent / Magnet", type: "text", required: true, placeholder: "magnet:?... or https://..." },
+        { name: "file_index", label: "File", type: "fileselect", required: true },
+        { name: "subtitle",   label: "Subtitle (.ass)", type: "file", required: true, accept: ".ass" },
+        { name: "preset",     label: "Preset", type: "select", options: ["standard", "gpu", "pseudolossless", "dummy"] }
       ],
       run: function (v) {
         return api("POST", "/api/v1/jobs/pancode", {
-          probe_job_id: v.probe_job_id,
+          probe_job_id: pancodeProbeJobId,
           file_index: parseInt(v.file_index, 10) || 0,
           subtitle_b64: v.subtitle,
           preset: v.preset
@@ -571,7 +566,7 @@
       render: renderResult
     }
   };
-  var ORDER = ["encode", "gitcode", "backup", "probe", "pancode", "jobs", "getjob", "cancel"];
+  var ORDER = ["encode", "gitcode", "backup", "pancode", "jobs", "getjob", "cancel"];
 
   // ---- render command list ----
   var rail = document.createElement("div");
@@ -617,6 +612,8 @@
       } else if (f.type === "jobselect") {
         html += '<div class="selrow"><select id="' + id + '"><option value="">Loading…</option></select>' +
                 '<button type="button" class="mini" id="r_' + f.name + '" title="Refresh">↻</button></div>';
+      } else if (f.type === "fileselect") {
+        html += '<select id="' + id + '" disabled><option value="">Run Probe first</option></select>';
       } else if (f.type === "file") {
         html += '<label class="filepick"><input type="file" id="' + id + '" accept="' + esc(f.accept || "") + '">' +
                 '<span class="filebtn">Choose file</span>' +
@@ -643,8 +640,19 @@
         loadJobOptions(sel);
         var btn = document.getElementById("r_" + f.name);
         if (btn) btn.addEventListener("click", function () { loadJobOptions(sel); });
+      } else if (f.type === "fileselect") {
+        renderPancodeFiles();
       }
     });
+    if (key === "pancode") {
+      var tor = document.getElementById("f_torrent");
+      if (tor) {
+        if (pancodeProbeTorrent) tor.value = pancodeProbeTorrent;
+        tor.addEventListener("input", function () {
+          if (tor.value.trim() !== pancodeProbeTorrent) resetPancodeProbe();
+        });
+      }
+    }
   }
 
   function loadJobOptions(sel) {
@@ -659,11 +667,121 @@
     }).catch(function () { sel.innerHTML = '<option value="">Could not load jobs</option>'; });
   }
 
+  function resetPancodeProbe() {
+    if (pollMode === "pancode_probe") stopPoll();
+    pancodeProbeJobId = "";
+    pancodeProbeTorrent = "";
+    pancodeProbeReady = false;
+    pancodeProbeFiles = "";
+    renderPancodeFiles();
+    updateRunState();
+  }
+
+  function parseProbeFiles(files) {
+    if (!files) return [];
+    return String(files).split("\n").map(function (line) {
+      var m = line.match(/`?(\d+)`?\s*[—-]\s*(.*)/);
+      if (!m) return null;
+      return { index: m[1], label: line.replace(/`/g, "") };
+    }).filter(Boolean);
+  }
+
+  function renderPancodeFiles() {
+    var sel = document.getElementById("f_file_index");
+    if (!sel) return;
+    if (!pancodeProbeReady) {
+      sel.disabled = true;
+      sel.innerHTML = '<option value="">' + (pancodeProbeJobId ? "Probing…" : "Run Probe first") + "</option>";
+      return;
+    }
+    var files = parseProbeFiles(pancodeProbeFiles);
+    if (!files.length) {
+      sel.disabled = true;
+      sel.innerHTML = '<option value="">No files returned</option>';
+      return;
+    }
+    sel.disabled = false;
+    sel.innerHTML = files.map(function (f) {
+      return '<option value="' + esc(f.index) + '">' + esc(f.label) + "</option>";
+    }).join("");
+  }
+
+  function doPancode() {
+    if (activeEncodeJobId) {
+      outputEl.innerHTML = '<span class="pill err">busy</span><p class="muted">This page is already watching encode job <span class="mono">#' + esc(activeEncodeJobId) + '</span>. Wait until it finishes before starting another encode.</p>';
+      updateRunState();
+      return;
+    }
+    var tor = document.getElementById("f_torrent");
+    var torrent = tor ? tor.value.trim() : "";
+    if (!torrent) { showError("Torrent / Magnet is required"); return; }
+    if (!pancodeProbeReady || torrent !== pancodeProbeTorrent) {
+      if (pollMode !== "watch") stopPoll();
+      busy(true);
+      api("POST", "/api/v1/jobs/probe", { torrent: torrent }).then(function (res) {
+        renderResult(res);
+        if (res.status === 202 && res.data && res.data.job_id) {
+          pancodeProbeJobId = String(res.data.job_id);
+          pancodeProbeTorrent = torrent;
+          pancodeProbeReady = false;
+          pancodeProbeFiles = "";
+          startPancodeProbeWatch(pancodeProbeJobId);
+        }
+      }).catch(function (e) {
+        showError(e && e.message ? e.message : String(e));
+      }).then(function () { busy(false); });
+      return;
+    }
+    gather(COMMANDS.pancode).then(function (vals) {
+      busy(true);
+      return COMMANDS.pancode.run(vals).then(function (res) {
+        COMMANDS.pancode.render(res);
+        if (res.status === 202 && res.data && res.data.job_id) startJobWatch(res.data.job_id, true);
+      });
+    }).catch(function (e) {
+      showError(e && e.message ? e.message : String(e));
+    }).then(function () { busy(false); });
+  }
+
+  function startPancodeProbeWatch(jobId) {
+    clearPollTimer();
+    pollMode = "pancode_probe";
+    watchedJobId = String(jobId);
+    renderPancodeFiles();
+    function tick() {
+      pollJob(watchedJobId).then(handlePancodeProbeStatus).catch(function () {});
+    }
+    tick();
+    pollTimer = setInterval(tick, 2000);
+    updateRunState();
+  }
+
+  function handlePancodeProbeStatus(res) {
+    renderResult(res);
+    if (!res.ok || !isJobStatus(res.data)) return;
+    var d = res.data;
+    if (d.stage === "Probed") {
+      pancodeProbeReady = true;
+      pancodeProbeFiles = d.progress && d.progress.files ? d.progress.files : "";
+      renderPancodeFiles();
+      clearPollTimer();
+      pollMode = "";
+      watchedJobId = "";
+      updateRunState();
+    } else if (TERMINAL.indexOf(d.stage) !== -1) {
+      pancodeProbeReady = false;
+      pancodeProbeFiles = "";
+      renderPancodeFiles();
+      stopPoll();
+    }
+  }
+
   // ---- run ----
   runEl.addEventListener("click", doRun);
 
   function doRun() {
     var key = active;
+    if (key === "pancode") { doPancode(); return; }
     if (isEncodeStarter(key) && activeEncodeJobId) {
       outputEl.innerHTML = '<span class="pill err">busy</span><p class="muted">This page is already watching encode job <span class="mono">#' + esc(activeEncodeJobId) + '</span>. Wait until it finishes before starting another encode.</p>';
       updateRunState();
@@ -938,8 +1056,13 @@
   function busy(on) { busyFlag = on; updateRunState(); }
   function updateRunState() {
     var locked = !!activeEncodeJobId && isEncodeStarter(active);
-    runEl.disabled = busyFlag || locked;
-    runEl.textContent = busyFlag ? "Running…" : (locked ? "Encoding…" : "Run");
+    var probingPancode = active === "pancode" && pollMode === "pancode_probe";
+    runEl.disabled = busyFlag || locked || probingPancode;
+    if (busyFlag) runEl.textContent = "Running…";
+    else if (locked) runEl.textContent = "Encoding…";
+    else if (probingPancode) runEl.textContent = "Probing…";
+    else if (active === "pancode") runEl.textContent = pancodeProbeReady ? "Pancode" : "Probe";
+    else runEl.textContent = "Run";
   }
   function esc(s) {
     return String(s === undefined || s === null ? "" : s)
