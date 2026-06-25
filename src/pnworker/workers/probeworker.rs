@@ -137,7 +137,12 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
 
 fn format_probe_rows(rows: &[ProbeFile]) -> Vec<String> {
     let basenames: Vec<String> = rows.iter().map(|r| basename(&r.name)).collect();
-    let tokens: Vec<Option<String>> = basenames.iter().map(|n| episode_token(n)).collect();
+    let direct_tokens: Vec<Option<String>> = basenames.iter().map(|n| episode_token(n)).collect();
+    let tokens = if direct_tokens.iter().filter(|t| t.is_some()).count() >= 2 {
+        direct_tokens
+    } else {
+        sequence_tokens(&basenames)
+    };
     let detected = tokens.iter().filter(|t| t.is_some()).count() >= 2;
     rows.iter().zip(basenames.iter()).zip(tokens.iter()).map(|((row, name), token)| {
         if detected {
@@ -172,4 +177,62 @@ fn episode_token(name: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn sequence_tokens(names: &[String]) -> Vec<Option<String>> {
+    let candidates: Vec<Vec<String>> = names.iter().map(|n| numeric_candidates(n)).collect();
+    let max_cols = candidates.iter().map(|c| c.len()).max().unwrap_or(0);
+    let mut best_col = None;
+    let mut best_score = 0usize;
+    for col in 0..max_cols {
+        let nums: Vec<Option<u64>> = candidates.iter()
+            .map(|c| c.get(col).and_then(|t| token_number(t)))
+            .collect();
+        let present: Vec<u64> = nums.iter().filter_map(|n| *n).collect();
+        if present.len() < 2 {
+            continue;
+        }
+        let mut score = 0usize;
+        for pair in nums.windows(2) {
+            if let [Some(a), Some(b)] = pair {
+                if *b == *a + 1 {
+                    score += 1;
+                }
+            }
+        }
+        if score > best_score {
+            best_score = score;
+            best_col = Some(col);
+        }
+    }
+    if best_score == 0 {
+        return vec![None; names.len()];
+    }
+    let col = best_col.unwrap();
+    candidates.into_iter().map(|c| c.get(col).cloned()).collect()
+}
+
+fn numeric_candidates(name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let bracket_re = Regex::new(r"(?i)\[(\d{1,4}(?:v\d+)?)\]").unwrap();
+    for caps in bracket_re.captures_iter(name) {
+        if let Some(m) = caps.get(1) {
+            out.push(m.as_str().to_string());
+        }
+    }
+    let delim_re = Regex::new(r"(?i)(?:^|[\s._\-])([0-9]{1,4}(?:v\d+)?)(?:$|[\s._\-\(\[])").unwrap();
+    for caps in delim_re.captures_iter(name) {
+        if let Some(m) = caps.get(1) {
+            let token = m.as_str().to_string();
+            if !out.iter().any(|v| v == &token) {
+                out.push(token);
+            }
+        }
+    }
+    out
+}
+
+fn token_number(token: &str) -> Option<u64> {
+    let digits: String = token.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse::<u64>().ok()
 }
