@@ -38,6 +38,7 @@ pub async fn handle_edit(
     let existing_gdrive_client_secret = existing_lines.get(5).copied().unwrap_or("");
     let existing_gdrive_refresh_token = existing_lines.get(6).copied().unwrap_or("");
     let existing_gdrive_folder_id = existing_lines.get(7).copied().unwrap_or("");
+    let existing_wrap_style = existing_lines.get(8).copied().unwrap_or("");
 
     let language = match option_str(command, "language") {
         Some(l) if matches!(l, "EN" | "TR" | "JP") => l.to_string(),
@@ -69,13 +70,22 @@ pub async fn handle_edit(
     let gdrive_client_secret = edit_text_field(command, "gdrive_client_secret", existing_gdrive_client_secret);
     let gdrive_refresh_token = edit_text_field(command, "gdrive_refresh_token", existing_gdrive_refresh_token);
     let gdrive_folder_id = edit_text_field(command, "gdrive_folder_id", existing_gdrive_folder_id);
+    let wrap_style = match option_str(command, "wrapstyle").map(str::trim) {
+        None => existing_wrap_style.to_string(),
+        Some("dont_touch") | Some("keep") | Some(CLEAR_SENTINEL) => String::new(),
+        Some(v) if matches!(v, "0" | "1" | "2" | "3") => v.to_string(),
+        Some(other) => {
+            command_error(ctx, command, format!("Error: wrapstyle `{}` must be dont_touch, 0, 1, 2, or 3", other)).await;
+            return;
+        }
+    };
     let gdrive_parts = [&gdrive_client_id, &gdrive_client_secret, &gdrive_refresh_token, &gdrive_folder_id];
     if gdrive_parts.iter().any(|s| !s.is_empty()) && gdrive_parts.iter().any(|s| s.is_empty()) {
         command_error(ctx, command, "Error: Google Drive config requires client id, client secret, refresh token, and folder id.").await;
         return;
     }
 
-    let body = format!("{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n", language, forgejo, channel, new_api_key, gdrive_client_id, gdrive_client_secret, gdrive_refresh_token, gdrive_folder_id);
+    let body = format!("{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n", language, forgejo, channel, new_api_key, gdrive_client_id, gdrive_client_secret, gdrive_refresh_token, gdrive_folder_id, wrap_style);
     let path = dir.join("meta.pandora");
     if let Err(e) = tokio::fs::write(&path, body).await {
         command.create_response(ctx, CreateInteractionResponse::Message(
@@ -90,10 +100,11 @@ pub async fn handle_edit(
     let api_key_display = if new_api_key.is_empty() { "(unset)".to_string() } else { "(set)".to_string() };
     let gdrive_display = if gdrive_client_id.is_empty() && gdrive_client_secret.is_empty() && gdrive_refresh_token.is_empty() && gdrive_folder_id.is_empty() { "(unset)".to_string() } else { "(set)".to_string() };
     let channel_display = if channel.is_empty() { "(unset)".to_string() } else { format!("<#{}>", channel) };
+    let wrap_display = if wrap_style.is_empty() { "dont_touch".to_string() } else { wrap_style.clone() };
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
-            .content(format!("Edited server `{}` — language: {}, forgejo: {}, forgejo api_key: {}, gdrive: {}, announcement channel: {}",
-                server_id, language, forgejo_display, api_key_display, gdrive_display, channel_display))
+            .content(format!("Edited server `{}` — language: {}, forgejo: {}, forgejo api_key: {}, gdrive: {}, wrapstyle: {}, announcement channel: {}",
+                server_id, language, forgejo_display, api_key_display, gdrive_display, wrap_display, channel_display))
             .ephemeral(true)
     )).await.ok();
 }

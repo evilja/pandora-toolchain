@@ -205,15 +205,15 @@ fn help_catalog() -> &'static [HelpCommand] {
             name: "configure",
             rank: 2,
             summary: "Configure server language, Forgejo, and Google Drive credentials.",
-            usage: "/configure language:<EN|TR|JP> [forgejo] [api_key] [gdrive_client_id] [gdrive_client_secret] [gdrive_refresh_token] [gdrive_folder_id]",
-            details: "Writes server metadata. Run this before /init if the server needs a Forgejo org/base or per-guild Google Drive upload credentials configured.",
+            usage: "/configure language:<EN|TR|JP> [forgejo] [api_key] [gdrive_client_id] [gdrive_client_secret] [gdrive_refresh_token] [gdrive_folder_id] [wrapstyle]",
+            details: "Writes server metadata. Run this before /init if the server needs a Forgejo org/base or per-guild Google Drive upload credentials configured. wrapstyle controls ASS WrapStyle normalization; default dont_touch leaves existing subtitles unchanged.",
         },
         HelpCommand {
             name: "edit",
             rank: 2,
             summary: "Edit individual server metadata fields, leaving the rest untouched.",
-            usage: "/edit [language] [forgejo] [api_key] [gdrive_client_id] [gdrive_client_secret] [gdrive_refresh_token] [gdrive_folder_id] [announcement_channel]",
-            details: "Like /configure but every field is optional — omitted fields keep their current value. Pass `-` to clear a text field. Set announcement_channel:true to point announcements at the current channel. Requires the server to already be configured.",
+            usage: "/edit [language] [forgejo] [api_key] [gdrive_client_id] [gdrive_client_secret] [gdrive_refresh_token] [gdrive_folder_id] [wrapstyle] [announcement_channel]",
+            details: "Like /configure but every field is optional — omitted fields keep their current value. Pass `-` to clear a text field. wrapstyle can be dont_touch or 0-3. Set announcement_channel:true to point announcements at the current channel. Requires the server to already be configured.",
         },
         HelpCommand {
             name: "addapi",
@@ -427,6 +427,15 @@ async fn handle_help_component(ctx: &Context, component: &ComponentInteraction) 
             .embed(help_detail_embed(cmd))
             .components(help_components(component.user.id.get(), Some(cmd.name)))
     )).await.ok();
+}
+
+fn server_wrap_style(server_id: u64) -> String {
+    let path = format!("DB/config/{}/meta.pandora", server_id);
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| s.lines().nth(8).map(String::from))
+        .filter(|s| matches!(s.as_str(), "0" | "1" | "2" | "3"))
+        .unwrap_or_else(|| "keep".to_string())
 }
 
 fn read_lang(guild_id: Option<serenity::all::GuildId>) -> String {
@@ -1254,6 +1263,15 @@ impl EventHandler for Handler {
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "gdrive_folder_id", "Google Drive upload folder id. Omit to keep the existing one.")
                         .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "wrapstyle", "ASS WrapStyle normalization. Default dont_touch.")
+                        .required(false)
+                        .add_string_choice("dont_touch", "dont_touch")
+                        .add_string_choice("0", "0")
+                        .add_string_choice("1", "1")
+                        .add_string_choice("2", "2")
+                        .add_string_choice("3", "3")
                 ),
             CreateCommand::new("edit")
                 .description("Edit individual server metadata fields, leaving the rest untouched")
@@ -1287,6 +1305,15 @@ impl EventHandler for Handler {
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "gdrive_folder_id", "Google Drive upload folder id. Omit to keep, `-` to unset.")
                         .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "wrapstyle", "ASS WrapStyle normalization. Use dont_touch to clear.")
+                        .required(false)
+                        .add_string_choice("dont_touch", "dont_touch")
+                        .add_string_choice("0", "0")
+                        .add_string_choice("1", "1")
+                        .add_string_choice("2", "2")
+                        .add_string_choice("3", "3")
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::Boolean, "announcement_channel", "Set the announcement channel to this channel.")

@@ -33,6 +33,9 @@ struct Args {
     split_signs: Option<String>,
 
     #[arg(long)]
+    wrap_style: Option<String>,
+
+    #[arg(long)]
     title: Option<String>,
 
     #[arg(long)]
@@ -60,12 +63,13 @@ async fn main() {
         args.negkey.clone().unwrap_or_else(|| "PNassCLI".to_string()),
     );
 
+    let wrap_style = parse_wrap_style_arg(args.wrap_style.as_deref());
     let mut sub = SubstationAlpha::load(PathBuf::from(&args.input), true).await;
 
     if let Some(t) = args.title {
         sub.script_info.title = t;
     }
-    fill_script_info_defaults(&mut sub.script_info);
+    fill_script_info_defaults(&mut sub.script_info, wrap_style);
 
     if let Some(n) = args.set_layer {
         for ev in &mut sub.events {
@@ -91,7 +95,7 @@ async fn main() {
 
     if let Some(merge_path) = args.merge.as_deref() {
         let mut secondary = SubstationAlpha::load(PathBuf::from(merge_path), true).await;
-        fill_script_info_defaults(&mut secondary.script_info);
+        fill_script_info_defaults(&mut secondary.script_info, wrap_style);
         if let Err(e) = normalize_merge_resolutions(&mut sub, &mut secondary) {
             println!("{}", pn_emit!(protocol = proto, negkey = &neg,
                 schema = [leaf, leaf], data = ["4", e]).unwrap());
@@ -171,12 +175,22 @@ fn visible_lines(line: &ASSLine) -> Vec<String> {
     lines
 }
 
-fn fill_script_info_defaults(si: &mut ScriptInfo) {
+fn parse_wrap_style_arg(value: Option<&str>) -> Option<u8> {
+    match value.map(str::trim) {
+        Some("0") => Some(0),
+        Some("1") => Some(1),
+        Some("2") => Some(2),
+        Some("3") => Some(3),
+        _ => None,
+    }
+}
+
+fn fill_script_info_defaults(si: &mut ScriptInfo, wrap_style: Option<u8>) {
     if si.script_type.is_empty() {
         si.script_type = "v4.00+".to_string();
     }
-    if si.wrap_style != 2 {
-        si.wrap_style = 2;
+    if let Some(wrap_style) = wrap_style {
+        si.wrap_style = wrap_style;
     }
     if !si.scaled_border_and_shadow {
         si.scaled_border_and_shadow = true;

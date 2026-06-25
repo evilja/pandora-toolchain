@@ -50,6 +50,17 @@ pub async fn handle_configure(
     let existing_gdrive_client_secret = existing_lines.get(5).copied().unwrap_or("").to_string();
     let existing_gdrive_refresh_token = existing_lines.get(6).copied().unwrap_or("").to_string();
     let existing_gdrive_folder_id = existing_lines.get(7).copied().unwrap_or("").to_string();
+    let existing_wrap_style = existing_lines.get(8).copied().unwrap_or("").to_string();
+
+    let wrap_style = match option_str(command, "wrapstyle").map(str::trim) {
+        Some("dont_touch") | Some("keep") | Some("-") => String::new(),
+        Some(v) if matches!(v, "0" | "1" | "2" | "3") => v.to_string(),
+        Some(other) => {
+            command_error(ctx, command, format!("Error: wrapstyle `{}` must be dont_touch, 0, 1, 2, or 3", other)).await;
+            return;
+        }
+        None => existing_wrap_style,
+    };
 
     let new_api_key = option_str(command, "api_key")
         .map(str::trim)
@@ -82,7 +93,7 @@ pub async fn handle_configure(
         return;
     }
 
-    let body = format!("{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n", language, forgejo, command.channel_id.get(), new_api_key, gdrive_client_id, gdrive_client_secret, gdrive_refresh_token, gdrive_folder_id);
+    let body = format!("{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n", language, forgejo, command.channel_id.get(), new_api_key, gdrive_client_id, gdrive_client_secret, gdrive_refresh_token, gdrive_folder_id, wrap_style);
     let path = dir.join("meta.pandora");
     if let Err(e) = tokio::fs::write(&path, body).await {
         command.create_response(ctx, CreateInteractionResponse::Message(
@@ -96,10 +107,11 @@ pub async fn handle_configure(
     let forgejo_display = if forgejo.is_empty() { "(unset)".to_string() } else { format!("`{}`", forgejo) };
     let api_key_display = if new_api_key.is_empty() { "(unset)".to_string() } else { "(set)".to_string() };
     let gdrive_display = if gdrive_client_id.is_empty() && gdrive_client_secret.is_empty() && gdrive_refresh_token.is_empty() && gdrive_folder_id.is_empty() { "(unset)".to_string() } else { "(set)".to_string() };
+    let wrap_display = if wrap_style.is_empty() { "dont_touch".to_string() } else { wrap_style.clone() };
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
-            .content(format!("Configured server `{}` — language: {}, forgejo: {}, forgejo api_key: {}, gdrive: {}, announcement channel: <#{}>",
-                server_id, language, forgejo_display, api_key_display, gdrive_display, command.channel_id.get()))
+            .content(format!("Configured server `{}` — language: {}, forgejo: {}, forgejo api_key: {}, gdrive: {}, wrapstyle: {}, announcement channel: <#{}>",
+                server_id, language, forgejo_display, api_key_display, gdrive_display, wrap_display, command.channel_id.get()))
             .ephemeral(true)
     )).await.ok();
 }

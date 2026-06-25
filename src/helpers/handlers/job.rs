@@ -113,7 +113,9 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
 
     let warnings: Vec<String> = Vec::new();
     let title = if name.is_empty() { owner.clone() } else { format!("{} - {}", owner, name) };
-    if let Err(e) = standardise_ass_header_only(&input_path, &output_path, &title).await {
+    let wrap_style = server_wrap_style(server_id);
+    let wrap_style = if matches!(wrap_style.as_str(), "0" | "1" | "2" | "3") { Some(wrap_style.as_str()) } else { None };
+    if let Err(e) = standardise_ass_header_only(&input_path, &output_path, &title, wrap_style).await {
         let _ = response_msg.edit(ctx, EditMessage::new()
             .content(format!("Failed to standardise ASS header: {}", e))).await;
         return;
@@ -170,14 +172,14 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
     }
 }
 
-async fn standardise_ass_header_only(input_path: &str, output_path: &str, title: &str) -> Result<(), String> {
+async fn standardise_ass_header_only(input_path: &str, output_path: &str, title: &str, wrap_style: Option<&str>) -> Result<(), String> {
     let text = tokio::fs::read_to_string(input_path).await.map_err(|e| e.to_string())?;
     let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
     let mut lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
     let script_idx = lines.iter().position(|l| l.trim().eq_ignore_ascii_case("[Script Info]"));
     if script_idx.is_none() {
         let mut header = vec!["[Script Info]".to_string()];
-        header.extend(default_script_info_lines(title, None, None));
+        header.extend(default_script_info_lines(title, None, None, wrap_style));
         header.push(String::new());
         header.extend(lines);
         tokio::fs::write(output_path, header.join(newline)).await.map_err(|e| e.to_string())?;
@@ -195,7 +197,7 @@ async fn standardise_ass_header_only(input_path: &str, output_path: &str, title:
 
     let existing_playres_x = header_u16(&lines[start + 1..end], "playresx").filter(|v| *v != 0);
     let existing_playres_y = header_u16(&lines[start + 1..end], "playresy").filter(|v| *v != 0);
-    let defaults = default_script_info_lines(title, existing_playres_x, existing_playres_y);
+    let defaults = default_script_info_lines(title, existing_playres_x, existing_playres_y, wrap_style);
     let mut present = vec![false; defaults.len()];
     for line in lines.iter_mut().take(end).skip(start + 1) {
         let key = line.split_once(':').map(|(k, _)| k.trim().to_lowercase()).unwrap_or_default();
@@ -213,20 +215,23 @@ async fn standardise_ass_header_only(input_path: &str, output_path: &str, title:
     tokio::fs::write(output_path, lines.join(newline)).await.map_err(|e| e.to_string())
 }
 
-fn default_script_info_lines(title: &str, playres_x: Option<u16>, playres_y: Option<u16>) -> Vec<String> {
+fn default_script_info_lines(title: &str, playres_x: Option<u16>, playres_y: Option<u16>, wrap_style: Option<&str>) -> Vec<String> {
     let x = playres_x.unwrap_or(1920);
     let y = playres_y.unwrap_or(1080);
-    vec![
+    let mut lines = vec![
         format!("Title: {}", title),
         "ScriptType: v4.00+".to_string(),
-        "WrapStyle: 2".to_string(),
         "ScaledBorderAndShadow: Yes".to_string(),
         format!("PlayResX: {}", x),
         format!("PlayResY: {}", y),
         "YCbCr Matrix: TV.709".to_string(),
         format!("LayoutResX: {}", x),
         format!("LayoutResY: {}", y),
-    ]
+    ];
+    if let Some(wrap_style) = wrap_style {
+        lines.insert(2, format!("WrapStyle: {}", wrap_style));
+    }
+    lines
 }
 
 fn header_u16(lines: &[String], key: &str) -> Option<u16> {

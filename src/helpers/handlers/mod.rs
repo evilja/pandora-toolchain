@@ -179,6 +179,7 @@ async fn smartcode_merge_upload(
     };
 
     let job_id = response_msg.id.get();
+    let wrap_style = server_wrap_style(server_id);
     let work_dir = match std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
     {
@@ -217,6 +218,7 @@ async fn smartcode_merge_upload(
                 ("INPUT",  PathValue::from(tl_local.display().to_string())),
                 ("OUTPUT", PathValue::from(split_tl_local.display().to_string())),
                 ("SIGNS",  PathValue::from(ts_local.display().to_string())),
+                ("WRAPSTYLE", PathValue::from(wrap_style.clone())),
             ]),
             job_id,
             &mut proto,
@@ -275,6 +277,7 @@ async fn smartcode_merge_upload(
     let mut paths: HashMap<&str, PathValue> = HashMap::from([
         ("INPUT",  PathValue::from(tl_local.display().to_string())),
         ("OUTPUT", PathValue::from(merged_local.display().to_string())),
+        ("WRAPSTYLE", PathValue::from(wrap_style.clone())),
     ]);
     if ts_bytes_opt.is_some() {
         paths.insert("MERGE", PathValue::from(ts_local.display().to_string()));
