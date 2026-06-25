@@ -53,6 +53,7 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/jobs/gitcode", post(submit_gitcode))
         .route("/jobs/:id/cancel", post(cancel_job))
         .route("/jobs/:id/acix/confirm", post(acix_confirm))
+        .route("/gitsync", post(gitsync))
         .route("/acix/search", get(acix_search))
         .route("/acix/tmdb", post(acix_tmdb))
         .route("/acix/translators", get(acix_translators))
@@ -312,6 +313,15 @@ async fn cancel_job(State(st): State<AppState>, Path(id): Path<u64>) -> Response
         return (StatusCode::SERVICE_UNAVAILABLE, "worker channel closed").into_response();
     }
     StatusCode::ACCEPTED.into_response()
+}
+
+async fn gitsync(State(st): State<AppState>) -> Response {
+    let hj = HalfJob::new_gitsync_api(st.api_author, 0);
+    let job_id = hj.job_id.to_string();
+    if st.tx.send(JobClass::HalfJob(hj)).await.is_err() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "worker channel closed").into_response();
+    }
+    (StatusCode::ACCEPTED, Json(json!({ "job_id": job_id, "status": "accepted" }))).into_response()
 }
 
 async fn submit(st: &AppState, job: Job) -> Response {

@@ -591,6 +591,16 @@ impl HalfJob {
             frontend: Frontend::discord(context, msg),
         }
     }
+    pub fn new_gitsync_api(author: u64, channel_id: u64) -> Self {
+        Self {
+            author,
+            channel_id,
+            job_id: SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0),
+            requested_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_secs(0)),
+            job_type: JobType::GitSync,
+            frontend: Frontend::Web,
+        }
+    }
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
