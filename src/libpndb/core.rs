@@ -140,6 +140,18 @@ impl JobDb {
                 job_type, preset_type, candidates, link, directory, stage
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(job_id) DO UPDATE SET
+                author = excluded.author,
+                channel_id = excluded.channel_id,
+                response_id = excluded.response_id,
+                requested_at = excluded.requested_at,
+                job_type = excluded.job_type,
+                preset_type = excluded.preset_type,
+                candidates = excluded.candidates,
+                link = excluded.link,
+                directory = excluded.directory,
+                stage = excluded.stage,
+                archived = 0
             "#,
         )
         .bind(job.job_id as i64)

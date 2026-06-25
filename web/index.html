@@ -546,16 +546,6 @@
       run: function () { return api("GET", "/api/v1/jobs?status=recent"); },
       render: renderJobs
     },
-    getjob: {
-      label: "Get Job",
-      desc: "Inspect one job and watch it move down the pipeline.",
-      fields: [
-        { name: "job_id",  label: "Job", type: "jobselect", required: true },
-        { name: "refresh", label: "Auto-refresh every 2s until it finishes", type: "checkbox" }
-      ],
-      run: function (v) { return api("GET", "/api/v1/jobs/" + encodeURIComponent(v.job_id)); },
-      render: renderResult
-    },
     cancel: {
       label: "Cancel",
       desc: "Stop an ongoing job before it finishes.",
@@ -566,7 +556,7 @@
       render: renderResult
     }
   };
-  var ORDER = ["encode", "gitcode", "backup", "pancode", "jobs", "getjob", "cancel"];
+  var ORDER = ["encode", "gitcode", "backup", "pancode", "jobs", "cancel"];
 
   // ---- render command list ----
   var rail = document.createElement("div");
@@ -589,6 +579,7 @@
     });
     renderOptions(key);
     updateRunState();
+    if (key === "jobs") doRun();
   }
 
   function renderOptions(key) {
@@ -762,6 +753,7 @@
   }
 
   function handlePancodeProbeStatus(res) {
+    if (res.status === 404) return;
     renderResult(res);
     if (!res.ok || !isJobStatus(res.data)) return;
     var d = res.data;
@@ -805,10 +797,6 @@
           if (lockEncode || !activeEncodeJobId) startJobWatch(res.data.job_id, lockEncode);
           return;
         }
-        if (key === "getjob" && pollMode !== "watch" && document.getElementById("f_refresh") &&
-            document.getElementById("f_refresh").checked && !isTerminal(res)) {
-          startPoll(cmd, vals);
-        }
       });
     }).catch(function (e) {
       showError(e && e.message ? e.message : String(e));
@@ -829,11 +817,13 @@
     watchedJobId = String(jobId);
     if (lockEncode) activeEncodeJobId = watchedJobId;
     pollJob(watchedJobId).then(function (res) {
+      if (res.status === 404) return;
       renderResult(res);
       finishWatched(res);
     }).catch(function () {});
     pollTimer = setInterval(function () {
       pollJob(watchedJobId).then(function (res) {
+        if (res.status === 404) return;
         renderResult(res);
         finishWatched(res);
       }).catch(function () {});

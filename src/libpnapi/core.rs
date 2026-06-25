@@ -13,7 +13,7 @@ use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::Sender;
 
-use crate::pnworker::core::{HalfJob, Job, JobClass, JobType, Preset};
+use crate::pnworker::core::{HalfJob, Job, JobClass, JobType, Preset, Stage};
 use crate::pnworker::acix::confirm_acix;
 use crate::libacix::{AnimeCix, MediaType, MixedUpload};
 use crate::libpndb::core::{JobDb, JobStatus};
@@ -236,6 +236,12 @@ async fn submit_pancode(State(st): State<AppState>, Json(req): Json<PancodeReq>)
         Ok(None) => return (StatusCode::NOT_FOUND, "no such probe job").into_response(),
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
+    if probe.archived != 0 {
+        return (StatusCode::CONFLICT, "probe job is no longer active").into_response();
+    }
+    if probe.stage != 21 {
+        return (StatusCode::CONFLICT, "probe job is not ready yet").into_response();
+    }
     let mut job = Job::new_api(
         st.api_author,
         0,
@@ -310,7 +316,12 @@ async fn cancel_job(State(st): State<AppState>, Path(id): Path<u64>) -> Response
 
 async fn submit(st: &AppState, job: Job) -> Response {
     let job_id = job.job_id;
+    if let Err(e) = st.db.insert_job(&job).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
     if st.tx.send(JobClass::Job(job)).await.is_err() {
+        let _ = st.db.update_stage(job_id, Stage::Failed).await;
+        let _ = st.db.archive_job(job_id).await;
         return (StatusCode::SERVICE_UNAVAILABLE, "worker channel closed").into_response();
     }
     (StatusCode::ACCEPTED, Json(json!({ "job_id": job_id.to_string() }))).into_response()
