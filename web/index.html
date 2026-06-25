@@ -930,7 +930,7 @@
     var t = progress.type;
     if ((active === 1 && t === "download") ||
         (active === 2 && t === "encode") ||
-        (active === 3 && t === "upload")) {
+        (active === 3 && (t === "upload" || t === "upload_all"))) {
       return pct(progress.percent);
     }
     return 0;
@@ -943,7 +943,7 @@
       var cls = "todo", w = 0;
       if (fin) { cls = "fin"; w = 100; }
       else if (i <= doneUpTo) { cls = "done"; w = 100; }
-      else if (i === active) { cls = "active"; w = i === 0 ? 100 : phaseLivePercent(stage, progress); }
+      else if (i === active) { cls = "active"; w = (i === 0 || stage === "Uploading") ? 100 : phaseLivePercent(stage, progress); }
       var delay = cls === "active" ? ";animation-delay:-" + ((Date.now() % 1700) / 1000).toFixed(3) + "s" : "";
       return '<div class="seg ' + cls + '"><span class="seg-track">' +
              '<span class="seg-prog" style="width:' + w + '%' + delay + '"></span></span>' +
@@ -954,8 +954,13 @@
 
   function pct(v) { return Math.max(0, Math.min(100, Math.round(Number(v) || 0))); }
   function progMeta(text) { return '<div class="prog-meta mono">' + esc(text) + "</div>"; }
-  function progressBlock(p) {
+  function progressBlock(p, stage) {
     if (!p || typeof p !== "object") return "";
+    if ((stage === "Downloading" || stage === "Downloaded") && p.type !== "download") return "";
+    if ((stage === "Encoding" || stage === "Encoded") && p.type !== "encode") return "";
+    if (stage === "Uploading" && p.type !== "upload" && p.type !== "upload_all") return "";
+    if (stage === "Uploaded" && p.type !== "upload" && p.type !== "upload_all") return "";
+    if ((stage === "Probing" || stage === "Probed") && p.type !== "probe") return "";
     if (p.type === "encode") {
       var meta = pct(p.percent) + "% · frame " + esc(p.frame) + "/" + esc(p.total) + " · " + esc(p.fps) + " fps";
       if (p.kbps) meta += " · " + esc(p.kbps) + " kbit/s";
@@ -975,6 +980,10 @@
         return '<div class="up-host mono">' + esc(h) + "</div>";
       }).join("");
       return progMeta(pct(p.percent) + "%") + (detail ? '<div class="up-hosts">' + detail + "</div>" : "");
+    }
+    if (p.type === "upload_all") {
+      var rows = p.rows ? '<div class="up-hosts"><pre>' + esc(p.rows) + "</pre></div>" : "";
+      return progMeta(pct(p.percent) + "%") + rows;
     }
     if (p.type === "probe") {
       return '<div class="prog-label">Files</div><pre>' + esc(p.files) + "</pre>";
@@ -1024,7 +1033,7 @@
                  '<span class="stat-id mono">#' + esc(d.job_id) + "</span>" +
                  '<span class="stat-type">' + esc(d.job_type) + "</span></div>";
       var pipe = PIPELINE_STAGES.indexOf(d.stage) !== -1 ? renderPipeline(d.stage, d.progress) : "";
-      outputEl.innerHTML = head + pipe + progressBlock(d.progress) + linksBlock(d.links) + summaryBlock(d);
+      outputEl.innerHTML = head + pipe + progressBlock(d.progress, d.stage) + linksBlock(d.links) + summaryBlock(d);
       return;
     }
     if (res.status === 202 && res.data && res.data.job_id) {

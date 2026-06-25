@@ -410,12 +410,37 @@ async fn persist_side_effects(db: &JobDb, job_id: u64, payload: &MessagePayload,
             "voe": args.get(3), "abyss": args.get(4),
         });
         db.update_links(job_id, &v.to_string()).await.ok();
-    } else if *id == UPLOAD_BACKUP_PROG && stage == Some(Stage::Uploaded) {
-        let v = serde_json::json!({ "drive": args.get(0) });
-        db.update_links(job_id, &v.to_string()).await.ok();
-    } else if *id == BACKUPALL_PROG && stage == Some(Stage::Uploaded) {
-        let v = serde_json::json!({ "episodes": args.get(0) });
-        db.update_links(job_id, &v.to_string()).await.ok();
+        let p = serde_json::json!({ "type": "upload", "percent": 100, "hosts": args });
+        db.update_progress(job_id, &p.to_string()).await.ok();
+    } else if *id == UPLOAD_BACKUP_PROG {
+        if stage == Some(Stage::Uploaded) {
+            let v = serde_json::json!({ "drive": args.get(0) });
+            db.update_links(job_id, &v.to_string()).await.ok();
+            let p = serde_json::json!({ "type": "upload", "percent": 100, "hosts": args });
+            db.update_progress(job_id, &p.to_string()).await.ok();
+        } else {
+            let v = serde_json::json!({
+                "type": "upload",
+                "percent": upload_percent(args),
+                "hosts": args,
+            });
+            db.update_progress(job_id, &v.to_string()).await.ok();
+        }
+    } else if *id == BACKUPALL_PROG {
+        let rows = args.get(0).cloned().unwrap_or_default();
+        if stage == Some(Stage::Uploaded) {
+            let v = serde_json::json!({ "episodes": rows });
+            db.update_links(job_id, &v.to_string()).await.ok();
+            let p = serde_json::json!({ "type": "upload_all", "percent": 100, "rows": rows });
+            db.update_progress(job_id, &p.to_string()).await.ok();
+        } else {
+            let v = serde_json::json!({
+                "type": "upload_all",
+                "percent": backupall_percent(&rows),
+                "rows": rows,
+            });
+            db.update_progress(job_id, &v.to_string()).await.ok();
+        }
     }
 }
 
@@ -458,6 +483,33 @@ fn upload_percent(hosts: &[String]) -> u64 {
                     if b > 0.0 {
                         sum += (a / b * 100.0).min(100.0);
                         n += 1.0;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    if n > 0.0 { (sum / n).round() as u64 } else { 0 }
+}
+
+fn backupall_percent(rows: &str) -> u64 {
+    let mut sum = 0.0;
+    let mut n = 0.0;
+    for row in rows.lines() {
+        let row = row.trim();
+        if row.is_empty() {
+            continue;
+        }
+        n += 1.0;
+        if row.contains("http") || row.contains("Başarısız") || row.contains("İptal") {
+            sum += 100.0;
+            continue;
+        }
+        for tok in row.split_whitespace() {
+            if let Some((a, b)) = tok.trim_end_matches("MB").split_once('/') {
+                if let (Ok(a), Ok(b)) = (a.parse::<f64>(), b.parse::<f64>()) {
+                    if b > 0.0 {
+                        sum += (a / b * 100.0).min(100.0);
                     }
                     break;
                 }
