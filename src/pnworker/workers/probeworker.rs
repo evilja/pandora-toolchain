@@ -7,13 +7,20 @@ use crate::libpnprotocol::core::Protocol;
 use crate::pnworker::messages::{CTORRENT_DONE, CTORRENT_FAIL, MessagePayload, PROBE_FAIL, PROBE_ROW};
 use crate::pnworker::util::{ToolResult, run_tool, string_byte_to_mb};
 use crate::pnworker::tools::{PNCURL_TORRENT, PNP2P_PROBE};
-use std::path::PathBuf;
+use regex::Regex;
+use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 use crate::pnworker::core::Stage;
 use crate::pnworker::util::PathValue;
 use crate::pnworker::core::{CommData, WorkerMsg};
 
 pub type ProbeData = (PathBuf, TorrentType, u64);
+
+struct ProbeFile {
+    idx: String,
+    name: String,
+    size: String,
+}
 
 pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, pulse: Sender<()>) {
     let mut proto = Protocol::new(vec![1]);
@@ -68,8 +75,7 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 }
             }
 
-            // Phase 2: run pnp2p --probe, collect file rows, emit them all as one message
-            let mut probe_rows: Vec<String> = vec![];
+            let mut probe_rows: Vec<ProbeFile> = vec![];
             let result = run_tool(
                 &pnp2p_path,
                 PNP2P_PROBE,
@@ -85,29 +91,17 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                         None => return None,
                     };
                     match out {
-                        // opcode 4 = probe file row: [index, name, size]
                         4 => {
                             let payload = data.get(1).and_then(|v| v.as_multi())?;
                             let idx  = payload.get(0).and_then(|v| v.as_str()).unwrap_or("?");
                             let name = payload.get(1).and_then(|v| v.as_str()).unwrap_or("?");
                             let size = payload.get(2).and_then(|v| v.as_str()).unwrap_or("?");
-                            // Remove bracketed tags like [1080p], [HEVC], [SubGroup] etc
-                            let short_name = name
-                                .split('-').last()          // everything before first bracket
-                                .unwrap_or(&name)
-                                .trim()
-                                .to_string();
-                            let l_i = short_name.char_indices().nth(15).map(|(i, _)| i);
-                            match l_i {
-                                Some(index) => {
-                                    println!("[Pandora Prober] {}", &short_name[..index]);
-                                    probe_rows.push(format!("`{}` — {} ({}MB)", idx, &short_name[..index], string_byte_to_mb(size)));
-                                },
-                                None => {
-                                    println!("[Pandora Prober] {}", short_name);
-                                    probe_rows.push(format!("`{}` — {} ({}MB)", idx, short_name, string_byte_to_mb(size)));
-                                },
-                            }
+                            println!("[Pandora Prober] {}", name);
+                            probe_rows.push(ProbeFile {
+                                idx: idx.to_string(),
+                                name: name.to_string(),
+                                size: size.to_string(),
+                            });
                         }
                         1 => return Some(ToolResult::Success),
                         2 => return Some(ToolResult::Fail),
@@ -123,7 +117,7 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                         tx.send((job_id, MessagePayload::Static(PROBE_FAIL), Some(Stage::Failed))).await.unwrap();
                         continue 'll;
                     }
-                    let list = probe_rows.join("\n");
+                    let list = format_probe_rows(&probe_rows).join("\n");
                     tx.send((job_id, MessagePayload::Progress(PROBE_ROW, vec![list]), Some(Stage::Probed))).await.unwrap();
                 }
                 ToolResult::Fail => {
@@ -139,4 +133,43 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
         sleep(Duration::from_secs(5)).await;
         pulse.try_send(()).ok();
     }
+}
+
+fn format_probe_rows(rows: &[ProbeFile]) -> Vec<String> {
+    let basenames: Vec<String> = rows.iter().map(|r| basename(&r.name)).collect();
+    let tokens: Vec<Option<String>> = basenames.iter().map(|n| episode_token(n)).collect();
+    let detected = tokens.iter().filter(|t| t.is_some()).count() >= 2;
+    rows.iter().zip(basenames.iter()).zip(tokens.iter()).map(|((row, name), token)| {
+        if detected {
+            if let Some(t) = token {
+                return format!("`{}` — E{}", row.idx, t);
+            }
+        }
+        format!("`{}` — {} ({}MB)", row.idx, name, string_byte_to_mb(&row.size))
+    }).collect()
+}
+
+fn basename(name: &str) -> String {
+    let normalized = name.replace('\\', "/");
+    Path::new(&normalized)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(name)
+        .to_string()
+}
+
+fn episode_token(name: &str) -> Option<String> {
+    for pattern in [
+        r"(?i)\s-\s*(\d{1,4}(?:v\d+)?)\b",
+        r"(?i)(?:^|[\s._\-\[])[Ss]\d{1,2}[Ee](\d{1,4}(?:v\d+)?)\b",
+        r"(?i)(?:^|[\s._\-\[])[Ee][Pp]?\s*(\d{1,4}(?:v\d+)?)\b",
+    ] {
+        let re = Regex::new(pattern).unwrap();
+        if let Some(caps) = re.captures(name) {
+            if let Some(m) = caps.get(1) {
+                return Some(m.as_str().to_string());
+            }
+        }
+    }
+    None
 }
