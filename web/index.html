@@ -715,14 +715,16 @@
       if (pollMode !== "watch") stopPoll();
       busy(true);
       api("POST", "/api/v1/jobs/probe", { torrent: torrent }).then(function (res) {
-        renderResult(res);
         if (res.status === 202 && res.data && res.data.job_id) {
           pancodeProbeJobId = String(res.data.job_id);
           pancodeProbeTorrent = torrent;
           pancodeProbeReady = false;
           pancodeProbeFiles = "";
+          renderProbeAccepted(pancodeProbeJobId);
           startPancodeProbeWatch(pancodeProbeJobId);
+          return;
         }
+        renderResult(res);
       }).catch(function (e) {
         showError(e && e.message ? e.message : String(e));
       }).then(function () { busy(false); });
@@ -1006,6 +1008,13 @@
       if (data.detail) return data.detail;
     }
     return ok ? "Request completed." : "Request failed.";
+  }
+  function renderProbeAccepted(jobId) {
+    outputEl.innerHTML = '<div class="stat-head">' +
+      '<span class="pill ok">202</span>' + chip("Probing") +
+      '<span class="stat-id mono">#' + esc(jobId) + '</span>' +
+      '<span class="stat-type">Probe</span></div>' +
+      '<p class="muted">Reading torrent metadata. The file dropdown will appear here when probing finishes.</p>';
   }
   function renderResult(res) {
     if (res.ok && isJobStatus(res.data)) {
