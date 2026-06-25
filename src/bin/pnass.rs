@@ -27,6 +27,12 @@ struct Args {
     set_layer: Option<u16>,
 
     #[arg(long)]
+    smart_layer: Option<u16>,
+
+    #[arg(long)]
+    split_signs: Option<String>,
+
+    #[arg(long)]
     title: Option<String>,
 
     #[arg(long)]
@@ -64,6 +70,19 @@ async fn main() {
     if let Some(n) = args.set_layer {
         for ev in &mut sub.events {
             ev.layer = n;
+        }
+    }
+
+    if let Some(n) = args.smart_layer {
+        set_basic_text_layers(&mut sub, n);
+    }
+
+    if let Some(signs_path) = args.split_signs.as_deref() {
+        if let Some(signs) = split_sign_events(&mut sub) {
+            if signs.dump_to_file(PathBuf::from(signs_path)).await.is_err() {
+                eprintln!("pnass: failed to write {}", signs_path);
+                std::process::exit(1);
+            }
         }
     }
 
@@ -272,6 +291,126 @@ fn rename_style_refs_in_override(ov: &mut ASSOverride, mapping: &std::collection
         }
         _ => {}
     }
+}
+
+fn set_basic_text_layers(sub: &mut SubstationAlpha, layer: u16) {
+    for ev in &mut sub.events {
+        if event_has_only_basic_overrides(ev) {
+            ev.layer = layer;
+        }
+    }
+}
+
+fn event_has_only_basic_overrides(ev: &pandora_toolchain::libkagami::core::Event) -> bool {
+    if ev.style.to_lowercase().contains("sign") {
+        return false;
+    }
+    ev.text.data.iter().all(|item| match item {
+        ASSText::RawText(_) => true,
+        ASSText::Override(ov) => is_basic_override(ov),
+        ASSText::Drawing(_) => false,
+    })
+}
+
+fn is_basic_override(ov: &ASSOverride) -> bool {
+    matches!(
+        ov,
+        ASSOverride::Bold(_)
+            | ASSOverride::Italic(_)
+            | ASSOverride::Underline(_)
+            | ASSOverride::Strikeout(_)
+    )
+}
+
+fn split_sign_events(sub: &mut SubstationAlpha) -> Option<SubstationAlpha> {
+    let mut kept = Vec::new();
+    let mut signs = Vec::new();
+    for ev in sub.events.drain(..) {
+        if ev.style.to_lowercase().contains("sign") {
+            signs.push(ev);
+        } else {
+            kept.push(ev);
+        }
+    }
+    sub.events = kept;
+    if signs.is_empty() {
+        return None;
+    }
+
+    let sign_used = used_style_names_for_events(&signs);
+    let tl_used = used_style_names(sub);
+    let mut sign_styles = Vec::new();
+    let mut tl_styles = Vec::new();
+    for style in sub.v4p_styles.drain(..) {
+        if sign_used.contains(&style.name) {
+            if tl_used.contains(&style.name) {
+                tl_styles.push(clone_style(&style));
+            }
+            sign_styles.push(style);
+        } else if tl_used.contains(&style.name) {
+            tl_styles.push(style);
+        }
+    }
+    sub.v4p_styles = tl_styles;
+
+    Some(SubstationAlpha {
+        script_info: clone_script_info(&sub.script_info),
+        v4p_styles: sign_styles,
+        events: signs,
+    })
+}
+
+fn clone_script_info(si: &ScriptInfo) -> ScriptInfo {
+    ScriptInfo {
+        title: si.title.clone(),
+        script_type: si.script_type.clone(),
+        wrap_style: si.wrap_style,
+        scaled_border_and_shadow: si.scaled_border_and_shadow,
+        playresx: si.playresx,
+        playresy: si.playresy,
+        ycbcr_matrix: si.ycbcr_matrix.clone(),
+        layout_res_x: si.layout_res_x,
+        layout_res_y: si.layout_res_y,
+    }
+}
+
+fn clone_style(style: &pandora_toolchain::libkagami::core::V4pStyle) -> pandora_toolchain::libkagami::core::V4pStyle {
+    pandora_toolchain::libkagami::core::V4pStyle {
+        name: style.name.clone(),
+        fontname: style.fontname.clone(),
+        fontsize: style.fontsize,
+        colours: style.colours.clone(),
+        bold: style.bold,
+        italic: style.italic,
+        underline: style.underline,
+        strikeout: style.strikeout,
+        scale_x: style.scale_x,
+        scale_y: style.scale_y,
+        spacing: style.spacing,
+        angle: style.angle,
+        border_style: style.border_style,
+        outline: style.outline,
+        shadow: style.shadow,
+        alignment: style.alignment,
+        margin_l: style.margin_l,
+        margin_r: style.margin_r,
+        margin_v: style.margin_v,
+        encoding: style.encoding,
+    }
+}
+
+fn used_style_names_for_events(events: &[pandora_toolchain::libkagami::core::Event]) -> std::collections::HashSet<String> {
+    use std::collections::HashSet;
+    let mut used = HashSet::new();
+    for ev in events {
+        if !ev.style.is_empty() {
+            used.insert(ev.style.clone());
+        }
+        for item in &ev.text.data {
+            collect_style_names_from_text(item, &mut used);
+        }
+    }
+    used
 }
 
 fn style_names(sub: &SubstationAlpha) -> std::collections::HashSet<String> {

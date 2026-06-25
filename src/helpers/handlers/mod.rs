@@ -109,7 +109,7 @@ async fn smartcode_merge_upload(
         }
     };
 
-    let ts_bytes_opt = match read_repo_ass(&fg, &owner_repo, &ts_path).await {
+    let mut ts_bytes_opt = match read_repo_ass(&fg, &owner_repo, &ts_path).await {
         Ok(Some((b, _))) => Some(b),
         Ok(None) => None,
         Err(e) => {
@@ -194,6 +194,8 @@ async fn smartcode_merge_upload(
     let tl_local = work_dir.join("tl.ass");
     let ts_local = work_dir.join("ts.ass");
     let merged_local = work_dir.join("merged.ass");
+    let split_tl_local = work_dir.join("tl_no_signs.ass");
+    let mut warnings: Vec<String> = Vec::new();
 
     if let Err(e) = tokio::fs::write(&tl_local, &tl_bytes).await {
         let _ = response_msg.edit(ctx, EditMessage::new()
@@ -206,6 +208,67 @@ async fn smartcode_merge_upload(
                 .content(format!("Failed to write TS: {}", e))).await;
             return None;
         }
+    } else {
+        let mut proto = Protocol::new(vec![1]);
+        let split_result = run_tool(
+            &pnass_path,
+            PNASS_SPLIT_SIGNS,
+            &HashMap::from([
+                ("INPUT",  PathValue::from(tl_local.display().to_string())),
+                ("OUTPUT", PathValue::from(split_tl_local.display().to_string())),
+                ("SIGNS",  PathValue::from(ts_local.display().to_string())),
+            ]),
+            job_id,
+            &mut proto,
+            |data| {
+                if data.get(0).and_then(|v| v.as_str()) == Some("4") {
+                    if let Some(line) = data.get(1).and_then(|v| v.as_str()) {
+                        warnings.push(line.to_string());
+                    }
+                }
+                None
+            },
+        ).await;
+        if !matches!(split_result, ToolResult::Success) {
+            let _ = response_msg.edit(ctx, EditMessage::new()
+                .content(format!("ASS sign split failed (warnings so far: {}).", warnings.len()))).await;
+            return None;
+        }
+        if tokio::fs::metadata(&ts_local).await.is_ok() {
+            let split_tl_bytes = match tokio::fs::read(&split_tl_local).await {
+                Ok(b) => b,
+                Err(e) => {
+                    let _ = response_msg.edit(ctx, EditMessage::new()
+                        .content(format!("Failed to read sign-aware TL: {}", e))).await;
+                    return None;
+                }
+            };
+            let sign_bytes = match tokio::fs::read(&ts_local).await {
+                Ok(b) => b,
+                Err(e) => {
+                    let _ = response_msg.edit(ctx, EditMessage::new()
+                        .content(format!("Failed to read generated TS: {}", e))).await;
+                    return None;
+                }
+            };
+            if let Err(e) = upsert_repo_ass(&fg, &owner_repo, &tl_path, &split_tl_bytes, "Smartcode move signs from TL").await {
+                let _ = response_msg.edit(ctx, EditMessage::new()
+                    .content(format!("Failed to update TL after sign split: {}", e))).await;
+                return None;
+            }
+            if let Err(e) = upsert_repo_ass(&fg, &owner_repo, &ts_path, &sign_bytes, "Smartcode move signs to TS").await {
+                let _ = response_msg.edit(ctx, EditMessage::new()
+                    .content(format!("Failed to upload generated TS: {}", e))).await;
+                return None;
+            }
+            if let Err(e) = tokio::fs::write(&tl_local, &split_tl_bytes).await {
+                let _ = response_msg.edit(ctx, EditMessage::new()
+                    .content(format!("Failed to write sign-aware TL: {}", e))).await;
+                return None;
+            }
+            warnings.push(format!("Sign lines were moved from `{}` into generated `{}`.", tl_path, ts_path));
+            ts_bytes_opt = Some(sign_bytes);
+        }
     }
 
     let spec: &[CliParam] = if ts_bytes_opt.is_some() { PNASS_MERGE } else { PNASS_MERGE_TL_ONLY };
@@ -217,7 +280,6 @@ async fn smartcode_merge_upload(
         paths.insert("MERGE", PathValue::from(ts_local.display().to_string()));
     }
 
-    let mut warnings: Vec<String> = Vec::new();
     let mut proto = Protocol::new(vec![1]);
     let result = run_tool(
         &pnass_path,

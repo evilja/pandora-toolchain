@@ -111,57 +111,11 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
         Err(e) => println!("[job] id={} input_ass_metadata_failed={}", job_id, e),
     }
 
-    let mut warnings: Vec<String> = Vec::new();
-    if matches!(job_kind, JobKind::TLC) {
-        let pnass_path = match get_pandora_env().get(PNASS) {
-            Some(p) if !p.is_empty() => p.clone(),
-            _ => {
-                let _ = response_msg.edit(ctx, EditMessage::new()
-                    .content("Error: PNASS binary path is not set in DB/config/global/environment/env.pandora.")).await;
-                return;
-            }
-        };
-        let mut proto = Protocol::new(vec![1]);
-        let result = run_tool(
-            &pnass_path,
-            PNASS_LAYER,
-            &HashMap::from([
-                ("INPUT", PathValue::from(input_path.clone())),
-                ("OUTPUT", PathValue::from(output_path.clone())),
-            ]),
-            job_id,
-            &mut proto,
-            |data| {
-                match data.get(0).and_then(|v| v.as_str()) {
-                    Some("4") => {
-                        if let Some(line) = data.get(1).and_then(|v| v.as_str()) {
-                            warnings.push(line.to_string());
-                        }
-                    }
-                    _ => {}
-                }
-                None
-            },
-        ).await;
-        if !matches!(result, ToolResult::Success) {
-            let _ = response_msg.edit(ctx, EditMessage::new()
-                .content(format!("ASS normalisation failed (warnings so far: {}).", warnings.len()))).await;
-            return;
-        }
-    } else {
-        if let Err(e) = tokio::fs::copy(&input_path, &output_path).await {
-            let _ = response_msg.edit(ctx, EditMessage::new()
-                .content(format!("Failed to copy input to output: {}", e))).await;
-            return;
-        }
-    }
-
+    let warnings: Vec<String> = Vec::new();
     let title = if name.is_empty() { owner.clone() } else { format!("{} - {}", owner, name) };
-    let mut sub = SubstationAlpha::load(PathBuf::from(&output_path), false).await;
-    sub.script_info.title = title;
-    if sub.dump_to_file(PathBuf::from(&output_path)).await.is_err() {
+    if let Err(e) = standardise_ass_header_only(&input_path, &output_path, &title).await {
         let _ = response_msg.edit(ctx, EditMessage::new()
-            .content(format!("Failed to rewrite ASS title."))).await;
+            .content(format!("Failed to standardise ASS header: {}", e))).await;
         return;
     }
     let output_bytes = match tokio::fs::read(&output_path).await {
@@ -214,4 +168,74 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
                 .content(format!("Upload failed: {}", e))).await;
         }
     }
+}
+
+async fn standardise_ass_header_only(input_path: &str, output_path: &str, title: &str) -> Result<(), String> {
+    let text = tokio::fs::read_to_string(input_path).await.map_err(|e| e.to_string())?;
+    let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
+    let script_idx = lines.iter().position(|l| l.trim().eq_ignore_ascii_case("[Script Info]"));
+    if script_idx.is_none() {
+        let mut header = vec!["[Script Info]".to_string()];
+        header.extend(default_script_info_lines(title, None, None));
+        header.push(String::new());
+        header.extend(lines);
+        tokio::fs::write(output_path, header.join(newline)).await.map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    let start = script_idx.unwrap();
+    let end = lines.iter().enumerate().skip(start + 1)
+        .find(|(_, l)| {
+            let t = l.trim();
+            t.starts_with('[') && t.ends_with(']')
+        })
+        .map(|(i, _)| i)
+        .unwrap_or(lines.len());
+
+    let existing_playres_x = header_u16(&lines[start + 1..end], "playresx").filter(|v| *v != 0);
+    let existing_playres_y = header_u16(&lines[start + 1..end], "playresy").filter(|v| *v != 0);
+    let defaults = default_script_info_lines(title, existing_playres_x, existing_playres_y);
+    let mut present = vec![false; defaults.len()];
+    for line in lines.iter_mut().take(end).skip(start + 1) {
+        let key = line.split_once(':').map(|(k, _)| k.trim().to_lowercase()).unwrap_or_default();
+        if let Some(pos) = defaults.iter().position(|d| d.split_once(':').map(|(k, _)| k.trim().eq_ignore_ascii_case(&key)).unwrap_or(false)) {
+            *line = defaults[pos].clone();
+            present[pos] = true;
+        }
+    }
+    let missing: Vec<String> = defaults.into_iter().enumerate()
+        .filter_map(|(i, line)| if present[i] { None } else { Some(line) })
+        .collect();
+    for (i, line) in missing.into_iter().enumerate() {
+        lines.insert(end + i, line);
+    }
+    tokio::fs::write(output_path, lines.join(newline)).await.map_err(|e| e.to_string())
+}
+
+fn default_script_info_lines(title: &str, playres_x: Option<u16>, playres_y: Option<u16>) -> Vec<String> {
+    let x = playres_x.unwrap_or(1920);
+    let y = playres_y.unwrap_or(1080);
+    vec![
+        format!("Title: {}", title),
+        "ScriptType: v4.00+".to_string(),
+        "WrapStyle: 2".to_string(),
+        "ScaledBorderAndShadow: Yes".to_string(),
+        format!("PlayResX: {}", x),
+        format!("PlayResY: {}", y),
+        "YCbCr Matrix: TV.709".to_string(),
+        format!("LayoutResX: {}", x),
+        format!("LayoutResY: {}", y),
+    ]
+}
+
+fn header_u16(lines: &[String], key: &str) -> Option<u16> {
+    lines.iter().find_map(|line| {
+        let (k, v) = line.split_once(':')?;
+        if k.trim().eq_ignore_ascii_case(key) {
+            v.trim().parse().ok()
+        } else {
+            None
+        }
+    })
 }
