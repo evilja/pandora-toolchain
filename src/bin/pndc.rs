@@ -323,27 +323,37 @@ fn help_rank_label(rank: u8) -> &'static str {
 }
 
 fn help_components(user_id: u64, selected: Option<&str>) -> Vec<CreateActionRow> {
-    let options = user_help_commands(user_id).into_iter()
-        .map(|cmd| {
-            let option = CreateSelectMenuOption::new(format!("/{}", cmd.name), cmd.name)
-                .description(cmd.summary);
-            if Some(cmd.name) == selected {
-                option.default_selection(true)
+    let commands = user_help_commands(user_id);
+    let total_chunks = (commands.len() + 24) / 25;
+    commands.chunks(25).enumerate()
+        .map(|(idx, chunk)| {
+            let options = chunk.iter()
+                .map(|cmd| {
+                    let option = CreateSelectMenuOption::new(format!("/{}", cmd.name), cmd.name)
+                        .description(cmd.summary);
+                    if Some(cmd.name) == selected {
+                        option.default_selection(true)
+                    } else {
+                        option
+                    }
+                })
+                .collect();
+            let placeholder = if total_chunks > 1 {
+                format!("Choose a command ({}/{})", idx + 1, total_chunks)
             } else {
-                option
-            }
+                "Choose a command".to_string()
+            };
+            CreateActionRow::SelectMenu(
+                CreateSelectMenu::new(
+                    format!("pnhelp:{}:{}", user_id, idx),
+                    CreateSelectMenuKind::String { options },
+                )
+                    .placeholder(placeholder)
+                    .min_values(1)
+                    .max_values(1)
+            )
         })
-        .collect();
-
-    vec![CreateActionRow::SelectMenu(
-        CreateSelectMenu::new(
-            format!("pnhelp:{}", user_id),
-            CreateSelectMenuKind::String { options },
-        )
-            .placeholder("Choose a command")
-            .min_values(1)
-            .max_values(1)
-    )]
+        .collect()
 }
 
 fn help_overview_embed(user_id: u64) -> CreateEmbed {
@@ -381,7 +391,7 @@ async fn handle_help_component(ctx: &Context, component: &ComponentInteraction) 
     let Some(owner) = component.data.custom_id.strip_prefix("pnhelp:") else {
         return;
     };
-    let owner_id = owner.parse::<u64>().unwrap_or(0);
+    let owner_id = owner.split(':').next().unwrap_or(owner).parse::<u64>().unwrap_or(0);
     if owner_id != component.user.id.get() {
         component.create_response(ctx, CreateInteractionResponse::Message(
             CreateInteractionResponseMessage::new()
