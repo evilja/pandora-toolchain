@@ -12,10 +12,27 @@ use std::fs::File;
 use tokio_util::io::ReaderStream;
 use std::io::Write;
 use std::path::Path;
-use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex, mpsc::Sender};
 use tokio::io::{AsyncRead, ReadBuf};
 use std::pin::Pin;
 use std::task::{Context, Poll};
+
+const UPLOAD_TIMEOUT_SECS: u64 = 600;
+const UPLOAD_TIMEOUT_EXTENSION_SECS: u64 = 100;
+const UPLOAD_SPEED_CHECK_INTERVAL_SECS: u64 = 60;
+const UPLOAD_SPEED_THRESHOLD_BYTES_PER_SEC: f64 = 3.0 * 1024.0 * 1024.0;
+const UPLOAD_TIMEOUT_THRESHOLDS: [f64; 4] = [70.0, 85.0, 90.0, 95.0];
+
+struct UploadProgress {
+    sent: u64,
+    total: u64,
+}
+
+impl UploadProgress {
+    fn new(total: u64) -> Arc<Mutex<Self>> {
+        Arc::new(Mutex::new(Self { sent: 0, total }))
+    }
+}
 
 struct ProgressReader<R> {
     inner: R,
@@ -23,11 +40,12 @@ struct ProgressReader<R> {
     total: u64,
     tx: Sender<RpbData>,
     host: Host,
+    progress: Arc<Mutex<UploadProgress>>,
 }
 
 impl<R> ProgressReader<R> {
-    fn new(inner: R, total: u64, tx: Sender<RpbData>, host: Host) -> Self {
-        Self { inner, sent: 0, total, tx, host }
+    fn new(inner: R, total: u64, tx: Sender<RpbData>, host: Host, progress: Arc<Mutex<UploadProgress>>) -> Self {
+        Self { inner, sent: 0, total, tx, host, progress }
     }
 }
 
@@ -44,10 +62,79 @@ impl<R: AsyncRead + Unpin> AsyncRead for ProgressReader<R> {
         let n = (after - before) as u64;
         if n > 0 {
             self.sent += n;
+            if let Ok(mut progress) = self.progress.lock() {
+                progress.sent = self.sent;
+            }
             self.tx.send(RpbData::Progress(self.sent, self.total, self.host.clone())).ok();
         }
 
         result
+    }
+}
+
+async fn send_upload_with_dynamic_timeout(
+    request: reqwest::RequestBuilder,
+    progress: Arc<Mutex<UploadProgress>>,
+    base_timeout_secs: u64,
+    label: &str,
+) -> Result<reqwest::Response, String> {
+    let mut request = Box::pin(request.send());
+    let mut deadline = tokio::time::Instant::now() + Duration::from_secs(base_timeout_secs);
+    let mut allowed_secs = base_timeout_secs;
+    let mut threshold_idx = 0usize;
+    let mut last_sent = 0u64;
+    let mut last_check = std::time::Instant::now();
+
+    loop {
+        tokio::select! {
+            result = &mut request => {
+                return result.map_err(|e| e.to_string());
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                return Err(format!("dynamic upload timeout after {allowed_secs}s"));
+            }
+            _ = tokio::time::sleep(Duration::from_secs(UPLOAD_SPEED_CHECK_INTERVAL_SECS)) => {
+                let (sent, total) = match progress.lock() {
+                    Ok(progress) => (progress.sent, progress.total),
+                    Err(_) => (last_sent, 0),
+                };
+                let elapsed = last_check.elapsed().as_secs_f64();
+                let speed = if elapsed > 0.0 {
+                    sent.saturating_sub(last_sent) as f64 / elapsed
+                } else {
+                    0.0
+                };
+                let percent = if total > 0 {
+                    sent as f64 * 100.0 / total as f64
+                } else {
+                    0.0
+                };
+                let mut extended = false;
+
+                while threshold_idx < UPLOAD_TIMEOUT_THRESHOLDS.len()
+                    && percent >= UPLOAD_TIMEOUT_THRESHOLDS[threshold_idx]
+                {
+                    deadline = deadline + Duration::from_secs(UPLOAD_TIMEOUT_EXTENSION_SECS);
+                    allowed_secs += UPLOAD_TIMEOUT_EXTENSION_SECS;
+                    threshold_idx += 1;
+                    extended = true;
+                    println!("[upload-timeout] {label}: +{UPLOAD_TIMEOUT_EXTENSION_SECS}s ({percent:.2}%, {:.2}MB/s)", speed / 1_048_576.0);
+                }
+
+                if !extended
+                    && threshold_idx < UPLOAD_TIMEOUT_THRESHOLDS.len()
+                    && speed >= UPLOAD_SPEED_THRESHOLD_BYTES_PER_SEC
+                {
+                    deadline = deadline + Duration::from_secs(UPLOAD_TIMEOUT_EXTENSION_SECS);
+                    allowed_secs += UPLOAD_TIMEOUT_EXTENSION_SECS;
+                    threshold_idx += 1;
+                    println!("[upload-timeout] {label}: +{UPLOAD_TIMEOUT_EXTENSION_SECS}s ({percent:.2}%, {:.2}MB/s)", speed / 1_048_576.0);
+                }
+
+                last_sent = sent;
+                last_check = std::time::Instant::now();
+            }
+        }
     }
 }
 
@@ -197,7 +284,7 @@ impl Req {
         };
 
         let client = Client::builder()
-            .timeout(Duration::from_secs(550))
+            .connect_timeout(Duration::from_secs(60))
             .build().unwrap();
 
         let upload_name = outfile.unwrap_or(self.target.clone());
@@ -215,7 +302,8 @@ impl Req {
         let total_size = file.metadata().await.unwrap().len();
         println!("[upload] total_size: {total_size} bytes ({:.2}MB)", total_size as f64 / 1_048_576.0);
 
-        let reader = ProgressReader::new(file, total_size, tx.clone(), host.clone());
+        let progress = UploadProgress::new(total_size);
+        let reader = ProgressReader::new(file, total_size, tx.clone(), host.clone(), progress.clone());
         let stream = ReaderStream::new(reader);
         let body = reqwest::Body::wrap_stream(stream);
 
@@ -229,7 +317,13 @@ impl Req {
             .part("file", file_part);
 
         println!("[upload] sending to {server_url}...");
-        let resp = match client.post(&server_url).multipart(form).send().await {
+        let host_label = format!("{:?}", host);
+        let resp = match send_upload_with_dynamic_timeout(
+            client.post(&server_url).multipart(form),
+            progress,
+            UPLOAD_TIMEOUT_SECS,
+            &host_label,
+        ).await {
             Ok(r) => { println!("[upload] response status: {}", r.status()); r },
             Err(a) => {
                 println!("[upload] request failed: {a}");
@@ -279,7 +373,7 @@ impl Req {
         let api_key = env.get(ABYSS).cloned().unwrap_or_default();
 
         let client = Client::builder()
-            .timeout(Duration::from_secs(360))
+            .connect_timeout(Duration::from_secs(60))
             .build().unwrap();
 
         let upload_name = outfile.unwrap_or(self.target.clone());
@@ -297,7 +391,8 @@ impl Req {
         let total_size = file.metadata().await.unwrap().len();
         println!("[abyss] total_size: {total_size} bytes ({:.2}MB)", total_size as f64 / 1_048_576.0);
 
-        let reader = ProgressReader::new(file, total_size, tx.clone(), Host::Abyss);
+        let progress = UploadProgress::new(total_size);
+        let reader = ProgressReader::new(file, total_size, tx.clone(), Host::Abyss, progress.clone());
         let stream = ReaderStream::new(reader);
         let body = reqwest::Body::wrap_stream(stream);
 
@@ -312,7 +407,12 @@ impl Req {
         let upload_url = format!("https://up.abyss.to/{api_key}");
         println!("[abyss] uploading to {upload_url}...");
 
-        let resp = match client.post(&upload_url).multipart(form).send().await {
+        let resp = match send_upload_with_dynamic_timeout(
+            client.post(&upload_url).multipart(form),
+            progress,
+            UPLOAD_TIMEOUT_SECS,
+            "Abyss",
+        ).await {
             Ok(r) => { println!("[abyss] response status: {}", r.status()); r },
             Err(a) => {
                 println!("[abyss] request failed: {a}");
@@ -409,7 +509,7 @@ impl Req {
         let parent_id = env.get(PARENTID).cloned().unwrap_or_default();
 
         let client = Client::builder()
-            .timeout(Duration::from_secs(1600))
+            .connect_timeout(Duration::from_secs(60))
             .build().unwrap();
 
         let upload_name = outfile.clone().unwrap_or(self.target.clone());
@@ -434,7 +534,8 @@ impl Req {
 
         let upload_name = outfile.clone().unwrap_or(self.target.clone());
 
-        let reader = ProgressReader::new(file, total_size, tx.clone(), Host::Drive);
+        let progress = UploadProgress::new(total_size);
+        let reader = ProgressReader::new(file, total_size, tx.clone(), Host::Drive, progress.clone());
 
         let stream = ReaderStream::new(reader);
         let body = reqwest::Body::wrap_stream(stream);
@@ -453,15 +554,18 @@ impl Req {
             .part("file", part);
 
 
-        let resp = match client
-            .post("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true")
-            .bearer_auth(access_token)
-            .multipart(form)
-            .send().await
-        {
+        let resp = match send_upload_with_dynamic_timeout(
+            client
+                .post("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true")
+                .bearer_auth(access_token)
+                .multipart(form),
+            progress,
+            UPLOAD_TIMEOUT_SECS,
+            "Drive",
+        ).await {
             Ok(r) => r,
             Err(a) => {
-                println!("{:?}", a);
+                println!("{a}");
                 tx.send(RpbData::Fail(Host::Drive)).ok();
                 return false;
             }
