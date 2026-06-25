@@ -439,6 +439,10 @@
   var tcEl       = document.getElementById("tc");
 
   var pollTimer = null;
+  var pollMode = "";
+  var watchedJobId = "";
+  var activeEncodeJobId = "";
+  var busyFlag = false;
   var active = "encode";
 
   // ---- ambient timecode in the titlebar (reads like an .ass event line) ----
@@ -584,11 +588,12 @@
 
   function select(key) {
     active = key;
-    stopPoll();
+    if (pollMode !== "watch") stopPoll();
     Array.prototype.forEach.call(commandsEl.querySelectorAll(".cmd"), function (c, i) {
       c.classList.toggle("active", ORDER[i] === key);
     });
     renderOptions(key);
+    updateRunState();
   }
 
   function renderOptions(key) {
@@ -658,13 +663,24 @@
   runEl.addEventListener("click", doRun);
 
   function doRun() {
-    stopPoll();
-    var cmd = COMMANDS[active];
+    var key = active;
+    if (isEncodeStarter(key) && activeEncodeJobId) {
+      outputEl.innerHTML = '<span class="pill err">busy</span><p class="muted">This page is already watching encode job <span class="mono">#' + esc(activeEncodeJobId) + '</span>. Wait until it finishes before starting another encode.</p>';
+      updateRunState();
+      return;
+    }
+    if (pollMode !== "watch") stopPoll();
+    var cmd = COMMANDS[key];
     gather(cmd).then(function (vals) {
       busy(true);
       return cmd.run(vals).then(function (res) {
         cmd.render(res);
-        if (active === "getjob" && document.getElementById("f_refresh") &&
+        if (res.status === 202 && res.data && res.data.job_id) {
+          var lockEncode = isEncodeStarter(key);
+          if (lockEncode || !activeEncodeJobId) startJobWatch(res.data.job_id, lockEncode);
+          return;
+        }
+        if (key === "getjob" && pollMode !== "watch" && document.getElementById("f_refresh") &&
             document.getElementById("f_refresh").checked && !isTerminal(res)) {
           startPoll(cmd, vals);
         }
@@ -674,7 +690,41 @@
     }).then(function () { busy(false); });
   }
 
+  function isEncodeStarter(key) {
+    return key === "encode" || key === "gitcode" || key === "pancode";
+  }
+
+  function pollJob(jobId) {
+    return api("GET", "/api/v1/jobs/" + encodeURIComponent(jobId));
+  }
+
+  function startJobWatch(jobId, lockEncode) {
+    clearPollTimer();
+    pollMode = "watch";
+    watchedJobId = String(jobId);
+    if (lockEncode) activeEncodeJobId = watchedJobId;
+    pollJob(watchedJobId).then(function (res) {
+      renderResult(res);
+      finishWatched(res);
+    }).catch(function () {});
+    pollTimer = setInterval(function () {
+      pollJob(watchedJobId).then(function (res) {
+        renderResult(res);
+        finishWatched(res);
+      }).catch(function () {});
+    }, 2000);
+    updateRunState();
+  }
+
+  function finishWatched(res) {
+    if (!isTerminal(res)) return;
+    if (res.data && String(res.data.job_id) === activeEncodeJobId) activeEncodeJobId = "";
+    stopPoll();
+  }
+
   function startPoll(cmd, vals) {
+    clearPollTimer();
+    pollMode = "manual";
     pollTimer = setInterval(function () {
       cmd.run(vals).then(function (res) {
         cmd.render(res);
@@ -682,7 +732,8 @@
       }).catch(function () { stopPoll(); });
     }, 2000);
   }
-  function stopPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+  function clearPollTimer() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+  function stopPoll() { clearPollTimer(); pollMode = ""; watchedJobId = ""; updateRunState(); }
 
   function isTerminal(res) {
     return res && res.data && typeof res.data === "object" && TERMINAL.indexOf(res.data.stage) !== -1;
@@ -855,7 +906,7 @@
       outputEl.innerHTML = pill(res) +
         '<div class="accepted">' + chip("Queued") +
         '<span class="mono">#' + esc(res.data.job_id) + "</span>" +
-        '<span class="muted">Queued. Open <b>Get Job</b> to watch it encode.</span></div>' +
+        '<span class="muted">Queued. This page will watch it automatically.</span></div>' +
         renderPipeline("Queued");
       return;
     }
@@ -884,7 +935,12 @@
     outputEl.innerHTML = '<span class="pill err">err</span><pre>' + esc(msg) + "</pre>";
   }
 
-  function busy(on) { runEl.disabled = on; runEl.textContent = on ? "Running…" : "Run"; }
+  function busy(on) { busyFlag = on; updateRunState(); }
+  function updateRunState() {
+    var locked = !!activeEncodeJobId && isEncodeStarter(active);
+    runEl.disabled = busyFlag || locked;
+    runEl.textContent = busyFlag ? "Running…" : (locked ? "Encoding…" : "Run");
+  }
   function esc(s) {
     return String(s === undefined || s === null ? "" : s)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
