@@ -66,73 +66,64 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                             };
                             match out {
                                 0 => {
-                                    let gd_payload = data.get(1).and_then(|v| v.as_multi())?;
-                                    let dood_payload = data.get(2).and_then(|v| v.as_multi())?;
-                                    let lulu_payload = data.get(3).and_then(|v| v.as_multi())?;
-                                    let voesx_payload = data.get(4).and_then(|v| v.as_multi())?;
-                                    let abyss_payload = data.get(5).and_then(|v| v.as_multi())?;
+                                    let total = data.get(1).and_then(|v| v.as_str());
+                                    let compact = total.is_some();
+                                    let offset = if compact { 2 } else { 1 };
+                                    let total = total.unwrap_or("0");
+                                    let gd_payload = data.get(offset).and_then(|v| v.as_multi())?;
+                                    let dood_payload = data.get(offset + 1).and_then(|v| v.as_multi())?;
+                                    let lulu_payload = data.get(offset + 2).and_then(|v| v.as_multi())?;
+                                    let voesx_payload = data.get(offset + 3).and_then(|v| v.as_multi())?;
+                                    let abyss_payload = data.get(offset + 4).and_then(|v| v.as_multi())?;
+                                    let total_index = if compact { 0 } else { 1 };
+                                    let ext_index = if compact { 1 } else { 2 };
                                     let gd_sent =
                                         gd_payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
-                                    let gd_totl =
-                                        gd_payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
+                                    let gd_totl = if compact { total } else { gd_payload.get(total_index).and_then(|v| v.as_str()).unwrap_or("0") };
+                                    let gd_ext =
+                                        gd_payload.get(ext_index).and_then(|v| v.as_str()).unwrap_or("0");
                                     let dood_sent =
                                         dood_payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
-                                    let dood_totl =
-                                        dood_payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
+                                    let dood_totl = if compact { total } else { dood_payload.get(total_index).and_then(|v| v.as_str()).unwrap_or("0") };
+                                    let dood_ext =
+                                        dood_payload.get(ext_index).and_then(|v| v.as_str()).unwrap_or("0");
                                     let lulu_sent =
                                         lulu_payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
-                                    let lulu_totl =
-                                        lulu_payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
+                                    let lulu_totl = if compact { total } else { lulu_payload.get(total_index).and_then(|v| v.as_str()).unwrap_or("0") };
+                                    let lulu_ext =
+                                        lulu_payload.get(ext_index).and_then(|v| v.as_str()).unwrap_or("0");
                                     let voesx_sent = voesx_payload
                                         .get(0)
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("0");
-                                    let voesx_totl = voesx_payload
-                                        .get(1)
+                                    let voesx_totl = if compact { total } else { voesx_payload.get(total_index).and_then(|v| v.as_str()).unwrap_or("0") };
+                                    let voesx_ext = voesx_payload
+                                        .get(ext_index)
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("0");
                                     let abyss_sent = abyss_payload
                                         .get(0)
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("0");
-                                    let abyss_totl = abyss_payload
-                                        .get(1)
+                                    let abyss_totl = if compact { total } else { abyss_payload.get(total_index).and_then(|v| v.as_str()).unwrap_or("0") };
+                                    let abyss_ext = abyss_payload
+                                        .get(ext_index)
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("0");
                                     if !gd_done {
-                                        gd_link = format!(
-                                            "Google {}/{} MB",
-                                            string_byte_to_mb(gd_sent),
-                                            string_byte_to_mb(gd_totl)
-                                        );
+                                        gd_link = upload_progress_text("Google", gd_sent, gd_totl, gd_ext);
                                     }
                                     if release && !dood_done && dood_totl != "0" {
-                                        dood_link = format!(
-                                            "Doodstream {}/{} MB",
-                                            string_byte_to_mb(dood_sent),
-                                            string_byte_to_mb(dood_totl)
-                                        );
+                                        dood_link = upload_progress_text("Doodstream", dood_sent, dood_totl, dood_ext);
                                     }
                                     if release && !lulu_done && lulu_totl != "0" {
-                                        lulu_link = format!(
-                                            "Lulustream {}/{} MB",
-                                            string_byte_to_mb(lulu_sent),
-                                            string_byte_to_mb(lulu_totl)
-                                        );
+                                        lulu_link = upload_progress_text("Lulustream", lulu_sent, lulu_totl, lulu_ext);
                                     }
                                     if release && !voesx_done && voesx_totl != "0" {
-                                        voesx_link = format!(
-                                            "Voe {}/{} MB",
-                                            string_byte_to_mb(voesx_sent),
-                                            string_byte_to_mb(voesx_totl)
-                                        );
+                                        voesx_link = upload_progress_text("Voe", voesx_sent, voesx_totl, voesx_ext);
                                     }
                                     if release && !abyss_done && abyss_totl != "0" {
-                                        abyss_link = format!(
-                                            "Abyss {}/{} MB",
-                                            string_byte_to_mb(abyss_sent),
-                                            string_byte_to_mb(abyss_totl)
-                                        );
+                                        abyss_link = upload_progress_text("Abyss", abyss_sent, abyss_totl, abyss_ext);
                                     }
                                     tx.try_send(upload_payload(
                                         job_id,
@@ -367,20 +358,26 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                                 };
                                 match out {
                                     0 => {
-                                        let gd_payload = data.get(1).and_then(|v| v.as_multi())?;
+                                        let total = data.get(1).and_then(|v| v.as_str());
+                                        let compact = total.is_some();
+                                        let gd_payload = data.get(if compact { 2 } else { 1 }).and_then(|v| v.as_multi())?;
                                         let gd_sent = gd_payload
                                             .get(0)
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("0");
-                                        let gd_totl = gd_payload
-                                            .get(1)
+                                        let gd_totl = if compact {
+                                            total.unwrap_or("0")
+                                        } else {
+                                            gd_payload.get(1).and_then(|v| v.as_str()).unwrap_or("0")
+                                        };
+                                        let gd_ext = gd_payload
+                                            .get(if compact { 1 } else { 2 })
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("0");
                                         rows[idx] = format!(
-                                            "{}: {}/{}MB",
+                                            "{}: {}",
                                             label,
-                                            string_byte_to_mb(gd_sent),
-                                            string_byte_to_mb(gd_totl)
+                                            upload_progress_text("", gd_sent, gd_totl, gd_ext)
                                         );
                                         tx.try_send((
                                             job_id,
@@ -594,6 +591,25 @@ fn format_backupall_rows(rows: &[String]) -> String {
         out.push_str(&format!("\n...and {} more", hidden));
     }
     out
+}
+
+fn upload_progress_text(host: &str, sent: &str, total: &str, extensions: &str) -> String {
+    let suffix = if extensions == "0" {
+        String::new()
+    } else {
+        format!("+{}", extensions)
+    };
+    let progress = format!(
+        "{}/{} MB{}",
+        string_byte_to_mb(sent),
+        string_byte_to_mb(total),
+        suffix
+    );
+    if host.is_empty() {
+        progress
+    } else {
+        format!("{} {}", host, progress)
+    }
 }
 
 fn upload_payload(

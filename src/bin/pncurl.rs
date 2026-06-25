@@ -143,16 +143,17 @@ async fn main() {
             });
         }
 
+        let mut total_size = 0u64;
         let mut gd_done = 0u64;
-        let mut gd_all = 0u64;
+        let mut gd_ext = 0u64;
         let mut dood_done = 0u64;
-        let mut dood_all = 0u64;
+        let mut dood_ext = 0u64;
         let mut lulu_done = 0u64;
-        let mut lulu_all = 0u64;
+        let mut lulu_ext = 0u64;
         let mut voesx_done = 0u64;
-        let mut voesx_all = 0u64;
+        let mut voesx_ext = 0u64;
         let mut abyss_done = 0u64;
-        let mut abyss_all = 0u64;
+        let mut abyss_ext = 0u64;
         let mut last = Instant::now();
 
         let mut gd_result: Option<Result<String, ()>> = None;
@@ -163,68 +164,73 @@ async fn main() {
 
         while let Ok(val) = rx.recv() {
             match val {
-                RpbData::Progress(done, total, Host::Drive) => {
-                    gd_done = done; gd_all = total;
+                RpbData::Progress(done, total, extensions, Host::Drive) => {
+                    if total != 0 { total_size = total; }
+                    gd_done = done; gd_ext = extensions;
                     if last.elapsed() < Duration::from_secs(5) { continue; }
                     last = Instant::now();
                     println!("{}",
                         pn_emit!(
                             protocol = proto,
                             negkey = &neg,
-                            schema = [leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
-                            data   = ["0", [gd_done, gd_all], [dood_done, dood_all], [lulu_done, lulu_all], [voesx_done, voesx_all], [abyss_done, abyss_all]]
+                            schema = [leaf, leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
+                            data   = ["0", total_size, [gd_done, gd_ext], [dood_done, dood_ext], [lulu_done, lulu_ext], [voesx_done, voesx_ext], [abyss_done, abyss_ext]]
                         ).unwrap()
                     );
                 }
-                RpbData::Progress(done, total, Host::Doodstream) => {
-                    dood_done = done; dood_all = total;
+                RpbData::Progress(done, total, extensions, Host::Doodstream) => {
+                    if total != 0 { total_size = total; }
+                    dood_done = done; dood_ext = extensions;
                     if last.elapsed() < Duration::from_secs(5) { continue; }
                     last = Instant::now();
                     println!("{}",
                         pn_emit!(
                             protocol = proto,
                             negkey = &neg,
-                            schema = [leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
-                            data   = ["0", [gd_done, gd_all], [dood_done, dood_all], [lulu_done, lulu_all], [voesx_done, voesx_all], [abyss_done, abyss_all]]
+                            schema = [leaf, leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
+                            data   = ["0", total_size, [gd_done, gd_ext], [dood_done, dood_ext], [lulu_done, lulu_ext], [voesx_done, voesx_ext], [abyss_done, abyss_ext]]
                         ).unwrap()
                     );
                 }
-                RpbData::Progress(done, total, Host::Lulu) => {
-                    lulu_done = done; lulu_all = total;
+                RpbData::Progress(done, total, extensions, Host::Lulu) => {
+                    if total != 0 { total_size = total; }
+                    lulu_done = done; lulu_ext = extensions;
                     if last.elapsed() < Duration::from_secs(5) { continue; }
                     last = Instant::now();
                     println!("{}",
                         pn_emit!(
                             protocol = proto,
                             negkey = &neg,
-                            schema = [leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
-                            data   = ["0", [gd_done, gd_all], [dood_done, dood_all], [lulu_done, lulu_all], [voesx_done, voesx_all], [abyss_done, abyss_all]]
+                            schema = [leaf, leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
+                            data   = ["0", total_size, [gd_done, gd_ext], [dood_done, dood_ext], [lulu_done, lulu_ext], [voesx_done, voesx_ext], [abyss_done, abyss_ext]]
                         ).unwrap()
                     );
                 }
-                RpbData::Progress(done, total, Host::VoeSx) => {
-                    voesx_done = done; voesx_all = total;
+                RpbData::Progress(done, total, extensions, Host::VoeSx) => {
+                    if total != 0 { total_size = total; }
+                    voesx_done = done; voesx_ext = extensions;
                     if last.elapsed() < Duration::from_secs(5) { continue; }
                     last = Instant::now();
                     println!("{}",
                         pn_emit!(
                             protocol = proto,
                             negkey = &neg,
-                            schema = [leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
-                            data   = ["0", [gd_done, gd_all], [dood_done, dood_all], [lulu_done, lulu_all], [voesx_done, voesx_all], [abyss_done, abyss_all]]
+                            schema = [leaf, leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
+                            data   = ["0", total_size, [gd_done, gd_ext], [dood_done, dood_ext], [lulu_done, lulu_ext], [voesx_done, voesx_ext], [abyss_done, abyss_ext]]
                         ).unwrap()
                     );
                 }
-                RpbData::Progress(done, total, Host::Abyss) => {
-                    abyss_done = done; abyss_all = total;
+                RpbData::Progress(done, total, extensions, Host::Abyss) => {
+                    if total != 0 { total_size = total; }
+                    abyss_done = done; abyss_ext = extensions;
                     if last.elapsed() < Duration::from_secs(5) { continue; }
                     last = Instant::now();
                     println!("{}",
                         pn_emit!(
                             protocol = proto,
                             negkey = &neg,
-                            schema = [leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
-                            data   = ["0", [gd_done, gd_all], [dood_done, dood_all], [lulu_done, lulu_all], [voesx_done, voesx_all], [abyss_done, abyss_all]]
+                            schema = [leaf, leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
+                            data   = ["0", total_size, [gd_done, gd_ext], [dood_done, dood_ext], [lulu_done, lulu_ext], [voesx_done, voesx_ext], [abyss_done, abyss_ext]]
                         ).unwrap()
                     );
                 }

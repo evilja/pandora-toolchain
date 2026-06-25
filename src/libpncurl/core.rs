@@ -26,11 +26,12 @@ const UPLOAD_TIMEOUT_THRESHOLDS: [f64; 4] = [70.0, 85.0, 90.0, 95.0];
 struct UploadProgress {
     sent: u64,
     total: u64,
+    extensions: u64,
 }
 
 impl UploadProgress {
     fn new(total: u64) -> Arc<Mutex<Self>> {
-        Arc::new(Mutex::new(Self { sent: 0, total }))
+        Arc::new(Mutex::new(Self { sent: 0, total, extensions: 0 }))
     }
 }
 
@@ -65,7 +66,11 @@ impl<R: AsyncRead + Unpin> AsyncRead for ProgressReader<R> {
             if let Ok(mut progress) = self.progress.lock() {
                 progress.sent = self.sent;
             }
-            self.tx.send(RpbData::Progress(self.sent, self.total, self.host.clone())).ok();
+            let extensions = match self.progress.lock() {
+                Ok(progress) => progress.extensions,
+                Err(_) => 0,
+            };
+            self.tx.send(RpbData::Progress(self.sent, self.total, extensions, self.host.clone())).ok();
         }
 
         result
@@ -77,6 +82,8 @@ async fn send_upload_with_dynamic_timeout(
     progress: Arc<Mutex<UploadProgress>>,
     base_timeout_secs: u64,
     label: &str,
+    tx: Sender<RpbData>,
+    host: Host,
 ) -> Result<reqwest::Response, String> {
     let mut request = Box::pin(request.send());
     let mut deadline = tokio::time::Instant::now() + Duration::from_secs(base_timeout_secs);
@@ -117,7 +124,11 @@ async fn send_upload_with_dynamic_timeout(
                     deadline = deadline + Duration::from_secs(UPLOAD_TIMEOUT_EXTENSION_SECS);
                     allowed_secs += UPLOAD_TIMEOUT_EXTENSION_SECS;
                     threshold_idx += 1;
+                    if let Ok(mut progress) = progress.lock() {
+                        progress.extensions = threshold_idx as u64;
+                    }
                     extended = true;
+                    tx.send(RpbData::Progress(sent, total, threshold_idx as u64, host.clone())).ok();
                     println!("[upload-timeout] {label}: +{UPLOAD_TIMEOUT_EXTENSION_SECS}s ({percent:.2}%, {:.2}MB/s)", speed / 1_048_576.0);
                 }
 
@@ -128,6 +139,10 @@ async fn send_upload_with_dynamic_timeout(
                     deadline = deadline + Duration::from_secs(UPLOAD_TIMEOUT_EXTENSION_SECS);
                     allowed_secs += UPLOAD_TIMEOUT_EXTENSION_SECS;
                     threshold_idx += 1;
+                    if let Ok(mut progress) = progress.lock() {
+                        progress.extensions = threshold_idx as u64;
+                    }
+                    tx.send(RpbData::Progress(sent, total, threshold_idx as u64, host.clone())).ok();
                     println!("[upload-timeout] {label}: +{UPLOAD_TIMEOUT_EXTENSION_SECS}s ({percent:.2}%, {:.2}MB/s)", speed / 1_048_576.0);
                 }
 
@@ -176,7 +191,7 @@ pub enum Host {
     Abyss,
 }
 pub enum RpbData {
-    Progress(u64, u64, Host),
+    Progress(u64, u64, u64, Host),
     Done(String, Host),
     Fail(Host),
 }
@@ -323,6 +338,8 @@ impl Req {
             progress,
             UPLOAD_TIMEOUT_SECS,
             &host_label,
+            tx.clone(),
+            host.clone(),
         ).await {
             Ok(r) => { println!("[upload] response status: {}", r.status()); r },
             Err(a) => {
@@ -412,6 +429,8 @@ impl Req {
             progress,
             UPLOAD_TIMEOUT_SECS,
             "Abyss",
+            tx.clone(),
+            Host::Abyss,
         ).await {
             Ok(r) => { println!("[abyss] response status: {}", r.status()); r },
             Err(a) => {
@@ -562,6 +581,8 @@ impl Req {
             progress,
             UPLOAD_TIMEOUT_SECS,
             "Drive",
+            tx.clone(),
+            Host::Drive,
         ).await {
             Ok(r) => r,
             Err(a) => {

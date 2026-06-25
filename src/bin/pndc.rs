@@ -72,8 +72,8 @@ fn min_rank_for_command(part: &str) -> u8 {
     match part {
         "encode" | "pancode" | "probe" | "backup" | "backupall" | "scrape" | "gitcode" | "smartcode" | "merge" | "release" | "source" => 0,
         "!enc" | "!encode" => 0,
-        "job" | "get" | "acixconfirm" | "!ts" => 1,
-        "auth" | "remove" | "gitsync" | "hearts" | "configure" | "edit" | "acixtemplate" | "readmebase" | "addapi" | "font" | "!ban" | "!some" => 2,
+        "job" | "get" | "acixconfirm" | "!ts" | "font" => 1,
+        "auth" | "remove" | "gitsync" | "hearts" | "configure" | "edit" | "acixtemplate" | "readmebase" | "addapi" | "!ban" | "!some" => 2,
         "attach" | "init" | "destruct" | "detach" | "gentoken" => 3,
         _ => u8::MAX,
     }
