@@ -63,7 +63,11 @@ impl Frontend {
             Frontend::Discord { ctx, .. } => {
                 ctx.set_presence(Some(ActivityData::custom("Recompiling Pandora.")), OnlineStatus::Idle);
             }
-            Frontend::Web => {}
+            Frontend::Web => {
+                if let Some(ctx) = global_context() {
+                    ctx.set_presence(Some(ActivityData::custom("Recompiling Pandora.")), OnlineStatus::Idle);
+                }
+            }
             Frontend::None => {}
         }
     }
