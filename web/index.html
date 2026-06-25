@@ -826,6 +826,21 @@
     if (!rows) return "";
     return '<div class="prog-label">Links</div>' + rows;
   }
+  function summaryBlock(d) {
+    var rows = "";
+    if (d.preset) rows += '<div class="link-row"><span class="link-host mono">Preset</span><span>' + esc(d.preset) + "</span></div>";
+    if (d.link) rows += '<div class="link-row"><span class="link-host mono">Source</span><span>' + esc(d.link) + "</span></div>";
+    return rows ? '<div class="prog-label">Details</div>' + rows : "";
+  }
+  function messageText(data, ok) {
+    if (typeof data === "string") return data;
+    if (data && typeof data === "object") {
+      if (data.error) return data.error;
+      if (data.message) return data.message;
+      if (data.detail) return data.detail;
+    }
+    return ok ? "Request completed." : "Request failed.";
+  }
   function renderResult(res) {
     if (res.ok && isJobStatus(res.data)) {
       var d = res.data;
@@ -833,8 +848,7 @@
                  '<span class="stat-id mono">#' + esc(d.job_id) + "</span>" +
                  '<span class="stat-type">' + esc(d.job_type) + "</span></div>";
       var pipe = PIPELINE_STAGES.indexOf(d.stage) !== -1 ? renderPipeline(d.stage, d.progress) : "";
-      outputEl.innerHTML = head + pipe + progressBlock(d.progress) + linksBlock(d.links) +
-        "<pre>" + esc(JSON.stringify(d, null, 2)) + "</pre>";
+      outputEl.innerHTML = head + pipe + progressBlock(d.progress) + linksBlock(d.links) + summaryBlock(d);
       return;
     }
     if (res.status === 202 && res.data && res.data.job_id) {
@@ -851,8 +865,7 @@
       outputEl.innerHTML = pill(res) + '<p class="muted">Accepted.</p>';
       return;
     }
-    var txt = typeof res.data === "string" ? res.data : JSON.stringify(res.data, null, 2);
-    outputEl.innerHTML = pill(res) + note + "<pre>" + esc(txt) + "</pre>";
+    outputEl.innerHTML = pill(res) + note + '<p class="muted">' + esc(messageText(res.data, res.ok)) + "</p>";
   }
 
   function renderJobs(res) {
