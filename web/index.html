@@ -679,6 +679,11 @@
 
   function parseProbeFiles(files) {
     if (!files) return [];
+    if (Array.isArray(files)) {
+      return files.map(function (f) {
+        return f && f.index !== undefined ? { index: f.index, label: f.label || f.name || f.index } : null;
+      }).filter(Boolean);
+    }
     return String(files).split("\n").map(function (line) {
       var m = line.match(/`?(\d+)`?\s*[—-]\s*(.*)/);
       if (!m) return null;
@@ -762,13 +767,15 @@
     var d = res.data;
     if (d.stage === "Probed") {
       pancodeProbeReady = true;
-      pancodeProbeFiles = d.progress && d.progress.files ? d.progress.files : "";
+      pancodeProbeFiles = d.progress && d.progress.file_options ? d.progress.file_options : (d.progress && d.progress.files ? d.progress.files : "");
       renderPancodeFiles();
       clearPollTimer();
       pollMode = "";
       watchedJobId = "";
       updateRunState();
     } else if (TERMINAL.indexOf(d.stage) !== -1) {
+      pancodeProbeJobId = "";
+      pancodeProbeTorrent = "";
       pancodeProbeReady = false;
       pancodeProbeFiles = "";
       renderPancodeFiles();

@@ -546,6 +546,10 @@ async fn drive_env_path(directory: &PathBuf, server_id: Option<u64>) -> String {
     }
 }
 
+fn is_video_ext(ext: &str) -> bool {
+    matches!(ext.to_ascii_lowercase().as_str(), "mkv" | "mp4" | "m4v" | "mov" | "avi" | "webm" | "ts" | "m2ts")
+}
+
 async fn find_mkv_files(root: &PathBuf) -> Vec<PathBuf> {
     let mut result = Vec::new();
     let mut stack = vec![root.clone()];
@@ -561,7 +565,7 @@ async fn find_mkv_files(root: &PathBuf) -> Vec<PathBuf> {
             } else if path
                 .extension()
                 .and_then(|e| e.to_str())
-                .map(|e| e.eq_ignore_ascii_case("mkv"))
+                .map(is_video_ext)
                 .unwrap_or(false)
             {
                 result.push(path);

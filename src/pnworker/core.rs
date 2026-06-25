@@ -401,7 +401,8 @@ async fn persist_side_effects(db: &JobDb, job_id: u64, payload: &MessagePayload,
         });
         db.update_progress(job_id, &v.to_string()).await.ok();
     } else if *id == PROBE_ROW {
-        let v = serde_json::json!({ "type": "probe", "files": args.get(0) });
+        let files = args.get(0).cloned().unwrap_or_default();
+        let v = serde_json::json!({ "type": "probe", "files": files, "file_options": parse_probe_options(&files) });
         db.update_progress(job_id, &v.to_string()).await.ok();
     } else if *id == UPLOAD_DONE {
         let v = serde_json::json!({
@@ -416,6 +417,19 @@ async fn persist_side_effects(db: &JobDb, job_id: u64, payload: &MessagePayload,
         let v = serde_json::json!({ "episodes": args.get(0) });
         db.update_links(job_id, &v.to_string()).await.ok();
     }
+}
+
+fn parse_probe_options(files: &str) -> Vec<serde_json::Value> {
+    files
+        .lines()
+        .filter_map(|line| {
+            let rest = line.strip_prefix('`')?;
+            let end = rest.find('`')?;
+            let index = &rest[..end];
+            let label = line.replace('`', "");
+            Some(serde_json::json!({ "index": index, "label": label }))
+        })
+        .collect()
 }
 
 fn encode_percent(frame: &str, total: &str) -> u64 {

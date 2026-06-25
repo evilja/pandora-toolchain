@@ -334,7 +334,7 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     let mkv_files = find_mkv_files(&torrent_dir).await;
 
                     if mkv_files.is_empty() {
-                        eprintln!("No .mkv file found in downloaded torrent");
+                        eprintln!("No video file found in downloaded torrent");
                         tx.send((
                             job_id,
                             MessagePayload::Static(TORRENT_FAIL),
@@ -468,6 +468,10 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
     }
 }
 
+fn is_video_ext(ext: &str) -> bool {
+    matches!(ext.to_ascii_lowercase().as_str(), "mkv" | "mp4" | "m4v" | "mov" | "avi" | "webm" | "ts" | "m2ts")
+}
+
 async fn find_mkv_files(root: &PathBuf) -> Vec<PathBuf> {
     let mut result = Vec::new();
     let mut stack = vec![root.clone()];
@@ -483,7 +487,7 @@ async fn find_mkv_files(root: &PathBuf) -> Vec<PathBuf> {
             } else if path
                 .extension()
                 .and_then(|e| e.to_str())
-                .map(|e| e.eq_ignore_ascii_case("mkv"))
+                .map(is_video_ext)
                 .unwrap_or(false)
             {
                 result.push(path);

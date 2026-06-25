@@ -15,6 +15,18 @@ pub struct P2p {
     cfile: Option<PathBuf>,
 }
 
+fn is_video_ext(ext: &str) -> bool {
+    matches!(ext.to_ascii_lowercase().as_str(), "mkv" | "mp4" | "m4v" | "mov" | "avi" | "webm" | "ts" | "m2ts")
+}
+
+fn is_video_name(name: &str) -> bool {
+    Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(is_video_ext)
+        .unwrap_or(false)
+}
+
 impl P2p {
     pub async fn new(host: &str, uname: &str, pass: &str, cfile: Option<String>) -> Self {
         println!(
@@ -111,22 +123,21 @@ impl P2p {
             files.len()
         );
 
-        // Filter .mkv files
-        let mkv_files: Vec<(u64, String, u64)> = files
+        let video_files: Vec<(u64, String, u64)> = files
             .iter()
-            .filter(|f| f.name.to_lowercase().ends_with(".mkv"))
+            .filter(|f| is_video_name(&f.name))
             .map(|f| (f.index, f.name.clone(), f.size))
             .collect();
         println!(
-            "[pnp2p] probe_torrent: found {} .mkv files",
-            mkv_files.len()
+            "[pnp2p] probe_torrent: found {} video files",
+            video_files.len()
         );
 
         println!("[pnp2p] probe_torrent: deleting torrent and cleaning up temp dir");
         self.api.delete_torrents(vec![hash], true).await?;
         tokio::fs::remove_dir_all(&temp_dir).await.ok();
-        println!("[pnp2p] probe_torrent: success, returning mkv_files");
-        Ok(mkv_files)
+        println!("[pnp2p] probe_torrent: success, returning video_files");
+        Ok(video_files)
     }
 
     pub async fn download_selected(
@@ -567,7 +578,7 @@ async fn copy_mkv_files_to_save_path(
         } else if path
             .extension()
             .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case("mkv"))
+            .map(is_video_ext)
             .unwrap_or(false)
         {
             let target = save_path.join(path.file_name().unwrap_or_default());
