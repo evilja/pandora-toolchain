@@ -2,7 +2,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, Query, Request, State},
+    extract::{DefaultBodyLimit, Extension, Path, Query, Request, State},
     http::{StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -26,6 +26,11 @@ struct AppState {
     tx: Sender<JobClass>,
     db: Arc<JobDb>,
     api_author: u64,
+}
+
+#[derive(Clone)]
+struct ApiAuth {
+    local_server_id: Option<u64>,
 }
 
 pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -84,7 +89,7 @@ async fn health() -> &'static str {
     "ok"
 }
 
-async fn auth(req: Request, next: Next) -> Response {
+async fn auth(mut req: Request, next: Next) -> Response {
     let presented = req
         .headers()
         .get(header::AUTHORIZATION)
@@ -97,16 +102,36 @@ async fn auth(req: Request, next: Next) -> Response {
         _ => return (StatusCode::UNAUTHORIZED, "missing bearer token").into_response(),
     };
 
-    let valid = get_perm(API_TOKENS_PATH.to_string())
-        .into_iter()
-        .map(|l| l.trim().to_string())
-        .any(|t| !t.is_empty() && !t.starts_with(';') && t == token);
-
-    if !valid {
+    let Some(auth) = api_auth_for_token(&token) else {
         return (StatusCode::UNAUTHORIZED, "invalid token").into_response();
-    }
+    };
 
+    req.extensions_mut().insert(auth);
     next.run(req).await
+}
+
+fn api_auth_for_token(token: &str) -> Option<ApiAuth> {
+    for line in get_perm(API_TOKENS_PATH.to_string()) {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with(';') {
+            continue;
+        }
+        let mut parts = line.split('|');
+        let stored = parts.next().unwrap_or("").trim();
+        if stored != token {
+            continue;
+        }
+        let local_server_id = match (parts.next(), parts.next()) {
+            (Some("local"), Some(server_id)) => server_id.trim().parse::<u64>().ok(),
+            _ => None,
+        };
+        return Some(ApiAuth { local_server_id });
+    }
+    None
+}
+
+fn effective_server_id(auth: &ApiAuth, requested: Option<u64>) -> Option<u64> {
+    auth.local_server_id.or(requested)
 }
 
 #[derive(Deserialize)]
@@ -149,7 +174,7 @@ struct EncodeReq {
     server_id: Option<u64>,
 }
 
-async fn submit_encode(State(st): State<AppState>, Json(req): Json<EncodeReq>) -> Response {
+async fn submit_encode(State(st): State<AppState>, Extension(auth): Extension<ApiAuth>, Json(req): Json<EncodeReq>) -> Response {
     let subtitle = match base64_decode_bytes(&req.subtitle_b64) {
         Ok(b) => b,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("subtitle_b64: {e}")).into_response(),
@@ -162,7 +187,7 @@ async fn submit_encode(State(st): State<AppState>, Json(req): Json<EncodeReq>) -
         nyaaise(&req.torrent),
         subtitle,
         req.lang.unwrap_or_else(|| "EN".to_string()),
-        req.server_id,
+        effective_server_id(&auth, req.server_id),
     );
     submit(&st, job).await
 }
@@ -180,7 +205,7 @@ struct BackupReq {
     all: bool,
 }
 
-async fn submit_backup(State(st): State<AppState>, Json(req): Json<BackupReq>) -> Response {
+async fn submit_backup(State(st): State<AppState>, Extension(auth): Extension<ApiAuth>, Json(req): Json<BackupReq>) -> Response {
     let job_type = if req.all { JobType::BackupAll } else { JobType::Backup };
     let job = Job::new_api(
         st.api_author,
@@ -190,7 +215,7 @@ async fn submit_backup(State(st): State<AppState>, Json(req): Json<BackupReq>) -
         nyaaise(&req.torrent),
         vec![],
         req.lang.unwrap_or_else(|| "EN".to_string()),
-        req.server_id,
+        effective_server_id(&auth, req.server_id),
     );
     submit(&st, job).await
 }
@@ -223,7 +248,7 @@ struct PancodeReq {
     preset: Option<String>,
 }
 
-async fn submit_pancode(State(st): State<AppState>, Json(req): Json<PancodeReq>) -> Response {
+async fn submit_pancode(State(st): State<AppState>, Extension(auth): Extension<ApiAuth>, Json(req): Json<PancodeReq>) -> Response {
     let subtitle = match base64_decode_bytes(&req.subtitle_b64) {
         Ok(b) => b,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("subtitle_b64: {e}")).into_response(),
@@ -251,7 +276,7 @@ async fn submit_pancode(State(st): State<AppState>, Json(req): Json<PancodeReq>)
         nyaaise(&probe.link),
         subtitle,
         "EN".to_string(),
-        None,
+        effective_server_id(&auth, None),
     );
     job.probe_job_id = Some(probe_id);
     job.probe_file_index = Some(req.file_index);
@@ -266,7 +291,7 @@ struct GitcodeReq {
     preset: Option<String>,
 }
 
-async fn submit_gitcode(State(st): State<AppState>, Json(req): Json<GitcodeReq>) -> Response {
+async fn submit_gitcode(State(st): State<AppState>, Extension(auth): Extension<ApiAuth>, Json(req): Json<GitcodeReq>) -> Response {
     let url = github_blob_to_raw(&req.subtitle_url);
     let subtitle = match fetch_subtitle(&url).await {
         Ok(b) => b,
@@ -280,7 +305,7 @@ async fn submit_gitcode(State(st): State<AppState>, Json(req): Json<GitcodeReq>)
         nyaaise(&req.torrent),
         subtitle,
         "EN".to_string(),
-        None,
+        effective_server_id(&auth, None),
     );
     submit(&st, job).await
 }

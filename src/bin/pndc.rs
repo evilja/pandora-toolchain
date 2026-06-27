@@ -226,8 +226,8 @@ fn help_catalog() -> &'static [HelpCommand] {
             name: "gentoken",
             rank: 3,
             summary: "Generate a new API bearer token.",
-            usage: "/gentoken [label:<note>]",
-            details: "Mints a random bearer token for the HTTP API and appends it to the token file. The token is shown once, privately. Upper only.",
+            usage: "/gentoken [label:<note>] [local:<true|false>]",
+            details: "Mints a random bearer token for the HTTP API and appends it to the token file. With local enabled, jobs submitted with the token use this server's Google Drive credentials when available, falling back to global credentials. The token is shown once, privately. Upper only.",
         },
         HelpCommand {
             name: "acixconfirm",
@@ -1333,6 +1333,10 @@ impl EventHandler for Handler {
                 .description("Generate a new API bearer token (upper only)")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "label", "Optional note stored beside the token")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Boolean, "local", "Use this server's Google Drive credentials for API uploads when available")
                         .required(false)
                 ),
             CreateCommand::new("acixconfirm")

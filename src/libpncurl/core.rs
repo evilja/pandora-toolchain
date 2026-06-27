@@ -21,7 +21,7 @@ const UPLOAD_TIMEOUT_SECS: u64 = 600;
 const UPLOAD_TIMEOUT_EXTENSION_SECS: u64 = 100;
 const UPLOAD_SPEED_CHECK_INTERVAL_SECS: u64 = 60;
 const UPLOAD_SPEED_THRESHOLD_BYTES_PER_SEC: f64 = 3.0 * 1024.0 * 1024.0;
-const UPLOAD_TIMEOUT_THRESHOLDS: [f64; 4] = [70.0, 85.0, 90.0, 95.0];
+const UPLOAD_TIMEOUT_THRESHOLDS: [f64; 6] = [50.0, 60.0, 70.0, 85.0, 90.0, 95.0];
 
 struct UploadProgress {
     sent: u64,
@@ -89,6 +89,7 @@ async fn send_upload_with_dynamic_timeout(
     let mut deadline = tokio::time::Instant::now() + Duration::from_secs(base_timeout_secs);
     let mut allowed_secs = base_timeout_secs;
     let mut threshold_idx = 0usize;
+    let mut total_extensions = 0u64;
     let mut last_sent = 0u64;
     let mut last_check = std::time::Instant::now();
 
@@ -124,25 +125,23 @@ async fn send_upload_with_dynamic_timeout(
                     deadline = deadline + Duration::from_secs(UPLOAD_TIMEOUT_EXTENSION_SECS);
                     allowed_secs += UPLOAD_TIMEOUT_EXTENSION_SECS;
                     threshold_idx += 1;
+                    total_extensions += 1;
                     if let Ok(mut progress) = progress.lock() {
-                        progress.extensions = threshold_idx as u64;
+                        progress.extensions = total_extensions;
                     }
                     extended = true;
-                    tx.send(RpbData::Progress(sent, total, threshold_idx as u64, host.clone())).ok();
+                    tx.send(RpbData::Progress(sent, total, total_extensions, host.clone())).ok();
                     println!("[upload-timeout] {label}: +{UPLOAD_TIMEOUT_EXTENSION_SECS}s ({percent:.2}%, {:.2}MB/s)", speed / 1_048_576.0);
                 }
 
-                if !extended
-                    && threshold_idx < UPLOAD_TIMEOUT_THRESHOLDS.len()
-                    && speed >= UPLOAD_SPEED_THRESHOLD_BYTES_PER_SEC
-                {
+                if !extended && speed >= UPLOAD_SPEED_THRESHOLD_BYTES_PER_SEC {
                     deadline = deadline + Duration::from_secs(UPLOAD_TIMEOUT_EXTENSION_SECS);
                     allowed_secs += UPLOAD_TIMEOUT_EXTENSION_SECS;
-                    threshold_idx += 1;
+                    total_extensions += 1;
                     if let Ok(mut progress) = progress.lock() {
-                        progress.extensions = threshold_idx as u64;
+                        progress.extensions = total_extensions;
                     }
-                    tx.send(RpbData::Progress(sent, total, threshold_idx as u64, host.clone())).ok();
+                    tx.send(RpbData::Progress(sent, total, total_extensions, host.clone())).ok();
                     println!("[upload-timeout] {label}: +{UPLOAD_TIMEOUT_EXTENSION_SECS}s ({percent:.2}%, {:.2}MB/s)", speed / 1_048_576.0);
                 }
 

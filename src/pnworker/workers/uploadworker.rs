@@ -521,7 +521,7 @@ async fn drive_env_path(directory: &PathBuf, server_id: Option<u64>) -> String {
     let client_secret = lines.next().unwrap_or("").trim().to_string();
     let refresh_token = lines.next().unwrap_or("").trim().to_string();
     let parent_id = lines.next().unwrap_or("").trim().to_string();
-    if client_id.is_empty() && client_secret.is_empty() && refresh_token.is_empty() && parent_id.is_empty() {
+    if client_id.is_empty() || client_secret.is_empty() || refresh_token.is_empty() || parent_id.is_empty() {
         return ENV_PATH.to_string();
     }
 

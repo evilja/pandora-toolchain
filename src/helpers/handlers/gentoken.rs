@@ -8,6 +8,15 @@ pub async fn handle_gentoken(
     command: &serenity::all::CommandInteraction,
 ) {
     let label = option_trimmed(command, "label");
+    let local = option_bool(command, "local").unwrap_or(false);
+    let local_server_id = if local {
+        match command_server_id(ctx, command, "/gentoken local").await {
+            Some(id) => Some(id),
+            None => return,
+        }
+    } else {
+        None
+    };
     if let Some(l) = &label {
         if l.contains('\n') || l.contains('\r') {
             command_error(ctx, command, "Error: `label` cannot contain newlines.").await;
@@ -38,7 +47,10 @@ pub async fn handle_gentoken(
             .unwrap_or(0);
         blob.push_str(&format!("; {} (added {})\n", l, ts));
     }
-    blob.push_str(&token);
+    match local_server_id {
+        Some(id) => blob.push_str(&format!("{}|local|{}", token, id)),
+        None => blob.push_str(&token),
+    }
     blob.push('\n');
 
     let write_result = async {
@@ -57,11 +69,14 @@ pub async fn handle_gentoken(
     }
 
     let labelled = label.map(|l| format!(" for `{}`", l)).unwrap_or_default();
+    let scope = local_server_id
+        .map(|id| format!(" It will use this server's Google Drive credentials (`{}`) when available, otherwise the global credentials.", id))
+        .unwrap_or_default();
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
             .content(format!(
-                "Created an API bearer token{}. It's stored in `{}` and shown only here:\n```\n{}\n```\nSend it as `Authorization: Bearer <token>`.",
-                labelled, TOKENS_PATH, token
+                "Created an API bearer token{}.{} It's stored in `{}` and shown only here:\n```\n{}\n```\nSend it as `Authorization: Bearer <token>`.",
+                labelled, scope, TOKENS_PATH, token
             ))
             .ephemeral(true)
     )).await.ok();
