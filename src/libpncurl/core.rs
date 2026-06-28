@@ -1,37 +1,37 @@
-use crate::{libpnenv::{
-    core::get_env,
-    standard::{
-        CLIENT_ID, CLIENT_SECRET, PARENTID, REFRESH_TOKEN, TOKEN_URL, DOODSTREAM,
-        LULU, VOESX, ABYSS,
-    }
-}, libpnlogging::core::LoggingHandle, log};
+use crate::{
+    libpnenv::{
+        core::get_env,
+        standard::{
+            ABYSS, CLIENT_ID, CLIENT_SECRET, DOODSTREAM, LULU, PARENTID, REFRESH_TOKEN, TOKEN_URL,
+            VOESX,
+        },
+    },
+    libpnlogging::core::LoggingHandle,
+    log,
+};
 use reqwest::{Client, multipart};
 use serde::Deserialize;
-use std::{collections::HashMap, path::PathBuf, time::Duration};
 use std::fs::File;
-use tokio_util::io::ReaderStream;
 use std::io::Write;
 use std::path::Path;
-use std::sync::{Arc, Mutex, mpsc::Sender};
-use tokio::io::{AsyncRead, ReadBuf};
 use std::pin::Pin;
+use std::sync::{Arc, Mutex, mpsc::Sender};
 use std::task::{Context, Poll};
-
-const UPLOAD_TIMEOUT_SECS: u64 = 600;
-const UPLOAD_TIMEOUT_EXTENSION_SECS: u64 = 100;
-const UPLOAD_SPEED_CHECK_INTERVAL_SECS: u64 = 60;
-const UPLOAD_SPEED_THRESHOLD_BYTES_PER_SEC: f64 = 3.0 * 1024.0 * 1024.0;
-const UPLOAD_TIMEOUT_THRESHOLDS: [f64; 6] = [50.0, 60.0, 70.0, 85.0, 90.0, 95.0];
+use std::{collections::HashMap, path::PathBuf, time::Duration};
+use tokio::io::{AsyncRead, ReadBuf};
+use tokio_util::io::ReaderStream;
 
 struct UploadProgress {
     sent: u64,
-    total: u64,
     extensions: u64,
 }
 
 impl UploadProgress {
-    fn new(total: u64) -> Arc<Mutex<Self>> {
-        Arc::new(Mutex::new(Self { sent: 0, total, extensions: 0 }))
+    fn new(_total: u64) -> Arc<Mutex<Self>> {
+        Arc::new(Mutex::new(Self {
+            sent: 0,
+            extensions: 0,
+        }))
     }
 }
 
@@ -45,8 +45,21 @@ struct ProgressReader<R> {
 }
 
 impl<R> ProgressReader<R> {
-    fn new(inner: R, total: u64, tx: Sender<RpbData>, host: Host, progress: Arc<Mutex<UploadProgress>>) -> Self {
-        Self { inner, sent: 0, total, tx, host, progress }
+    fn new(
+        inner: R,
+        total: u64,
+        tx: Sender<RpbData>,
+        host: Host,
+        progress: Arc<Mutex<UploadProgress>>,
+    ) -> Self {
+        Self {
+            inner,
+            sent: 0,
+            total,
+            tx,
+            host,
+            progress,
+        }
     }
 }
 
@@ -70,86 +83,24 @@ impl<R: AsyncRead + Unpin> AsyncRead for ProgressReader<R> {
                 Ok(progress) => progress.extensions,
                 Err(_) => 0,
             };
-            self.tx.send(RpbData::Progress(self.sent, self.total, extensions, self.host.clone())).ok();
+            self.tx
+                .send(RpbData::Progress(
+                    self.sent,
+                    self.total,
+                    extensions,
+                    self.host.clone(),
+                ))
+                .ok();
         }
 
         result
     }
 }
 
-async fn send_upload_with_dynamic_timeout(
+async fn send_upload_unlimited(
     request: reqwest::RequestBuilder,
-    progress: Arc<Mutex<UploadProgress>>,
-    base_timeout_secs: u64,
-    label: &str,
-    tx: Sender<RpbData>,
-    host: Host,
 ) -> Result<reqwest::Response, String> {
-    let mut request = Box::pin(request.send());
-    let mut deadline = tokio::time::Instant::now() + Duration::from_secs(base_timeout_secs);
-    let mut allowed_secs = base_timeout_secs;
-    let mut threshold_idx = 0usize;
-    let mut total_extensions = 0u64;
-    let mut last_sent = 0u64;
-    let mut last_check = std::time::Instant::now();
-
-    loop {
-        tokio::select! {
-            result = &mut request => {
-                return result.map_err(|e| e.to_string());
-            }
-            _ = tokio::time::sleep_until(deadline) => {
-                return Err(format!("dynamic upload timeout after {allowed_secs}s"));
-            }
-            _ = tokio::time::sleep(Duration::from_secs(UPLOAD_SPEED_CHECK_INTERVAL_SECS)) => {
-                let (sent, total) = match progress.lock() {
-                    Ok(progress) => (progress.sent, progress.total),
-                    Err(_) => (last_sent, 0),
-                };
-                let elapsed = last_check.elapsed().as_secs_f64();
-                let speed = if elapsed > 0.0 {
-                    sent.saturating_sub(last_sent) as f64 / elapsed
-                } else {
-                    0.0
-                };
-                let percent = if total > 0 {
-                    sent as f64 * 100.0 / total as f64
-                } else {
-                    0.0
-                };
-                let mut extended = false;
-
-                while threshold_idx < UPLOAD_TIMEOUT_THRESHOLDS.len()
-                    && percent >= UPLOAD_TIMEOUT_THRESHOLDS[threshold_idx]
-                {
-                    deadline = deadline + Duration::from_secs(UPLOAD_TIMEOUT_EXTENSION_SECS);
-                    allowed_secs += UPLOAD_TIMEOUT_EXTENSION_SECS;
-                    threshold_idx += 1;
-                    total_extensions += 1;
-                    if let Ok(mut progress) = progress.lock() {
-                        progress.extensions = total_extensions;
-                    }
-                    extended = true;
-                    tx.send(RpbData::Progress(sent, total, total_extensions, host.clone())).ok();
-                    println!("[upload-timeout] {label}: +{UPLOAD_TIMEOUT_EXTENSION_SECS}s ({percent:.2}%, {:.2}MB/s)", speed / 1_048_576.0);
-                }
-
-                if !extended && speed >= UPLOAD_SPEED_THRESHOLD_BYTES_PER_SEC {
-                    deadline = deadline + Duration::from_secs(UPLOAD_TIMEOUT_EXTENSION_SECS);
-                    allowed_secs += UPLOAD_TIMEOUT_EXTENSION_SECS;
-                    total_extensions += 1;
-                    if let Ok(mut progress) = progress.lock() {
-                        progress.extensions = total_extensions;
-                    }
-                    tx.send(RpbData::Progress(sent, total, total_extensions, host.clone())).ok();
-                    println!("[upload-timeout] {label}: +{UPLOAD_TIMEOUT_EXTENSION_SECS}s ({percent:.2}%, {:.2}MB/s)", speed / 1_048_576.0);
-                }
-
-                last_sent = sent;
-                last_check = std::time::Instant::now();
-            }
-        }
-    }
+    request.send().await.map_err(|e| e.to_string())
 }
 
 #[derive(Deserialize)]
@@ -165,15 +116,22 @@ async fn get_access_token(
 
     let params = [
         ("client_id", env.get(CLIENT_ID).cloned().unwrap_or_default()),
-        ("client_secret", env.get(CLIENT_SECRET).cloned().unwrap_or_default()),
-        ("refresh_token", env.get(REFRESH_TOKEN).cloned().unwrap_or_default()),
+        (
+            "client_secret",
+            env.get(CLIENT_SECRET).cloned().unwrap_or_default(),
+        ),
+        (
+            "refresh_token",
+            env.get(REFRESH_TOKEN).cloned().unwrap_or_default(),
+        ),
         ("grant_type", "refresh_token".into()),
     ];
 
     let resp = client
         .post(env.get(TOKEN_URL).cloned().unwrap_or_default())
         .form(&params)
-        .send().await?
+        .send()
+        .await?
         .error_for_status()?;
 
     let token: TokenResponse = resp.json().await?;
@@ -210,9 +168,7 @@ impl Req {
 
     async fn download(&self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
         let mut handle: Option<LoggingHandle> = match self.log {
-            Some(ref pb) => {
-                Some(LoggingHandle::get_handle(pb).await.unwrap())
-            }
+            Some(ref pb) => Some(LoggingHandle::get_handle(pb).await.unwrap()),
             None => None,
         };
         let client = Client::builder()
@@ -258,7 +214,7 @@ impl Req {
         &self,
         api_key: String,
         server_endpoint: String,
-        key_field: &str,        // "api_key" for dood/uq, "key" for lulu
+        key_field: &str, // "api_key" for dood/uq, "key" for lulu
         link_fn: impl Fn(&str) -> String,
         host: Host,
         outfile: Option<String>,
@@ -267,9 +223,7 @@ impl Req {
         println!("HOST {:?}", host);
         // Step 1: get upload server
         let server_url = {
-            let resp = match reqwest::get(
-                format!("{server_endpoint}?key={api_key}")
-            ).await {
+            let resp = match reqwest::get(format!("{server_endpoint}?key={api_key}")).await {
                 Ok(r) => r,
                 Err(a) => {
                     println!("[upload] failed to get upload server: {a}");
@@ -279,7 +233,10 @@ impl Req {
             };
 
             let json: serde_json::Value = match resp.json().await {
-                Ok(j) => { println!("[upload] server response: {j}"); j },
+                Ok(j) => {
+                    println!("[upload] server response: {j}");
+                    j
+                }
                 Err(a) => {
                     println!("[upload] failed to parse server response: {a}");
                     tx.send(RpbData::Fail(host)).ok();
@@ -288,7 +245,10 @@ impl Req {
             };
 
             match json["result"].as_str() {
-                Some(url) => { println!("[upload] upload server url: {url}"); url.to_string() },
+                Some(url) => {
+                    println!("[upload] upload server url: {url}");
+                    url.to_string()
+                }
                 None => {
                     println!("[upload] no upload server url in response");
                     tx.send(RpbData::Fail(host)).ok();
@@ -299,13 +259,20 @@ impl Req {
 
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(60))
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         let upload_name = outfile.unwrap_or(self.target.clone());
-        println!("[upload] upload_name: {upload_name}, target: {}", self.target);
+        println!(
+            "[upload] upload_name: {upload_name}, target: {}",
+            self.target
+        );
 
         let file = match tokio::fs::File::open(&self.target).await {
-            Ok(f) => { println!("[upload] file opened"); f },
+            Ok(f) => {
+                println!("[upload] file opened");
+                f
+            }
             Err(a) => {
                 println!("[upload] failed to open file: {a}");
                 tx.send(RpbData::Fail(host.clone())).ok();
@@ -314,10 +281,14 @@ impl Req {
         };
 
         let total_size = file.metadata().await.unwrap().len();
-        println!("[upload] total_size: {total_size} bytes ({:.2}MB)", total_size as f64 / 1_048_576.0);
+        println!(
+            "[upload] total_size: {total_size} bytes ({:.2}MB)",
+            total_size as f64 / 1_048_576.0
+        );
 
         let progress = UploadProgress::new(total_size);
-        let reader = ProgressReader::new(file, total_size, tx.clone(), host.clone(), progress.clone());
+        let reader =
+            ProgressReader::new(file, total_size, tx.clone(), host.clone(), progress.clone());
         let stream = ReaderStream::new(reader);
         let body = reqwest::Body::wrap_stream(stream);
 
@@ -331,16 +302,11 @@ impl Req {
             .part("file", file_part);
 
         println!("[upload] sending to {server_url}...");
-        let host_label = format!("{:?}", host);
-        let resp = match send_upload_with_dynamic_timeout(
-            client.post(&server_url).multipart(form),
-            progress,
-            UPLOAD_TIMEOUT_SECS,
-            &host_label,
-            tx.clone(),
-            host.clone(),
-        ).await {
-            Ok(r) => { println!("[upload] response status: {}", r.status()); r },
+        let resp = match send_upload_unlimited(client.post(&server_url).multipart(form)).await {
+            Ok(r) => {
+                println!("[upload] response status: {}", r.status());
+                r
+            }
             Err(a) => {
                 println!("[upload] request failed: {a}");
                 tx.send(RpbData::Fail(host)).ok();
@@ -354,7 +320,7 @@ impl Req {
                 println!("[upload] failed to extract link");
                 tx.send(RpbData::Fail(host)).ok();
                 return false;
-            },
+            }
             s => s,
         };
 
@@ -363,40 +329,69 @@ impl Req {
         true
     }
 
-    pub async fn voewrapupload(&self, envpath: String, outfile: Option<String>, tx: Sender<RpbData>) -> bool {
+    pub async fn voewrapupload(
+        &self,
+        envpath: String,
+        outfile: Option<String>,
+        tx: Sender<RpbData>,
+    ) -> bool {
         let env = get_env(&envpath);
         let api_key = env.get(VOESX).cloned().unwrap_or_default();
-        let result = self.filehost_upload(
-            api_key,
-            "https://voe.sx/api/upload/server".to_string(),
-            "key",
-            |text| {
-                serde_json::from_str::<serde_json::Value>(text).ok()
-                    .and_then(|j| j["file"]["file_code"].as_str().map(|s| format!("https://voe.sx/{s}")))
-                    .unwrap_or_default()
-            },
-            Host::VoeSx,
-            outfile,
-            tx,
-        ).await;
+        let result = self
+            .filehost_upload(
+                api_key,
+                "https://voe.sx/api/upload/server".to_string(),
+                "key",
+                |text| {
+                    serde_json::from_str::<serde_json::Value>(text)
+                        .ok()
+                        .and_then(|j| {
+                            j["file"]["file_code"]
+                                .as_str()
+                                .map(|s| format!("https://voe.sx/{s}"))
+                        })
+                        .unwrap_or_default()
+                },
+                Host::VoeSx,
+                outfile,
+                tx,
+            )
+            .await;
         result
     }
 
-    pub async fn abyssupload(&self, envpath: String, outfile: Option<String>, tx: Sender<RpbData>) -> bool {
+    pub async fn abyssupload(
+        &self,
+        envpath: String,
+        outfile: Option<String>,
+        tx: Sender<RpbData>,
+    ) -> bool {
         println!("[abyss] abyssupload started");
         let env = get_env(&envpath);
-        println!("[abyss] env len: {}, ABYSS key: {}, value: {:?}", env.len(), ABYSS, env.get(ABYSS));
+        println!(
+            "[abyss] env len: {}, ABYSS key: {}, value: {:?}",
+            env.len(),
+            ABYSS,
+            env.get(ABYSS)
+        );
         let api_key = env.get(ABYSS).cloned().unwrap_or_default();
 
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(60))
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         let upload_name = outfile.unwrap_or(self.target.clone());
-        println!("[abyss] upload_name: {upload_name}, target: {}", self.target);
+        println!(
+            "[abyss] upload_name: {upload_name}, target: {}",
+            self.target
+        );
 
         let file = match tokio::fs::File::open(&self.target).await {
-            Ok(f) => { println!("[abyss] file opened"); f },
+            Ok(f) => {
+                println!("[abyss] file opened");
+                f
+            }
             Err(a) => {
                 println!("[abyss] failed to open file: {a}");
                 tx.send(RpbData::Fail(Host::Abyss)).ok();
@@ -405,10 +400,14 @@ impl Req {
         };
 
         let total_size = file.metadata().await.unwrap().len();
-        println!("[abyss] total_size: {total_size} bytes ({:.2}MB)", total_size as f64 / 1_048_576.0);
+        println!(
+            "[abyss] total_size: {total_size} bytes ({:.2}MB)",
+            total_size as f64 / 1_048_576.0
+        );
 
         let progress = UploadProgress::new(total_size);
-        let reader = ProgressReader::new(file, total_size, tx.clone(), Host::Abyss, progress.clone());
+        let reader =
+            ProgressReader::new(file, total_size, tx.clone(), Host::Abyss, progress.clone());
         let stream = ReaderStream::new(reader);
         let body = reqwest::Body::wrap_stream(stream);
 
@@ -417,21 +416,16 @@ impl Req {
             .mime_str("video/mp4")
             .unwrap();
 
-        let form = multipart::Form::new()
-            .part("file", file_part);
+        let form = multipart::Form::new().part("file", file_part);
 
         let upload_url = format!("https://up.abyss.to/{api_key}");
         println!("[abyss] uploading to {upload_url}...");
 
-        let resp = match send_upload_with_dynamic_timeout(
-            client.post(&upload_url).multipart(form),
-            progress,
-            UPLOAD_TIMEOUT_SECS,
-            "Abyss",
-            tx.clone(),
-            Host::Abyss,
-        ).await {
-            Ok(r) => { println!("[abyss] response status: {}", r.status()); r },
+        let resp = match send_upload_unlimited(client.post(&upload_url).multipart(form)).await {
+            Ok(r) => {
+                println!("[abyss] response status: {}", r.status());
+                r
+            }
             Err(a) => {
                 println!("[abyss] request failed: {a}");
                 tx.send(RpbData::Fail(Host::Abyss)).ok();
@@ -440,7 +434,10 @@ impl Req {
         };
 
         let json: serde_json::Value = match resp.json().await {
-            Ok(j) => { println!("[abyss] response: {j}"); j },
+            Ok(j) => {
+                println!("[abyss] response: {j}");
+                j
+            }
             Err(a) => {
                 println!("[abyss] failed to parse response: {a}");
                 tx.send(RpbData::Fail(Host::Abyss)).ok();
@@ -448,9 +445,14 @@ impl Req {
             }
         };
 
-        let link = json["urlIframe"].as_str()
+        let link = json["urlIframe"]
+            .as_str()
             .map(|s| s.to_string())
-            .or_else(|| json["slug"].as_str().map(|s| format!("https://abyss.to/r/{s}")))
+            .or_else(|| {
+                json["slug"]
+                    .as_str()
+                    .map(|s| format!("https://abyss.to/r/{s}"))
+            })
             .unwrap_or_default();
 
         if link.is_empty() {
@@ -462,27 +464,44 @@ impl Req {
         true
     }
 
-    pub async fn luluwrapupload(&self, envpath: String, outfile: Option<String>, tx: Sender<RpbData>) -> bool {
+    pub async fn luluwrapupload(
+        &self,
+        envpath: String,
+        outfile: Option<String>,
+        tx: Sender<RpbData>,
+    ) -> bool {
         let env = get_env(&envpath);
         let api_key = env.get(LULU).cloned().unwrap_or_default();
-        let result = self.filehost_upload(
-            api_key,
-            "https://lulustream.com/api/upload/server".to_string(),
-            "key",
-            |text| {
-                println!("[lulu] upload response: {text}");
-                serde_json::from_str::<serde_json::Value>(text).ok()
-                    .and_then(|j| j["files"][0]["filecode"].as_str().map(|s| format!("https://lulustream.com/{s}")))
-                    .unwrap_or_default()
-            },
-            Host::Lulu,
-            outfile,
-            tx,
-        ).await;
+        let result = self
+            .filehost_upload(
+                api_key,
+                "https://lulustream.com/api/upload/server".to_string(),
+                "key",
+                |text| {
+                    println!("[lulu] upload response: {text}");
+                    serde_json::from_str::<serde_json::Value>(text)
+                        .ok()
+                        .and_then(|j| {
+                            j["files"][0]["filecode"]
+                                .as_str()
+                                .map(|s| format!("https://lulustream.com/{s}"))
+                        })
+                        .unwrap_or_default()
+                },
+                Host::Lulu,
+                outfile,
+                tx,
+            )
+            .await;
         result
     }
 
-    pub async fn doodwrapupload(&self, envpath: String, outfile: Option<String>, tx: Sender<RpbData>) -> bool {
+    pub async fn doodwrapupload(
+        &self,
+        envpath: String,
+        outfile: Option<String>,
+        tx: Sender<RpbData>,
+    ) -> bool {
         let env = get_env(&envpath);
         let api_key = env.get(DOODSTREAM).cloned().unwrap_or_default();
         self.filehost_upload(
@@ -491,16 +510,21 @@ impl Req {
             "api_key",
             |text| {
                 println!("[dood] upload response: {text}");
-                serde_json::from_str::<serde_json::Value>(text).ok()
-                    .and_then(|j| j["result"][0]["filecode"].as_str().map(|s| format!("https://doodstream.com/d/{s}")))
+                serde_json::from_str::<serde_json::Value>(text)
+                    .ok()
+                    .and_then(|j| {
+                        j["result"][0]["filecode"]
+                            .as_str()
+                            .map(|s| format!("https://doodstream.com/d/{s}"))
+                    })
                     .unwrap_or_default()
             },
             Host::Doodstream,
             outfile,
             tx,
-        ).await
+        )
+        .await
     }
-
 
     pub async fn gdupload(
         &self,
@@ -509,9 +533,7 @@ impl Req {
         tx: Sender<RpbData>,
     ) -> bool {
         let mut handle: Option<LoggingHandle> = match self.log {
-            Some(ref pb) => {
-                Some(LoggingHandle::get_handle(pb).await.unwrap())
-            }
+            Some(ref pb) => Some(LoggingHandle::get_handle(pb).await.unwrap()),
             None => None,
         };
         let env = get_env(&envpath);
@@ -519,16 +541,17 @@ impl Req {
             Ok(token) => {
                 log!(handle, "Access token taken\n");
                 token
-            },
+            }
             Err(_) => {
                 return false;
-            },
+            }
         };
         let parent_id = env.get(PARENTID).cloned().unwrap_or_default();
 
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(60))
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         let upload_name = outfile.clone().unwrap_or(self.target.clone());
 
@@ -541,10 +564,10 @@ impl Req {
             Ok(f) => {
                 log!(handle, &format!("File created: {}\n", &self.target));
                 f
-            },
+            }
             Err(a) => {
                 log!(handle, &format!("File creation failed: {a}\n"));
-                return false
+                return false;
             }
         };
 
@@ -553,7 +576,8 @@ impl Req {
         let upload_name = outfile.clone().unwrap_or(self.target.clone());
 
         let progress = UploadProgress::new(total_size);
-        let reader = ProgressReader::new(file, total_size, tx.clone(), Host::Drive, progress.clone());
+        let reader =
+            ProgressReader::new(file, total_size, tx.clone(), Host::Drive, progress.clone());
 
         let stream = ReaderStream::new(reader);
         let body = reqwest::Body::wrap_stream(stream);
@@ -571,17 +595,11 @@ impl Req {
             .part("metadata", metadata_part)
             .part("file", part);
 
-
-        let resp = match send_upload_with_dynamic_timeout(
+        let resp = match send_upload_unlimited(
             client
                 .post("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true")
                 .bearer_auth(access_token)
                 .multipart(form),
-            progress,
-            UPLOAD_TIMEOUT_SECS,
-            "Drive",
-            tx.clone(),
-            Host::Drive,
         ).await {
             Ok(r) => r,
             Err(a) => {
