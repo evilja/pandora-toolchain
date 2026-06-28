@@ -1757,6 +1757,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serenity",
+ "sha1",
  "sqlx",
  "tokio",
  "tokio-util",

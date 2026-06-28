@@ -5,6 +5,7 @@ use qbit_rs::model::Priority;
 use qbit_rs::model::{
     AddTorrentArg, Credential, GetTorrentListArg, Sep, State, Torrent, TorrentFile, TorrentSource,
 };
+use sha1::{Digest, Sha1};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use tokio::fs::{self, try_exists};
@@ -41,6 +42,25 @@ impl P2p {
             api: Qbit::new(host, credential),
             cfile: cfile.map(PathBuf::from),
         }
+    }
+
+    async fn fail_if_duplicate_hash(&self, hash: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let torrents = self
+            .api
+            .get_torrent_list(
+                GetTorrentListArg::builder()
+                    .hashes(hash.to_string())
+                    .build(),
+            )
+            .await?;
+        if let Some(torrent) = torrents.first() {
+            return Err(duplicate_torrent_error(
+                torrent.save_path.as_deref(),
+                torrent.content_path.as_deref(),
+            )
+            .into());
+        }
+        Ok(())
     }
 
     async fn find_added_hash(
@@ -125,6 +145,10 @@ impl P2p {
         let save_path = temp_dir.to_str().unwrap().to_string();
         println!("[pnp2p] probe_torrent: creating temp dir {:?}", temp_dir);
         tokio::fs::create_dir_all(&temp_dir).await?;
+
+        if let Some(hash) = source_info_hash(torrent_path, srcmgn).await? {
+            self.fail_if_duplicate_hash(&hash).await?;
+        }
 
         println!(
             "[pnp2p] probe_torrent: calling api.add_torrent with savepath {:?}",
@@ -223,6 +247,10 @@ impl P2p {
                 }],
             }
         };
+
+        if let Some(hash) = source_info_hash(torrent_path, srcmgn).await? {
+            self.fail_if_duplicate_hash(&hash).await?;
+        }
 
         println!("[pnp2p] download_selected: adding torrent paused");
         let qbit_save_path = host_save_path(save_path);
@@ -434,6 +462,10 @@ impl P2p {
             }
         };
 
+        if let Some(hash) = source_info_hash(torrent_path, srcmgn).await? {
+            self.fail_if_duplicate_hash(&hash).await?;
+        }
+
         println!("[pnp2p] download_and_remove: adding torrent (not paused)");
         let qbit_save_path = host_save_path(save_path);
         let mut add_args = AddTorrentArg::builder()
@@ -559,6 +591,90 @@ impl P2p {
         );
         println!("[pnp2p] download_and_remove: success");
         Ok(())
+    }
+}
+
+async fn source_info_hash(
+    torrent_path: &str,
+    srcmgn: bool,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    if srcmgn {
+        return Ok(magnet_info_hash(torrent_path));
+    }
+    let data = fs::read(torrent_path).await?;
+    Ok(torrent_info_hash(&data))
+}
+
+fn magnet_info_hash(magnet: &str) -> Option<String> {
+    for part in magnet.split(['?', '&']) {
+        if let Some(value) = part.strip_prefix("xt=urn:btih:") {
+            if value.len() == 40 && value.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Some(value.to_ascii_lowercase());
+            }
+        }
+    }
+    None
+}
+
+fn torrent_info_hash(data: &[u8]) -> Option<String> {
+    let info_start = find_info_value_start(data)?;
+    let info_end = bencode_value_end(data, info_start)?;
+    let mut hasher = Sha1::new();
+    hasher.update(&data[info_start..info_end]);
+    Some(format!("{:x}", hasher.finalize()))
+}
+
+fn find_info_value_start(data: &[u8]) -> Option<usize> {
+    if data.first().copied()? != b'd' {
+        return None;
+    }
+    let mut pos = 1usize;
+    while pos < data.len() && data[pos] != b'e' {
+        let key_start = pos;
+        let key_end = bencode_value_end(data, key_start)?;
+        let key = bencode_bytes(data, key_start, key_end)?;
+        pos = key_end;
+        if key == b"info" {
+            return Some(pos);
+        }
+        pos = bencode_value_end(data, pos)?;
+    }
+    None
+}
+
+fn bencode_bytes(data: &[u8], start: usize, end: usize) -> Option<&[u8]> {
+    let colon = data[start..end].iter().position(|b| *b == b':')? + start;
+    Some(&data[colon + 1..end])
+}
+
+fn bencode_value_end(data: &[u8], start: usize) -> Option<usize> {
+    match *data.get(start)? {
+        b'i' => {
+            let rel = data[start..].iter().position(|b| *b == b'e')?;
+            Some(start + rel + 1)
+        }
+        b'l' | b'd' => {
+            let mut pos = start + 1;
+            while *data.get(pos)? != b'e' {
+                pos = bencode_value_end(data, pos)?;
+            }
+            Some(pos + 1)
+        }
+        b'0'..=b'9' => {
+            let mut colon = start;
+            while data.get(colon)?.is_ascii_digit() {
+                colon += 1;
+            }
+            if *data.get(colon)? != b':' {
+                return None;
+            }
+            let len = std::str::from_utf8(&data[start..colon])
+                .ok()?
+                .parse::<usize>()
+                .ok()?;
+            Some(colon + 1 + len)
+        }
+        _ => None,
     }
 }
 

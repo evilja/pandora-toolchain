@@ -35,14 +35,24 @@ impl WorkerNamePool {
     }
 
     pub fn acquire(&mut self) -> Option<String> {
-        for name in &self.names {
-            if !self.used.contains(*name) {
-                let name = name.to_string();
-                self.used.insert(name.clone());
-                return Some(name);
-            }
+        let available: Vec<&'static str> = self
+            .names
+            .iter()
+            .copied()
+            .filter(|name| !self.used.contains(*name))
+            .collect();
+        if available.is_empty() {
+            return None;
         }
-        None
+        let mut bytes = [0u8; 8];
+        let idx = if getrandom::getrandom(&mut bytes).is_ok() {
+            (u64::from_ne_bytes(bytes) as usize) % available.len()
+        } else {
+            0
+        };
+        let name = available[idx].to_string();
+        self.used.insert(name.clone());
+        Some(name)
     }
 
     pub fn release(&mut self, name: &str) {
