@@ -31,6 +31,35 @@ fn is_video_name(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+pub async fn cleanup_pandora_qbit() {
+    let qbit_host =
+        std::env::var("PNP2P_QBIT_HOST").unwrap_or_else(|_| "http://localhost:8089".to_string());
+    let qbit_user = std::env::var("PNP2P_QBIT_USER").unwrap_or_else(|_| "admin".to_string());
+    let qbit_pass = std::env::var("PNP2P_QBIT_PASS").unwrap_or_else(|_| "adminadmin".to_string());
+    let p2p = P2p::new(&qbit_host, &qbit_user, &qbit_pass, None).await;
+    let torrents = match p2p
+        .api
+        .get_torrent_list(GetTorrentListArg::builder().build())
+        .await
+    {
+        Ok(torrents) => torrents,
+        Err(e) => {
+            eprintln!("[pnp2p] startup cleanup failed to list torrents: {e}");
+            return;
+        }
+    };
+    let hashes: Vec<String> = torrents
+        .iter()
+        .filter(|t| has_pandora_tag(t.tags.as_deref()))
+        .filter_map(|t| t.hash.clone())
+        .collect();
+    if !hashes.is_empty() {
+        if let Err(e) = p2p.api.delete_torrents(hashes, true).await {
+            eprintln!("[pnp2p] startup cleanup failed to delete torrents: {e}");
+        }
+    }
+}
+
 impl P2p {
     pub async fn new(host: &str, uname: &str, pass: &str, cfile: Option<String>) -> Self {
         println!(
@@ -683,6 +712,13 @@ fn duplicate_torrent_error(save_path: Option<&str>, content_path: Option<&str>) 
         "DUPLICATE_TORRENT|{}",
         save_path.or(content_path).unwrap_or("")
     )
+}
+
+fn has_pandora_tag(tags: Option<&str>) -> bool {
+    tags.unwrap_or("")
+        .split(',')
+        .map(|t| t.trim())
+        .any(|t| t.starts_with("pandora-job-"))
 }
 
 fn has_other_pandora_tag(tags: Option<&str>, current: &str) -> bool {
