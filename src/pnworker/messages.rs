@@ -1,8 +1,8 @@
-use std::collections::HashMap;
-use std::path::Path;
 use crate::pnworker::core::{Job, Preset, Stage};
 use serde::Deserialize;
 use serenity::all::{Colour, CreateEmbed};
+use std::collections::HashMap;
+use std::path::Path;
 
 const PKGVER: &'static str = env!("CARGO_PKG_VERSION");
 
@@ -19,6 +19,7 @@ pub const TORRENT_PROG: &str = "TORRENT_PROG";
 pub const TORRENT_PROG_SELECT: &str = "TORRENT_PROG_SELECT";
 pub const TORRENT_DONE: &str = "TORRENT_DONE";
 pub const TORRENT_FAIL: &str = "TORRENT_FAIL";
+pub const TORRENT_DUPLICATE_WAIT: &str = "TORRENT_DUPLICATE_WAIT";
 pub const ENCODE_PROG: &str = "ENCODE_PROG";
 pub const ENCODE_CONCAT_PROG: &str = "ENCODE_CONCAT_PROG";
 pub const ENCODE_DONE: &str = "ENCODE_DONE";
@@ -34,6 +35,7 @@ pub const PROBE_ROW: &str = "PROBE_ROW";
 pub const EMBED_TITLE: &str = "EMBED_TITLE";
 pub const FIELD_JOBID: &str = "FIELD_JOBID";
 pub const FIELD_AUTHOR: &str = "FIELD_AUTHOR";
+pub const FIELD_WORKER: &str = "FIELD_WORKER";
 pub const FIELD_STATUS: &str = "FIELD_STATUS";
 pub const FIELD_PRESET: &str = "FIELD_PRESET";
 pub const FIELD_TORRENT: &str = "FIELD_TORRENT";
@@ -57,30 +59,72 @@ pub const PRESET_GPU_NOINTRO: &str = "PRESET_GPU_NOINTRO";
 pub const PRESET_STANDARD_INTRO: &str = "PRESET_STANDARD_INTRO";
 pub const PRESET_STANDARD_NOINTRO: &str = "PRESET_STANDARD_NOINTRO";
 pub const PRESET_DUMMY: &str = "PRESET_DUMMY";
+pub const WORKER_ASSIGN: &str = "WORKER_ASSIGN";
 
 pub const DEFAULT_LANGS: &[&str] = &["en", "tr", "jp"];
 
 static DEFAULT_ENTRIES: &[(&str, &str, usize)] = &[
-    ("QUEUE_TOO_LONG", "\n\nŞu anda Pandora Toolchain'de biraz sıra var. \nLütfen daha sonra tekrar deneyin.", 0),
+    (
+        "QUEUE_TOO_LONG",
+        "\n\nŞu anda Pandora Toolchain'de biraz sıra var. \nLütfen daha sonra tekrar deneyin.",
+        0,
+    ),
     ("QUEUED", "\n\nİsteğiniz alındı.", 0),
     ("JOB_CANCELLED", "\nİşlem iptal edildi.", 0),
-    ("PROBE_TIMEOUT", "Probe timed out. use /pancode or /backup within 3 minutes next time.", 0),
+    (
+        "PROBE_TIMEOUT",
+        "Probe timed out. use /pancode or /backup within 3 minutes next time.",
+        0,
+    ),
     ("GITSYNC_PROGRESS", "Tüm işlemler kapatılıyor.", 0),
-    ("GITSYNC_SUCCESS", "Kaynak kodlar git ile güncellendi.\nBot yeniden başlatılıyor.", 0),
-    ("GITSYNC_FAIL", "Git güncellemesi başarısız oldu.\nBot yine de yeniden başlatılıyor.", 0),
-    ("CTORRENT_DONE", "\n\nTorrent kısa süre içinde indirilmeye başlanacak.", 0),
+    (
+        "GITSYNC_SUCCESS",
+        "Kaynak kodlar git ile güncellendi.\nBot yeniden başlatılıyor.",
+        0,
+    ),
+    (
+        "GITSYNC_FAIL",
+        "Git güncellemesi başarısız oldu.\nBot yine de yeniden başlatılıyor.",
+        0,
+    ),
+    (
+        "CTORRENT_DONE",
+        "\n\nTorrent kısa süre içinde indirilmeye başlanacak.",
+        0,
+    ),
     ("CTORRENT_FAIL", "\n\nTorrent metadatası indirilemedi.", 0),
     ("TORRENT_PROG", "\n\nTorrent ilerlemesi: {}% {}MB/{}MB", 3),
     ("TORRENT_PROG_SELECT", "\n\nTorrent ilerlemesi: {}% {}MB", 2),
     ("TORRENT_DONE", "\n\nEncode kısa süre içinde başlayacak.", 0),
     ("TORRENT_FAIL", "\n\nTorrent indirilemedi.", 0),
-    ("ENCODE_PROG", "\n\nDosya encode ediliyor.\nAşama: 1/{}\nİşlenen kare: {}/{}\nSaniye başına işlenen kare: {}\nSaniye başına ortalama veri: {}kbit/s", 5),
-    ("ENCODE_CONCAT_PROG", "\n\nDosyaya intro ekleniyor.\nAşama: 2/2\nİşlenen kare: {}/{}\nSaniye başına işlenen kare: {}\nSaniye başına ortalama veri: {}kbit/s", 4),
+    (
+        "TORRENT_DUPLICATE_WAIT",
+        "\n\nYour file is already cached, no need to download. Waiting for that encode to finish.",
+        1,
+    ),
+    (
+        "ENCODE_PROG",
+        "\n\nDosya encode ediliyor.\nAşama: 1/{}\nİşlenen kare: {}/{}\nSaniye başına işlenen kare: {}\nSaniye başına ortalama veri: {}kbit/s",
+        5,
+    ),
+    (
+        "ENCODE_CONCAT_PROG",
+        "\n\nDosyaya intro ekleniyor.\nAşama: 2/2\nİşlenen kare: {}/{}\nSaniye başına işlenen kare: {}\nSaniye başına ortalama veri: {}kbit/s",
+        4,
+    ),
     ("ENCODE_DONE", "\n\nÇıktı sunuculara yükleniyor.", 0),
     ("ENCODE_FAIL", "\n\nDosya encode edilemedi.", 0),
-    ("UPLOAD_PROG", "\n\nYükleme ilerlemesi:\n{}\n{}\n{}\n{}\n{}", 5),
+    (
+        "UPLOAD_PROG",
+        "\n\nYükleme ilerlemesi:\n{}\n{}\n{}\n{}\n{}",
+        5,
+    ),
     ("UPLOAD_DONE", "\n\nDosya yüklendi.\n{}\n{}\n{}\n{}\n{}", 5),
-    ("UPLOAD_FAIL", "\n\nDosya yüklenemedi. \nBir yetkiliden botu yeniden başlatmasını isteyebilirsiniz.", 0),
+    (
+        "UPLOAD_FAIL",
+        "\n\nDosya yüklenemedi. \nBir yetkiliden botu yeniden başlatmasını isteyebilirsiniz.",
+        0,
+    ),
     ("UPLOAD_BACKUP_PROG", "\n\n{}", 1),
     ("BACKUPALL_PROG", "\n\n{}", 1),
     ("PROBE_DONE", "\n\nBatch torrent incelendi.", 0),
@@ -89,6 +133,7 @@ static DEFAULT_ENTRIES: &[(&str, &str, usize)] = &[
     ("EMBED_TITLE", "Encode İşlemi ({})", 1),
     ("FIELD_JOBID", "İşlem Numarası", 0),
     ("FIELD_AUTHOR", "İşlem Sahibi", 0),
+    ("FIELD_WORKER", "Worker", 0),
     ("FIELD_STATUS", "Durum", 0),
     ("FIELD_PRESET", "Encode Preset", 0),
     ("FIELD_TORRENT", "Torrent Linki", 0),
@@ -105,12 +150,24 @@ static DEFAULT_ENTRIES: &[(&str, &str, usize)] = &[
     ("STAGE_FAILED", "Başarısız", 0),
     ("STAGE_DECLINED", "Reddedildi", 0),
     ("STAGE_CANCELLED", "İptal Edildi", 0),
-    ("PRESET_PSEUDOLOSSLESS_INTRO", "Kayıpsız - İşlemci | İntrolu", 0),
-    ("PRESET_PSEUDOLOSSLESS_NOINTRO", "Kayıpsız - İşlemci | İntrosuz", 0),
+    (
+        "PRESET_PSEUDOLOSSLESS_INTRO",
+        "Kayıpsız - İşlemci | İntrolu",
+        0,
+    ),
+    (
+        "PRESET_PSEUDOLOSSLESS_NOINTRO",
+        "Kayıpsız - İşlemci | İntrosuz",
+        0,
+    ),
     ("PRESET_GPU_INTRO", "Standart - Ekran kartı | İntrolu", 0),
     ("PRESET_GPU_NOINTRO", "Standart - Ekran kartı | İntrosuz", 0),
     ("PRESET_STANDARD_INTRO", "Standart - İşlemci | İntrolu", 0),
-    ("PRESET_STANDARD_NOINTRO", "Standart - İşlemci | İntrosuz", 0),
+    (
+        "PRESET_STANDARD_NOINTRO",
+        "Standart - İşlemci | İntrosuz",
+        0,
+    ),
     ("PRESET_DUMMY", "DEVELOPER", 0),
 ];
 
@@ -154,7 +211,8 @@ fn lookup(id: &str, lang: &str) -> Option<(String, usize)> {
             }
         }
     }
-    DEFAULT_ENTRIES.iter()
+    DEFAULT_ENTRIES
+        .iter()
         .find(|(k, _, _)| *k == id)
         .map(|(_, text, args)| ((*text).to_string(), *args))
 }
@@ -171,7 +229,12 @@ pub fn format_payload(payload: &MessagePayload, lang: &str) -> String {
         MessagePayload::Progress(id, args) => {
             if let Some(expected) = get_arg_count(id, lang) {
                 if expected != args.len() {
-                    eprintln!("[messages] arg count mismatch for {}: expected {}, got {}", id, expected, args.len());
+                    eprintln!(
+                        "[messages] arg count mismatch for {}: expected {}, got {}",
+                        id,
+                        expected,
+                        args.len()
+                    );
                 }
             }
             let template = get_message(id, lang);
@@ -184,7 +247,7 @@ fn substitute(template: &str, args: &[String]) -> String {
     let mut result = template.to_string();
     for arg in args {
         if let Some(pos) = result.find("{}") {
-            result.replace_range(pos..pos+2, arg);
+            result.replace_range(pos..pos + 2, arg);
         }
     }
     result
@@ -219,13 +282,32 @@ pub fn create_job_embed(job: &Job, payload: &MessagePayload) -> CreateEmbed {
     };
 
     CreateEmbed::new()
-        .title(substitute(&get_message(EMBED_TITLE, lang), &[PKGVER.to_string()]))
+        .title(substitute(
+            &get_message(EMBED_TITLE, lang),
+            &[PKGVER.to_string()],
+        ))
         .colour(color)
-        .field(get_message(FIELD_JOBID, lang), format!("`{}`", job.job_id), true)
-        .field(get_message(FIELD_AUTHOR, lang), format!("<@{}>", job.author), true)
-        .field(get_message(FIELD_STATUS, lang), get_stage_text(job.ready, lang), true)
+        .field(
+            get_message(FIELD_JOBID, lang),
+            format!("`{}`", job.job_id),
+            true,
+        )
+        .field(
+            get_message(FIELD_WORKER, lang),
+            format!("`{}`", job.worker),
+            true,
+        )
+        .field(
+            get_message(FIELD_STATUS, lang),
+            get_stage_text(job.ready, lang),
+            true,
+        )
         .field(get_message(FIELD_PRESET, lang), preset_text, false)
-        .field(get_message(FIELD_TORRENT, lang), format!("{}", job.torrent.display()), false)
+        .field(
+            get_message(FIELD_TORRENT, lang),
+            format!("{}", job.torrent.display()),
+            false,
+        )
         .field(get_message(FIELD_PROGRESS, lang), status_message, false)
         .timestamp(serenity::model::Timestamp::now())
 }

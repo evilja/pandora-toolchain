@@ -16,7 +16,10 @@ pub struct P2p {
 }
 
 fn is_video_ext(ext: &str) -> bool {
-    matches!(ext.to_ascii_lowercase().as_str(), "mkv" | "mp4" | "m4v" | "mov" | "avi" | "webm" | "ts" | "m2ts")
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "mkv" | "mp4" | "m4v" | "mov" | "avi" | "webm" | "ts" | "m2ts"
+    )
 }
 
 fn is_video_name(name: &str) -> bool {
@@ -40,10 +43,63 @@ impl P2p {
         }
     }
 
+    async fn find_added_hash(
+        &self,
+        tag: Option<&str>,
+        empty_msg: &'static str,
+        expected_save_path: Option<&str>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        if let Some(tag) = tag {
+            for _ in 0..30 {
+                let torrents = self
+                    .api
+                    .get_torrent_list(GetTorrentListArg::builder().tag(tag.to_string()).build())
+                    .await?;
+                if let Some(torrent) = torrents.iter().max_by_key(|t| t.added_on.unwrap_or(0)) {
+                    if has_other_pandora_tag(torrent.tags.as_deref(), tag) {
+                        return Err(duplicate_torrent_error(
+                            torrent.save_path.as_deref(),
+                            torrent.content_path.as_deref(),
+                        )
+                        .into());
+                    }
+                    if let (Some(expected), Some(actual)) =
+                        (expected_save_path, torrent.save_path.as_deref())
+                    {
+                        if normalize_qbit_path(expected) != normalize_qbit_path(actual) {
+                            return Err(duplicate_torrent_error(
+                                torrent.save_path.as_deref(),
+                                torrent.content_path.as_deref(),
+                            )
+                            .into());
+                        }
+                    }
+                    if let Some(hash) = torrent.hash.clone() {
+                        return Ok(hash);
+                    }
+                }
+                sleep(Duration::from_secs(1)).await;
+            }
+            return Err(duplicate_torrent_error(expected_save_path, None).into());
+        }
+
+        Ok(self
+            .api
+            .get_torrent_list(GetTorrentListArg::builder().build())
+            .await?
+            .iter()
+            .max_by_key(|t| t.added_on.unwrap_or(0))
+            .ok_or(empty_msg)?
+            .hash
+            .clone()
+            .unwrap())
+    }
+
     pub async fn probe_torrent(
         &self,
         torrent_path: &str,
         srcmgn: bool,
+        tag: Option<String>,
     ) -> Result<Vec<(u64, String, u64)>, Box<dyn std::error::Error>> {
         println!(
             "[pnp2p] probe_torrent entry: torrent_path={}, srcmgn={}",
@@ -66,6 +122,7 @@ impl P2p {
         };
 
         let temp_dir = std::env::temp_dir().join(format!("qb_probe_{}", std::process::id()));
+        let save_path = temp_dir.to_str().unwrap().to_string();
         println!("[pnp2p] probe_torrent: creating temp dir {:?}", temp_dir);
         tokio::fs::create_dir_all(&temp_dir).await?;
 
@@ -73,28 +130,25 @@ impl P2p {
             "[pnp2p] probe_torrent: calling api.add_torrent with savepath {:?}",
             temp_dir
         );
-        let add_args = AddTorrentArg::builder()
+        let mut add_args = AddTorrentArg::builder()
             .source(source)
             .paused("true".to_string())
-            .savepath(temp_dir.to_str().unwrap().to_string())
+            .savepath(save_path.clone())
             .build();
+        add_args.tags = tag.clone();
 
         self.api.add_torrent(add_args).await?;
         println!("[pnp2p] probe_torrent: add_torrent succeeded");
         sleep(Duration::from_secs(1)).await;
 
-        // Find the hash (most recently added)
         println!("[pnp2p] probe_torrent: fetching torrent list to get hash");
         let hash = self
-            .api
-            .get_torrent_list(GetTorrentListArg::builder().build())
-            .await?
-            .iter()
-            .max_by_key(|t| t.added_on.unwrap_or(0))
-            .ok_or("No torrent found after add")?
-            .hash
-            .clone()
-            .unwrap();
+            .find_added_hash(
+                tag.as_deref(),
+                "No torrent found after add",
+                Some(&save_path),
+            )
+            .await?;
         println!("[pnp2p] probe_torrent: obtained hash = {}", hash);
 
         // Wait for metadata (poll until contents are available)
@@ -145,9 +199,10 @@ impl P2p {
         torrent_path: &str,
         save_path: &str,
         file_indices: Vec<u64>,
-        proto: Protocol,
+        proto: &Protocol,
         neg: String,
         srcmgn: bool,
+        tag: Option<String>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         println!(
             "[pnp2p] download_selected entry: torrent_path={}, save_path={}, file_indices={:?}, srcmgn={}",
@@ -170,28 +225,22 @@ impl P2p {
         };
 
         println!("[pnp2p] download_selected: adding torrent paused");
-        let add_args = AddTorrentArg::builder()
+        let qbit_save_path = host_save_path(save_path);
+        let mut add_args = AddTorrentArg::builder()
             .source(source)
             .paused("true".to_string())
-            .savepath(host_save_path(save_path))
+            .savepath(qbit_save_path.clone())
             .build();
+        add_args.tags = tag.clone();
 
         self.api.add_torrent(add_args).await?;
         println!("[pnp2p] download_selected: add_torrent succeeded, waiting 1s");
         sleep(Duration::from_secs(1)).await;
 
         println!("[pnp2p] download_selected: fetching torrent list to get hash");
-        let torrents = self
-            .api
-            .get_torrent_list(GetTorrentListArg::builder().build())
+        let hash = self
+            .find_added_hash(tag.as_deref(), "No torrents found", Some(&qbit_save_path))
             .await?;
-        let hash = torrents
-            .iter()
-            .max_by_key(|t| t.added_on.unwrap_or(0))
-            .ok_or("No torrents found")?
-            .hash
-            .clone()
-            .unwrap();
         println!("[pnp2p] download_selected: obtained hash = {}", hash);
 
         // Wait for metadata and get file list
@@ -360,9 +409,10 @@ impl P2p {
         &self,
         torrent_path: &str,
         save_path: &str,
-        proto: Protocol,
+        proto: &Protocol,
         neg: String,
         srcmgn: bool,
+        tag: Option<String>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         println!(
             "[pnp2p] download_and_remove entry: torrent_path={}, save_path={}, srcmgn={}",
@@ -385,10 +435,12 @@ impl P2p {
         };
 
         println!("[pnp2p] download_and_remove: adding torrent (not paused)");
-        let add_args = AddTorrentArg::builder()
+        let qbit_save_path = host_save_path(save_path);
+        let mut add_args = AddTorrentArg::builder()
             .source(source)
-            .savepath(host_save_path(save_path))
+            .savepath(qbit_save_path.clone())
             .build();
+        add_args.tags = tag.clone();
 
         self.api.add_torrent(add_args).await?;
         println!("[pnp2p] download_and_remove: add_torrent succeeded, waiting 1s");
@@ -396,15 +448,8 @@ impl P2p {
 
         println!("[pnp2p] download_and_remove: fetching torrent list to get hash");
         let hash = self
-            .api
-            .get_torrent_list(GetTorrentListArg::builder().build())
-            .await?
-            .iter()
-            .max_by_key(|t| t.added_on.unwrap_or(0))
-            .ok_or("No torrents found")?
-            .hash
-            .clone()
-            .unwrap();
+            .find_added_hash(tag.as_deref(), "No torrents found", Some(&qbit_save_path))
+            .await?;
         println!("[pnp2p] download_and_remove: obtained hash = {}", hash);
 
         println!("[pnp2p] download_and_remove: entering progress monitoring loop");
@@ -515,6 +560,24 @@ impl P2p {
         println!("[pnp2p] download_and_remove: success");
         Ok(())
     }
+}
+
+fn duplicate_torrent_error(save_path: Option<&str>, content_path: Option<&str>) -> String {
+    format!(
+        "DUPLICATE_TORRENT|{}",
+        save_path.or(content_path).unwrap_or("")
+    )
+}
+
+fn has_other_pandora_tag(tags: Option<&str>, current: &str) -> bool {
+    tags.unwrap_or("")
+        .split(',')
+        .map(|t| t.trim())
+        .any(|t| t.starts_with("pandora-job-") && t != current)
+}
+
+fn normalize_qbit_path(path: &str) -> String {
+    path.replace('\\', "/").trim_end_matches('/').to_string()
 }
 
 fn download_finished(t: &Torrent) -> bool {

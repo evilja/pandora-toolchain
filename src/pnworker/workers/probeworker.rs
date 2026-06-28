@@ -1,18 +1,20 @@
-use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::time::{Duration, sleep};
 use crate::libpnenv::core::get_pandora_env;
 use crate::libpnenv::standard::{PNCURL, PNP2P};
 use crate::libpnp2p::nyaaise::TorrentType;
 use crate::libpnprotocol::core::Protocol;
-use crate::pnworker::messages::{CTORRENT_DONE, CTORRENT_FAIL, MessagePayload, PROBE_FAIL, PROBE_ROW};
-use crate::pnworker::util::{ToolResult, run_tool, string_byte_to_mb};
-use crate::pnworker::tools::{PNCURL_TORRENT, PNP2P_PROBE};
-use regex::Regex;
-use std::path::{Path, PathBuf};
-use std::collections::HashMap;
 use crate::pnworker::core::Stage;
-use crate::pnworker::util::PathValue;
 use crate::pnworker::core::{CommData, WorkerMsg};
+use crate::pnworker::messages::{
+    CTORRENT_DONE, CTORRENT_FAIL, MessagePayload, PROBE_FAIL, PROBE_ROW,
+};
+use crate::pnworker::tools::{PNCURL_TORRENT, PNP2P_PROBE};
+use crate::pnworker::util::PathValue;
+use crate::pnworker::util::{ToolResult, run_tool, string_byte_to_mb};
+use regex::Regex;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::time::{Duration, sleep};
 
 pub type ProbeData = (PathBuf, TorrentType, u64);
 
@@ -33,7 +35,13 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             let arg_opcode: String;
             match torrent {
                 TorrentType::GDrive(_) => {
-                    tx.send((job_id, MessagePayload::Static(PROBE_FAIL), Some(Stage::Failed))).await.unwrap();
+                    tx.send((
+                        job_id,
+                        MessagePayload::Static(PROBE_FAIL),
+                        Some(Stage::Failed),
+                    ))
+                    .await
+                    .unwrap();
                     continue 'll;
                 }
                 TorrentType::Link(ref link) => {
@@ -41,9 +49,27 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                         &pncurl_path,
                         PNCURL_TORRENT,
                         &HashMap::from([
-                            ("LINK",    PathValue::from(link.clone())),
-                            ("OPCODE",  PathValue::from(directory.join("contents").join("fetch.torrent").display().to_string())),
-                            ("LOGFILE", PathValue::from(directory.join("log").join(format!("PNcurl{}.log", job_id)).display().to_string())),
+                            ("LINK", PathValue::from(link.clone())),
+                            (
+                                "OPCODE",
+                                PathValue::from(
+                                    directory
+                                        .join("contents")
+                                        .join("fetch.torrent")
+                                        .display()
+                                        .to_string(),
+                                ),
+                            ),
+                            (
+                                "LOGFILE",
+                                PathValue::from(
+                                    directory
+                                        .join("log")
+                                        .join(format!("PNcurl{}.log", job_id))
+                                        .display()
+                                        .to_string(),
+                                ),
+                            ),
                         ]),
                         job_id,
                         &mut proto,
@@ -53,22 +79,40 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                                 None => return None,
                             };
                             match out {
-                                1 => { tx.try_send((job_id, MessagePayload::Static(CTORRENT_DONE), None)).ok(); }
+                                1 => {
+                                    tx.try_send((
+                                        job_id,
+                                        MessagePayload::Static(CTORRENT_DONE),
+                                        None,
+                                    ))
+                                    .ok();
+                                }
                                 2 => return Some(ToolResult::Fail),
                                 _ => {}
                             }
                             None
                         },
-                    ).await;
+                    )
+                    .await;
 
                     match result {
                         ToolResult::Fail => {
-                            tx.send((job_id, MessagePayload::Static(CTORRENT_FAIL), Some(Stage::Failed))).await.unwrap();
+                            tx.send((
+                                job_id,
+                                MessagePayload::Static(CTORRENT_FAIL),
+                                Some(Stage::Failed),
+                            ))
+                            .await
+                            .unwrap();
                             continue 'll;
                         }
                         _ => {}
                     }
-                    arg_opcode = directory.join("contents").join("fetch.torrent").display().to_string();
+                    arg_opcode = directory
+                        .join("contents")
+                        .join("fetch.torrent")
+                        .display()
+                        .to_string();
                 }
                 TorrentType::Magnet(ref magnet) => {
                     arg_opcode = magnet.clone();
@@ -80,8 +124,11 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 &pnp2p_path,
                 PNP2P_PROBE,
                 &HashMap::from([
-                    ("OPCODE",      PathValue::from(arg_opcode.clone())),
-                    ("TORRENTTYPE", PathValue::from(format!("--{}", torrent.get_arg()))),
+                    ("OPCODE", PathValue::from(arg_opcode.clone())),
+                    (
+                        "TORRENTTYPE",
+                        PathValue::from(format!("--{}", torrent.get_arg())),
+                    ),
                 ]),
                 job_id,
                 &mut proto,
@@ -93,7 +140,7 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     match out {
                         4 => {
                             let payload = data.get(1).and_then(|v| v.as_multi())?;
-                            let idx  = payload.get(0).and_then(|v| v.as_str()).unwrap_or("?");
+                            let idx = payload.get(0).and_then(|v| v.as_str()).unwrap_or("?");
                             let name = payload.get(1).and_then(|v| v.as_str()).unwrap_or("?");
                             let size = payload.get(2).and_then(|v| v.as_str()).unwrap_or("?");
                             println!("[Pandora Prober] {}", name);
@@ -105,26 +152,52 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                         }
                         1 => return Some(ToolResult::Success),
                         2 => return Some(ToolResult::Fail),
+                        5 => return Some(ToolResult::Fail),
                         _ => {}
                     }
                     None
                 },
-            ).await;
+            )
+            .await;
 
             match result {
                 ToolResult::Success => {
                     if probe_rows.is_empty() {
-                        tx.send((job_id, MessagePayload::Static(PROBE_FAIL), Some(Stage::Failed))).await.unwrap();
+                        tx.send((
+                            job_id,
+                            MessagePayload::Static(PROBE_FAIL),
+                            Some(Stage::Failed),
+                        ))
+                        .await
+                        .unwrap();
                         continue 'll;
                     }
                     let list = format_probe_rows(&probe_rows).join("\n");
-                    tx.send((job_id, MessagePayload::Progress(PROBE_ROW, vec![list]), Some(Stage::Probed))).await.unwrap();
+                    tx.send((
+                        job_id,
+                        MessagePayload::Progress(PROBE_ROW, vec![list]),
+                        Some(Stage::Probed),
+                    ))
+                    .await
+                    .unwrap();
                 }
                 ToolResult::Fail => {
-                    tx.send((job_id, MessagePayload::Static(PROBE_FAIL), Some(Stage::Failed))).await.unwrap();
+                    tx.send((
+                        job_id,
+                        MessagePayload::Static(PROBE_FAIL),
+                        Some(Stage::Failed),
+                    ))
+                    .await
+                    .unwrap();
                 }
                 _ => {
-                    tx.send((job_id, MessagePayload::Static(PROBE_FAIL), Some(Stage::Failed))).await.unwrap();
+                    tx.send((
+                        job_id,
+                        MessagePayload::Static(PROBE_FAIL),
+                        Some(Stage::Failed),
+                    ))
+                    .await
+                    .unwrap();
                 }
             }
             println!("[Pandora Probe] End of Session");
@@ -144,14 +217,23 @@ fn format_probe_rows(rows: &[ProbeFile]) -> Vec<String> {
         sequence_tokens(&basenames)
     };
     let detected = tokens.iter().filter(|t| t.is_some()).count() >= 2;
-    rows.iter().zip(basenames.iter()).zip(tokens.iter()).map(|((row, name), token)| {
-        if detected {
-            if let Some(t) = token {
-                return format!("`{}` — E{}", row.idx, t);
+    rows.iter()
+        .zip(basenames.iter())
+        .zip(tokens.iter())
+        .map(|((row, name), token)| {
+            if detected {
+                if let Some(t) = token {
+                    return format!("`{}` — E{}", row.idx, t);
+                }
             }
-        }
-        format!("`{}` — {} ({}MB)", row.idx, name, string_byte_to_mb(&row.size))
-    }).collect()
+            format!(
+                "`{}` — {} ({}MB)",
+                row.idx,
+                name,
+                string_byte_to_mb(&row.size)
+            )
+        })
+        .collect()
 }
 
 fn basename(name: &str) -> String {
@@ -185,7 +267,8 @@ fn sequence_tokens(names: &[String]) -> Vec<Option<String>> {
     let mut best_col = None;
     let mut best_score = 0usize;
     for col in 0..max_cols {
-        let nums: Vec<Option<u64>> = candidates.iter()
+        let nums: Vec<Option<u64>> = candidates
+            .iter()
             .map(|c| c.get(col).and_then(|t| token_number(t)))
             .collect();
         let present: Vec<u64> = nums.iter().filter_map(|n| *n).collect();
@@ -209,7 +292,10 @@ fn sequence_tokens(names: &[String]) -> Vec<Option<String>> {
         return vec![None; names.len()];
     }
     let col = best_col.unwrap();
-    candidates.into_iter().map(|c| c.get(col).cloned()).collect()
+    candidates
+        .into_iter()
+        .map(|c| c.get(col).cloned())
+        .collect()
 }
 
 fn numeric_candidates(name: &str) -> Vec<String> {
@@ -220,7 +306,8 @@ fn numeric_candidates(name: &str) -> Vec<String> {
             out.push(m.as_str().to_string());
         }
     }
-    let delim_re = Regex::new(r"(?i)(?:^|[\s._\-])([0-9]{1,4}(?:v\d+)?)(?:$|[\s._\-\(\[])").unwrap();
+    let delim_re =
+        Regex::new(r"(?i)(?:^|[\s._\-])([0-9]{1,4}(?:v\d+)?)(?:$|[\s._\-\(\[])").unwrap();
     for caps in delim_re.captures_iter(name) {
         if let Some(m) = caps.get(1) {
             let token = m.as_str().to_string();

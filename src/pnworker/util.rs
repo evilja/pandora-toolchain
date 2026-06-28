@@ -1,9 +1,9 @@
-use std::collections::HashMap;
-use std::process::Stdio;
-use tokio::io::{BufReader, AsyncBufReadExt};
 use crate::libpnprotocol::core::{Protocol, TypeC};
-use tokio::process::Command;
 use serde::Deserialize;
+use std::collections::{HashMap, HashSet};
+use std::process::Stdio;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::Command;
 
 #[derive(Debug)]
 pub enum CliParam {
@@ -21,17 +21,50 @@ pub enum ToolResult {
     Cancel,
 }
 
+pub struct WorkerNamePool {
+    names: Vec<&'static str>,
+    used: HashSet<String>,
+}
+
+impl WorkerNamePool {
+    pub fn new(names: &[&'static str]) -> Self {
+        Self {
+            names: names.to_vec(),
+            used: HashSet::new(),
+        }
+    }
+
+    pub fn acquire(&mut self) -> Option<String> {
+        for name in &self.names {
+            if !self.used.contains(*name) {
+                let name = name.to_string();
+                self.used.insert(name.clone());
+                return Some(name);
+            }
+        }
+        None
+    }
+
+    pub fn release(&mut self, name: &str) {
+        self.used.remove(name);
+    }
+}
+
 pub enum PathValue {
     Single(String),
     Multi(Vec<String>),
 }
 
 impl From<String> for PathValue {
-    fn from(s: String) -> Self { PathValue::Single(s) }
+    fn from(s: String) -> Self {
+        PathValue::Single(s)
+    }
 }
 
 impl From<Vec<String>> for PathValue {
-    fn from(v: Vec<String>) -> Self { PathValue::Multi(v) }
+    fn from(v: Vec<String>) -> Self {
+        PathValue::Multi(v)
+    }
 }
 
 pub async fn run_tool<F>(
@@ -48,11 +81,19 @@ where
     let mut cmd = Command::new(tool_path);
     for param in params {
         match param {
-            CliParam::Literal(s)    => { cmd.arg(s); }
-            CliParam::Flag(s)       => { cmd.arg(format!("--{}", s)); }
-            CliParam::JobId(prefix) => { cmd.arg(format!("{}{}", prefix, job_id)); }
-            CliParam::NegVer(v)     => { cmd.arg(v); }
-            CliParam::Path(key)     => {
+            CliParam::Literal(s) => {
+                cmd.arg(s);
+            }
+            CliParam::Flag(s) => {
+                cmd.arg(format!("--{}", s));
+            }
+            CliParam::JobId(prefix) => {
+                cmd.arg(format!("{}{}", prefix, job_id));
+            }
+            CliParam::NegVer(v) => {
+                cmd.arg(v);
+            }
+            CliParam::Path(key) => {
                 if let Some(PathValue::Single(s)) = paths.get(key) {
                     cmd.arg(s);
                 } else {
@@ -80,7 +121,9 @@ where
     while let Ok(Some(line)) = lines.next_line().await {
         println!("{}", line);
         if !negotiated {
-            if proto.negotiate(&line).is_ok() { negotiated = true; }
+            if proto.negotiate(&line).is_ok() {
+                negotiated = true;
+            }
         } else if let Ok(data) = proto.extract_data(&line) {
             if let Some(result) = on_line(&data) {
                 child.kill().await.ok();
@@ -89,7 +132,12 @@ where
         }
     }
 
-    match child.wait().await.expect("Failed to wait on child").success() {
+    match child
+        .wait()
+        .await
+        .expect("Failed to wait on child")
+        .success()
+    {
         true => ToolResult::Success,
         false => ToolResult::Fail,
     }
@@ -105,7 +153,9 @@ impl IntrosConfig {
         std::fs::read_to_string("DB/config/global/environment/intros.toml")
             .ok()
             .and_then(|c| toml::from_str(&c).ok())
-            .unwrap_or(IntrosConfig { groups: HashMap::new() })
+            .unwrap_or(IntrosConfig {
+                groups: HashMap::new(),
+            })
     }
 
     pub fn resolve(&self, group: &str) -> Option<Vec<String>> {
