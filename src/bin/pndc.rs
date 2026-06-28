@@ -1336,7 +1336,7 @@ impl EventHandler for Handler {
                         .required(false)
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::Boolean, "local", "Use this server's Google Drive credentials for API uploads when available")
+                    CreateCommandOption::new(CommandOptionType::Boolean, "local", "Bind the token to this server: use its Drive creds for uploads and unlock the git console (/init, /attach, /source)")
                         .required(false)
                 ),
             CreateCommand::new("acixconfirm")

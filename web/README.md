@@ -1,18 +1,35 @@
 # Pandora web console
 
-A single self-contained page (`index.html`, no build step, no dependencies) that drives the
-pndc HTTP API: submit encode/backup jobs, list/inspect jobs, and cancel them. Auth is the
-same bearer token as the API (mint one with `/gentoken`, stored in
-`DB/config/global/environment/api.pandora`), entered in the footer and saved in the browser.
+Two self-contained pages (no build step, no dependencies) that drive the pndc HTTP API:
 
-## The bot serves this page itself
+- **`index.html`** — the encode console: submit encode/backup/probe/pancode/gitcode jobs,
+  list/inspect jobs, and cancel them.
+- **`git.html`** — the git console: repository operations (`/init`, `/attach`, `/source`).
+  These require a **local** token (see below).
 
-`index.html` is **baked into the `pndc` binary** (`include_str!`) and served by the API server.
+Auth is the same bearer token as the API (mint one with `/gentoken`, stored in
+`DB/config/global/environment/api.pandora`), entered in the footer and saved in the browser
+(shared across both pages). The two pages cross-link in the titlebar.
+
+## The bot serves these pages itself
+
+Both pages are **baked into the `pndc` binary** (`include_str!`) and served by the API server.
 When `api_port` is set in `env.pandora`, the bot listens on that port and answers:
 
-- `GET /`            → this console
+- `GET /`            → the encode console (`index.html`)
+- `GET /git`         → the git console (`git.html`)
 - `GET /api/v1/...`  → the JSON API (same origin, so no CORS)
 - `GET /health`      → liveness
+
+### Local tokens & the git console
+
+A token line in `api.pandora` may carry a `|local|<server_id>` suffix; mint one with
+`/gentoken local` (run it in the target Discord server). A local token is **bound to that
+server**: it uses the server's Google Drive credentials for uploads, and it is **required** for
+the git endpoints (`POST /api/v1/git/{init,attach,source}`) — a plain token gets `403` there.
+The server id comes from the token; the channel id is supplied per request (a Discord channel id,
+sent as a string because snowflakes exceed JS's safe-integer range). The git console persists the
+last channel id in the browser.
 
 So there is **nothing else to install or host** — no nginx, no Caddy, no admin rights. Point a
 browser at the bot's port and you get the UI. Editing this file requires rebuilding `pndc`.

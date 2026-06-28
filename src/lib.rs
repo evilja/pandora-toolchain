@@ -9,6 +9,7 @@ pub mod libkagami;
 pub mod libpnlogging;
 pub mod libpnmal;
 pub mod libpnforgejo;
+pub mod libpngit;
 pub mod libpnanisub;
 pub mod libacix;
 pub mod libpnbin;

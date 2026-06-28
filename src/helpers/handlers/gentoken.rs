@@ -70,7 +70,7 @@ pub async fn handle_gentoken(
 
     let labelled = label.map(|l| format!(" for `{}`", l)).unwrap_or_default();
     let scope = local_server_id
-        .map(|id| format!(" It will use this server's Google Drive credentials (`{}`) when available, otherwise the global credentials.", id))
+        .map(|id| format!(" It's bound to this server (`{}`): it uses this server's Google Drive credentials when available, and unlocks the git console (`/init`, `/attach`, `/source`) at `/git`.", id))
         .unwrap_or_default();
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()

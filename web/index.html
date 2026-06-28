@@ -98,6 +98,30 @@
     letter-spacing: 0.3px;
     white-space: nowrap;
   }
+  .navlink {
+    margin-left: 14px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--k1);
+    text-decoration: none;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+    padding: 4px 9px;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    transition: border-color .14s, color .14s;
+  }
+  .navlink:hover { border-color: var(--k1); color: var(--ink); }
+  .navlink:focus-visible { outline: 2px solid var(--cool); outline-offset: 2px; }
+  .notice {
+    font-size: 12px; color: var(--ink-2); line-height: 1.45;
+    background: rgba(47,127,215,0.08);
+    border: 1px solid rgba(47,127,215,0.22);
+    border-radius: var(--radius-sm);
+    padding: 9px 12px; margin: 0 0 16px;
+  }
+  .notice b { color: var(--ink); }
+  .notice .mono { color: var(--k1); }
 
   .grid { display: flex; min-height: 250px; }
 
@@ -439,6 +463,7 @@
       <div class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></div>
       <div class="brand"><b>pandora</b><span class="sub">encode console</span></div>
       <div class="tc" id="tc">Dialogue: 0,00:00:00:00,pndc</div>
+      <a class="navlink" href="/git" title="Git operations console">git ›</a>
     </div>
 
     <div class="grid">

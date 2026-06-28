@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pandora — git console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #eef6ff;
+    --bg-2: #fbfdff;
+    --panel: rgba(255,255,255,0.94);
+    --panel-2: #f3f8ff;
+    --raise: #e8f2ff;
+    --line: #cfe0f4;
+    --line-2: #aac6e9;
+    --ink: #18365f;
+    --ink-2: #416895;
+    --dim: #6f88ad;
+    --faint: #9aaccc;
+    --k1: #2f7fd7;
+    --k2: #95c8ff;
+    --cool: #5e93d9;
+    --done: #35a6c9;
+    --bad: #d35f75;
+    --radius: 16px;
+    --radius-sm: 9px;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --disp: "Bricolage Grotesque", "Hanken Grotesk", system-ui, sans-serif;
+    --body: "Hanken Grotesk", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: var(--body);
+    color: var(--ink);
+    background:
+      radial-gradient(720px 520px at 18% 0%, rgba(255,255,255,0.92), transparent 64%),
+      radial-gradient(820px 640px at 85% -10%, rgba(149,200,255,0.42), transparent 60%),
+      radial-gradient(860px 680px at -8% 110%, rgba(91,142,211,0.22), transparent 56%),
+      linear-gradient(180deg, var(--bg-2), var(--bg));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background: repeating-linear-gradient(0deg, rgba(47,127,215,0.035) 0 1px, transparent 1px 4px);
+    mix-blend-mode: multiply;
+  }
+
+  .window {
+    position: relative;
+    z-index: 1;
+    width: 94%;
+    max-width: 880px;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: 0 34px 80px -28px rgba(47,91,145,0.42), 0 2px 0 0 rgba(255,255,255,0.9) inset;
+    overflow: hidden;
+  }
+
+  .titlebar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 16px;
+    height: 46px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.92), rgba(236,246,255,0.88));
+    border-bottom: 1px solid var(--line);
+    user-select: none;
+  }
+  .dots { display: flex; gap: 8px; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; opacity: 0.95; }
+  .dot.r { background: #b7d8ff; }
+  .dot.y { background: #7fb6f4; }
+  .dot.g { background: #2f7fd7; }
+  .brand { display: flex; align-items: baseline; gap: 9px; margin-left: 4px; }
+  .brand b { font-family: var(--disp); font-weight: 800; font-size: 16px; letter-spacing: -0.2px; color: var(--ink); }
+  .brand .sub { font-family: var(--mono); font-size: 11px; color: var(--dim); letter-spacing: 0.4px; }
+  .tc {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--faint);
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+  }
+  .navlink {
+    margin-left: 14px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--k1);
+    text-decoration: none;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+    padding: 4px 9px;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    transition: border-color .14s, color .14s;
+  }
+  .navlink:hover { border-color: var(--k1); color: var(--ink); }
+  .navlink:focus-visible { outline: 2px solid var(--cool); outline-offset: 2px; }
+  .notice {
+    font-size: 12px; color: var(--ink-2); line-height: 1.45;
+    background: rgba(47,127,215,0.08);
+    border: 1px solid rgba(47,127,215,0.22);
+    border-radius: var(--radius-sm);
+    padding: 9px 12px; margin: 0 0 16px;
+  }
+  .notice b { color: var(--ink); }
+  .notice .mono { color: var(--k1); }
+
+  .grid { display: flex; min-height: 250px; }
+
+  .commands {
+    width: 176px;
+    flex-shrink: 0;
+    padding: 14px 12px;
+    border-right: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    background: linear-gradient(180deg, rgba(232,242,255,0.78), rgba(255,255,255,0.46));
+  }
+  .rail-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 1.4px;
+    text-transform: uppercase;
+    color: var(--faint);
+    padding: 2px 10px 8px;
+  }
+  .cmd {
+    position: relative;
+    text-align: left;
+    border: 0;
+    border-left: 2px solid transparent;
+    background: transparent;
+    color: var(--dim);
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    font-family: var(--disp);
+    font-weight: 600;
+    font-size: 14.5px;
+    letter-spacing: -0.1px;
+    cursor: pointer;
+    transition: background .14s, color .14s, border-color .14s;
+  }
+  .cmd:hover { background: var(--raise); color: var(--ink-2); }
+  .cmd.active {
+    background: var(--raise);
+    color: var(--ink);
+    border-left-color: var(--k1);
+  }
+  .cmd.active::after {
+    content: "";
+    position: absolute;
+    right: 11px; top: 50%;
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: var(--k1);
+    transform: translateY(-50%);
+    box-shadow: 0 0 8px var(--k1);
+  }
+  .cmd:focus-visible { outline: 2px solid var(--cool); outline-offset: 2px; }
+
+  .options {
+    flex: 1;
+    padding: 20px 22px;
+    overflow-y: auto;
+    min-width: 0;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.5px;
+    color: var(--faint);
+    margin-bottom: 6px;
+  }
+  .opt-title {
+    font-family: var(--disp);
+    font-size: 21px;
+    font-weight: 700;
+    letter-spacing: -0.4px;
+    margin: 0 0 4px;
+    color: var(--ink);
+  }
+  .desc { font-size: 13px; color: var(--dim); margin: 0 0 18px; line-height: 1.45; }
+
+  .field { margin-bottom: 15px; }
+  .field > label {
+    display: block;
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.2px;
+    color: var(--ink-2);
+    margin-bottom: 6px;
+  }
+  .field .opt { color: var(--faint); font-weight: 400; }
+  input[type=text], input[type=number], input[type=password], select {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    color: var(--ink);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    font-size: 13.5px;
+    font-family: var(--body);
+    outline: none;
+    transition: border-color .14s, box-shadow .14s;
+  }
+  input::placeholder { color: var(--faint); }
+  input:focus, select:focus {
+    border-color: var(--cool);
+    box-shadow: 0 0 0 3px rgba(94,147,217,0.18);
+  }
+  select {
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%236f88ad' stroke-width='1.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    padding-right: 32px;
+  }
+  .hint { font-size: 12px; color: var(--dim); }
+
+  .check { display: flex; align-items: center; gap: 11px; cursor: pointer; user-select: none; font-size: 13.5px; color: var(--ink-2); }
+  .check input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .check .box {
+    width: 19px; height: 19px; flex-shrink: 0;
+    border: 1px solid var(--line-2);
+    background: var(--bg);
+    border-radius: 6px;
+    display: inline-flex; align-items: center; justify-content: center;
+    transition: border-color .14s, background .14s;
+  }
+  .check .box::after {
+    content: ""; width: 10px; height: 10px; border-radius: 3px;
+    background: linear-gradient(135deg, var(--k1), var(--k2));
+    transform: scale(0); transition: transform .14s;
+  }
+  .check input:checked + .box { border-color: var(--k1); }
+  .check input:checked + .box::after { transform: scale(1); }
+  .check input:focus-visible + .box { box-shadow: 0 0 0 3px rgba(94,147,217,0.22); }
+
+  .filepick { display: flex; align-items: center; gap: 12px; cursor: pointer; }
+  .filepick input[type=file] { display: none; }
+  .filebtn {
+    font-family: var(--mono);
+    background: var(--raise); color: var(--ink-2);
+    border: 1px solid var(--line-2); border-radius: var(--radius-sm);
+    padding: 9px 14px; font-size: 12.5px; white-space: nowrap;
+    transition: border-color .14s, color .14s;
+  }
+  .filepick:hover .filebtn { border-color: var(--k1); color: var(--ink); }
+  .filename {
+    font-family: var(--mono); font-size: 12px; color: var(--faint);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .filename.has { color: var(--ink); }
+
+  .selrow { display: flex; gap: 8px; }
+  .selrow select { flex: 1; }
+  .mini {
+    border: 1px solid var(--line-2); background: var(--raise);
+    color: var(--dim); border-radius: var(--radius-sm); padding: 0 13px;
+    font-size: 15px; cursor: pointer; line-height: 1;
+    transition: border-color .14s, color .14s, transform .3s;
+  }
+  .mini:hover { border-color: var(--k1); color: var(--ink); transform: rotate(90deg); }
+  .mini:focus-visible { outline: 2px solid var(--cool); outline-offset: 2px; }
+
+  .output {
+    border-top: 1px solid var(--line);
+    padding: 16px 22px;
+    max-height: 36vh;
+    overflow: auto;
+    background: linear-gradient(180deg, rgba(232,242,255,0.82), rgba(255,255,255,0.56));
+  }
+  .output:empty { display: none; }
+  pre {
+    margin: 10px 0 0;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--ink-2);
+  }
+  .mono { font-family: var(--mono); }
+  .muted { color: var(--dim); }
+
+  table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12.5px; }
+  th, td { text-align: left; padding: 8px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--faint); font-weight: 600; font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.8px; text-transform: uppercase; }
+  td.trunc { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .pill {
+    display: inline-block; font-family: var(--mono); font-size: 11px; font-weight: 600;
+    padding: 2px 9px; border-radius: 6px; letter-spacing: 0.3px;
+    border: 1px solid var(--line-2); color: var(--ink-2); background: var(--panel-2);
+  }
+  .pill.ok { color: var(--done); border-color: rgba(53,166,201,0.42); }
+  .pill.err { color: var(--bad); border-color: rgba(211,95,117,0.4); }
+
+  .chip {
+    display: inline-block; font-family: var(--mono); font-size: 11px; font-weight: 600;
+    padding: 3px 9px; border-radius: 7px; letter-spacing: 0.3px;
+    border: 1px solid var(--line); color: var(--ink-2); background: var(--panel-2);
+  }
+  .chip.active { color: var(--k1); border-color: rgba(47,127,215,0.38); background: rgba(47,127,215,0.08); }
+  .chip.done { color: var(--done); border-color: rgba(53,166,201,0.38); background: rgba(53,166,201,0.08); }
+  .chip.bad { color: var(--bad); border-color: rgba(211,95,117,0.38); background: rgba(211,95,117,0.08); }
+  .chip.idle { color: var(--dim); }
+
+  /* signature: karaoke pipeline */
+  .stat-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .stat-id { font-size: 12.5px; color: var(--ink); }
+  .stat-type { font-size: 12.5px; color: var(--dim); }
+  .pipe { display: flex; gap: 10px; margin: 6px 0 10px; }
+  .seg { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 9px; }
+  .seg-track { height: 8px; border-radius: 999px; background: var(--line); display: block; overflow: hidden; }
+  .seg-prog { display: block; height: 100%; width: 0; border-radius: 999px; transition: width .5s ease; }
+  .seg-name {
+    font-family: var(--mono); font-size: 11px; color: var(--faint);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0.4px;
+  }
+  .seg.done .seg-prog { background: var(--cool); }
+  .seg.done .seg-name { color: var(--ink-2); }
+  .seg.fin .seg-prog { background: var(--done); }
+  .seg.fin .seg-name { color: var(--done); }
+  .seg.active .seg-track { box-shadow: 0 0 0 1px rgba(47,127,215,0.2) inset; }
+  .seg.active .seg-prog {
+    background: linear-gradient(90deg, #dcecff, #95c8ff, #5e93d9, #b7d8ff, #ffffff, #95c8ff, #dcecff);
+    background-size: 300% 100%;
+    animation: ksweep 1.7s linear infinite;
+    box-shadow: 0 0 14px -2px var(--k2);
+  }
+  .seg.active .seg-name { color: var(--k1); font-weight: 600; }
+  @keyframes ksweep { from { background-position: 200% 0; } to { background-position: 0 0; } }
+  .accepted { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 12px 0; font-size: 13px; }
+
+  /* progress readout + uploaded links */
+  .prog-meta { margin-top: 2px; font-size: 12px; color: var(--ink-2); }
+  .prog-label {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+    color: var(--faint); margin: 14px 0 6px;
+  }
+  .link-row {
+    display: flex; gap: 12px; align-items: baseline; padding: 5px 0;
+    border-bottom: 1px solid var(--line); font-size: 12.5px; word-break: break-all;
+  }
+  .link-host { color: var(--k1); min-width: 88px; flex-shrink: 0; }
+  .link-row a { color: var(--cool); text-decoration: none; }
+  .link-row a:hover { text-decoration: underline; }
+
+  .up-hosts { margin-top: 9px; display: flex; flex-direction: column; gap: 4px; }
+  .up-host { font-size: 12px; color: var(--ink-2); word-break: break-all; }
+  .up-host a { color: var(--cool); text-decoration: none; }
+  .up-host a:hover { text-decoration: underline; }
+
+  .footer {
+    display: flex;
+    align-items: flex-end;
+    gap: 12px;
+    padding: 14px 16px;
+    border-top: 1px solid var(--line);
+    background: linear-gradient(180deg, rgba(236,246,255,0.9), rgba(255,255,255,0.86));
+  }
+  .footer .tok { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+  .footer .toklabel {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+    color: var(--faint); display: flex; gap: 8px; align-items: center;
+  }
+  .saved { color: var(--done); opacity: 0; transition: opacity .2s; text-transform: none; letter-spacing: 0; }
+  .saved.show { opacity: 1; }
+  .run {
+    font-family: var(--disp);
+    background: linear-gradient(120deg, var(--k1), var(--k2));
+    color: #ffffff;
+    border: 0;
+    border-radius: var(--radius-sm);
+    padding: 10px 26px;
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+    cursor: pointer;
+    align-self: flex-end;
+    box-shadow: 0 10px 22px -9px rgba(47,127,215,0.62);
+    transition: filter .14s, transform .08s, opacity .14s;
+  }
+  .run:hover { filter: brightness(1.06); }
+  .run:active { transform: translateY(1px); }
+  .run:focus-visible { outline: 2px solid var(--cool); outline-offset: 2px; }
+  .run:disabled { opacity: 0.5; cursor: default; filter: saturate(0.5); }
+
+  @media (max-width: 760px) {
+    body { padding: 0; align-items: stretch; }
+    .window {
+      width: 100%;
+      max-width: none;
+      min-height: 100%;
+      max-height: none;
+      border: 0;
+      border-radius: 0;
+      box-shadow: none;
+    }
+    .grid { flex-direction: column; }
+    .commands {
+      width: auto;
+      flex-direction: row;
+      flex-wrap: wrap;
+      gap: 6px;
+      border-right: none;
+      border-bottom: 1px solid var(--line);
+    }
+    .rail-label { display: none; }
+    .cmd {
+      flex: 1 1 auto;
+      text-align: center;
+      padding: 9px 12px;
+      border-left: 0;
+      border-bottom: 2px solid transparent;
+    }
+    .cmd.active { border-left: 0; border-bottom-color: var(--k1); }
+    .cmd.active::after { display: none; }
+    .options { padding: 18px 16px; }
+    .output { padding: 14px 16px; max-height: none; }
+    .seg-name { display: none; }
+    .footer { flex-wrap: wrap; padding: 12px 16px; gap: 10px; }
+    .footer .tok { flex: 1 1 100%; }
+    .run { width: 100%; align-self: stretch; padding: 13px 26px; }
+    /* 16px on inputs keeps iOS Safari from auto-zooming on focus */
+    input[type=text], input[type=number], input[type=password], select { font-size: 16px; }
+    td.trunc { max-width: 140px; }
+    .link-host { min-width: 0; }
+  }
+  @media (max-width: 380px) {
+    .brand .sub { display: none; }
+    .tc { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .seg.active .seg-prog { animation: none; background: linear-gradient(90deg, #dcecff, #95c8ff, #5e93d9, #b7d8ff, #ffffff); }
+    .mini:hover { transform: none; }
+  }
+</style>
+</head>
+<body>
+  <div class="window">
+    <div class="titlebar">
+      <div class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></div>
+      <div class="brand"><b>pandora</b><span class="sub">git console</span></div>
+      <div class="tc" id="tc">Dialogue: 0,00:00:00:00,pndc</div>
+      <a class="navlink" href="/" title="Encode console">‹ encode</a>
+    </div>
+
+    <div class="grid">
+      <div class="commands" id="commands"></div>
+      <div class="options" id="options"></div>
+    </div>
+
+    <div class="output" id="output"></div>
+
+    <div class="footer">
+      <div class="tok">
+        <div class="toklabel">Local API token <span class="saved" id="saved">saved ✓</span></div>
+        <input type="password" id="token" placeholder="Bearer token (local)" autocomplete="off" spellcheck="false">
+      </div>
+      <button class="run" id="run">Run</button>
+    </div>
+  </div>
+
+<script>
+(function () {
+  "use strict";
+
+  var API = "";
+  var commandsEl = document.getElementById("commands");
+  var optionsEl  = document.getElementById("options");
+  var outputEl   = document.getElementById("output");
+  var tokenEl    = document.getElementById("token");
+  var savedEl    = document.getElementById("saved");
+  var runEl      = document.getElementById("run");
+  var tcEl       = document.getElementById("tc");
+
+  var active = "init";
+  var busyFlag = false;
+
+  // ---- ambient timecode in the titlebar ----
+  var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  (function () {
+    var start = Date.now();
+    function pad(n) { return (n < 10 ? "0" : "") + n; }
+    function paint() {
+      var ms = Date.now() - start;
+      var s = Math.floor(ms / 1000);
+      var tc = pad(Math.floor(s / 3600)) + ":" + pad(Math.floor(s % 3600 / 60)) + ":" +
+               pad(s % 60) + ":" + pad(Math.floor((ms % 1000) / 1000 * 24));
+      tcEl.textContent = "Dialogue: 0," + tc + ",pndc";
+    }
+    if (reduceMotion) { return; }
+    var timer = setInterval(paint, 42);
+    document.addEventListener("visibilitychange", function () {
+      clearInterval(timer);
+      if (!document.hidden) { timer = setInterval(paint, 42); }
+    });
+    paint();
+  })();
+
+  // ---- token persistence (shared with the encode console) ----
+  tokenEl.value = localStorage.getItem("pandora_token") || "";
+  var savedT;
+  tokenEl.addEventListener("input", function () {
+    localStorage.setItem("pandora_token", tokenEl.value);
+    savedEl.classList.add("show");
+    clearTimeout(savedT);
+    savedT = setTimeout(function () { savedEl.classList.remove("show"); }, 900);
+  });
+
+  // ---- channel id persistence (these flows are all channel-scoped) ----
+  function loadChannel(el) { if (el) el.value = localStorage.getItem("pandora_git_channel") || ""; }
+  function saveChannel(el) { if (el) localStorage.setItem("pandora_git_channel", el.value.trim()); }
+
+  var NOTICE = 'Needs a <b>local</b> token bound to this server. Mint one in Discord with ' +
+    '<span class="mono">/gentoken local</span> (run it in the target server). The token carries the server id; ' +
+    'you supply the channel below.';
+
+  // ---- command specs ----
+  var COMMANDS = {
+    init: {
+      label: "Init",
+      desc: "Create a new Forgejo repo for a MyAnimeList entry, bootstrap its episode folders, and attach it to a channel.",
+      fields: [
+        { name: "mal",        label: "MyAnimeList URL", type: "text", required: true, placeholder: "https://myanimelist.net/anime/..." },
+        { name: "channel_id", label: "Channel ID", type: "channel", required: true, placeholder: "Discord channel id" },
+        { name: "season",     label: "Season", type: "number", optional: true, placeholder: "1" },
+        { name: "tl",         label: "TL credit", type: "text", optional: true, placeholder: "---" },
+        { name: "tlc",        label: "TLC credit", type: "text", optional: true, placeholder: "---" },
+        { name: "ts",         label: "TS credit", type: "text", optional: true, placeholder: "---" },
+        { name: "qc",         label: "QC credit", type: "text", optional: true, placeholder: "---" }
+      ],
+      run: function (v) { return api("POST", "/api/v1/git/init", bodyFrom(v, ["mal", "channel_id", "season", "tl", "tlc", "ts", "qc"])); }
+    },
+    attach: {
+      label: "Attach",
+      desc: "Bootstrap an existing Forgejo repo from a MyAnimeList entry and attach it to a channel.",
+      fields: [
+        { name: "mal",        label: "MyAnimeList URL", type: "text", required: true, placeholder: "https://myanimelist.net/anime/..." },
+        { name: "repo",       label: "Repo URL", type: "text", required: true, placeholder: "https://git.example.com/Org/repo" },
+        { name: "channel_id", label: "Channel ID", type: "channel", required: true, placeholder: "Discord channel id" },
+        { name: "season",     label: "Season", type: "number", optional: true, placeholder: "1" },
+        { name: "tl",         label: "TL credit", type: "text", optional: true, placeholder: "---" },
+        { name: "tlc",        label: "TLC credit", type: "text", optional: true, placeholder: "---" },
+        { name: "ts",         label: "TS credit", type: "text", optional: true, placeholder: "---" },
+        { name: "qc",         label: "QC credit", type: "text", optional: true, placeholder: "---" }
+      ],
+      run: function (v) { return api("POST", "/api/v1/git/attach", bodyFrom(v, ["mal", "repo", "channel_id", "season", "tl", "tlc", "ts", "qc"])); }
+    },
+    source: {
+      label: "Source",
+      desc: "Write a release's SOURCE.md (the source link for an episode) to the channel's attached repo.",
+      fields: [
+        { name: "channel_id", label: "Channel ID", type: "channel", required: true, placeholder: "Discord channel id" },
+        { name: "episode",    label: "Episode", type: "number", required: true, placeholder: "1" },
+        { name: "link",       label: "Source link", type: "text", required: true, placeholder: "https://nyaa.si/view/... or magnet:?..." }
+      ],
+      run: function (v) { return api("POST", "/api/v1/git/source", bodyFrom(v, ["channel_id", "episode", "link"])); }
+    }
+  };
+  var ORDER = ["init", "attach", "source"];
+
+  // ---- render command list ----
+  var rail = document.createElement("div");
+  rail.className = "rail-label";
+  rail.textContent = "Git";
+  commandsEl.appendChild(rail);
+  ORDER.forEach(function (key) {
+    var b = document.createElement("button");
+    b.className = "cmd" + (key === active ? " active" : "");
+    b.textContent = COMMANDS[key].label;
+    b.addEventListener("click", function () { select(key); });
+    commandsEl.appendChild(b);
+  });
+
+  function select(key) {
+    active = key;
+    Array.prototype.forEach.call(commandsEl.querySelectorAll(".cmd"), function (c, i) {
+      c.classList.toggle("active", ORDER[i] === key);
+    });
+    renderOptions(key);
+    updateRunState();
+  }
+
+  function renderOptions(key) {
+    var cmd = COMMANDS[key];
+    var html = '<div class="eyebrow">// git ' + esc(key) + "</div>";
+    html += '<div class="opt-title">' + esc(cmd.label) + "</div>";
+    if (cmd.desc) html += '<p class="desc">' + esc(cmd.desc) + "</p>";
+    html += '<div class="notice">' + NOTICE + "</div>";
+    (cmd.fields || []).forEach(function (f) {
+      var id = "f_" + f.name;
+      var optTag = f.optional ? ' <span class="opt">(optional)</span>' : "";
+      html += '<div class="field"><label for="' + id + '">' + esc(f.label) + optTag + "</label>";
+      html += '<input type="' + (f.type === "number" ? "number" : "text") + '" id="' + id +
+              '" placeholder="' + esc(f.placeholder || "") + '">';
+      html += "</div>";
+    });
+    optionsEl.innerHTML = html;
+
+    (cmd.fields || []).forEach(function (f) {
+      if (f.type === "channel") {
+        var el = document.getElementById("f_" + f.name);
+        loadChannel(el);
+        el.addEventListener("input", function () { saveChannel(el); });
+      }
+    });
+  }
+
+  // ---- run ----
+  runEl.addEventListener("click", doRun);
+
+  function doRun() {
+    var cmd = COMMANDS[active];
+    var vals, err;
+    try { vals = gather(cmd); } catch (e) { err = e; }
+    if (err) { showError(err.message || String(err)); return; }
+    busy(true);
+    cmd.run(vals).then(function (res) {
+      renderGit(res);
+    }).catch(function (e) {
+      showError(e && e.message ? e.message : String(e));
+    }).then(function () { busy(false); });
+  }
+
+  function gather(cmd) {
+    var out = {};
+    (cmd.fields || []).forEach(function (f) {
+      var el = document.getElementById("f_" + f.name);
+      var val = el ? el.value.trim() : "";
+      if (f.required && !val) throw new Error(f.label + " is required");
+      out[f.name] = val;
+    });
+    return out;
+  }
+
+  function bodyFrom(v, keys) {
+    var b = {};
+    keys.forEach(function (k) {
+      var val = v[k];
+      if (val === undefined || val === "") return;
+      if (k === "season" || k === "episode") {
+        var n = parseInt(val, 10);
+        if (!isNaN(n)) b[k] = n;
+        return;
+      }
+      b[k] = val;
+    });
+    return b;
+  }
+
+  // ---- API call ----
+  function api(method, path, body) {
+    var token = tokenEl.value.trim();
+    var opts = { method: method, headers: {} };
+    if (token) opts.headers["Authorization"] = "Bearer " + token;
+    if (body !== undefined) {
+      opts.headers["Content-Type"] = "application/json";
+      opts.body = JSON.stringify(body);
+    }
+    return fetch(API + path, opts).then(function (resp) {
+      return resp.text().then(function (text) {
+        var data;
+        try { data = JSON.parse(text); } catch (e) { data = text; }
+        return { status: resp.status, ok: resp.ok, data: data };
+      });
+    });
+  }
+
+  // ---- renderers ----
+  function pill(res) {
+    return '<span class="pill ' + (res.ok ? "ok" : "err") + '">' + res.status + "</span>";
+  }
+  function linkOf(url) {
+    var s = String(url || "");
+    return /^https?:\/\//.test(s)
+      ? '<a href="' + esc(s) + '" target="_blank" rel="noopener">' + esc(s) + "</a>"
+      : esc(s);
+  }
+  function row(k, v) {
+    return '<div class="link-row"><span class="link-host mono">' + esc(k) + "</span><span>" + v + "</span></div>";
+  }
+  function messageText(data, ok) {
+    if (typeof data === "string" && data) return data;
+    if (data && typeof data === "object") {
+      if (data.error) return data.error;
+      if (data.message) return data.message;
+      if (data.detail) return data.detail;
+    }
+    return ok ? "Request completed." : "Request failed.";
+  }
+
+  function renderGit(res) {
+    if (res.status === 403) {
+      outputEl.innerHTML = pill(res) +
+        '<p class="muted">This needs a <b>local</b> token. Mint one in Discord with ' +
+        '<span class="mono">/gentoken local</span> (run it in the target server), then paste it below. ' +
+        'A plain token works on the encode console but not here.</p>';
+      return;
+    }
+    if (res.ok && res.data && typeof res.data === "object" && res.data.owner_repo) {
+      var d = res.data;
+      var rows = "";
+      rows += row("Repo", linkOf(d.repo_url));
+      rows += row("Owner/Repo", esc(d.owner_repo));
+      rows += row("Name", esc(d.name));
+      rows += row("Slug", esc(d.slug));
+      rows += row("Kind", esc(d.kind));
+      rows += row("Episodes", esc(d.episode_count));
+      rows += row("Season", esc(d.season));
+      var created = (d.created && d.created.length) ? d.created.join(", ") : "none — repo already had all folders and README";
+      var renamed = (d.renamed_files && d.renamed_files.length) ? d.renamed_files.join("\n") : "";
+      outputEl.innerHTML = '<div class="stat-head">' + pill(res) +
+        '<span class="chip done">' + esc(d.label || "attached") + "</span>" +
+        '<span class="stat-type">attached to channel</span></div>' +
+        '<div class="prog-label">Repository</div>' + rows +
+        '<div class="prog-label">Created / updated</div><pre>' + esc(created) + "</pre>" +
+        (renamed ? '<div class="prog-label">Renamed files</div><pre>' + esc(renamed) + "</pre>" : "");
+      return;
+    }
+    if (res.ok && res.data && typeof res.data === "object" && res.data.path) {
+      var s = res.data;
+      outputEl.innerHTML = '<div class="stat-head">' + pill(res) +
+        '<span class="chip done">SOURCE.md</span></div>' +
+        '<div class="prog-label">Wrote ' + esc(s.path) + "</div><pre>" + esc((s.content || "").replace(/\s+$/, "")) + "</pre>";
+      return;
+    }
+    var note = "";
+    if (res.status === 401) note = '<p class="muted">Invalid or missing token — check the field below.</p>';
+    outputEl.innerHTML = pill(res) + note + '<p class="muted">' + esc(messageText(res.data, res.ok)) + "</p>";
+  }
+
+  function showError(msg) {
+    outputEl.innerHTML = '<span class="pill err">err</span><pre>' + esc(msg) + "</pre>";
+  }
+
+  function busy(on) { busyFlag = on; updateRunState(); }
+  function updateRunState() {
+    runEl.disabled = busyFlag;
+    runEl.textContent = busyFlag ? "Running…" : "Run";
+  }
+  function esc(s) {
+    return String(s === undefined || s === null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+
+  // ---- boot ----
+  renderOptions(active);
+})();
+</script>
+</body>
+</html>

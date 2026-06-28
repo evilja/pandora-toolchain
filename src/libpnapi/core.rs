@@ -17,6 +17,7 @@ use crate::pnworker::core::{HalfJob, Job, JobClass, JobType, Preset, Stage};
 use crate::pnworker::acix::confirm_acix;
 use crate::libacix::{AnimeCix, MediaType, MixedUpload};
 use crate::libpndb::core::{JobDb, JobStatus};
+use crate::libpngit::{attach_repo, init_repo, set_source, Credits, RepoOutcome};
 use crate::libpnp2p::nyaaise::nyaaise;
 use crate::libpnenv::core::{get_pandora_env, get_perm};
 use crate::libpnenv::standard::{API_AUTHOR_ID, API_HOST, API_TOKENS_PATH};
@@ -58,6 +59,9 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/jobs/gitcode", post(submit_gitcode))
         .route("/jobs/:id/cancel", post(cancel_job))
         .route("/jobs/:id/acix/confirm", post(acix_confirm))
+        .route("/git/init", post(git_init))
+        .route("/git/attach", post(git_attach))
+        .route("/git/source", post(git_source))
         .route("/gitsync", post(gitsync))
         .route("/acix/search", get(acix_search))
         .route("/acix/tmdb", post(acix_tmdb))
@@ -68,6 +72,7 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
 
     let app = Router::new()
         .route("/", get(index))
+        .route("/git", get(git_console))
         .route("/health", get(health))
         .nest("/api/v1", protected)
         .with_state(state);
@@ -80,9 +85,14 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
 }
 
 const INDEX_HTML: &str = include_str!("../../web/index.html");
+const GIT_HTML: &str = include_str!("../../web/git.html");
 
 async fn index() -> axum::response::Html<&'static str> {
     axum::response::Html(INDEX_HTML)
+}
+
+async fn git_console() -> axum::response::Html<&'static str> {
+    axum::response::Html(GIT_HTML)
 }
 
 async fn health() -> &'static str {
@@ -347,6 +357,133 @@ async fn gitsync(State(st): State<AppState>) -> Response {
         return (StatusCode::SERVICE_UNAVAILABLE, "worker channel closed").into_response();
     }
     (StatusCode::ACCEPTED, Json(json!({ "job_id": job_id, "status": "accepted" }))).into_response()
+}
+
+fn require_local(auth: &ApiAuth) -> Result<u64, Response> {
+    match auth.local_server_id {
+        Some(id) => Ok(id),
+        None => Err((
+            StatusCode::FORBIDDEN,
+            "this endpoint requires a local token (mint one with `/gentoken local`)",
+        ).into_response()),
+    }
+}
+
+fn parse_channel_id(raw: &str) -> Result<u64, Response> {
+    raw.trim().parse::<u64>()
+        .map_err(|_| (StatusCode::BAD_REQUEST, "channel_id must be a numeric string").into_response())
+}
+
+fn validate_season(season: Option<u64>) -> Result<u16, Response> {
+    let s = season.unwrap_or(1);
+    if s < 1 || s > u16::MAX as u64 {
+        return Err((StatusCode::BAD_REQUEST, "season must be between 1 and 65535").into_response());
+    }
+    Ok(s as u16)
+}
+
+fn credit_or_default(v: Option<String>) -> String {
+    v.map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "---".to_string())
+}
+
+fn credits_from(tl: Option<String>, tlc: Option<String>, ts: Option<String>, qc: Option<String>) -> Credits {
+    Credits {
+        tl: credit_or_default(tl),
+        tlc: credit_or_default(tlc),
+        ts: credit_or_default(ts),
+        qc: credit_or_default(qc),
+    }
+}
+
+fn repo_outcome_response(out: RepoOutcome) -> Response {
+    (StatusCode::OK, Json(json!({
+        "label": out.label,
+        "owner_repo": out.owner_repo,
+        "repo_url": out.repo_url,
+        "name": out.name,
+        "slug": out.slug,
+        "kind": out.kind,
+        "episode_count": out.episode_count,
+        "season": out.season,
+        "created": out.created,
+        "renamed_files": out.renamed_files,
+    }))).into_response()
+}
+
+#[derive(Deserialize)]
+struct GitInitReq {
+    mal: String,
+    channel_id: String,
+    #[serde(default)]
+    season: Option<u64>,
+    #[serde(default)]
+    tl: Option<String>,
+    #[serde(default)]
+    tlc: Option<String>,
+    #[serde(default)]
+    ts: Option<String>,
+    #[serde(default)]
+    qc: Option<String>,
+}
+
+async fn git_init(Extension(auth): Extension<ApiAuth>, Json(req): Json<GitInitReq>) -> Response {
+    let server_id = match require_local(&auth) { Ok(id) => id, Err(r) => return r };
+    let channel_id = match parse_channel_id(&req.channel_id) { Ok(c) => c, Err(r) => return r };
+    let season = match validate_season(req.season) { Ok(s) => s, Err(r) => return r };
+    let credits = credits_from(req.tl, req.tlc, req.ts, req.qc);
+    match init_repo(server_id, channel_id, &req.mal, season, &credits).await {
+        Ok(out) => repo_outcome_response(out),
+        Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct GitAttachReq {
+    mal: String,
+    repo: String,
+    channel_id: String,
+    #[serde(default)]
+    season: Option<u64>,
+    #[serde(default)]
+    tl: Option<String>,
+    #[serde(default)]
+    tlc: Option<String>,
+    #[serde(default)]
+    ts: Option<String>,
+    #[serde(default)]
+    qc: Option<String>,
+}
+
+async fn git_attach(Extension(auth): Extension<ApiAuth>, Json(req): Json<GitAttachReq>) -> Response {
+    let server_id = match require_local(&auth) { Ok(id) => id, Err(r) => return r };
+    let channel_id = match parse_channel_id(&req.channel_id) { Ok(c) => c, Err(r) => return r };
+    let season = match validate_season(req.season) { Ok(s) => s, Err(r) => return r };
+    let credits = credits_from(req.tl, req.tlc, req.ts, req.qc);
+    match attach_repo(server_id, channel_id, &req.mal, &req.repo, season, &credits).await {
+        Ok(out) => repo_outcome_response(out),
+        Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct GitSourceReq {
+    channel_id: String,
+    episode: u32,
+    link: String,
+}
+
+async fn git_source(Extension(auth): Extension<ApiAuth>, Json(req): Json<GitSourceReq>) -> Response {
+    let server_id = match require_local(&auth) { Ok(id) => id, Err(r) => return r };
+    let channel_id = match parse_channel_id(&req.channel_id) { Ok(c) => c, Err(r) => return r };
+    match set_source(server_id, channel_id, req.episode, &req.link).await {
+        Ok(out) => (StatusCode::OK, Json(json!({
+            "path": out.path,
+            "content": out.content,
+        }))).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
+    }
 }
 
 async fn submit(st: &AppState, job: Job) -> Response {
