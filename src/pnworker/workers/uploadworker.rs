@@ -74,7 +74,7 @@ async fn run_upload_job(
     if let Some(job_id) = assign_job_id {
         tx.try_send((
             job_id,
-            MessagePayload::Progress(WORKER_ASSIGN, vec![format!("pn-up-{}", worker_name)]),
+            MessagePayload::Progress(WORKER_ASSIGN, vec![format!("upl-{}", worker_name)]),
             None,
         ))
         .ok();

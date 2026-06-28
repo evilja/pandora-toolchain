@@ -67,7 +67,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                     }
                     match job.job_type {
                         JobType::Encode => {
-                            job.worker = "pn-dw-pending".to_string();
+                            job.worker = "dwl-pending".to_string();
                             render(&mut job, MessagePayload::Static(QUEUED)).await;
                             for i in STRUCT {
                                 create_dir_all(job.directory.join(i)).await.unwrap();
@@ -114,7 +114,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                             }
                         }
                         JobType::Probe => {
-                            job.worker = "pn-pr-main".to_string();
+                            job.worker = "prb-main".to_string();
                             render(&mut job, MessagePayload::Static(QUEUED)).await;
                             for i in STRUCT {
                                 create_dir_all(job.directory.join(i)).await.unwrap();
@@ -151,7 +151,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                                 .join("work")
                                 .join(job.probe_job_id.unwrap().to_string());
 
-                            job.worker = "pn-dw-pending".to_string();
+                            job.worker = "dwl-pending".to_string();
                             render(&mut job, MessagePayload::Static(QUEUED)).await;
                             for i in STRUCT {
                                 create_dir_all(job.directory.join(i)).await.unwrap();
@@ -218,7 +218,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                                     .join(id.to_string())
                             });
 
-                            job.worker = "pn-dw-pending".to_string();
+                            job.worker = "dwl-pending".to_string();
                             render(&mut job, MessagePayload::Static(QUEUED)).await;
                             for i in STRUCT {
                                 create_dir_all(job.directory.join(i)).await.unwrap();
@@ -267,7 +267,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                             }
                         }
                         JobType::BackupAll => {
-                            job.worker = "pn-dw-pending".to_string();
+                            job.worker = "dwl-pending".to_string();
                             render(&mut job, MessagePayload::Static(QUEUED)).await;
                             for i in STRUCT {
                                 create_dir_all(job.directory.join(i)).await.unwrap();
@@ -554,7 +554,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                         .join("input.mkv");
                     let dst = job.directory.join("work").join("output.mp4");
                     let _ = tokio::fs::rename(&src, &dst).await;
-                    job.worker = "pn-up-pending".to_string();
+                    job.worker = "upl-pending".to_string();
                     if !dispatch_or_kill(
                         &mut shrine,
                         &Worker::Upload,
@@ -583,7 +583,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                         .set_presence(Presence::Uploading { idx, total: qlen })
                         .await;
                 } else if job.job_type == JobType::BackupAll {
-                    job.worker = "pn-up-pending".to_string();
+                    job.worker = "upl-pending".to_string();
                     if !dispatch_or_kill(
                         &mut shrine,
                         &Worker::Upload,
@@ -603,7 +603,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                         .set_presence(Presence::Uploading { idx, total: qlen })
                         .await;
                 } else {
-                    job.worker = "pn-en-main".to_string();
+                    job.worker = "enc-main".to_string();
                     if !dispatch_or_kill(
                         &mut shrine,
                         &Worker::Encode,
@@ -629,7 +629,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                         .await;
                 }
             } else if job.ready == Stage::Encoded {
-                job.worker = "pn-up-pending".to_string();
+                job.worker = "upl-pending".to_string();
                 if !dispatch_or_kill(
                     &mut shrine,
                     &Worker::Upload,
@@ -935,7 +935,7 @@ async fn use_cached_input(job: &mut Job) -> bool {
         Ok(_) => {
             touch_input_cache(&key).await;
             job.ready = Stage::Downloaded;
-            job.worker = "pn-dw-cache".to_string();
+            job.worker = "dwl-cache".to_string();
             true
         }
         Err(e) => {
@@ -973,7 +973,7 @@ async fn use_cache_or_wait(job: &mut Job, queue: &[Job]) -> bool {
     if let Some(source) = queued_duplicate_source(job, queue) {
         job.duplicate_source = Some(source.clone());
         job.ready = Stage::Downloading;
-        job.worker = "pn-dw-cache".to_string();
+        job.worker = "dwl-cache".to_string();
         render(
             job,
             MessagePayload::Progress(TORRENT_DUPLICATE_WAIT, vec![source.display().to_string()]),
@@ -1290,7 +1290,7 @@ impl Job {
             lang,
             server_id,
             acix: None,
-            worker: "pn-q-main".to_string(),
+            worker: "que-main".to_string(),
             duplicate_source: None,
         }
     }
@@ -1336,7 +1336,7 @@ impl Job {
             lang,
             server_id,
             acix: None,
-            worker: "pn-q-main".to_string(),
+            worker: "que-main".to_string(),
             duplicate_source: None,
         }
     }

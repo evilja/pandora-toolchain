@@ -70,7 +70,7 @@ async fn run_download_job(
     let mut proto = Protocol::new(vec![1]);
     tx.try_send((
         job_id,
-        MessagePayload::Progress(WORKER_ASSIGN, vec![format!("pn-dw-{}", worker_name)]),
+        MessagePayload::Progress(WORKER_ASSIGN, vec![format!("dwl-{}", worker_name)]),
         None,
     ))
     .ok();
