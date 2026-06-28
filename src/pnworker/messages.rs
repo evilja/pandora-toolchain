@@ -99,7 +99,7 @@ static DEFAULT_ENTRIES: &[(&str, &str, usize)] = &[
     ("TORRENT_FAIL", "\n\nTorrent indirilemedi.", 0),
     (
         "TORRENT_DUPLICATE_WAIT",
-        "\n\nYour file is already cached, no need to download. Waiting for that encode to finish.",
+        "\n\nYour file is already cached, no need to download. \nWaiting for that encode to finish.",
         1,
     ),
     (
