@@ -1,5 +1,14 @@
-use crate::libpnforgejo::core::{base64_encode, Forgejo};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use crate::libkagami::core::SubstationAlpha;
+use crate::libpnenv::core::get_pandora_env;
+use crate::libpnenv::standard::PNASS;
+use crate::libpnforgejo::core::{base64_encode, base64_encode_bytes, Forgejo};
 use crate::libpnmal::core::{fetch_anime, AnimeKind, AnimeMeta};
+use crate::libpnprotocol::core::Protocol;
+use crate::pnworker::tools::{PNASS_MERGE, PNASS_MERGE_TL_ONLY, PNASS_SPLIT_SIGNS};
+use crate::pnworker::util::{run_tool, CliParam, PathValue, ToolResult};
 
 pub struct Credits {
     pub tl: String,
@@ -250,6 +259,260 @@ pub async fn set_source(
     Ok(SourceOutcome { path: source_path, content: source_content })
 }
 
+pub struct DetachOutcome {
+    pub name: String,
+    pub repo_url: String,
+}
+
+pub async fn detach_channel(server_id: u64, channel_id: u64) -> Result<DetachOutcome, String> {
+    let meta = read_channel_meta(server_id, channel_id);
+    if meta.mal_id.is_none() && meta.repo_url.as_deref().map_or(true, str::is_empty) {
+        return Err("this channel is not attached to an anime.".to_string());
+    }
+    let out = DetachOutcome {
+        name: meta.name.unwrap_or_default(),
+        repo_url: meta.repo_url.unwrap_or_default(),
+    };
+    let path = meta_path(server_id, channel_id);
+    tokio::fs::remove_file(&path).await.map_err(|e| format!("failed to remove channel meta: {}", e))?;
+    if let Some(parent) = path.parent() {
+        let _ = tokio::fs::remove_dir(parent).await;
+    }
+    Ok(out)
+}
+
+pub struct DestructOutcome {
+    pub name: String,
+    pub owner_repo: String,
+}
+
+pub async fn destruct_repo(server_id: u64, channel_id: u64) -> Result<DestructOutcome, String> {
+    let meta = read_channel_meta(server_id, channel_id);
+    if meta.mal_id.is_none() {
+        return Err("this channel is not attached to an anime.".to_string());
+    }
+    let repo_url = meta.repo_url.clone().filter(|s| !s.is_empty())
+        .ok_or_else(|| "this channel has no repo URL configured.".to_string())?;
+    let (owner, repo) = parse_repo_url(&repo_url).map_err(|e| format!("bad repo URL in meta: {}", e))?;
+    let owner_repo = format!("{}/{}", owner, repo);
+    let name = meta.name.clone().unwrap_or_default();
+
+    let (forgejo_base, api_key) = forgejo_config(server_id).await?;
+    let fg = Forgejo::new(forgejo_base, api_key).map_err(|e| format!("Forgejo init failed: {}", e))?;
+    fg.delete_repo(&owner_repo).await.map_err(|e| format!("delete_repo failed: {}", e))?;
+
+    let _ = tokio::fs::remove_file(meta_path(server_id, channel_id)).await;
+    Ok(DestructOutcome { name, owner_repo })
+}
+
+pub struct SmartMergeResult {
+    pub link: String,
+    pub merged_bytes: Vec<u8>,
+    pub owner_repo: String,
+    pub release_path: String,
+    pub source_path: String,
+    pub warnings: Vec<String>,
+}
+
+pub async fn smartcode_merge(
+    server_id: u64,
+    channel_id: u64,
+    episode: u32,
+    link_opt: Option<String>,
+) -> Result<SmartMergeResult, String> {
+    let meta = read_channel_meta(server_id, channel_id);
+    if meta.mal_id.is_none() {
+        return Err("this channel is not attached to an anime. Run /init or /attach first.".to_string());
+    }
+    let max_ep = meta.episode_count.unwrap_or(0);
+    if episode < 1 || episode > max_ep {
+        return Err(format!("`episode` must be between 1 and {}.", max_ep));
+    }
+    let repo_url = meta.repo_url.clone().filter(|s| !s.is_empty())
+        .ok_or_else(|| "this channel has no repo URL configured.".to_string())?;
+    let (owner, repo) = parse_repo_url(&repo_url).map_err(|e| format!("bad repo URL in meta: {}", e))?;
+    let owner_repo = format!("{}/{}", owner, repo);
+    let name = meta.name.clone().unwrap_or_default();
+
+    let (forgejo_base, api_key) = forgejo_config(server_id).await?;
+    let fg = Forgejo::new(forgejo_base, api_key).map_err(|e| format!("Forgejo init failed: {}", e))?;
+
+    let safe_name = name.replace('/', "-");
+    let folder = pad2(episode);
+    let tl_path = format!("{}/TL - {} - E{:02}.ass", folder, safe_name, episode);
+    let ts_path = format!("{}/TS - {} - E{:02}.ass", folder, safe_name, episode);
+
+    let tl_bytes = match read_repo_ass(&fg, &owner_repo, &tl_path).await? {
+        Some((b, _)) => b,
+        None => return Err(format!("TL file not found at {} or {}.zip.", tl_path, tl_path)),
+    };
+    let mut ts_bytes_opt = read_repo_ass(&fg, &owner_repo, &ts_path).await?.map(|(b, _)| b);
+
+    let link = match link_opt {
+        Some(ref l) => l.clone(),
+        None => {
+            let source_md_path = format!("{}/SOURCE.md", folder);
+            let b64 = fg.get_file_content(&owner_repo, &source_md_path).await?
+                .ok_or_else(|| format!("`link` was not provided and no {} exists in the repo to read it from.", source_md_path))?
+                .0;
+            let bytes = base64_decode_bytes(&b64).map_err(|e| format!("failed to decode {}: {}", source_md_path, e))?;
+            let text = String::from_utf8(bytes).map_err(|e| format!("{} is not valid UTF-8: {}", source_md_path, e))?;
+            text.lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty() && !l.starts_with(';'))
+                .map(|l| l.trim_start_matches('#').trim().to_string())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| format!("{} does not contain a parseable source link.", source_md_path))?
+        }
+    };
+
+    let pnass_path = match get_pandora_env().get(PNASS) {
+        Some(p) if !p.is_empty() => p.clone(),
+        _ => return Err("PNASS binary path is not set in DB/config/global/environment/env.pandora.".to_string()),
+    };
+
+    let job_id = nano_id();
+    let wrap_style = server_wrap_style(server_id);
+    let work_dir = std::env::temp_dir().join(format!("pandora_smartcode_{}", job_id));
+    tokio::fs::create_dir_all(&work_dir).await.map_err(|e| format!("failed to create work dir: {}", e))?;
+
+    let result = smartcode_merge_inner(
+        &fg, &owner_repo, &tl_path, &ts_path, &folder, &safe_name, episode,
+        tl_bytes, &mut ts_bytes_opt, &link, link_opt.is_some(), &pnass_path, &wrap_style, job_id, &work_dir,
+    ).await;
+    let _ = tokio::fs::remove_dir_all(&work_dir).await;
+
+    let (merged_bytes, release_path, source_path, warnings) = result?;
+    Ok(SmartMergeResult { link, merged_bytes, owner_repo, release_path, source_path, warnings })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn smartcode_merge_inner(
+    fg: &Forgejo,
+    owner_repo: &str,
+    tl_path: &str,
+    ts_path: &str,
+    folder: &str,
+    safe_name: &str,
+    episode: u32,
+    tl_bytes: Vec<u8>,
+    ts_bytes_opt: &mut Option<Vec<u8>>,
+    link: &str,
+    link_from_arg: bool,
+    pnass_path: &str,
+    wrap_style: &str,
+    job_id: u64,
+    work_dir: &Path,
+) -> Result<(Vec<u8>, String, String, Vec<String>), String> {
+    let tl_local = work_dir.join("tl.ass");
+    let ts_local = work_dir.join("ts.ass");
+    let merged_local = work_dir.join("merged.ass");
+    let split_tl_local = work_dir.join("tl_no_signs.ass");
+    let mut warnings: Vec<String> = Vec::new();
+
+    tokio::fs::write(&tl_local, &tl_bytes).await.map_err(|e| format!("failed to write TL: {}", e))?;
+    if let Some(b) = ts_bytes_opt.as_deref() {
+        tokio::fs::write(&ts_local, b).await.map_err(|e| format!("failed to write TS: {}", e))?;
+    } else {
+        let mut proto = Protocol::new(vec![1]);
+        let split_result = run_tool(
+            pnass_path,
+            PNASS_SPLIT_SIGNS,
+            &HashMap::from([
+                ("INPUT",  PathValue::from(tl_local.display().to_string())),
+                ("OUTPUT", PathValue::from(split_tl_local.display().to_string())),
+                ("SIGNS",  PathValue::from(ts_local.display().to_string())),
+                ("WRAPSTYLE", PathValue::from(wrap_style.to_string())),
+            ]),
+            job_id,
+            &mut proto,
+            |data| {
+                if data.get(0).and_then(|v| v.as_str()) == Some("4") {
+                    if let Some(line) = data.get(1).and_then(|v| v.as_str()) {
+                        warnings.push(line.to_string());
+                    }
+                }
+                None
+            },
+        ).await;
+        if !matches!(split_result, ToolResult::Success) {
+            return Err(format!("ASS sign split failed (warnings so far: {}).", warnings.len()));
+        }
+        if tokio::fs::metadata(&ts_local).await.is_ok() {
+            let split_tl_bytes = tokio::fs::read(&split_tl_local).await
+                .map_err(|e| format!("failed to read sign-aware TL: {}", e))?;
+            let sign_bytes = tokio::fs::read(&ts_local).await
+                .map_err(|e| format!("failed to read generated TS: {}", e))?;
+            upsert_repo_ass(fg, owner_repo, tl_path, &split_tl_bytes, "Smartcode move signs from TL").await?;
+            upsert_repo_ass(fg, owner_repo, ts_path, &sign_bytes, "Smartcode move signs to TS").await?;
+            tokio::fs::write(&tl_local, &split_tl_bytes).await
+                .map_err(|e| format!("failed to write sign-aware TL: {}", e))?;
+            warnings.push(format!("Sign lines were moved from {} into generated {}.", tl_path, ts_path));
+            *ts_bytes_opt = Some(sign_bytes);
+        }
+    }
+
+    let spec: &[CliParam] = if ts_bytes_opt.is_some() { PNASS_MERGE } else { PNASS_MERGE_TL_ONLY };
+    let mut paths: HashMap<&str, PathValue> = HashMap::from([
+        ("INPUT",  PathValue::from(tl_local.display().to_string())),
+        ("OUTPUT", PathValue::from(merged_local.display().to_string())),
+        ("WRAPSTYLE", PathValue::from(wrap_style.to_string())),
+    ]);
+    if ts_bytes_opt.is_some() {
+        paths.insert("MERGE", PathValue::from(ts_local.display().to_string()));
+    }
+
+    let mut proto = Protocol::new(vec![1]);
+    let result = run_tool(
+        pnass_path,
+        spec,
+        &paths,
+        job_id,
+        &mut proto,
+        |data| {
+            if data.get(0).and_then(|v| v.as_str()) == Some("4") {
+                if let Some(line) = data.get(1).and_then(|v| v.as_str()) {
+                    warnings.push(line.to_string());
+                }
+            }
+            None
+        },
+    ).await;
+    if !matches!(result, ToolResult::Success) {
+        return Err(format!("ASS merge failed (warnings so far: {}).", warnings.len()));
+    }
+
+    let merged_sub = SubstationAlpha::load(merged_local.clone(), true).await;
+    if merged_sub.dump_to_file(merged_local.clone()).await.is_err() {
+        return Err("failed to write advanced-parsed merged ASS.".to_string());
+    }
+
+    let merged_bytes = tokio::fs::read(&merged_local).await
+        .map_err(|e| format!("failed to read merged ASS: {}", e))?;
+
+    let release_path = format!("{}/Release - {} - E{:02}.ass", folder, safe_name, episode);
+    let uploaded_release_path = upsert_repo_ass(fg, owner_repo, &release_path, &merged_bytes, "Smartcode merge").await
+        .map_err(|e| format!("merged ASS upload to {} failed: {}", release_path, e))?;
+
+    let source_path = format!("{}/SOURCE.md", folder);
+    if link_from_arg {
+        let source_content = format!("# {}\n", source_link(link));
+        let source_b64 = base64_encode(&source_content);
+        fg.upsert_file(owner_repo, &source_path, &source_b64, "Smartcode source").await
+            .map_err(|e| format!("SOURCE.md upload to {} failed: {}", source_path, e))?;
+        remove_gitkeep_for_path(fg, owner_repo, &source_path).await;
+    }
+
+    Ok((merged_bytes, uploaded_release_path, source_path, warnings))
+}
+
+fn nano_id() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+}
+
 async fn forgejo_config(server_id: u64) -> Result<(String, String), String> {
     let (_lang, forgejo_base, api_key) = read_server_meta(server_id).await
         .map_err(|e| format!("failed to read server meta: {}", e))?;
@@ -472,4 +735,192 @@ async fn remove_gitkeep_for_path(fg: &Forgejo, owner_repo: &str, path: &str) {
     if let Ok(Some(sha)) = fg.get_file_sha(owner_repo, &gitkeep).await {
         let _ = fg.delete_file(owner_repo, &gitkeep, &sha, "Remove .gitkeep").await;
     }
+}
+
+fn server_wrap_style(server_id: u64) -> String {
+    let path = format!("DB/config/{}/meta.pandora", server_id);
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| s.lines().nth(8).map(String::from))
+        .filter(|s| matches!(s.as_str(), "0" | "1" | "2" | "3"))
+        .unwrap_or_else(|| "keep".to_string())
+}
+
+const ASS_ZIP_THRESHOLD_BYTES: usize = 1_500_000;
+
+async fn read_repo_ass(fg: &Forgejo, owner_repo: &str, ass_path: &str) -> Result<Option<(Vec<u8>, String)>, String> {
+    let zip_path = format!("{}.zip", ass_path);
+    if let Some((b64, _)) = fg.get_file_content(owner_repo, &zip_path).await? {
+        let zip_bytes = base64_decode_bytes(&b64)?;
+        let ass_bytes = unzip_single_ass(&zip_bytes).await?;
+        return Ok(Some((ass_bytes, zip_path)));
+    }
+    match fg.get_file_content(owner_repo, ass_path).await? {
+        Some((b64, _)) => Ok(Some((base64_decode_bytes(&b64)?, ass_path.to_string()))),
+        None => Ok(None),
+    }
+}
+
+async fn upsert_repo_ass(fg: &Forgejo, owner_repo: &str, ass_path: &str, bytes: &[u8], message: &str) -> Result<String, String> {
+    let (upload_path, upload_bytes, alternate_path) = if bytes.len() > ASS_ZIP_THRESHOLD_BYTES {
+        let entry_name = Path::new(ass_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("subtitle.ass");
+        (format!("{}.zip", ass_path), zip_single_ass(entry_name, bytes).await?, ass_path.to_string())
+    } else {
+        (ass_path.to_string(), bytes.to_vec(), format!("{}.zip", ass_path))
+    };
+    let b64 = base64_encode_bytes(&upload_bytes);
+    fg.upsert_file(owner_repo, &upload_path, &b64, message).await?;
+    remove_gitkeep_for_path(fg, owner_repo, &upload_path).await;
+    if let Ok(Some(sha)) = fg.get_file_sha(owner_repo, &alternate_path).await {
+        let _ = fg.delete_file(owner_repo, &alternate_path, &sha, &format!("Remove alternate {}", alternate_path)).await;
+    }
+    Ok(upload_path)
+}
+
+async fn zip_single_ass(entry_name: &str, bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let mut out: Vec<u8> = Vec::new();
+    {
+        let mut writer = async_zip::base::write::ZipFileWriter::new(&mut out);
+        let entry = async_zip::ZipEntryBuilder::new(entry_name.to_string().into(), async_zip::Compression::Deflate);
+        writer.write_entry_whole(entry, bytes).await.map_err(|e| e.to_string())?;
+        writer.close().await.map_err(|e| e.to_string())?;
+    }
+    Ok(out)
+}
+
+async fn unzip_single_ass(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let dir = std::env::temp_dir().join(format!("pandora_repo_ass_zip_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos()));
+    let result = async {
+        tokio::fs::create_dir_all(&dir).await.map_err(|e| e.to_string())?;
+        let extracted = extract_zip_root_ass(bytes, &dir).await?
+            .ok_or_else(|| "zip must contain exactly one root .ass file".to_string())?;
+        tokio::fs::read(extracted).await.map_err(|e| e.to_string())
+    }.await;
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+    result
+}
+
+async fn extract_zip_root_ass(bytes: &[u8], dest: &Path) -> Result<Option<PathBuf>, String> {
+    use async_zip::base::read::stream::ZipFileReader;
+    use futures_lite::io::AsyncReadExt;
+    use tokio::io::{AsyncWriteExt, BufReader};
+
+    let tmp = std::env::temp_dir().join(format!("pandora_repo_zip_{}.zip",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos()));
+
+    let result = async {
+        {
+            let mut f = tokio::fs::File::create(&tmp).await.map_err(|e| e.to_string())?;
+            f.write_all(bytes).await.map_err(|e| e.to_string())?;
+            f.sync_all().await.map_err(|e| e.to_string())?;
+        }
+        let f = tokio::fs::File::open(&tmp).await.map_err(|e| e.to_string())?;
+        let mut zip = ZipFileReader::with_tokio(BufReader::new(f));
+
+        let mut found: Option<PathBuf> = None;
+        let mut count: usize = 0;
+
+        loop {
+            let mut entry = match zip.next_with_entry().await.map_err(|e| format!("zip: {}", e))? {
+                Some(e) => e,
+                None => break,
+            };
+            let filename = entry.reader().entry().filename().as_str()
+                .map_err(|e| format!("zip filename: {}", e))?
+                .to_string();
+            let is_ass = filename.to_lowercase().ends_with(".ass");
+
+            if is_ass {
+                if filename.contains('\\') {
+                    return Err(format!("zip contains unsafe .ass path: {}", filename));
+                }
+                let mut components = Path::new(&filename).components();
+                let safe_name = match (components.next(), components.next()) {
+                    (Some(std::path::Component::Normal(name)), None) => name.to_owned(),
+                    _ => return Err(format!("zip contains unsafe .ass path: {}", filename)),
+                };
+                count += 1;
+                if count > 1 {
+                    return Ok(None);
+                }
+                let mut data = Vec::new();
+                entry.reader_mut().read_to_end(&mut data).await
+                    .map_err(|e| format!("zip read: {}", e))?;
+                let out_path = dest.join(safe_name);
+                tokio::fs::write(&out_path, &data).await.map_err(|e| e.to_string())?;
+                found = Some(out_path);
+            }
+
+            zip = entry.skip().await.map_err(|e| format!("zip skip: {}", e))?;
+        }
+
+        Ok(found)
+    }.await;
+
+    let _ = tokio::fs::remove_file(&tmp).await;
+    result
+}
+
+fn base64_decode_bytes(input: &str) -> Result<Vec<u8>, String> {
+    const ALPH: [u8; 128] = {
+        let mut a = [255u8; 128];
+        let chars = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut i = 0;
+        while i < chars.len() {
+            a[chars[i] as usize] = i as u8;
+            i += 1;
+        }
+        a
+    };
+    let cleaned: Vec<u8> = input.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    if cleaned.len() % 4 != 0 {
+        return Err(format!("base64: invalid length {}", cleaned.len()));
+    }
+    let mut out: Vec<u8> = Vec::with_capacity(cleaned.len() / 4 * 3);
+    let mut i = 0;
+    while i < cleaned.len() {
+        let c0 = cleaned[i];
+        let c1 = cleaned[i + 1];
+        let c2 = cleaned[i + 2];
+        let c3 = cleaned[i + 3];
+        let pad2 = c2 == b'=';
+        let pad3 = c3 == b'=';
+        let idx = |b: u8| -> u8 { if b < 128 { ALPH[b as usize] } else { 255 } };
+        let v0 = idx(c0);
+        let v1 = idx(c1);
+        if v0 == 255 || v1 == 255 {
+            return Err(format!("base64: invalid char at {}", i));
+        }
+        if !pad2 {
+            let v2 = idx(c2);
+            if v2 == 255 {
+                return Err(format!("base64: invalid char at {}", i + 2));
+            }
+            out.push((v0 << 2) | (v1 >> 4));
+            if !pad3 {
+                let v3 = idx(c3);
+                if v3 == 255 {
+                    return Err(format!("base64: invalid char at {}", i + 3));
+                }
+                out.push((v1 << 4) | (v2 >> 2));
+                out.push((v2 << 6) | v3);
+            } else {
+                out.push((v1 << 4) | (v2 >> 2));
+            }
+        } else {
+            out.push((v0 << 2) | (v1 >> 4));
+        }
+        i += 4;
+    }
+    Ok(out)
 }

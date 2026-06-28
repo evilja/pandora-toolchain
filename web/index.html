@@ -8,28 +8,93 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
+  /* theme: Pandora (Re:Zero) — silver-white hair, cobalt eyes, navy ribbon, violet flowers */
   :root {
-    --bg: #eef6ff;
-    --bg-2: #fbfdff;
-    --panel: rgba(255,255,255,0.94);
-    --panel-2: #f3f8ff;
-    --raise: #e8f2ff;
-    --line: #cfe0f4;
-    --line-2: #aac6e9;
-    --ink: #18365f;
-    --ink-2: #416895;
-    --dim: #6f88ad;
-    --faint: #9aaccc;
-    --k1: #2f7fd7;
-    --k2: #95c8ff;
-    --cool: #5e93d9;
-    --done: #35a6c9;
-    --bad: #d35f75;
+    --bg: #eaeff7;
+    --bg-2: #fafcff;
+    --panel: rgba(255,255,255,0.95);
+    --panel-2: #f0f4fb;
+    --raise: #e5ecf7;
+    --line: #d2dcec;
+    --line-2: #b1c2de;
+    --ink: #1e2c4d;
+    --ink-2: #3f5681;
+    --dim: #6b7c9e;
+    --faint: #9aa9c6;
+    --k1: #2f6fd0;
+    --k2: #a9cef4;
+    --cool: #5a83c6;
+    --done: #7c6cc8;
+    --bad: #d2687f;
+    --body-bg:
+      radial-gradient(720px 520px at 18% 0%, rgba(255,255,255,0.95), transparent 64%),
+      radial-gradient(820px 640px at 85% -10%, rgba(169,206,244,0.45), transparent 60%),
+      radial-gradient(860px 680px at -8% 110%, rgba(124,108,200,0.16), transparent 56%),
+      linear-gradient(180deg, var(--bg-2), var(--bg));
+    --scan: rgba(47,111,208,0.035);
+    --scan-blend: multiply;
+    --shadow: rgba(40,60,110,0.42);
+    --inset: rgba(255,255,255,0.9);
+    --bar-bg: linear-gradient(180deg, rgba(255,255,255,0.92), rgba(234,240,250,0.88));
+    --rail-bg: linear-gradient(180deg, rgba(230,238,250,0.78), rgba(255,255,255,0.46));
+    --out-bg: linear-gradient(180deg, rgba(230,238,250,0.82), rgba(255,255,255,0.56));
+    --focus: rgba(90,131,198,0.20);
+    --tint-bg: rgba(47,111,208,0.08);
+    --tint-line: rgba(47,111,208,0.32);
+    --ok-bg: rgba(124,108,200,0.10);
+    --ok-line: rgba(124,108,200,0.40);
+    --bad-bg: rgba(210,104,127,0.10);
+    --bad-line: rgba(210,104,127,0.40);
+    --on-accent: #ffffff;
+    --accent-shadow: rgba(47,111,208,0.55);
+    --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%236b7c9e' stroke-width='1.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+    --karaoke: linear-gradient(90deg, #dcecff, #a9cef4, #2f6fd0, #c4dcff, #ffffff, #a9cef4, #dcecff);
     --radius: 16px;
     --radius-sm: 9px;
     --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     --disp: "Bricolage Grotesque", "Hanken Grotesk", system-ui, sans-serif;
     --body: "Hanken Grotesk", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1626;
+    --bg-2: #131c30;
+    --panel: rgba(22,30,49,0.96);
+    --panel-2: #1a2440;
+    --raise: #212c4a;
+    --line: #2c3a5c;
+    --line-2: #44557d;
+    --ink: #e9f0fb;
+    --ink-2: #bfceea;
+    --dim: #8a9cbf;
+    --faint: #5f7298;
+    --k1: #6ba6f0;
+    --k2: #bfe0ff;
+    --cool: #7ca2dc;
+    --done: #a99bf0;
+    --bad: #e58aa0;
+    --body-bg:
+      radial-gradient(720px 520px at 18% 0%, rgba(54,72,116,0.45), transparent 64%),
+      radial-gradient(820px 640px at 85% -10%, rgba(47,90,170,0.30), transparent 60%),
+      radial-gradient(860px 680px at -8% 110%, rgba(124,108,200,0.20), transparent 56%),
+      linear-gradient(180deg, var(--bg-2), var(--bg));
+    --scan: rgba(150,185,240,0.06);
+    --scan-blend: screen;
+    --shadow: rgba(0,0,0,0.55);
+    --inset: rgba(255,255,255,0.06);
+    --bar-bg: linear-gradient(180deg, rgba(28,38,62,0.92), rgba(18,26,44,0.9));
+    --rail-bg: linear-gradient(180deg, rgba(26,36,60,0.8), rgba(18,26,44,0.5));
+    --out-bg: linear-gradient(180deg, rgba(24,33,55,0.85), rgba(16,23,40,0.6));
+    --focus: rgba(124,162,220,0.30);
+    --tint-bg: rgba(107,166,240,0.12);
+    --tint-line: rgba(107,166,240,0.40);
+    --ok-bg: rgba(169,155,240,0.14);
+    --ok-line: rgba(169,155,240,0.42);
+    --bad-bg: rgba(229,138,160,0.14);
+    --bad-line: rgba(229,138,160,0.42);
+    --on-accent: #0d1424;
+    --accent-shadow: rgba(0,0,0,0.5);
+    --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238a9cbf' stroke-width='1.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+    --karaoke: linear-gradient(90deg, #1f3a66, #6ba6f0, #bfe0ff, #ffffff, #bfe0ff, #6ba6f0, #1f3a66);
   }
   * { box-sizing: border-box; }
   html { -webkit-text-size-adjust: 100%; }
@@ -37,11 +102,7 @@
   body {
     font-family: var(--body);
     color: var(--ink);
-    background:
-      radial-gradient(720px 520px at 18% 0%, rgba(255,255,255,0.92), transparent 64%),
-      radial-gradient(820px 640px at 85% -10%, rgba(149,200,255,0.42), transparent 60%),
-      radial-gradient(860px 680px at -8% 110%, rgba(91,142,211,0.22), transparent 56%),
-      linear-gradient(180deg, var(--bg-2), var(--bg));
+    background: var(--body-bg);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -53,8 +114,8 @@
     inset: 0;
     pointer-events: none;
     z-index: 0;
-    background: repeating-linear-gradient(0deg, rgba(47,127,215,0.035) 0 1px, transparent 1px 4px);
-    mix-blend-mode: multiply;
+    background: repeating-linear-gradient(0deg, var(--scan) 0 1px, transparent 1px 4px);
+    mix-blend-mode: var(--scan-blend);
   }
 
   .window {
@@ -68,7 +129,7 @@
     background: var(--panel);
     border: 1px solid var(--line);
     border-radius: var(--radius);
-    box-shadow: 0 34px 80px -28px rgba(47,91,145,0.42), 0 2px 0 0 rgba(255,255,255,0.9) inset;
+    box-shadow: 0 34px 80px -28px var(--shadow), 0 2px 0 0 var(--inset) inset;
     overflow: hidden;
   }
 
@@ -78,15 +139,15 @@
     gap: 12px;
     padding: 0 16px;
     height: 46px;
-    background: linear-gradient(180deg, rgba(255,255,255,0.92), rgba(236,246,255,0.88));
+    background: var(--bar-bg);
     border-bottom: 1px solid var(--line);
     user-select: none;
   }
   .dots { display: flex; gap: 8px; }
   .dot { width: 12px; height: 12px; border-radius: 50%; opacity: 0.95; }
-  .dot.r { background: #b7d8ff; }
-  .dot.y { background: #7fb6f4; }
-  .dot.g { background: #2f7fd7; }
+  .dot.r { background: var(--line-2); }
+  .dot.y { background: var(--cool); }
+  .dot.g { background: var(--k1); }
   .brand { display: flex; align-items: baseline; gap: 9px; margin-left: 4px; }
   .brand b { font-family: var(--disp); font-weight: 800; font-size: 16px; letter-spacing: -0.2px; color: var(--ink); }
   .brand .sub { font-family: var(--mono); font-size: 11px; color: var(--dim); letter-spacing: 0.4px; }
@@ -113,10 +174,24 @@
   }
   .navlink:hover { border-color: var(--k1); color: var(--ink); }
   .navlink:focus-visible { outline: 2px solid var(--cool); outline-offset: 2px; }
+  .theme-toggle {
+    margin-left: 12px;
+    font-size: 13px;
+    line-height: 1;
+    color: var(--ink-2);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    padding: 5px 9px;
+    cursor: pointer;
+    transition: border-color .14s, color .14s;
+  }
+  .theme-toggle:hover { border-color: var(--k1); color: var(--ink); }
+  .theme-toggle:focus-visible { outline: 2px solid var(--cool); outline-offset: 2px; }
   .notice {
     font-size: 12px; color: var(--ink-2); line-height: 1.45;
-    background: rgba(47,127,215,0.08);
-    border: 1px solid rgba(47,127,215,0.22);
+    background: var(--tint-bg);
+    border: 1px solid var(--tint-line);
     border-radius: var(--radius-sm);
     padding: 9px 12px; margin: 0 0 16px;
   }
@@ -133,7 +208,7 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
-    background: linear-gradient(180deg, rgba(232,242,255,0.78), rgba(255,255,255,0.46));
+    background: var(--rail-bg);
   }
   .rail-label {
     font-family: var(--mono);
@@ -225,11 +300,11 @@
   input::placeholder { color: var(--faint); }
   input:focus, select:focus {
     border-color: var(--cool);
-    box-shadow: 0 0 0 3px rgba(94,147,217,0.18);
+    box-shadow: 0 0 0 3px var(--focus);
   }
   select {
     appearance: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%236f88ad' stroke-width='1.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-image: var(--select-arrow);
     background-repeat: no-repeat;
     background-position: right 12px center;
     padding-right: 32px;
@@ -253,7 +328,7 @@
   }
   .check input:checked + .box { border-color: var(--k1); }
   .check input:checked + .box::after { transform: scale(1); }
-  .check input:focus-visible + .box { box-shadow: 0 0 0 3px rgba(94,147,217,0.22); }
+  .check input:focus-visible + .box { box-shadow: 0 0 0 3px var(--focus); }
 
   .filepick { display: flex; align-items: center; gap: 12px; cursor: pointer; }
   .filepick input[type=file] { display: none; }
@@ -287,7 +362,7 @@
     padding: 16px 22px;
     max-height: 36vh;
     overflow: auto;
-    background: linear-gradient(180deg, rgba(232,242,255,0.82), rgba(255,255,255,0.56));
+    background: var(--out-bg);
   }
   .output:empty { display: none; }
   pre {
@@ -312,17 +387,17 @@
     padding: 2px 9px; border-radius: 6px; letter-spacing: 0.3px;
     border: 1px solid var(--line-2); color: var(--ink-2); background: var(--panel-2);
   }
-  .pill.ok { color: var(--done); border-color: rgba(53,166,201,0.42); }
-  .pill.err { color: var(--bad); border-color: rgba(211,95,117,0.4); }
+  .pill.ok { color: var(--done); border-color: var(--ok-line); }
+  .pill.err { color: var(--bad); border-color: var(--bad-line); }
 
   .chip {
     display: inline-block; font-family: var(--mono); font-size: 11px; font-weight: 600;
     padding: 3px 9px; border-radius: 7px; letter-spacing: 0.3px;
     border: 1px solid var(--line); color: var(--ink-2); background: var(--panel-2);
   }
-  .chip.active { color: var(--k1); border-color: rgba(47,127,215,0.38); background: rgba(47,127,215,0.08); }
-  .chip.done { color: var(--done); border-color: rgba(53,166,201,0.38); background: rgba(53,166,201,0.08); }
-  .chip.bad { color: var(--bad); border-color: rgba(211,95,117,0.38); background: rgba(211,95,117,0.08); }
+  .chip.active { color: var(--k1); border-color: var(--tint-line); background: var(--tint-bg); }
+  .chip.done { color: var(--done); border-color: var(--ok-line); background: var(--ok-bg); }
+  .chip.bad { color: var(--bad); border-color: var(--bad-line); background: var(--bad-bg); }
   .chip.idle { color: var(--dim); }
 
   /* signature: karaoke pipeline */
@@ -341,9 +416,9 @@
   .seg.done .seg-name { color: var(--ink-2); }
   .seg.fin .seg-prog { background: var(--done); }
   .seg.fin .seg-name { color: var(--done); }
-  .seg.active .seg-track { box-shadow: 0 0 0 1px rgba(47,127,215,0.2) inset; }
+  .seg.active .seg-track { box-shadow: 0 0 0 1px var(--tint-line) inset; }
   .seg.active .seg-prog {
-    background: linear-gradient(90deg, #dcecff, #95c8ff, #5e93d9, #b7d8ff, #ffffff, #95c8ff, #dcecff);
+    background: var(--karaoke);
     background-size: 300% 100%;
     animation: ksweep 1.7s linear infinite;
     box-shadow: 0 0 14px -2px var(--k2);
@@ -377,7 +452,7 @@
     gap: 12px;
     padding: 14px 16px;
     border-top: 1px solid var(--line);
-    background: linear-gradient(180deg, rgba(236,246,255,0.9), rgba(255,255,255,0.86));
+    background: var(--bar-bg);
   }
   .footer .tok { flex: 1; display: flex; flex-direction: column; gap: 6px; }
   .footer .toklabel {
@@ -389,7 +464,7 @@
   .run {
     font-family: var(--disp);
     background: linear-gradient(120deg, var(--k1), var(--k2));
-    color: #ffffff;
+    color: var(--on-accent);
     border: 0;
     border-radius: var(--radius-sm);
     padding: 10px 26px;
@@ -398,7 +473,7 @@
     letter-spacing: 0.2px;
     cursor: pointer;
     align-self: flex-end;
-    box-shadow: 0 10px 22px -9px rgba(47,127,215,0.62);
+    box-shadow: 0 10px 22px -9px var(--accent-shadow);
     transition: filter .14s, transform .08s, opacity .14s;
   }
   .run:hover { filter: brightness(1.06); }
@@ -452,10 +527,21 @@
     .tc { display: none; }
   }
   @media (prefers-reduced-motion: reduce) {
-    .seg.active .seg-prog { animation: none; background: linear-gradient(90deg, #dcecff, #95c8ff, #5e93d9, #b7d8ff, #ffffff); }
+    .seg.active .seg-prog { animation: none; background: var(--karaoke); }
     .mini:hover { transform: none; }
   }
 </style>
+<script>
+  (function () {
+    try {
+      var t = localStorage.getItem("pandora_theme");
+      if (t !== "light" && t !== "dark") {
+        t = (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+      }
+      document.documentElement.setAttribute("data-theme", t);
+    } catch (e) {}
+  })();
+</script>
 </head>
 <body>
   <div class="window">
@@ -463,6 +549,7 @@
       <div class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></div>
       <div class="brand"><b>pandora</b><span class="sub">encode console</span></div>
       <div class="tc" id="tc">Dialogue: 0,00:00:00:00,pndc</div>
+      <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle theme">☾</button>
       <a class="navlink" href="/git" title="Git operations console">git ›</a>
     </div>
 
@@ -485,6 +572,23 @@
 <script>
 (function () {
   "use strict";
+
+  // ---- theme toggle (Pandora light / dark), shared across both consoles ----
+  (function () {
+    var root = document.documentElement;
+    var btn = document.getElementById("themeToggle");
+    function paint() {
+      var dark = root.getAttribute("data-theme") === "dark";
+      if (btn) { btn.textContent = dark ? "☀" : "☾"; btn.title = dark ? "Light mode" : "Dark mode"; }
+    }
+    paint();
+    if (btn) btn.addEventListener("click", function () {
+      var next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
+      root.setAttribute("data-theme", next);
+      try { localStorage.setItem("pandora_theme", next); } catch (e) {}
+      paint();
+    });
+  })();
 
   var API = "";              // same origin; cloudflared/nginx proxies /api/v1
   var TERMINAL = ["Uploaded", "Failed", "Declined", "Cancelled"];

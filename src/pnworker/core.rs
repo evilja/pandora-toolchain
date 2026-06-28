@@ -420,9 +420,12 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                     }
                 }
                 if let Some(a) = commdata.2 {
+                    let previous_ready = i.ready;
                     i.ready = a;
                     db.update_stage(i.job_id, i.ready).await.unwrap();
-                    if a == Stage::Encoded {
+                    if a == Stage::Encoded
+                        || (a == Stage::Cancelled && past_downloaded(previous_ready))
+                    {
                         cache_encode_input(i).await;
                     }
                 }
@@ -838,6 +841,13 @@ fn backupall_percent(rows: &str) -> u64 {
 }
 
 const INPUT_CACHE_TTL_SECS: u64 = 30 * 60;
+
+fn past_downloaded(stage: Stage) -> bool {
+    matches!(
+        stage,
+        Stage::Downloaded | Stage::Encoding | Stage::Encoded | Stage::Uploading | Stage::Uploaded
+    )
+}
 
 fn input_cache_key(job: &Job) -> String {
     format!(

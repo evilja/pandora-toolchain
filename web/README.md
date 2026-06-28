@@ -4,12 +4,18 @@ Two self-contained pages (no build step, no dependencies) that drive the pndc HT
 
 - **`index.html`** — the encode console: submit encode/backup/probe/pancode/gitcode jobs,
   list/inspect jobs, and cancel them.
-- **`git.html`** — the git console: repository operations (`/init`, `/attach`, `/source`).
-  These require a **local** token (see below).
+- **`git.html`** — the git console: repository operations (`/init`, `/attach`, `/source`,
+  `/smartcode`, `/detach`, `/destruct`). These require a **local** token (see below).
 
 Auth is the same bearer token as the API (mint one with `/gentoken`, stored in
 `DB/config/global/environment/api.pandora`), entered in the footer and saved in the browser
 (shared across both pages). The two pages cross-link in the titlebar.
+
+The theme is **Pandora (Re:Zero)** — silver-white / cobalt-blue / navy with violet accents — and
+the titlebar **☾/☀ button** toggles light/dark (saved under `pandora_theme`, shared by both
+pages; defaults to your OS `prefers-color-scheme`). All colors are CSS variables: edit the
+`:root` (light) and `:root[data-theme="dark"]` (dark) blocks in `index.html`'s `<style>` to
+retheme. `git.html` reuses `index.html`'s `<head>` verbatim, so re-sync its head after CSS edits.
 
 ## The bot serves these pages itself
 
@@ -33,11 +39,15 @@ JS's safe-integer range).
 
 The git console never asks for a raw channel id:
 
-- **Source** picks from a dropdown of the server's **attached animes**
-  (`GET /api/v1/git/attachments`, from `DB/config/<server>/*/meta.toml`).
+- **Source**/**Smartcode**/**Detach**/**Destruct** pick from a dropdown of the server's
+  **attached animes** (`GET /api/v1/git/attachments`, from `DB/config/<server>/*/meta.toml`).
 - **Init**/**Attach** pick from a dropdown of the server's **Discord channels**
   (`GET /api/v1/git/channels`, from `DB/config/<server>/channels.json`, which the bot publishes
   and keeps in sync via channel/thread events).
+
+**Smartcode** also takes an episode, an optional source link (blank reads the episode's
+`SOURCE.md`), and a preset; it merges, uploads the release, and queues an encode job (track it on
+the encode console). **Destruct** deletes the Forgejo repo, so it requires a confirm checkbox.
 
 Both dropdowns are refreshable and remember the last pick in the browser.
 

@@ -17,7 +17,10 @@ use crate::pnworker::core::{HalfJob, Job, JobClass, JobType, Preset, Stage};
 use crate::pnworker::acix::confirm_acix;
 use crate::libacix::{AnimeCix, MediaType, MixedUpload};
 use crate::libpndb::core::{JobDb, JobStatus};
-use crate::libpngit::{attach_repo, init_repo, list_attachments, set_source, Credits, RepoOutcome};
+use crate::libpngit::{
+    attach_repo, destruct_repo, detach_channel, init_repo, list_attachments, set_source,
+    smartcode_merge, Credits, RepoOutcome,
+};
 use crate::libpnp2p::nyaaise::nyaaise;
 use crate::libpnenv::core::{get_pandora_env, get_perm};
 use crate::libpnenv::standard::{API_AUTHOR_ID, API_HOST, API_TOKENS_PATH};
@@ -64,6 +67,9 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/git/init", post(git_init))
         .route("/git/attach", post(git_attach))
         .route("/git/source", post(git_source))
+        .route("/git/detach", post(git_detach))
+        .route("/git/destruct", post(git_destruct))
+        .route("/git/smartcode", post(git_smartcode))
         .route("/gitsync", post(gitsync))
         .route("/acix/search", get(acix_search))
         .route("/acix/tmdb", post(acix_tmdb))
@@ -503,6 +509,82 @@ async fn git_source(Extension(auth): Extension<ApiAuth>, Json(req): Json<GitSour
         }))).into_response(),
         Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
     }
+}
+
+#[derive(Deserialize)]
+struct GitChannelReq {
+    channel_id: String,
+}
+
+async fn git_detach(Extension(auth): Extension<ApiAuth>, Json(req): Json<GitChannelReq>) -> Response {
+    let server_id = match require_local(&auth) { Ok(id) => id, Err(r) => return r };
+    let channel_id = match parse_channel_id(&req.channel_id) { Ok(c) => c, Err(r) => return r };
+    match detach_channel(server_id, channel_id).await {
+        Ok(out) => (StatusCode::OK, Json(json!({
+            "name": out.name,
+            "repo_url": out.repo_url,
+        }))).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
+    }
+}
+
+async fn git_destruct(Extension(auth): Extension<ApiAuth>, Json(req): Json<GitChannelReq>) -> Response {
+    let server_id = match require_local(&auth) { Ok(id) => id, Err(r) => return r };
+    let channel_id = match parse_channel_id(&req.channel_id) { Ok(c) => c, Err(r) => return r };
+    match destruct_repo(server_id, channel_id).await {
+        Ok(out) => (StatusCode::OK, Json(json!({
+            "name": out.name,
+            "owner_repo": out.owner_repo,
+        }))).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct GitSmartcodeReq {
+    channel_id: String,
+    episode: u32,
+    #[serde(default)]
+    link: Option<String>,
+    #[serde(default)]
+    preset: Option<String>,
+}
+
+async fn git_smartcode(State(st): State<AppState>, Extension(auth): Extension<ApiAuth>, Json(req): Json<GitSmartcodeReq>) -> Response {
+    let server_id = match require_local(&auth) { Ok(id) => id, Err(r) => return r };
+    let channel_id = match parse_channel_id(&req.channel_id) { Ok(c) => c, Err(r) => return r };
+    let link_opt = req.link.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let merge = match smartcode_merge(server_id, channel_id, req.episode, link_opt).await {
+        Ok(m) => m,
+        Err(e) => return (StatusCode::BAD_GATEWAY, e).into_response(),
+    };
+    let job = Job::new_api(
+        st.api_author,
+        channel_id,
+        JobType::Encode,
+        preset_from_str(req.preset.as_deref()),
+        nyaaise(&merge.link),
+        merge.merged_bytes,
+        "EN".to_string(),
+        Some(server_id),
+    );
+    let job_id = job.job_id;
+    if let Err(e) = st.db.insert_job(&job).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+    if st.tx.send(JobClass::Job(job)).await.is_err() {
+        let _ = st.db.update_stage(job_id, Stage::Failed).await;
+        let _ = st.db.archive_job(job_id).await;
+        return (StatusCode::SERVICE_UNAVAILABLE, "worker channel closed").into_response();
+    }
+    (StatusCode::ACCEPTED, Json(json!({
+        "job_id": job_id.to_string(),
+        "link": merge.link,
+        "owner_repo": merge.owner_repo,
+        "release_path": merge.release_path,
+        "source_path": merge.source_path,
+        "warnings": merge.warnings,
+    }))).into_response()
 }
 
 async fn submit(st: &AppState, job: Job) -> Response {
