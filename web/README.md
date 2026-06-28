@@ -26,10 +26,24 @@ When `api_port` is set in `env.pandora`, the bot listens on that port and answer
 A token line in `api.pandora` may carry a `|local|<server_id>` suffix; mint one with
 `/gentoken local` (run it in the target Discord server). A local token is **bound to that
 server**: it uses the server's Google Drive credentials for uploads, and it is **required** for
-the git endpoints (`POST /api/v1/git/{init,attach,source}`) — a plain token gets `403` there.
-The server id comes from the token; the channel id is supplied per request (a Discord channel id,
-sent as a string because snowflakes exceed JS's safe-integer range). The git console persists the
-last channel id in the browser.
+the git endpoints (`GET /api/v1/git/{attachments,channels}`,
+`POST /api/v1/git/{init,attach,source}`) — a plain token gets `403` there. The server id comes
+from the token; the channel id is per request (sent as a string because Discord snowflakes exceed
+JS's safe-integer range).
+
+The git console never asks for a raw channel id:
+
+- **Source** picks from a dropdown of the server's **attached animes**
+  (`GET /api/v1/git/attachments`, from `DB/config/<server>/*/meta.toml`).
+- **Init**/**Attach** pick from a dropdown of the server's **Discord channels**
+  (`GET /api/v1/git/channels`, from `DB/config/<server>/channels.json`, which the bot publishes
+  and keeps in sync via channel/thread events).
+
+Both dropdowns are refreshable and remember the last pick in the browser.
+
+When a Discord channel/thread (incl. forum channels and posts) is **deleted**, the bot
+auto-detaches it — it removes that channel's `meta.toml` (the repo is left untouched), so deleted
+channels stop appearing as attachments.
 
 So there is **nothing else to install or host** — no nginx, no Caddy, no admin rights. Point a
 browser at the bot's port and you get the UI. Editing this file requires rebuilding `pndc`.

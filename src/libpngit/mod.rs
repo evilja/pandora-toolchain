@@ -1,3 +1,6 @@
 pub mod core;
 
-pub use core::{attach_repo, init_repo, set_source, Credits, RepoOutcome, SourceOutcome};
+pub use core::{
+    attach_repo, init_repo, list_attachments, set_source, Attachment, Credits, RepoOutcome,
+    SourceOutcome,
+};

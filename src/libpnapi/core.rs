@@ -17,7 +17,7 @@ use crate::pnworker::core::{HalfJob, Job, JobClass, JobType, Preset, Stage};
 use crate::pnworker::acix::confirm_acix;
 use crate::libacix::{AnimeCix, MediaType, MixedUpload};
 use crate::libpndb::core::{JobDb, JobStatus};
-use crate::libpngit::{attach_repo, init_repo, set_source, Credits, RepoOutcome};
+use crate::libpngit::{attach_repo, init_repo, list_attachments, set_source, Credits, RepoOutcome};
 use crate::libpnp2p::nyaaise::nyaaise;
 use crate::libpnenv::core::{get_pandora_env, get_perm};
 use crate::libpnenv::standard::{API_AUTHOR_ID, API_HOST, API_TOKENS_PATH};
@@ -59,6 +59,8 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/jobs/gitcode", post(submit_gitcode))
         .route("/jobs/:id/cancel", post(cancel_job))
         .route("/jobs/:id/acix/confirm", post(acix_confirm))
+        .route("/git/attachments", get(git_attachments))
+        .route("/git/channels", get(git_channels))
         .route("/git/init", post(git_init))
         .route("/git/attach", post(git_attach))
         .route("/git/source", post(git_source))
@@ -410,6 +412,23 @@ fn repo_outcome_response(out: RepoOutcome) -> Response {
         "created": out.created,
         "renamed_files": out.renamed_files,
     }))).into_response()
+}
+
+async fn git_attachments(Extension(auth): Extension<ApiAuth>) -> Response {
+    let server_id = match require_local(&auth) { Ok(id) => id, Err(r) => return r };
+    Json(list_attachments(server_id).await).into_response()
+}
+
+async fn git_channels(Extension(auth): Extension<ApiAuth>) -> Response {
+    let server_id = match require_local(&auth) { Ok(id) => id, Err(r) => return r };
+    let path = format!("DB/config/{}/channels.json", server_id);
+    match tokio::fs::read_to_string(&path).await {
+        Ok(s) => match serde_json::from_str::<serde_json::Value>(&s) {
+            Ok(v) => Json(v).into_response(),
+            Err(_) => Json(json!([])).into_response(),
+        },
+        Err(_) => Json(json!([])).into_response(),
+    }
 }
 
 #[derive(Deserialize)]

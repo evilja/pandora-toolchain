@@ -37,6 +37,49 @@ pub struct SourceOutcome {
     pub content: String,
 }
 
+#[derive(serde::Serialize)]
+pub struct Attachment {
+    pub channel_id: String,
+    pub mal_id: u64,
+    pub name: String,
+    pub slug: String,
+    pub kind: String,
+    pub episode_count: u32,
+    pub season: u16,
+    pub repo_url: String,
+}
+
+pub async fn list_attachments(server_id: u64) -> Vec<Attachment> {
+    let dir = std::path::PathBuf::from("DB").join("config").join(server_id.to_string());
+    let mut rd = match tokio::fs::read_dir(&dir).await {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    let mut out: Vec<Attachment> = Vec::new();
+    while let Ok(Some(entry)) = rd.next_entry().await {
+        let channel_id = match entry.file_name().to_str().and_then(|s| s.parse::<u64>().ok()) {
+            Some(id) => id,
+            None => continue,
+        };
+        let meta = read_channel_meta(server_id, channel_id);
+        if meta.mal_id.is_none() || meta.kind.is_none() {
+            continue;
+        }
+        out.push(Attachment {
+            channel_id: channel_id.to_string(),
+            mal_id: meta.mal_id.unwrap_or(0),
+            name: meta.name.unwrap_or_default(),
+            slug: meta.slug.unwrap_or_default(),
+            kind: meta.kind.unwrap_or_default(),
+            episode_count: meta.episode_count.unwrap_or(0),
+            season: meta.season,
+            repo_url: meta.repo_url.unwrap_or_default(),
+        });
+    }
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out
+}
+
 pub async fn init_repo(
     server_id: u64,
     channel_id: u64,

@@ -529,13 +529,9 @@
     savedT = setTimeout(function () { savedEl.classList.remove("show"); }, 900);
   });
 
-  // ---- channel id persistence (these flows are all channel-scoped) ----
-  function loadChannel(el) { if (el) el.value = localStorage.getItem("pandora_git_channel") || ""; }
-  function saveChannel(el) { if (el) localStorage.setItem("pandora_git_channel", el.value.trim()); }
-
   var NOTICE = 'Needs a <b>local</b> token bound to this server. Mint one in Discord with ' +
     '<span class="mono">/gentoken local</span> (run it in the target server). The token carries the server id; ' +
-    'you supply the channel below.';
+    'pick the channel below.';
 
   // ---- command specs ----
   var COMMANDS = {
@@ -544,7 +540,7 @@
       desc: "Create a new Forgejo repo for a MyAnimeList entry, bootstrap its episode folders, and attach it to a channel.",
       fields: [
         { name: "mal",        label: "MyAnimeList URL", type: "text", required: true, placeholder: "https://myanimelist.net/anime/..." },
-        { name: "channel_id", label: "Channel ID", type: "channel", required: true, placeholder: "Discord channel id" },
+        { name: "channel_id", label: "Channel", type: "channelpick", required: true },
         { name: "season",     label: "Season", type: "number", optional: true, placeholder: "1" },
         { name: "tl",         label: "TL credit", type: "text", optional: true, placeholder: "---" },
         { name: "tlc",        label: "TLC credit", type: "text", optional: true, placeholder: "---" },
@@ -559,7 +555,7 @@
       fields: [
         { name: "mal",        label: "MyAnimeList URL", type: "text", required: true, placeholder: "https://myanimelist.net/anime/..." },
         { name: "repo",       label: "Repo URL", type: "text", required: true, placeholder: "https://git.example.com/Org/repo" },
-        { name: "channel_id", label: "Channel ID", type: "channel", required: true, placeholder: "Discord channel id" },
+        { name: "channel_id", label: "Channel", type: "channelpick", required: true },
         { name: "season",     label: "Season", type: "number", optional: true, placeholder: "1" },
         { name: "tl",         label: "TL credit", type: "text", optional: true, placeholder: "---" },
         { name: "tlc",        label: "TLC credit", type: "text", optional: true, placeholder: "---" },
@@ -572,7 +568,7 @@
       label: "Source",
       desc: "Write a release's SOURCE.md (the source link for an episode) to the channel's attached repo.",
       fields: [
-        { name: "channel_id", label: "Channel ID", type: "channel", required: true, placeholder: "Discord channel id" },
+        { name: "channel_id", label: "Attached anime", type: "attachment", required: true },
         { name: "episode",    label: "Episode", type: "number", required: true, placeholder: "1" },
         { name: "link",       label: "Source link", type: "text", required: true, placeholder: "https://nyaa.si/view/... or magnet:?..." }
       ],
@@ -613,18 +609,54 @@
       var id = "f_" + f.name;
       var optTag = f.optional ? ' <span class="opt">(optional)</span>' : "";
       html += '<div class="field"><label for="' + id + '">' + esc(f.label) + optTag + "</label>";
-      html += '<input type="' + (f.type === "number" ? "number" : "text") + '" id="' + id +
-              '" placeholder="' + esc(f.placeholder || "") + '">';
+      if (f.type === "attachment" || f.type === "channelpick") {
+        html += '<div class="selrow"><select id="' + id + '"><option value="">Loading…</option></select>' +
+                '<button type="button" class="mini" id="r_' + f.name + '" title="Refresh">↻</button></div>';
+      } else {
+        html += '<input type="' + (f.type === "number" ? "number" : "text") + '" id="' + id +
+                '" placeholder="' + esc(f.placeholder || "") + '">';
+      }
       html += "</div>";
     });
     optionsEl.innerHTML = html;
 
     (cmd.fields || []).forEach(function (f) {
-      if (f.type === "channel") {
-        var el = document.getElementById("f_" + f.name);
-        loadChannel(el);
-        el.addEventListener("input", function () { saveChannel(el); });
-      }
+      if (f.type !== "attachment" && f.type !== "channelpick") return;
+      var sel = document.getElementById("f_" + f.name);
+      var load = f.type === "attachment" ? loadAttachments : loadChannels;
+      load(sel);
+      var btn = document.getElementById("r_" + f.name);
+      if (btn) btn.addEventListener("click", function () { load(sel); });
+    });
+  }
+
+  function fillSelect(sel, path, emptyMsg, optionFn) {
+    if (!sel) return;
+    sel.innerHTML = '<option value="">Loading…</option>';
+    api("GET", path).then(function (res) {
+      if (res.status === 401) { sel.innerHTML = '<option value="">Enter a local token below</option>'; return; }
+      if (res.status === 403) { sel.innerHTML = '<option value="">Needs a local token (see above)</option>'; return; }
+      if (!res.ok || !Array.isArray(res.data)) { sel.innerHTML = '<option value="">Could not load</option>'; return; }
+      if (!res.data.length) { sel.innerHTML = '<option value="">' + esc(emptyMsg) + "</option>"; return; }
+      var prev = localStorage.getItem("pandora_git_channel") || "";
+      sel.innerHTML = res.data.map(function (item) {
+        var o = optionFn(item);
+        return '<option value="' + esc(o.value) + '"' + (o.value === prev ? " selected" : "") + ">" + esc(o.label) + "</option>";
+      }).join("");
+      if (sel.value) localStorage.setItem("pandora_git_channel", sel.value);
+      sel.onchange = function () { localStorage.setItem("pandora_git_channel", sel.value); };
+    }).catch(function () { sel.innerHTML = '<option value="">Could not load</option>'; });
+  }
+
+  function loadChannels(sel) {
+    fillSelect(sel, "/api/v1/git/channels", "No channels found for this server", function (c) {
+      return { value: c.id, label: "#" + c.name + " · " + c.kind };
+    });
+  }
+
+  function loadAttachments(sel) {
+    fillSelect(sel, "/api/v1/git/attachments", "No attached animes on this server", function (a) {
+      return { value: a.channel_id, label: a.name + " — S" + a.season + " · " + a.episode_count + " ep · #" + a.channel_id };
     });
   }
 

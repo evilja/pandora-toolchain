@@ -625,6 +625,81 @@ async fn write_channel_meta(server_id: u64, channel_id: u64, m: &ChannelMeta) ->
     Ok(())
 }
 
+fn channel_kind_label(kind: ChannelType) -> Option<&'static str> {
+    match kind {
+        ChannelType::Text => Some("Text"),
+        ChannelType::News => Some("Announcement"),
+        ChannelType::Forum => Some("Forum"),
+        ChannelType::PublicThread => Some("Thread"),
+        ChannelType::PrivateThread => Some("Private Thread"),
+        ChannelType::NewsThread => Some("Announcement Thread"),
+        _ => None,
+    }
+}
+
+async fn sync_guild_channels(ctx: &Context, guild_id: u64) {
+    let gid = serenity::all::GuildId::new(guild_id);
+    let mut list: Vec<serde_json::Value> = Vec::new();
+
+    if let Ok(channels) = gid.channels(&ctx.http).await {
+        for (id, ch) in channels {
+            if let Some(label) = channel_kind_label(ch.kind) {
+                list.push(serde_json::json!({ "id": id.get().to_string(), "name": ch.name, "kind": label }));
+            }
+        }
+    }
+    if let Ok(active) = gid.get_active_threads(&ctx.http).await {
+        for ch in active.threads {
+            if let Some(label) = channel_kind_label(ch.kind) {
+                list.push(serde_json::json!({ "id": ch.id.get().to_string(), "name": ch.name, "kind": label }));
+            }
+        }
+    }
+
+    list.sort_by(|a, b| {
+        a["name"].as_str().unwrap_or("").to_lowercase()
+            .cmp(&b["name"].as_str().unwrap_or("").to_lowercase())
+    });
+
+    let dir = format!("DB/config/{}", guild_id);
+    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+        eprintln!("[channels] create_dir {} failed: {}", dir, e);
+        return;
+    }
+    let path = format!("{}/channels.json", dir);
+    match serde_json::to_string(&list) {
+        Ok(s) => {
+            if let Err(e) = tokio::fs::write(&path, s).await {
+                eprintln!("[channels] write {} failed: {}", path, e);
+            }
+        }
+        Err(e) => eprintln!("[channels] serialize failed: {}", e),
+    }
+}
+
+async fn auto_detach_channel(server_id: u64, channel_id: u64) {
+    let meta = read_channel_meta(server_id, channel_id);
+    if meta.mal_id.is_none() && meta.repo_url.as_deref().map_or(true, str::is_empty) {
+        return;
+    }
+    let path = meta_path(server_id, channel_id);
+    match tokio::fs::remove_file(&path).await {
+        Ok(()) => {
+            println!(
+                "[detach] auto-detached deleted channel {} in server {} (anime: {})",
+                channel_id, server_id, meta.name.unwrap_or_default()
+            );
+            if let Some(parent) = path.parent() {
+                let _ = tokio::fs::remove_dir(parent).await;
+            }
+        }
+        Err(e) => eprintln!(
+            "[detach] failed to remove meta for deleted channel {} in server {}: {}",
+            channel_id, server_id, e
+        ),
+    }
+}
+
 async fn bootstrap_repo(
     fg: &Forgejo,
     owner_repo: &str,
@@ -771,6 +846,38 @@ impl EventHandler for Handler {
             }
             _ => {}
         }
+    }
+
+    async fn cache_ready(&self, ctx: Context, guilds: Vec<serenity::all::GuildId>) {
+        for gid in guilds {
+            sync_guild_channels(&ctx, gid.get()).await;
+        }
+    }
+
+    async fn guild_create(&self, ctx: Context, guild: serenity::all::Guild, _is_new: Option<bool>) {
+        sync_guild_channels(&ctx, guild.id.get()).await;
+    }
+
+    async fn channel_create(&self, ctx: Context, channel: serenity::all::GuildChannel) {
+        sync_guild_channels(&ctx, channel.guild_id.get()).await;
+    }
+
+    async fn channel_update(&self, ctx: Context, _old: Option<serenity::all::GuildChannel>, new: serenity::all::GuildChannel) {
+        sync_guild_channels(&ctx, new.guild_id.get()).await;
+    }
+
+    async fn channel_delete(&self, ctx: Context, channel: serenity::all::GuildChannel, _messages: Option<Vec<Message>>) {
+        auto_detach_channel(channel.guild_id.get(), channel.id.get()).await;
+        sync_guild_channels(&ctx, channel.guild_id.get()).await;
+    }
+
+    async fn thread_create(&self, ctx: Context, thread: serenity::all::GuildChannel) {
+        sync_guild_channels(&ctx, thread.guild_id.get()).await;
+    }
+
+    async fn thread_delete(&self, ctx: Context, thread: serenity::all::PartialGuildChannel, _full_thread_data: Option<serenity::all::GuildChannel>) {
+        auto_detach_channel(thread.guild_id.get(), thread.id.get()).await;
+        sync_guild_channels(&ctx, thread.guild_id.get()).await;
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
