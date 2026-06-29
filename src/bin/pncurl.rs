@@ -77,6 +77,7 @@ async fn main() {
     let request = Req {
         target: args.link.clone(),
         log: args.logfile.clone().map(PathBuf::from),
+        cfile: args.cancelfile.clone().map(PathBuf::from),
     };
     if args.gscrape {
         let scraper = GScrape {
@@ -123,6 +124,8 @@ async fn main() {
         let link4 = args.link.clone(); let link5 = args.link.clone(); let link6 = args.link.clone();
         let log2 = request.log.clone();
         let log4 = request.log.clone(); let log5 = request.log.clone(); let log6 = request.log.clone();
+        let cfile2 = request.cfile.clone();
+        let cfile4 = request.cfile.clone(); let cfile5 = request.cfile.clone(); let cfile6 = request.cfile.clone();
 
         let drive_folder = args.drive_folder.clone();
         tokio::spawn(async move {
@@ -130,19 +133,19 @@ async fn main() {
         });
         if !args.backup {
             tokio::spawn(async move {
-                let req2 = Req { target: link2, log: log2 };
+                let req2 = Req { target: link2, log: log2, cfile: cfile2 };
                 req2.doodwrapupload(env2, Some(opcode2), tx2).await;
             });
             tokio::spawn(async move {
-                let req4 = Req { target: link4, log: log4 };
+                let req4 = Req { target: link4, log: log4, cfile: cfile4 };
                 req4.luluwrapupload(env4, Some(opcode4), tx4).await;
             });
             tokio::spawn(async move {
-                let req5 = Req { target: link5, log: log5 };
+                let req5 = Req { target: link5, log: log5, cfile: cfile5 };
                 req5.voewrapupload(env5, Some(opcode5), tx5).await;
             });
             tokio::spawn(async move {
-                let req6 = Req { target: link6, log: log6 };
+                let req6 = Req { target: link6, log: log6, cfile: cfile6 };
                 req6.abyssupload(env6, Some(opcode6), tx6).await;
             });
         }
@@ -268,6 +271,11 @@ async fn main() {
                 RpbData::Fail(Host::Lulu) => { lulu_result = Some(Err(())); }
                 RpbData::Fail(Host::VoeSx) => { voesx_result = Some(Err(())); }
                 RpbData::Fail(Host::Abyss) => { abyss_result = Some(Err(())); }
+                RpbData::Cancel(_) => {
+                    println!("{}", pn_emit!(protocol = proto, negkey = &neg,
+                        schema = [leaf, leaf], data = ["3", "CANCELLED"]).unwrap());
+                    break;
+                }
             }
 
             if (args.backup && gd_result.is_some()) || (gd_result.is_some() && dood_result.is_some() &&  voesx_result.is_some() && lulu_result.is_some() && abyss_result.is_some()) {

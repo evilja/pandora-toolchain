@@ -12,7 +12,7 @@ use crate::{
 use reqwest::{Client, multipart};
 use serde::Deserialize;
 use std::fs::File;
-use std::io::Write;
+use std::io::{Error, ErrorKind, Write};
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, mpsc::Sender};
@@ -44,6 +44,7 @@ struct ProgressReader<R> {
     tx: Sender<RpbData>,
     host: Host,
     progress: Arc<Mutex<UploadProgress>>,
+    cfile: Option<PathBuf>,
 }
 
 impl<R> ProgressReader<R> {
@@ -53,6 +54,7 @@ impl<R> ProgressReader<R> {
         tx: Sender<RpbData>,
         host: Host,
         progress: Arc<Mutex<UploadProgress>>,
+        cfile: Option<PathBuf>,
     ) -> Self {
         Self {
             inner,
@@ -61,6 +63,7 @@ impl<R> ProgressReader<R> {
             tx,
             host,
             progress,
+            cfile,
         }
     }
 }
@@ -71,6 +74,10 @@ impl<R: AsyncRead + Unpin> AsyncRead for ProgressReader<R> {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
+        if is_cancelled(&self.cfile) {
+            self.tx.send(RpbData::Cancel(self.host.clone())).ok();
+            return Poll::Ready(Err(Error::new(ErrorKind::Interrupted, "cancelled")));
+        }
         let before = buf.filled().len();
         let result = Pin::new(&mut self.inner).poll_read(cx, buf);
         let after = buf.filled().len();
@@ -153,11 +160,17 @@ pub enum RpbData {
     Progress(u64, u64, u64, Host),
     Done(String, Host),
     Fail(Host),
+    Cancel(Host),
 }
 
 pub struct Req {
     pub target: String,
     pub log: Option<PathBuf>,
+    pub cfile: Option<PathBuf>,
+}
+
+fn is_cancelled(cfile: &Option<PathBuf>) -> bool {
+    cfile.as_ref().map(|p| p.exists()).unwrap_or(false)
 }
 
 impl Req {
@@ -222,6 +235,10 @@ impl Req {
         outfile: Option<String>,
         tx: Sender<RpbData>,
     ) -> bool {
+        if is_cancelled(&self.cfile) {
+            tx.send(RpbData::Cancel(host)).ok();
+            return false;
+        }
         println!("HOST {:?}", host);
         // Step 1: get upload server
         let server_url = {
@@ -290,7 +307,7 @@ impl Req {
 
         let progress = UploadProgress::new(total_size);
         let reader =
-            ProgressReader::new(file, total_size, tx.clone(), host.clone(), progress.clone());
+            ProgressReader::new(file, total_size, tx.clone(), host.clone(), progress.clone(), self.cfile.clone());
         let stream = ReaderStream::new(reader);
         let body = reqwest::Body::wrap_stream(stream);
 
@@ -311,6 +328,10 @@ impl Req {
             }
             Err(a) => {
                 println!("[upload] request failed: {a}");
+                if is_cancelled(&self.cfile) {
+                    tx.send(RpbData::Cancel(host)).ok();
+                    return false;
+                }
                 tx.send(RpbData::Fail(host)).ok();
                 return false;
             }
@@ -368,6 +389,10 @@ impl Req {
         outfile: Option<String>,
         tx: Sender<RpbData>,
     ) -> bool {
+        if is_cancelled(&self.cfile) {
+            tx.send(RpbData::Cancel(Host::Abyss)).ok();
+            return false;
+        }
         println!("[abyss] abyssupload started");
         let env = get_env(&envpath);
         println!(
@@ -409,7 +434,7 @@ impl Req {
 
         let progress = UploadProgress::new(total_size);
         let reader =
-            ProgressReader::new(file, total_size, tx.clone(), Host::Abyss, progress.clone());
+            ProgressReader::new(file, total_size, tx.clone(), Host::Abyss, progress.clone(), self.cfile.clone());
         let stream = ReaderStream::new(reader);
         let body = reqwest::Body::wrap_stream(stream);
 
@@ -430,6 +455,10 @@ impl Req {
             }
             Err(a) => {
                 println!("[abyss] request failed: {a}");
+                if is_cancelled(&self.cfile) {
+                    tx.send(RpbData::Cancel(Host::Abyss)).ok();
+                    return false;
+                }
                 tx.send(RpbData::Fail(Host::Abyss)).ok();
                 return false;
             }
@@ -535,6 +564,10 @@ impl Req {
         drive_folder: Option<String>,
         tx: Sender<RpbData>,
     ) -> bool {
+        if is_cancelled(&self.cfile) {
+            tx.send(RpbData::Cancel(Host::Drive)).ok();
+            return false;
+        }
         let mut handle: Option<LoggingHandle> = match self.log {
             Some(ref pb) => Some(LoggingHandle::get_handle(pb).await.unwrap()),
             None => None,
@@ -590,7 +623,7 @@ impl Req {
 
         let progress = UploadProgress::new(total_size);
         let reader =
-            ProgressReader::new(file, total_size, tx.clone(), Host::Drive, progress.clone());
+            ProgressReader::new(file, total_size, tx.clone(), Host::Drive, progress.clone(), self.cfile.clone());
 
         let stream = ReaderStream::new(reader);
         let body = reqwest::Body::wrap_stream(stream);
@@ -617,6 +650,10 @@ impl Req {
             Ok(r) => r,
             Err(a) => {
                 println!("{a}");
+                if is_cancelled(&self.cfile) {
+                    tx.send(RpbData::Cancel(Host::Drive)).ok();
+                    return false;
+                }
                 tx.send(RpbData::Fail(Host::Drive)).ok();
                 return false;
             }

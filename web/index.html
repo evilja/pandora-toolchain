@@ -213,6 +213,7 @@
   }
   .jobwin-close:hover { border-color: var(--k1); color: var(--ink); }
   .jobwin-body { padding: 16px; overflow: auto; }
+  .jobwin-body .stat-head { display: none; }
   .popout {
     margin-left: auto; cursor: pointer; font-family: var(--mono); font-size: 11px;
     color: var(--k1); background: transparent; border: 1px solid var(--line);
@@ -240,6 +241,7 @@
   /* job-only mode: a single job's live view, no command UI (used by desktop job windows) */
   html.jobonly .grid, html.jobonly .footer { display: none; }
   html.jobonly .output { flex: 1; height: 100%; max-height: none; overflow: auto; }
+  html.jobonly .stat-head { display: none; }
 
   .notice {
     font-size: 12px; color: var(--ink-2); line-height: 1.45;

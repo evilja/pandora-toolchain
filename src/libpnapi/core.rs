@@ -385,22 +385,23 @@ async fn fetch_subtitle(url: &str) -> Result<Vec<u8>, String> {
 }
 
 async fn cancel_job(State(st): State<AppState>, Extension(auth): Extension<ApiAuth>, Path(id): Path<u64>) -> Response {
-    let server_id = match require_local(&auth) { Ok(id) => id, Err(r) => return r };
     let row = match st.db.get_job(id).await {
         Ok(Some(row)) => row,
         Ok(None) => return (StatusCode::NOT_FOUND, "no such job").into_response(),
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
-    if row.server_id != Some(server_id as i64) {
-        return (StatusCode::FORBIDDEN, "cannot cancel a job from another server").into_response();
-    }
-    if row.job_type != JobType::Encode as u16 as i64 {
-        return (StatusCode::FORBIDDEN, "only encode jobs can be cancelled through this token").into_response();
+    if let Some(server_id) = auth.local_server_id {
+        if row.server_id != Some(server_id as i64) {
+            return (StatusCode::FORBIDDEN, "cannot cancel a job from another server").into_response();
+        }
+        if row.job_type != JobType::Encode as u16 as i64 {
+            return (StatusCode::FORBIDDEN, "only encode jobs can be cancelled through this token").into_response();
+        }
     }
     if row.archived != 0 || matches!(row.stage, 6 | 7 | 8 | 9) {
         return (StatusCode::CONFLICT, "job is already terminal").into_response();
     }
-    let hj = HalfJob::new_cancel(st.api_author, 0, id);
+    let hj = HalfJob::new_cancel(row.author as u64, row.channel_id as u64, id);
     if st.tx.send(JobClass::HalfJob(hj)).await.is_err() {
         return (StatusCode::SERVICE_UNAVAILABLE, "worker channel closed").into_response();
     }

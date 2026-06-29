@@ -15,6 +15,7 @@ use crate::pnworker::workers::encodeworker::*;
 use crate::pnworker::workers::probeworker::*;
 use crate::pnworker::workers::uploadworker::*;
 use serenity::all::{Context, Message};
+use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -543,6 +544,16 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
         }
         let qlen = queue.len();
         let mut dead: Vec<u64> = vec![];
+        let mut active_encode_sources: HashMap<String, PathBuf> = queue
+            .iter()
+            .filter(|j| j.ready == Stage::Encoding)
+            .map(|j| {
+                (
+                    input_cache_key(j),
+                    j.directory.join("contents").join("torrent"),
+                )
+            })
+            .collect();
         for (idx, job) in queue.iter_mut().enumerate() {
             // Find the first job that's actively progressing (not parked at Probed)
             //
@@ -612,6 +623,22 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                         .set_presence(Presence::Uploading { idx, total: qlen })
                         .await;
                 } else {
+                    let key = input_cache_key(job);
+                    if let Some(source) = active_encode_sources.get(&key).cloned() {
+                        job.duplicate_source = Some(source.clone());
+                        job.ready = Stage::Downloading;
+                        job.worker = "dwl-cache".to_string();
+                        let v = serde_json::json!({ "type": "download", "waiting": "cache" });
+                        db.update_stage(job.job_id, Stage::Downloading).await.unwrap();
+                        db.update_progress(job.job_id, &v.to_string()).await.ok();
+                        db.update_worker(job.job_id, &job.worker).await.ok();
+                        render(
+                            job,
+                            MessagePayload::Progress(TORRENT_DUPLICATE_WAIT, vec![source.display().to_string()]),
+                        )
+                        .await;
+                        continue;
+                    }
                     job.worker = "enc-main".to_string();
                     db.update_worker(job.job_id, &job.worker).await.ok();
                     if !dispatch_or_kill(
@@ -633,6 +660,10 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                         continue;
                     }
                     job.ready = Stage::Encoding;
+                    active_encode_sources.insert(
+                        key,
+                        job.directory.join("contents").join("torrent"),
+                    );
                     db.update_stage(job.job_id, Stage::Encoding).await.unwrap();
                     job.frontend
                         .set_presence(Presence::Encoding { idx, total: qlen })

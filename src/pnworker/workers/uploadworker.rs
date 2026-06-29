@@ -124,6 +124,7 @@ async fn run_upload_job(
                     ("OPCODE", PathValue::from(out_name.clone())),
                     ("ENV", PathValue::from(drive_env)),
                     ("DRIVEFOLDER", PathValue::from(drive_folder)),
+                    ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),
                 ]),
                 job_id,
                 &mut proto,
@@ -354,6 +355,7 @@ async fn run_upload_job(
                                 return Some(ToolResult::Success);
                             }
                         }
+                        3 => return Some(ToolResult::Cancel),
                         _ => {}
                     }
                     None
@@ -460,6 +462,7 @@ async fn run_upload_job(
                         ("LINK", PathValue::from(file.display().to_string())),
                         ("OPCODE", PathValue::from(out_name)),
                         ("ENV", PathValue::from(drive_env.clone())),
+                        ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),
                     ]),
                     upload_job_id,
                     &mut proto,
@@ -536,6 +539,7 @@ async fn run_upload_job(
                                 .ok();
                                 return Some(ToolResult::Fail);
                             }
+                            3 => return Some(ToolResult::Cancel),
                             _ => {}
                         }
                         None
