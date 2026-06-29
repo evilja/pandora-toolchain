@@ -225,6 +225,9 @@
     width: 100%; max-width: none; height: 100%; max-height: none;
     border: 0; border-radius: 0; box-shadow: none;
   }
+  /* fill the iframe: let the command area grow so the footer pins to the bottom (no gap) */
+  html.embed .grid { flex: 1 1 auto; min-height: 0; }
+  html.embed .options { overflow: auto; }
   /* job-only mode: a single job's live view, no command UI (used by desktop job windows) */
   html.jobonly .grid, html.jobonly .footer { display: none; }
   html.jobonly .output { flex: 1; height: 100%; max-height: none; overflow: auto; }
