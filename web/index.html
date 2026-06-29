@@ -567,7 +567,9 @@
   @media (max-width: 760px) {
     body { padding: 0; align-items: stretch; }
     /* mobile: no window manager — keep the plain single-card layout */
-    .titlebar { cursor: default; }
+    .titlebar { cursor: default; gap: 8px; padding: 0 12px; }
+    .navlink { margin-left: 0; padding: 4px 7px; }
+    .theme-toggle { padding: 5px 7px; }
     .jobwin { display: none !important; }
     .popout { display: none !important; }
     .jobrow { cursor: default; }
@@ -612,6 +614,9 @@
   }
   @media (max-width: 380px) {
     .brand .sub { display: none; }
+    .titlebar { gap: 5px; padding: 0 8px; }
+    .navlink { padding: 4px 5px; }
+    .theme-toggle { padding: 5px 6px; }
   }
   @media (prefers-reduced-motion: reduce) {
     .seg.active .seg-prog { animation: none; background: var(--karaoke); }
