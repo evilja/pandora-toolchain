@@ -54,7 +54,6 @@ impl JobDb {
             "CREATE INDEX IF NOT EXISTS idx_jobs_channel  ON jobs(channel_id);",
             "CREATE INDEX IF NOT EXISTS idx_jobs_stage    ON jobs(stage);",
             "CREATE INDEX IF NOT EXISTS idx_jobs_archived ON jobs(archived);",
-            "CREATE INDEX IF NOT EXISTS idx_jobs_server   ON jobs(server_id);",
         ] {
             sqlx::query(idx).execute(&self.pool).await?;
         }
