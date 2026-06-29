@@ -80,7 +80,8 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .layer(middleware::from_fn(auth));
 
     let app = Router::new()
-        .route("/", get(index))
+        .route("/", get(desktop))
+        .route("/encode", get(index))
         .route("/git", get(git_console))
         .route("/favicon", get(favicon))
         .route("/favicon.ico", get(favicon))
@@ -97,6 +98,11 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
 
 const INDEX_HTML: &str = include_str!("../../web/index.html");
 const GIT_HTML: &str = include_str!("../../web/git.html");
+const DESKTOP_HTML: &str = include_str!("../../web/desktop.html");
+
+async fn desktop() -> axum::response::Html<&'static str> {
+    axum::response::Html(DESKTOP_HTML)
+}
 
 async fn index() -> axum::response::Html<&'static str> {
     axum::response::Html(INDEX_HTML)

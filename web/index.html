@@ -216,6 +216,19 @@
   .jobrow { cursor: pointer; }
   .jobrow:hover td { background: var(--raise); }
 
+  /* embed mode: rendered inside a desktop-shell iframe — drop the outer chrome */
+  html.embed, html.embed body { height: 100%; }
+  html.embed body { padding: 0; align-items: stretch; background: transparent; }
+  html.embed body::before { display: none; }
+  html.embed .titlebar { display: none; }
+  html.embed .window {
+    width: 100%; max-width: none; height: 100%; max-height: none;
+    border: 0; border-radius: 0; box-shadow: none;
+  }
+  /* job-only mode: a single job's live view, no command UI (used by desktop job windows) */
+  html.jobonly .grid, html.jobonly .footer { display: none; }
+  html.jobonly .output { flex: 1; height: 100%; max-height: none; overflow: auto; }
+
   .notice {
     font-size: 12px; color: var(--ink-2); line-height: 1.45;
     background: var(--tint-bg);
@@ -587,6 +600,8 @@
         t = (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
       }
       document.documentElement.setAttribute("data-theme", t);
+      if (/[?&]embed=1\b/.test(location.search)) document.documentElement.classList.add("embed");
+      if (/[?&]job=/.test(location.search)) document.documentElement.classList.add("jobonly");
     } catch (e) {}
   })();
 </script>
@@ -597,6 +612,7 @@
       <div class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></div>
       <div class="brand"><b>pandora</b><span class="sub">encode console</span></div>
       <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle theme">☀</button>
+      <a class="navlink" href="/" title="Desktop">⊞ desktop</a>
       <a class="navlink" href="/git" title="Git operations console">git ›</a>
     </div>
 
@@ -925,7 +941,7 @@
       busy(true);
       return COMMANDS.pancode.run(vals).then(function (res) {
         COMMANDS.pancode.render(res);
-        if (res.status === 202 && res.data && res.data.job_id) startJobWatch(res.data.job_id, true);
+        if (res.status === 202 && res.data && res.data.job_id) afterSubmit(res.data.job_id, true);
       });
     }).catch(function (e) {
       showError(e && e.message ? e.message : String(e));
@@ -986,8 +1002,7 @@
       return cmd.run(vals).then(function (res) {
         cmd.render(res);
         if (res.status === 202 && res.data && res.data.job_id) {
-          var lockEncode = isEncodeStarter(key);
-          if (lockEncode || !activeEncodeJobId) startJobWatch(res.data.job_id, lockEncode);
+          afterSubmit(res.data.job_id, isEncodeStarter(key));
           return;
         }
       });
@@ -1374,10 +1389,29 @@
     delete jobWindows[jobId];
   }
 
+  // pop a job into a window — on the desktop shell when embedded, locally otherwise
+  function popJob(jobId) {
+    jobId = String(jobId);
+    if (window.parent && window.parent !== window) {
+      try { window.parent.postMessage({ type: "pandora:openJob", jobId: jobId }, "*"); return; } catch (e) {}
+    }
+    openJobWindow(jobId);
+  }
+
+  // after a job is submitted: pop it into its own window, keep the console output clean
+  function afterSubmit(jobId, lockEncode) {
+    if (wmMobile()) { startJobWatch(jobId, lockEncode); return; }
+    popJob(jobId);
+    outputEl.innerHTML = '<span class="pill ok">202</span>' +
+      '<div class="accepted">' + chip("Queued") +
+      '<span class="mono">#' + esc(jobId) + '</span>' +
+      '<span class="muted">Popped out into its own window.</span></div>';
+  }
+
   // open a job window from the Jobs table (row or pop-out button) or the watched-job header
   outputEl.addEventListener("click", function (e) {
     var t = e.target.closest("[data-job]");
-    if (t) { openJobWindow(t.getAttribute("data-job")); }
+    if (t) { popJob(t.getAttribute("data-job")); }
   });
 
   // shrinking into mobile drops the WM and restores the plain card
@@ -1391,7 +1425,17 @@
   });
 
   // ---- boot ----
-  renderOptions(active);
+  var jobOnly = location.search.match(/[?&]job=([^&]+)/);
+  if (jobOnly) {
+    var onlyId = decodeURIComponent(jobOnly[1]);
+    (function () {
+      function tick() { pollJob(onlyId).then(function (res) { renderJobInto(outputEl, res); }).catch(function () {}); }
+      tick();
+      setInterval(tick, 2000);
+    })();
+  } else {
+    renderOptions(active);
+  }
 })();
 </script>
 </body>

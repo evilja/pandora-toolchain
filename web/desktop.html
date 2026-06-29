@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pandora — desktop</title>
+<link rel="icon" href="/favicon">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  /* theme: Pandora (Re:Zero) — kept in sync with index.html / git.html :root blocks */
+  :root {
+    --bg: #eaeff7;
+    --bg-2: #fafcff;
+    --panel: rgba(255,255,255,0.95);
+    --panel-2: #f0f4fb;
+    --raise: #e5ecf7;
+    --line: #d2dcec;
+    --line-2: #b1c2de;
+    --ink: #1e2c4d;
+    --ink-2: #3f5681;
+    --dim: #6b7c9e;
+    --faint: #9aa9c6;
+    --k1: #2f6fd0;
+    --k2: #a9cef4;
+    --cool: #5a83c6;
+    --done: #7c6cc8;
+    --bad: #d2687f;
+    --body-bg:
+      radial-gradient(720px 520px at 18% 0%, rgba(255,255,255,0.95), transparent 64%),
+      radial-gradient(820px 640px at 85% -10%, rgba(169,206,244,0.45), transparent 60%),
+      radial-gradient(860px 680px at -8% 110%, rgba(124,108,200,0.16), transparent 56%),
+      linear-gradient(180deg, var(--bg-2), var(--bg));
+    --scan: rgba(47,111,208,0.035);
+    --scan-blend: multiply;
+    --shadow: rgba(40,60,110,0.42);
+    --inset: rgba(255,255,255,0.9);
+    --bar-bg: linear-gradient(180deg, rgba(255,255,255,0.92), rgba(234,240,250,0.88));
+    --focus: rgba(90,131,198,0.20);
+    --tint-bg: rgba(47,111,208,0.08);
+    --tint-line: rgba(47,111,208,0.32);
+    --on-accent: #ffffff;
+    --accent-shadow: rgba(47,111,208,0.55);
+    --radius: 16px;
+    --radius-sm: 9px;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --disp: "Bricolage Grotesque", "Hanken Grotesk", system-ui, sans-serif;
+    --body: "Hanken Grotesk", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1626;
+    --bg-2: #131c30;
+    --panel: rgba(22,30,49,0.96);
+    --panel-2: #1a2440;
+    --raise: #212c4a;
+    --line: #2c3a5c;
+    --line-2: #44557d;
+    --ink: #e9f0fb;
+    --ink-2: #bfceea;
+    --dim: #8a9cbf;
+    --faint: #5f7298;
+    --k1: #6ba6f0;
+    --k2: #bfe0ff;
+    --cool: #7ca2dc;
+    --done: #a99bf0;
+    --bad: #e58aa0;
+    --body-bg:
+      radial-gradient(720px 520px at 18% 0%, rgba(54,72,116,0.45), transparent 64%),
+      radial-gradient(820px 640px at 85% -10%, rgba(47,90,170,0.30), transparent 60%),
+      radial-gradient(860px 680px at -8% 110%, rgba(124,108,200,0.20), transparent 56%),
+      linear-gradient(180deg, var(--bg-2), var(--bg));
+    --scan: rgba(150,185,240,0.06);
+    --scan-blend: screen;
+    --shadow: rgba(0,0,0,0.55);
+    --inset: rgba(255,255,255,0.06);
+    --bar-bg: linear-gradient(180deg, rgba(28,38,62,0.92), rgba(18,26,44,0.9));
+    --focus: rgba(124,162,220,0.30);
+    --tint-bg: rgba(107,166,240,0.12);
+    --tint-line: rgba(107,166,240,0.40);
+    --on-accent: #0d1424;
+    --accent-shadow: rgba(0,0,0,0.5);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: var(--body);
+    color: var(--ink);
+    background: var(--body-bg);
+    overflow: hidden;
+  }
+  body::before {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background: repeating-linear-gradient(0deg, var(--scan) 0 1px, transparent 1px 4px);
+    mix-blend-mode: var(--scan-blend);
+  }
+
+  .desktop { position: absolute; inset: 0 0 48px 0; z-index: 1; overflow: hidden; }
+
+  .dwin {
+    position: absolute; display: flex; flex-direction: column;
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: 0 34px 80px -28px var(--shadow), 0 2px 0 0 var(--inset) inset;
+    overflow: hidden; min-width: 360px; min-height: 240px;
+  }
+  .dwin-bar {
+    display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+    height: 44px; padding: 0 14px; cursor: move; user-select: none;
+    background: var(--bar-bg); border-bottom: 1px solid var(--line);
+  }
+  .dwin-lights { display: flex; align-items: center; gap: 8px; margin-right: 5px; flex-shrink: 0; }
+  .tl {
+    width: 12px; height: 12px; border-radius: 50%; border: 0; padding: 0; cursor: pointer; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-size: 8px; line-height: 1; color: transparent;
+    transition: filter .14s, color .14s;
+  }
+  .tl.r { background: var(--line-2); }
+  .tl.y { background: var(--cool); }
+  .tl.g { background: var(--k1); }
+  .tl:hover { filter: brightness(1.15); }
+  .dwin-bar:hover .tl { color: var(--on-accent); }
+  .dwin-title { font-family: var(--mono); font-size: 12px; color: var(--ink-2); letter-spacing: 0.3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dwin-body { flex: 1; min-height: 0; background: var(--panel); }
+  .dwin-body iframe { width: 100%; height: 100%; border: 0; display: block; }
+  .dwin-resize {
+    position: absolute; right: 0; bottom: 0; width: 18px; height: 18px;
+    cursor: nwse-resize; z-index: 2;
+  }
+  .dwin-resize::after {
+    content: ""; position: absolute; right: 3px; bottom: 3px; width: 8px; height: 8px;
+    border-right: 2px solid var(--line-2); border-bottom: 2px solid var(--line-2);
+  }
+  /* while dragging/resizing, stop iframes from swallowing pointer events */
+  body.dragging .dwin-body iframe { pointer-events: none; }
+
+  .taskbar {
+    position: fixed; left: 0; right: 0; bottom: 0; height: 48px; z-index: 50;
+    display: flex; align-items: center; gap: 10px; padding: 0 14px;
+    background: var(--bar-bg); border-top: 1px solid var(--line);
+    backdrop-filter: blur(6px);
+  }
+  .tb-brand { display: flex; align-items: baseline; gap: 8px; margin-right: 6px; }
+  .tb-brand b { font-family: var(--disp); font-weight: 800; font-size: 15px; letter-spacing: -0.2px; color: var(--ink); }
+  .tb-brand span { font-family: var(--mono); font-size: 10.5px; color: var(--dim); letter-spacing: 0.4px; }
+  .tb-apps { display: flex; gap: 8px; }
+  .tb-app {
+    font-family: var(--mono); font-size: 12px; cursor: pointer;
+    color: var(--ink-2); background: transparent;
+    border: 1px solid var(--line); border-radius: 8px; padding: 6px 13px;
+    transition: border-color .14s, color .14s, background .14s;
+  }
+  .tb-app:hover { border-color: var(--k1); color: var(--ink); }
+  .tb-app.active { color: var(--k1); border-color: var(--tint-line); background: var(--tint-bg); }
+  .tb-spacer { margin-left: auto; }
+  .tb-clock { font-family: var(--mono); font-size: 11px; color: var(--dim); letter-spacing: 0.3px; }
+  .tb-toggle {
+    font-size: 13px; line-height: 1; color: var(--ink-2); background: transparent; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px;
+  }
+  .tb-toggle:hover { border-color: var(--k1); color: var(--ink); }
+
+  /* mobile: no window manager — a simple launcher to the standalone consoles */
+  .mlaunch { display: none; }
+  @media (max-width: 760px) {
+    .desktop, .taskbar { display: none !important; }
+    body { overflow: auto; display: flex; align-items: center; justify-content: center; padding: 24px; }
+    .mlaunch {
+      display: flex; flex-direction: column; gap: 14px; z-index: 1;
+      width: 100%; max-width: 360px;
+      background: var(--panel); border: 1px solid var(--line);
+      border-radius: var(--radius); padding: 22px;
+      box-shadow: 0 34px 80px -28px var(--shadow);
+    }
+    .mlaunch h1 { font-family: var(--disp); font-size: 20px; margin: 0; color: var(--ink); }
+    .mlaunch p { margin: 0; font-size: 13px; color: var(--dim); line-height: 1.5; }
+    .mlaunch a {
+      display: block; text-align: center; text-decoration: none;
+      font-family: var(--mono); font-size: 14px; color: var(--on-accent);
+      background: linear-gradient(180deg, var(--k1), var(--cool));
+      border-radius: var(--radius-sm); padding: 13px;
+      box-shadow: 0 10px 24px -12px var(--accent-shadow);
+    }
+    .mlaunch a.alt { color: var(--k1); background: transparent; border: 1px solid var(--line); box-shadow: none; }
+  }
+</style>
+<script>
+  (function () {
+    try {
+      var t = localStorage.getItem("pandora_theme");
+      if (t !== "light" && t !== "dark") {
+        t = (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+      }
+      document.documentElement.setAttribute("data-theme", t);
+    } catch (e) {}
+  })();
+</script>
+</head>
+<body>
+  <div class="desktop" id="desktop"></div>
+
+  <div class="taskbar">
+    <div class="tb-brand"><b>pandora</b><span>desktop</span></div>
+    <div class="tb-apps" id="apps"></div>
+    <div class="tb-spacer"></div>
+    <div class="tb-clock" id="clock"></div>
+    <button class="tb-toggle" id="themeToggle" type="button" aria-label="Toggle theme">☀</button>
+  </div>
+
+  <div class="mlaunch">
+    <h1>pandora</h1>
+    <p>The window-manager desktop is desktop-only. Open a console:</p>
+    <a href="/encode">Encode console →</a>
+    <a class="alt" href="/git">Git console →</a>
+  </div>
+
+<script>
+(function () {
+  "use strict";
+
+  var APPS = {
+    encode: { title: "encode console", src: "/encode?embed=1" },
+    git:    { title: "git console",    src: "/git?embed=1" }
+  };
+  var ORDER = ["encode", "git"];
+  var STORE = "pandora_desktop_v1";
+
+  var desktop = document.getElementById("desktop");
+  var appsEl  = document.getElementById("apps");
+  var wins = {};   // app -> { el, body, iframe, state }
+  var zTop = 10;
+
+  function isMobile() { return window.matchMedia("(max-width: 760px)").matches; }
+
+  function loadStore() {
+    try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch (e) { return {}; }
+  }
+  function saveStore() {
+    var out = {};
+    ORDER.forEach(function (app) {
+      var w = wins[app];
+      if (w) out[app] = { open: true, x: w.state.x, y: w.state.y, w: w.state.w, h: w.state.h, min: w.state.min };
+      else out[app] = { open: false };
+    });
+    try { localStorage.setItem(STORE, JSON.stringify(out)); } catch (e) {}
+  }
+
+  function clampRect(s) {
+    var maxW = desktop.clientWidth, maxH = desktop.clientHeight;
+    s.w = Math.max(360, Math.min(s.w, maxW));
+    s.h = Math.max(240, Math.min(s.h, maxH));
+    s.x = Math.max(0, Math.min(s.x, maxW - s.w));
+    s.y = Math.max(0, Math.min(s.y, maxH - s.h));
+  }
+
+  function bringToFront(w) { w.el.style.zIndex = String(++zTop); markActive(); }
+
+  function defaultState(cfg) {
+    var n = Object.keys(wins).length;
+    var w = Math.min(cfg && cfg.w || 900, desktop.clientWidth - 40);
+    var h = Math.min(cfg && cfg.h || 640, desktop.clientHeight - 40);
+    return { x: 24 + n * 34, y: 18 + n * 30, w: w, h: h, min: false };
+  }
+
+  function applyRect(rec) {
+    rec.el.style.left = rec.state.x + "px"; rec.el.style.top = rec.state.y + "px";
+    rec.el.style.width = rec.state.w + "px"; rec.el.style.height = rec.state.h + "px";
+  }
+
+  function createWin(key, cfg, state) {
+    var s = state || defaultState(cfg);
+    clampRect(s);
+    var el = document.createElement("div");
+    el.className = "dwin";
+    var rec = { el: el, state: s, prev: null };
+    el.innerHTML =
+      '<div class="dwin-bar"><span class="dwin-lights">' +
+        '<button class="tl r dwin-close" type="button" title="Close">✕</button>' +
+        '<button class="tl y dwin-min" type="button" title="Minimize">–</button>' +
+        '<button class="tl g dwin-max" type="button" title="Maximize">+</button>' +
+      '</span><span class="dwin-title">' + cfg.title + '</span></div>' +
+      '<div class="dwin-body"><iframe src="' + cfg.src + '" title="' + cfg.title + '"></iframe></div>' +
+      '<div class="dwin-resize"></div>';
+    applyRect(rec);
+    desktop.appendChild(el);
+    wins[key] = rec;
+    if (s.min) el.style.display = "none";
+
+    el.addEventListener("pointerdown", function () { bringToFront(rec); }, true);
+    el.querySelector(".dwin-close").addEventListener("click", function (e) { e.stopPropagation(); closeWin(key); });
+    el.querySelector(".dwin-min").addEventListener("click", function (e) { e.stopPropagation(); minimizeWin(key); });
+    el.querySelector(".dwin-max").addEventListener("click", function (e) { e.stopPropagation(); maximizeWin(key); });
+    makeDraggable(rec, el.querySelector(".dwin-bar"));
+    makeResizable(rec, el.querySelector(".dwin-resize"));
+    bringToFront(rec);
+    return rec;
+  }
+
+  function openOrFocus(app) {
+    if (isMobile()) { location.href = APPS[app].src.replace("?embed=1", ""); return; }
+    var w = wins[app];
+    if (!w) { createWin(app, APPS[app]); saveStore(); markActive(); return; }
+    if (w.state.min) { w.state.min = false; w.el.style.display = ""; }
+    bringToFront(w); saveStore();
+  }
+
+  function openJobWindow(id) {
+    if (isMobile()) return;
+    var key = "job:" + id;
+    var w = wins[key];
+    if (w) { if (w.state.min) { w.state.min = false; w.el.style.display = ""; } bringToFront(w); return; }
+    createWin(key, { title: "job #" + id, w: 420, h: 460, src: "/encode?embed=1&job=" + encodeURIComponent(id) });
+  }
+
+  function minimizeWin(key) {
+    var w = wins[key]; if (!w) return;
+    w.state.min = true; w.el.style.display = "none";
+    saveStore(); markActive();
+  }
+
+  function maximizeWin(key) {
+    var w = wins[key]; if (!w) return;
+    if (w.prev) {
+      w.state.x = w.prev.x; w.state.y = w.prev.y; w.state.w = w.prev.w; w.state.h = w.prev.h;
+      w.prev = null;
+    } else {
+      w.prev = { x: w.state.x, y: w.state.y, w: w.state.w, h: w.state.h };
+      w.state.x = 0; w.state.y = 0; w.state.w = desktop.clientWidth; w.state.h = desktop.clientHeight;
+    }
+    applyRect(w); bringToFront(w); saveStore();
+  }
+
+  function closeWin(key) {
+    var w = wins[key]; if (!w) return;
+    if (w.el.parentNode) w.el.parentNode.removeChild(w.el);
+    delete wins[key];
+    saveStore(); markActive();
+  }
+
+  function makeDraggable(rec, handle) {
+    handle.addEventListener("pointerdown", function (e) {
+      if (e.target.closest("button")) return;
+      e.preventDefault();
+      document.body.classList.add("dragging");
+      bringToFront(rec);
+      rec.prev = null;
+      var sx = e.clientX, sy = e.clientY, ox = rec.state.x, oy = rec.state.y;
+      try { handle.setPointerCapture(e.pointerId); } catch (err) {}
+      function move(ev) {
+        rec.state.x = ox + (ev.clientX - sx);
+        rec.state.y = oy + (ev.clientY - sy);
+        clampRect(rec.state);
+        rec.el.style.left = rec.state.x + "px";
+        rec.el.style.top = rec.state.y + "px";
+      }
+      function up(ev) {
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", up);
+        try { handle.releasePointerCapture(ev.pointerId); } catch (err) {}
+        document.body.classList.remove("dragging");
+        saveStore();
+      }
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", up);
+    });
+  }
+
+  function makeResizable(rec, handle) {
+    handle.addEventListener("pointerdown", function (e) {
+      e.preventDefault(); e.stopPropagation();
+      document.body.classList.add("dragging");
+      bringToFront(rec);
+      var sx = e.clientX, sy = e.clientY, ow = rec.state.w, oh = rec.state.h;
+      try { handle.setPointerCapture(e.pointerId); } catch (err) {}
+      function move(ev) {
+        rec.state.w = ow + (ev.clientX - sx);
+        rec.state.h = oh + (ev.clientY - sy);
+        clampRect(rec.state);
+        rec.el.style.width = rec.state.w + "px";
+        rec.el.style.height = rec.state.h + "px";
+      }
+      function up(ev) {
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", up);
+        try { handle.releasePointerCapture(ev.pointerId); } catch (err) {}
+        document.body.classList.remove("dragging");
+        saveStore();
+      }
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", up);
+    });
+  }
+
+  // ---- taskbar ----
+  function markActive() {
+    Array.prototype.forEach.call(appsEl.children, function (btn) {
+      var app = btn.getAttribute("data-app");
+      var w = wins[app];
+      btn.classList.toggle("active", !!w && !w.state.min);
+    });
+  }
+  ORDER.forEach(function (app) {
+    var b = document.createElement("button");
+    b.className = "tb-app"; b.type = "button"; b.setAttribute("data-app", app);
+    b.textContent = APPS[app].title.replace(" console", "");
+    b.addEventListener("click", function () { openOrFocus(app); });
+    appsEl.appendChild(b);
+  });
+
+  // ---- theme toggle (shared key with the consoles) ----
+  (function () {
+    var root = document.documentElement;
+    var btn = document.getElementById("themeToggle");
+    function paint() {
+      var dark = root.getAttribute("data-theme") === "dark";
+      btn.textContent = dark ? "☾" : "☀";
+      btn.title = dark ? "Light mode" : "Dark mode";
+    }
+    paint();
+    btn.addEventListener("click", function () {
+      var next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
+      root.setAttribute("data-theme", next);
+      try { localStorage.setItem("pandora_theme", next); } catch (e) {}
+      paint();
+    });
+  })();
+
+  // ---- clock ----
+  (function () {
+    var el = document.getElementById("clock");
+    function pad(n) { return (n < 10 ? "0" : "") + n; }
+    function tick() { var d = new Date(); el.textContent = pad(d.getHours()) + ":" + pad(d.getMinutes()); }
+    tick(); setInterval(tick, 15000);
+  })();
+
+  // ---- job windows popped from the embedded consoles ----
+  window.addEventListener("message", function (e) {
+    var d = e.data;
+    if (!d || d.type !== "pandora:openJob" || !d.jobId) return;
+    openJobWindow(String(d.jobId));
+  });
+
+  // ---- boot: restore session (desktop only) ----
+  if (!isMobile()) {
+    var saved = loadStore();
+    var any = false;
+    ORDER.forEach(function (app) {
+      var st = saved[app];
+      if (st && st.open) { createWin(app, APPS[app], { x: st.x, y: st.y, w: st.w, h: st.h, min: !!st.min }); any = true; }
+    });
+    if (!any) createWin("encode", APPS.encode);
+    saveStore();
+    markActive();
+  }
+})();
+</script>
+</body>
+</html>

@@ -216,6 +216,19 @@
   .jobrow { cursor: pointer; }
   .jobrow:hover td { background: var(--raise); }
 
+  /* embed mode: rendered inside a desktop-shell iframe — drop the outer chrome */
+  html.embed, html.embed body { height: 100%; }
+  html.embed body { padding: 0; align-items: stretch; background: transparent; }
+  html.embed body::before { display: none; }
+  html.embed .titlebar { display: none; }
+  html.embed .window {
+    width: 100%; max-width: none; height: 100%; max-height: none;
+    border: 0; border-radius: 0; box-shadow: none;
+  }
+  /* job-only mode: a single job's live view, no command UI (used by desktop job windows) */
+  html.jobonly .grid, html.jobonly .footer { display: none; }
+  html.jobonly .output { flex: 1; height: 100%; max-height: none; overflow: auto; }
+
   .notice {
     font-size: 12px; color: var(--ink-2); line-height: 1.45;
     background: var(--tint-bg);
@@ -587,6 +600,8 @@
         t = (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
       }
       document.documentElement.setAttribute("data-theme", t);
+      if (/[?&]embed=1\b/.test(location.search)) document.documentElement.classList.add("embed");
+      if (/[?&]job=/.test(location.search)) document.documentElement.classList.add("jobonly");
     } catch (e) {}
   })();
 </script>
@@ -597,7 +612,8 @@
       <div class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></div>
       <div class="brand"><b>pandora</b><span class="sub">git console</span></div>
       <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle theme">☀</button>
-      <a class="navlink" href="/" title="Encode console">‹ encode</a>
+      <a class="navlink" href="/" title="Desktop">⊞ desktop</a>
+      <a class="navlink" href="/encode" title="Encode console">‹ encode</a>
     </div>
 
     <div class="grid">
@@ -975,7 +991,7 @@
         '<div class="prog-label">Result</div>' + rowsS +
         warningsBlock(d.warnings) +
         '<p class="muted">Merge uploaded and an encode job was queued. Track it on the ' +
-        '<a class="navlink" href="/">encode console</a>.</p>';
+        '<a class="navlink" href="/encode">encode console</a>.</p>';
       return;
     }
     if (isObj && Array.isArray(d.created)) {
