@@ -620,12 +620,15 @@
 </style>
 <script>
   (function () {
+    function preferredTheme(fallback) {
+      var t = null;
+      try { t = localStorage.getItem("pandora_theme"); } catch (e) {}
+      if (t === "light" || t === "dark") return t;
+      if (fallback === "light" || fallback === "dark") return fallback;
+      return (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+    }
     try {
-      var t = localStorage.getItem("pandora_theme");
-      if (t !== "light" && t !== "dark") {
-        t = (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
-      }
-      document.documentElement.setAttribute("data-theme", t);
+      document.documentElement.setAttribute("data-theme", preferredTheme());
       if (/[?&]embed=1\b/.test(location.search)) document.documentElement.classList.add("embed");
       if (/[?&]job=/.test(location.search) || /[?&]jobs=1\b/.test(location.search)) document.documentElement.classList.add("jobonly");
     } catch (e) {}
@@ -669,10 +672,10 @@
     function storedTheme() {
       var t = null;
       try { t = localStorage.getItem("pandora_theme"); } catch (e) {}
-      if (t !== "light" && t !== "dark") {
-        t = (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
-      }
-      return t;
+      if (t === "light" || t === "dark") return t;
+      t = root.getAttribute("data-theme");
+      if (t === "light" || t === "dark") return t;
+      return (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
     }
     function applyTheme(t) {
       t = t === "dark" ? "dark" : "light";
@@ -690,6 +693,7 @@
       var next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
       applyTheme(next);
       try { localStorage.setItem("pandora_theme", next); } catch (e) {}
+      try { window.parent.postMessage({ type: "pandora:theme", theme: next }, "*"); } catch (e) {}
     });
     window.addEventListener("storage", function (e) {
       if (e.key !== "pandora_theme") return;
@@ -817,7 +821,7 @@
       render: renderResult
     }
   };
-  var ORDER = ["encode", "gitcode", "backup", "pancode", "jobs", "cancel"];
+  var ORDER = ["encode", "gitcode", "backup", "pancode", "cancel"];
 
   // ---- render command list ----
   var rail = document.createElement("div");

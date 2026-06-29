@@ -220,12 +220,15 @@
 </style>
 <script>
   (function () {
+    function preferredTheme(fallback) {
+      var t = null;
+      try { t = localStorage.getItem("pandora_theme"); } catch (e) {}
+      if (t === "light" || t === "dark") return t;
+      if (fallback === "light" || fallback === "dark") return fallback;
+      return (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+    }
     try {
-      var t = localStorage.getItem("pandora_theme");
-      if (t !== "light" && t !== "dark") {
-        t = (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
-      }
-      document.documentElement.setAttribute("data-theme", t);
+      document.documentElement.setAttribute("data-theme", preferredTheme());
     } catch (e) {}
   })();
 </script>
@@ -465,8 +468,10 @@
     function currentTheme() {
       var t = null;
       try { t = localStorage.getItem("pandora_theme"); } catch (e) {}
-      if (t !== "light" && t !== "dark") t = root.getAttribute("data-theme") === "dark" ? "dark" : "light";
-      return t;
+      if (t === "light" || t === "dark") return t;
+      t = root.getAttribute("data-theme");
+      if (t === "light" || t === "dark") return t;
+      return (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
     }
     window.currentTheme = currentTheme;
     window.syncFrame = syncFrame;
@@ -489,21 +494,26 @@
       btn.textContent = dark ? "☾" : "☀";
       btn.title = dark ? "Light mode" : "Dark mode";
     }
-    paint();
-    btn.addEventListener("click", function () {
-      var next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    function applyTheme(theme, persist) {
+      var next = theme === "dark" ? "dark" : "light";
       root.setAttribute("data-theme", next);
-      try { localStorage.setItem("pandora_theme", next); } catch (e) {}
+      if (persist) {
+        try { localStorage.setItem("pandora_theme", next); } catch (e) {}
+      }
       syncFrames(next);
       paint();
+    }
+    window.pandoraSetTheme = function (theme) { applyTheme(theme, false); };
+    applyTheme(currentTheme(), false);
+    btn.addEventListener("click", function () {
+      var next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
+      applyTheme(next, true);
     });
     window.addEventListener("storage", function (e) {
       if (e.key !== "pandora_theme") return;
-      var next = e.newValue === "dark" ? "dark" : "light";
-      root.setAttribute("data-theme", next);
-      syncFrames(next);
-      paint();
+      applyTheme(e.newValue, false);
     });
+    window.addEventListener("pageshow", function () { applyTheme(currentTheme(), false); });
   })();
 
   // ---- API token (shared with every console via localStorage; consoles live-sync on the storage event) ----
@@ -553,6 +563,7 @@
     if (!d) return;
     if (d.type === "pandora:openJob" && d.jobId) { openJobWindow(String(d.jobId)); return; }
     if (d.type === "pandora:openJobs") { openJobsWindow(); return; }
+    if (d.type === "pandora:theme" && window.pandoraSetTheme) { window.pandoraSetTheme(d.theme); return; }
   });
 
   // ---- boot: restore session (desktop only) ----
