@@ -9,7 +9,7 @@ use crate::pnworker::messages::{
     BACKUPALL_PROG, JOB_CANCELLED, MessagePayload, UPLOAD_BACKUP_PROG, UPLOAD_DONE, UPLOAD_FAIL,
     UPLOAD_PROG, WORKER_ASSIGN,
 };
-use crate::pnworker::tools::{PNCURL_BACKUP, PNCURL_UPLOAD};
+use crate::pnworker::tools::{PNCURL_BACKUP, PNCURL_BACKUP_FOLDER, PNCURL_UPLOAD, PNCURL_UPLOAD_FOLDER};
 use crate::pnworker::util::PathValue;
 use crate::pnworker::util::string_byte_to_mb;
 use crate::pnworker::util::{ToolResult, WorkerNamePool, run_tool};
@@ -106,13 +106,19 @@ async fn run_upload_job(
                 gdrive_folder_global.unwrap_or_default()
             };
 
+            let spec = if release && !drive_folder.is_empty() {
+                PNCURL_UPLOAD_FOLDER
+            } else if release {
+                PNCURL_UPLOAD
+            } else if !drive_folder.is_empty() {
+                PNCURL_BACKUP_FOLDER
+            } else {
+                PNCURL_BACKUP
+            };
+
             let result = run_tool(
                 &pncurl_path,
-                if release {
-                    PNCURL_UPLOAD
-                } else {
-                    PNCURL_BACKUP
-                },
+                spec,
                 &HashMap::from([
                     ("LINK", PathValue::from(output_path.clone())),
                     ("OPCODE", PathValue::from(out_name.clone())),
@@ -454,7 +460,6 @@ async fn run_upload_job(
                         ("LINK", PathValue::from(file.display().to_string())),
                         ("OPCODE", PathValue::from(out_name)),
                         ("ENV", PathValue::from(drive_env.clone())),
-                        ("DRIVEFOLDER", PathValue::from(String::new())),
                     ]),
                     upload_job_id,
                     &mut proto,

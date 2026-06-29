@@ -41,7 +41,7 @@ impl JobDb {
                 uploaded_links TEXT,
                 acix_pending TEXT,
                 server_id    INTEGER,
-                worker       TEXT NOT NULL DEFAULT 'que-main',
+                worker       TEXT DEFAULT 'que-main',
                 created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             "#,
@@ -86,7 +86,7 @@ impl JobDb {
             "ALTER TABLE jobs ADD COLUMN server_id INTEGER"
         ).await?;
         self.add_column_if_missing(
-            "ALTER TABLE jobs ADD COLUMN worker TEXT NOT NULL DEFAULT 'que-main'"
+            "ALTER TABLE jobs ADD COLUMN worker TEXT DEFAULT 'que-main'"
         ).await?;
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_jobs_server ON jobs(server_id);")
             .execute(&self.pool)
@@ -263,7 +263,7 @@ impl JobDb {
             r#"
             SELECT job_id, author, channel_id, response_id, requested_at,
                    job_type, preset_type, candidates, link, directory, stage, archived,
-                   progress, uploaded_links, acix_pending, server_id, worker
+                   progress, uploaded_links, acix_pending, server_id, COALESCE(worker, 'que-main') AS worker
             FROM jobs WHERE job_id = ?
             "#,
         )
@@ -277,7 +277,7 @@ impl JobDb {
             r#"
             SELECT job_id, author, channel_id, response_id, requested_at,
                    job_type, preset_type, candidates, link, directory, stage, archived,
-                   progress, uploaded_links, acix_pending, server_id, worker
+                   progress, uploaded_links, acix_pending, server_id, COALESCE(worker, 'que-main') AS worker
             FROM jobs WHERE archived = 0 ORDER BY requested_at ASC
             "#,
         )
@@ -290,7 +290,7 @@ impl JobDb {
             r#"
             SELECT job_id, author, channel_id, response_id, requested_at,
                    job_type, preset_type, candidates, link, directory, stage, archived,
-                   progress, uploaded_links, acix_pending, server_id, worker
+                   progress, uploaded_links, acix_pending, server_id, COALESCE(worker, 'que-main') AS worker
             FROM jobs WHERE archived = 0 AND stage NOT IN (6, 7, 8, 9) ORDER BY requested_at ASC
             "#,
         )
@@ -303,7 +303,7 @@ impl JobDb {
             r#"
             SELECT job_id, author, channel_id, response_id, requested_at,
                    job_type, preset_type, candidates, link, directory, stage, archived,
-                   progress, uploaded_links, acix_pending, server_id, worker
+                   progress, uploaded_links, acix_pending, server_id, COALESCE(worker, 'que-main') AS worker
             FROM jobs ORDER BY requested_at DESC LIMIT ?
             "#,
         )
@@ -317,7 +317,7 @@ impl JobDb {
             r#"
             SELECT job_id, author, channel_id, response_id, requested_at,
                    job_type, preset_type, candidates, link, directory, stage, archived,
-                   progress, uploaded_links, acix_pending, server_id, worker
+                   progress, uploaded_links, acix_pending, server_id, COALESCE(worker, 'que-main') AS worker
             FROM jobs WHERE author = ? ORDER BY requested_at DESC
             "#,
         )

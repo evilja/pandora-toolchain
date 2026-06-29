@@ -101,6 +101,22 @@ pub const PNCURL_UPLOAD: &[CliParam] = &[
     CliParam::Literal("--drive"),
     CliParam::Literal("--env"),
     CliParam::Path("ENV"),
+    CliParam::Literal("--negkey"),
+    CliParam::JobId("PNcurlG"),
+    CliParam::Literal("--negotiator"),
+    CliParam::Literal("PNuloadworker"),
+    CliParam::Literal("--negver"),
+    CliParam::NegVer("1"),
+];
+
+pub const PNCURL_UPLOAD_FOLDER: &[CliParam] = &[
+    CliParam::Literal("--link"),
+    CliParam::Path("LINK"),
+    CliParam::Literal("--opcode"),
+    CliParam::Path("OPCODE"),
+    CliParam::Literal("--drive"),
+    CliParam::Literal("--env"),
+    CliParam::Path("ENV"),
     CliParam::Literal("--drive-folder"),
     CliParam::Path("DRIVEFOLDER"),
     CliParam::Literal("--negkey"),
@@ -112,6 +128,23 @@ pub const PNCURL_UPLOAD: &[CliParam] = &[
 ];
 
 pub const PNCURL_BACKUP: &[CliParam] = &[
+    CliParam::Literal("--link"),
+    CliParam::Path("LINK"),
+    CliParam::Literal("--opcode"),
+    CliParam::Path("OPCODE"),
+    CliParam::Literal("--drive"),
+    CliParam::Literal("--env"),
+    CliParam::Path("ENV"),
+    CliParam::Literal("--negkey"),
+    CliParam::JobId("PNcurlG"),
+    CliParam::Literal("--negotiator"),
+    CliParam::Literal("PNuloadworker"),
+    CliParam::Literal("--negver"),
+    CliParam::NegVer("1"),
+    CliParam::Literal("--backup"),
+];
+
+pub const PNCURL_BACKUP_FOLDER: &[CliParam] = &[
     CliParam::Literal("--link"),
     CliParam::Path("LINK"),
     CliParam::Literal("--opcode"),
