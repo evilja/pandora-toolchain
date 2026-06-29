@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>pandora — git console</title>
+<link rel="icon" href="/favicon">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -573,7 +574,7 @@
       <div class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></div>
       <div class="brand"><b>pandora</b><span class="sub">git console</span></div>
       <div class="tc" id="tc">Dialogue: 0,00:00:00:00,pndc</div>
-      <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle theme">☾</button>
+      <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle theme">☀</button>
       <a class="navlink" href="/" title="Encode console">‹ encode</a>
     </div>
 
@@ -603,7 +604,7 @@
     var btn = document.getElementById("themeToggle");
     function paint() {
       var dark = root.getAttribute("data-theme") === "dark";
-      if (btn) { btn.textContent = dark ? "☀" : "☾"; btn.title = dark ? "Light mode" : "Dark mode"; }
+      if (btn) { btn.textContent = dark ? "☾" : "☀"; btn.title = dark ? "Light mode" : "Dark mode"; }
     }
     paint();
     if (btn) btn.addEventListener("click", function () {

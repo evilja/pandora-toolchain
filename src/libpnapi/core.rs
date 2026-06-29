@@ -82,6 +82,8 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
     let app = Router::new()
         .route("/", get(index))
         .route("/git", get(git_console))
+        .route("/favicon", get(favicon))
+        .route("/favicon.ico", get(favicon))
         .route("/health", get(health))
         .nest("/api/v1", protected)
         .with_state(state);
@@ -102,6 +104,29 @@ async fn index() -> axum::response::Html<&'static str> {
 
 async fn git_console() -> axum::response::Html<&'static str> {
     axum::response::Html(GIT_HTML)
+}
+
+const FAVICON_PNG: &[u8] = include_bytes!("../../web/favicon.png");
+
+async fn favicon() -> Response {
+    // Allow an operator override at DB/config/global/favicon.<ext>; otherwise serve
+    // the bundled default.
+    let exts = [
+        ("png", "image/png"),
+        ("ico", "image/x-icon"),
+        ("svg", "image/svg+xml"),
+        ("jpg", "image/jpeg"),
+        ("jpeg", "image/jpeg"),
+        ("webp", "image/webp"),
+        ("gif", "image/gif"),
+    ];
+    for (ext, mime) in exts {
+        let path = format!("DB/config/global/favicon.{}", ext);
+        if let Ok(bytes) = tokio::fs::read(&path).await {
+            return ([(header::CONTENT_TYPE, mime)], bytes).into_response();
+        }
+    }
+    ([(header::CONTENT_TYPE, "image/png")], FAVICON_PNG).into_response()
 }
 
 async fn health() -> &'static str {
