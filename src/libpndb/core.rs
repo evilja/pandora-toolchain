@@ -40,6 +40,8 @@ impl JobDb {
                 progress     TEXT,
                 uploaded_links TEXT,
                 acix_pending TEXT,
+                server_id    INTEGER,
+                worker       TEXT NOT NULL DEFAULT 'que-main',
                 created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             "#,
@@ -52,6 +54,7 @@ impl JobDb {
             "CREATE INDEX IF NOT EXISTS idx_jobs_channel  ON jobs(channel_id);",
             "CREATE INDEX IF NOT EXISTS idx_jobs_stage    ON jobs(stage);",
             "CREATE INDEX IF NOT EXISTS idx_jobs_archived ON jobs(archived);",
+            "CREATE INDEX IF NOT EXISTS idx_jobs_server   ON jobs(server_id);",
         ] {
             sqlx::query(idx).execute(&self.pool).await?;
         }
@@ -79,6 +82,15 @@ impl JobDb {
         self.add_column_if_missing(
             "ALTER TABLE jobs ADD COLUMN acix_pending TEXT"
         ).await?;
+        self.add_column_if_missing(
+            "ALTER TABLE jobs ADD COLUMN server_id INTEGER"
+        ).await?;
+        self.add_column_if_missing(
+            "ALTER TABLE jobs ADD COLUMN worker TEXT NOT NULL DEFAULT 'que-main'"
+        ).await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_jobs_server ON jobs(server_id);")
+            .execute(&self.pool)
+            .await?;
 
         if self.column_exists("jobs", "preset_concat").await? {
             sqlx::query(
@@ -137,9 +149,9 @@ impl JobDb {
             r#"
             INSERT INTO jobs (
                 job_id, author, channel_id, response_id, requested_at,
-                job_type, preset_type, candidates, link, directory, stage
+                job_type, preset_type, candidates, link, directory, stage, server_id, worker
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(job_id) DO UPDATE SET
                 author = excluded.author,
                 channel_id = excluded.channel_id,
@@ -151,6 +163,8 @@ impl JobDb {
                 link = excluded.link,
                 directory = excluded.directory,
                 stage = excluded.stage,
+                server_id = excluded.server_id,
+                worker = excluded.worker,
                 archived = 0
             "#,
         )
@@ -165,9 +179,20 @@ impl JobDb {
         .bind(&job.torrent.get())
         .bind(job.directory.to_string_lossy().to_string())
         .bind(stage_to_int(job.ready))
+        .bind(job.server_id.map(|id| id as i64))
+        .bind(&job.worker)
         .execute(&self.pool)
         .await?;
 
+        Ok(())
+    }
+
+    pub async fn update_worker(&self, job_id: u64, worker: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE jobs SET worker = ? WHERE job_id = ?")
+            .bind(worker)
+            .bind(job_id as i64)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -238,7 +263,7 @@ impl JobDb {
             r#"
             SELECT job_id, author, channel_id, response_id, requested_at,
                    job_type, preset_type, candidates, link, directory, stage, archived,
-                   progress, uploaded_links, acix_pending
+                   progress, uploaded_links, acix_pending, server_id, worker
             FROM jobs WHERE job_id = ?
             "#,
         )
@@ -252,7 +277,7 @@ impl JobDb {
             r#"
             SELECT job_id, author, channel_id, response_id, requested_at,
                    job_type, preset_type, candidates, link, directory, stage, archived,
-                   progress, uploaded_links, acix_pending
+                   progress, uploaded_links, acix_pending, server_id, worker
             FROM jobs WHERE archived = 0 ORDER BY requested_at ASC
             "#,
         )
@@ -265,7 +290,7 @@ impl JobDb {
             r#"
             SELECT job_id, author, channel_id, response_id, requested_at,
                    job_type, preset_type, candidates, link, directory, stage, archived,
-                   progress, uploaded_links, acix_pending
+                   progress, uploaded_links, acix_pending, server_id, worker
             FROM jobs WHERE archived = 0 AND stage NOT IN (6, 7, 8, 9) ORDER BY requested_at ASC
             "#,
         )
@@ -278,7 +303,7 @@ impl JobDb {
             r#"
             SELECT job_id, author, channel_id, response_id, requested_at,
                    job_type, preset_type, candidates, link, directory, stage, archived,
-                   progress, uploaded_links, acix_pending
+                   progress, uploaded_links, acix_pending, server_id, worker
             FROM jobs ORDER BY requested_at DESC LIMIT ?
             "#,
         )
@@ -292,7 +317,7 @@ impl JobDb {
             r#"
             SELECT job_id, author, channel_id, response_id, requested_at,
                    job_type, preset_type, candidates, link, directory, stage, archived,
-                   progress, uploaded_links, acix_pending
+                   progress, uploaded_links, acix_pending, server_id, worker
             FROM jobs WHERE author = ? ORDER BY requested_at DESC
             "#,
         )
@@ -319,6 +344,8 @@ pub struct JobRow {
     pub progress:        Option<String>,
     pub uploaded_links:  Option<String>,
     pub acix_pending:    Option<String>,
+    pub server_id:       Option<i64>,
+    pub worker:          String,
 }
 
 impl JobRow {
@@ -342,9 +369,11 @@ pub struct JobStatus {
     pub job_id:     i64,
     pub author:     i64,
     pub channel_id: i64,
+    pub server_id:  Option<i64>,
     pub job_type:   String,
     pub preset:     String,
     pub stage:      String,
+    pub worker:     String,
     pub link:       String,
     pub archived:   bool,
     pub progress:   Option<serde_json::Value>,
@@ -358,9 +387,11 @@ impl JobStatus {
             job_id:     row.job_id,
             author:     row.author,
             channel_id: row.channel_id,
+            server_id:  row.server_id,
             job_type:   job_type_label(row.job_type).to_string(),
             preset:     preset_label(row.preset_type).to_string(),
             stage:      stage_label(row.stage).to_string(),
+            worker:     row.worker.clone(),
             link:       row.link.clone(),
             archived:   row.archived != 0,
             progress:   row.progress.as_deref().and_then(|s| serde_json::from_str(s).ok()),

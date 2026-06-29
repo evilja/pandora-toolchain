@@ -21,6 +21,8 @@ use std::{collections::HashMap, path::PathBuf, time::Duration};
 use tokio::io::{AsyncRead, ReadBuf};
 use tokio_util::io::ReaderStream;
 
+const DRIVE_FOLDER_MIME: &str = "application/vnd.google-apps.folder";
+
 struct UploadProgress {
     sent: u64,
     extensions: u64,
@@ -530,6 +532,7 @@ impl Req {
         &self,
         envpath: String,
         outfile: Option<String>,
+        drive_folder: Option<String>,
         tx: Sender<RpbData>,
     ) -> bool {
         let mut handle: Option<LoggingHandle> = match self.log {
@@ -546,12 +549,22 @@ impl Req {
                 return false;
             }
         };
-        let parent_id = env.get(PARENTID).cloned().unwrap_or_default();
-
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(60))
             .build()
             .unwrap();
+
+        let mut parent_id = env.get(PARENTID).cloned().unwrap_or_default();
+        if let Some(folder_path) = drive_folder.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            match ensure_drive_folder_path(&client, &access_token, &parent_id, folder_path, &mut handle).await {
+                Ok(id) => parent_id = id,
+                Err(e) => {
+                    println!("{e}");
+                    tx.send(RpbData::Fail(Host::Drive)).ok();
+                    return false;
+                }
+            }
+        }
 
         let upload_name = outfile.clone().unwrap_or(self.target.clone());
 
@@ -637,4 +650,89 @@ impl Req {
         tx.send(RpbData::Done(link.clone(), Host::Drive)).ok();
         true
     }
+}
+
+async fn ensure_drive_folder_path(
+    client: &Client,
+    access_token: &str,
+    root_parent_id: &str,
+    folder_path: &str,
+    handle: &mut Option<LoggingHandle>,
+) -> Result<String, String> {
+    let mut parent_id = root_parent_id.to_string();
+    for name in folder_path.split('/').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        let next = ensure_drive_folder(client, access_token, &parent_id, name).await?;
+        if let Some(h) = handle.as_mut() {
+            h.write(&format!("Drive folder {name}: {next}\n")).await;
+        }
+        parent_id = next;
+    }
+    Ok(parent_id)
+}
+
+async fn ensure_drive_folder(
+    client: &Client,
+    access_token: &str,
+    parent_id: &str,
+    name: &str,
+) -> Result<String, String> {
+    let query = format!(
+        "mimeType='{}' and trashed=false and name='{}' and '{}' in parents",
+        DRIVE_FOLDER_MIME,
+        drive_query_escape(name),
+        drive_query_escape(parent_id),
+    );
+    let found: serde_json::Value = client
+        .get("https://www.googleapis.com/drive/v3/files")
+        .bearer_auth(access_token)
+        .query(&[
+            ("q", query.as_str()),
+            ("fields", "files(id,name)"),
+            ("pageSize", "1"),
+            ("supportsAllDrives", "true"),
+            ("includeItemsFromAllDrives", "true"),
+        ])
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if let Some(id) = found["files"]
+        .as_array()
+        .and_then(|files| files.first())
+        .and_then(|file| file["id"].as_str())
+    {
+        return Ok(id.to_string());
+    }
+
+    let metadata = serde_json::json!({
+        "name": name,
+        "mimeType": DRIVE_FOLDER_MIME,
+        "parents": [parent_id],
+    });
+    let created: serde_json::Value = client
+        .post("https://www.googleapis.com/drive/v3/files")
+        .bearer_auth(access_token)
+        .query(&[("supportsAllDrives", "true"), ("fields", "id")])
+        .json(&metadata)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+    created["id"]
+        .as_str()
+        .map(|id| id.to_string())
+        .ok_or_else(|| format!("Drive folder create response did not include an id for {name}"))
+}
+
+fn drive_query_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('\'', "\\'")
 }

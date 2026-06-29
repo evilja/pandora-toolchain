@@ -38,6 +38,8 @@ pub async fn handle_smartcode(
         command.guild_id.map(|g| g.get()),
     );
     job.acix = build_acix_publish(ctx, command).await;
+    job.gdrive_folder_global = Some(result.gdrive_folder_global);
+    job.gdrive_folder_local = Some(result.gdrive_folder_local);
     Some(job)
 }
 

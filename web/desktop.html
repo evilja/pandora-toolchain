@@ -353,7 +353,7 @@
     var key = "job:" + id;
     var w = wins[key];
     if (w) { if (w.state.min) { w.state.min = false; w.el.style.display = ""; } bringToFront(w); return; }
-    createWin(key, { title: "job #" + id, w: 420, h: 460, src: "/encode?embed=1&job=" + encodeURIComponent(id) });
+    createWin(key, { title: "job #" + id, w: 420, h: 340, src: "/encode?embed=1&job=" + encodeURIComponent(id) });
   }
 
   function minimizeWin(key) {
@@ -531,7 +531,7 @@
     var key = "jobs";
     var w = wins[key];
     if (w) { if (w.state.min) { w.state.min = false; w.el.style.display = ""; } bringToFront(w); return; }
-    createWin(key, { title: "jobs", w: 800, h: 440, src: "/encode?embed=1&jobs=1" });
+    createWin(key, { title: "jobs", w: 800, h: 360, src: "/encode?embed=1&jobs=1" });
   }
 
   // ---- windows popped from the embedded consoles ----

@@ -311,6 +311,8 @@ pub struct SmartMergeResult {
     pub owner_repo: String,
     pub release_path: String,
     pub source_path: String,
+    pub gdrive_folder_global: String,
+    pub gdrive_folder_local: String,
     pub warnings: Vec<String>,
 }
 
@@ -383,7 +385,33 @@ pub async fn smartcode_merge(
     let _ = tokio::fs::remove_dir_all(&work_dir).await;
 
     let (merged_bytes, release_path, source_path, warnings) = result?;
-    Ok(SmartMergeResult { link, merged_bytes, owner_repo, release_path, source_path, warnings })
+    Ok(SmartMergeResult {
+        link,
+        merged_bytes,
+        gdrive_folder_global: smartcode_global_drive_folder(&owner_repo, &safe_name),
+        gdrive_folder_local: smartcode_local_drive_folder(&safe_name),
+        owner_repo,
+        release_path,
+        source_path,
+        warnings,
+    })
+}
+
+fn smartcode_global_drive_folder(owner_repo: &str, safe_name: &str) -> String {
+    let owner = owner_repo.split('/').next().unwrap_or("").trim();
+    if owner.is_empty() {
+        smartcode_local_drive_folder(safe_name)
+    } else {
+        format!("{}/{}", drive_folder_component(owner), drive_folder_component(safe_name))
+    }
+}
+
+fn smartcode_local_drive_folder(safe_name: &str) -> String {
+    drive_folder_component(safe_name)
+}
+
+fn drive_folder_component(s: &str) -> String {
+    s.replace('/', "-").trim().to_string()
 }
 
 #[allow(clippy::too_many_arguments)]

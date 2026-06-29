@@ -40,6 +40,8 @@ struct ApiAuth {
 pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let env = get_pandora_env();
     let db = Arc::new(JobDb::new().await?);
+    db.init_schema().await?;
+    db.migrate().await?;
     let api_author = env
         .get(API_AUTHOR_ID)
         .and_then(|s| s.trim().parse::<u64>().ok())
@@ -382,7 +384,22 @@ async fn fetch_subtitle(url: &str) -> Result<Vec<u8>, String> {
     Ok(bytes.to_vec())
 }
 
-async fn cancel_job(State(st): State<AppState>, Path(id): Path<u64>) -> Response {
+async fn cancel_job(State(st): State<AppState>, Extension(auth): Extension<ApiAuth>, Path(id): Path<u64>) -> Response {
+    let server_id = match require_local(&auth) { Ok(id) => id, Err(r) => return r };
+    let row = match st.db.get_job(id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => return (StatusCode::NOT_FOUND, "no such job").into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    if row.server_id != Some(server_id as i64) {
+        return (StatusCode::FORBIDDEN, "cannot cancel a job from another server").into_response();
+    }
+    if row.job_type != JobType::Encode as u16 as i64 {
+        return (StatusCode::FORBIDDEN, "only encode jobs can be cancelled through this token").into_response();
+    }
+    if row.archived != 0 || matches!(row.stage, 6 | 7 | 8 | 9) {
+        return (StatusCode::CONFLICT, "job is already terminal").into_response();
+    }
     let hj = HalfJob::new_cancel(st.api_author, 0, id);
     if st.tx.send(JobClass::HalfJob(hj)).await.is_err() {
         return (StatusCode::SERVICE_UNAVAILABLE, "worker channel closed").into_response();
@@ -619,7 +636,7 @@ async fn git_smartcode(State(st): State<AppState>, Extension(auth): Extension<Ap
         Ok(m) => m,
         Err(e) => return (StatusCode::BAD_GATEWAY, e).into_response(),
     };
-    let job = Job::new_api(
+    let mut job = Job::new_api(
         st.api_author,
         channel_id,
         JobType::Encode,
@@ -629,6 +646,8 @@ async fn git_smartcode(State(st): State<AppState>, Extension(auth): Extension<Ap
         "EN".to_string(),
         Some(server_id),
     );
+    job.gdrive_folder_global = Some(merge.gdrive_folder_global.clone());
+    job.gdrive_folder_local = Some(merge.gdrive_folder_local.clone());
     let job_id = job.job_id;
     if let Err(e) = st.db.insert_job(&job).await {
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
@@ -644,6 +663,8 @@ async fn git_smartcode(State(st): State<AppState>, Extension(auth): Extension<Ap
         "owner_repo": merge.owner_repo,
         "release_path": merge.release_path,
         "source_path": merge.source_path,
+        "gdrive_folder_global": merge.gdrive_folder_global,
+        "gdrive_folder_local": merge.gdrive_folder_local,
         "warnings": merge.warnings,
     }))).into_response()
 }

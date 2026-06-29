@@ -53,6 +53,9 @@ struct Args {
 
     #[arg(long)]
     gscrape: bool,
+
+    #[arg(long)]
+    drive_folder: Option<String>,
 }
 
 #[tokio::main]
@@ -121,8 +124,9 @@ async fn main() {
         let log2 = request.log.clone();
         let log4 = request.log.clone(); let log5 = request.log.clone(); let log6 = request.log.clone();
 
+        let drive_folder = args.drive_folder.clone();
         tokio::spawn(async move {
-            request.gdupload(a, Some(args.opcode), tx).await;
+            request.gdupload(a, Some(args.opcode), drive_folder, tx).await;
         });
         if !args.backup {
             tokio::spawn(async move {
@@ -154,7 +158,7 @@ async fn main() {
         let mut voesx_ext = 0u64;
         let mut abyss_done = 0u64;
         let mut abyss_ext = 0u64;
-        let mut last = Instant::now();
+        let mut last: Option<Instant> = None;
 
         let mut gd_result: Option<Result<String, ()>> = None;
         let mut dood_result: Option<Result<String, ()>> = None;
@@ -167,8 +171,8 @@ async fn main() {
                 RpbData::Progress(done, total, extensions, Host::Drive) => {
                     if total != 0 { total_size = total; }
                     gd_done = done; gd_ext = extensions;
-                    if last.elapsed() < Duration::from_secs(5) { continue; }
-                    last = Instant::now();
+                    if last.map(|t| t.elapsed() < Duration::from_secs(5)).unwrap_or(false) { continue; }
+                    last = Some(Instant::now());
                     println!("{}",
                         pn_emit!(
                             protocol = proto,
@@ -181,8 +185,8 @@ async fn main() {
                 RpbData::Progress(done, total, extensions, Host::Doodstream) => {
                     if total != 0 { total_size = total; }
                     dood_done = done; dood_ext = extensions;
-                    if last.elapsed() < Duration::from_secs(5) { continue; }
-                    last = Instant::now();
+                    if last.map(|t| t.elapsed() < Duration::from_secs(5)).unwrap_or(false) { continue; }
+                    last = Some(Instant::now());
                     println!("{}",
                         pn_emit!(
                             protocol = proto,
@@ -195,8 +199,8 @@ async fn main() {
                 RpbData::Progress(done, total, extensions, Host::Lulu) => {
                     if total != 0 { total_size = total; }
                     lulu_done = done; lulu_ext = extensions;
-                    if last.elapsed() < Duration::from_secs(5) { continue; }
-                    last = Instant::now();
+                    if last.map(|t| t.elapsed() < Duration::from_secs(5)).unwrap_or(false) { continue; }
+                    last = Some(Instant::now());
                     println!("{}",
                         pn_emit!(
                             protocol = proto,
@@ -209,8 +213,8 @@ async fn main() {
                 RpbData::Progress(done, total, extensions, Host::VoeSx) => {
                     if total != 0 { total_size = total; }
                     voesx_done = done; voesx_ext = extensions;
-                    if last.elapsed() < Duration::from_secs(5) { continue; }
-                    last = Instant::now();
+                    if last.map(|t| t.elapsed() < Duration::from_secs(5)).unwrap_or(false) { continue; }
+                    last = Some(Instant::now());
                     println!("{}",
                         pn_emit!(
                             protocol = proto,
@@ -223,8 +227,8 @@ async fn main() {
                 RpbData::Progress(done, total, extensions, Host::Abyss) => {
                     if total != 0 { total_size = total; }
                     abyss_done = done; abyss_ext = extensions;
-                    if last.elapsed() < Duration::from_secs(5) { continue; }
-                    last = Instant::now();
+                    if last.map(|t| t.elapsed() < Duration::from_secs(5)).unwrap_or(false) { continue; }
+                    last = Some(Instant::now());
                     println!("{}",
                         pn_emit!(
                             protocol = proto,

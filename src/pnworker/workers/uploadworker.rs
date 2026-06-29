@@ -19,7 +19,7 @@ use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::time::sleep;
 
-pub type UploadData = (PathBuf, String, bool, u64, Option<u64>);
+pub type UploadData = (PathBuf, String, bool, u64, Option<u64>, Option<String>, Option<String>);
 pub type UploadAllData = (PathBuf, u64, Option<u64>);
 
 pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, pulse: Sender<()>) {
@@ -67,7 +67,7 @@ async fn run_upload_job(
 ) {
     let mut proto = Protocol::new(vec![1]);
     let assign_job_id = match &msg {
-        WorkerMsg::Upload((_, _, _, job_id, _)) => Some(*job_id),
+        WorkerMsg::Upload((_, _, _, job_id, _, _, _)) => Some(*job_id),
         WorkerMsg::UploadAll((_, job_id, _)) => Some(*job_id),
         _ => None,
     };
@@ -80,7 +80,7 @@ async fn run_upload_job(
         .ok();
     }
     match msg {
-        WorkerMsg::Upload((directory, out_name, release, job_id, server_id)) => {
+        WorkerMsg::Upload((directory, out_name, release, job_id, server_id, gdrive_folder_global, gdrive_folder_local)) => {
             let output_path = directory
                 .join("work")
                 .join("output.mp4")
@@ -99,6 +99,13 @@ async fn run_upload_job(
             let mut abyss_done = false;
             let expected_hosts = if release { 5 } else { 1 };
 
+            let (drive_env, local_drive) = drive_env_path(&directory, server_id).await;
+            let drive_folder = if local_drive {
+                gdrive_folder_local.unwrap_or_default()
+            } else {
+                gdrive_folder_global.unwrap_or_default()
+            };
+
             let result = run_tool(
                 &pncurl_path,
                 if release {
@@ -109,10 +116,8 @@ async fn run_upload_job(
                 &HashMap::from([
                     ("LINK", PathValue::from(output_path.clone())),
                     ("OPCODE", PathValue::from(out_name.clone())),
-                    (
-                        "ENV",
-                        PathValue::from(drive_env_path(&directory, server_id).await),
-                    ),
+                    ("ENV", PathValue::from(drive_env)),
+                    ("DRIVEFOLDER", PathValue::from(drive_folder)),
                 ]),
                 job_id,
                 &mut proto,
@@ -431,6 +436,7 @@ async fn run_upload_job(
             ))
             .ok();
 
+            let (drive_env, _) = drive_env_path(&directory, server_id).await;
             for (idx, file) in files.iter().enumerate() {
                 let label = format!("episode {:02}", idx + 1);
                 let out_name = file
@@ -447,10 +453,8 @@ async fn run_upload_job(
                     &HashMap::from([
                         ("LINK", PathValue::from(file.display().to_string())),
                         ("OPCODE", PathValue::from(out_name)),
-                        (
-                            "ENV",
-                            PathValue::from(drive_env_path(&directory, server_id).await),
-                        ),
+                        ("ENV", PathValue::from(drive_env.clone())),
+                        ("DRIVEFOLDER", PathValue::from(String::new())),
                     ]),
                     upload_job_id,
                     &mut proto,
@@ -599,9 +603,9 @@ async fn run_upload_job(
     }
 }
 
-async fn drive_env_path(directory: &PathBuf, server_id: Option<u64>) -> String {
+async fn drive_env_path(directory: &PathBuf, server_id: Option<u64>) -> (String, bool) {
     let Some(server_id) = server_id else {
-        return ENV_PATH.to_string();
+        return (ENV_PATH.to_string(), false);
     };
     let meta_path = PathBuf::from("DB")
         .join("config")
@@ -609,7 +613,7 @@ async fn drive_env_path(directory: &PathBuf, server_id: Option<u64>) -> String {
         .join("meta.pandora");
     let meta = match tokio::fs::read_to_string(meta_path).await {
         Ok(s) => s,
-        Err(_) => return ENV_PATH.to_string(),
+        Err(_) => return (ENV_PATH.to_string(), false),
     };
     let mut lines = meta.lines();
     for _ in 0..4 {
@@ -624,7 +628,7 @@ async fn drive_env_path(directory: &PathBuf, server_id: Option<u64>) -> String {
         || refresh_token.is_empty()
         || parent_id.is_empty()
     {
-        return ENV_PATH.to_string();
+        return (ENV_PATH.to_string(), false);
     }
 
     let mut env = get_pandora_env();
@@ -639,9 +643,9 @@ async fn drive_env_path(directory: &PathBuf, server_id: Option<u64>) -> String {
         out.push_str(&format!("{}{}{}\n", key, ENV_SEP, value));
     }
     if tokio::fs::write(&path, out).await.is_ok() {
-        path.display().to_string()
+        (path.display().to_string(), true)
     } else {
-        ENV_PATH.to_string()
+        (ENV_PATH.to_string(), false)
     }
 }
 

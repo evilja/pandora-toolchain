@@ -407,6 +407,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                     if *id == WORKER_ASSIGN {
                         if let Some(worker) = args.get(0) {
                             i.worker = worker.clone();
+                            db.update_worker(i.job_id, &i.worker).await.ok();
                         }
                         continue;
                     }
@@ -559,6 +560,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                     let dst = job.directory.join("work").join("output.mp4");
                     let _ = tokio::fs::rename(&src, &dst).await;
                     job.worker = "upl-pending".to_string();
+                    db.update_worker(job.job_id, &job.worker).await.ok();
                     if !dispatch_or_kill(
                         &mut shrine,
                         &Worker::Upload,
@@ -571,6 +573,8 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                             false,
                             job.job_id,
                             job.server_id,
+                            None,
+                            None,
                         )),
                         job,
                         &db,
@@ -588,6 +592,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                         .await;
                 } else if job.job_type == JobType::BackupAll {
                     job.worker = "upl-pending".to_string();
+                    db.update_worker(job.job_id, &job.worker).await.ok();
                     if !dispatch_or_kill(
                         &mut shrine,
                         &Worker::Upload,
@@ -608,6 +613,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                         .await;
                 } else {
                     job.worker = "enc-main".to_string();
+                    db.update_worker(job.job_id, &job.worker).await.ok();
                     if !dispatch_or_kill(
                         &mut shrine,
                         &Worker::Encode,
@@ -634,6 +640,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                 }
             } else if job.ready == Stage::Encoded {
                 job.worker = "upl-pending".to_string();
+                db.update_worker(job.job_id, &job.worker).await.ok();
                 if !dispatch_or_kill(
                     &mut shrine,
                     &Worker::Upload,
@@ -649,6 +656,8 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                         },
                         job.job_id,
                         job.server_id,
+                        job.gdrive_folder_global.clone(),
+                        job.gdrive_folder_local.clone(),
                     )),
                     job,
                     &db,
@@ -969,6 +978,7 @@ async fn use_cache_or_wait(db: &JobDb, job: &mut Job, queue: &[Job]) -> bool {
     if use_cached_input(job).await {
         let v = serde_json::json!({ "type": "download", "percent": 100, "cached": true });
         db.update_progress(job.job_id, &v.to_string()).await.ok();
+        db.update_worker(job.job_id, &job.worker).await.ok();
         render(
             job,
             MessagePayload::Static(crate::pnworker::messages::TORRENT_DONE),
@@ -982,6 +992,7 @@ async fn use_cache_or_wait(db: &JobDb, job: &mut Job, queue: &[Job]) -> bool {
         job.worker = "dwl-cache".to_string();
         let v = serde_json::json!({ "type": "download", "waiting": "cache" });
         db.update_progress(job.job_id, &v.to_string()).await.ok();
+        db.update_worker(job.job_id, &job.worker).await.ok();
         render(
             job,
             MessagePayload::Progress(TORRENT_DUPLICATE_WAIT, vec![source.display().to_string()]),
@@ -1246,6 +1257,8 @@ pub struct Job {
     pub lang: String,
     pub server_id: Option<u64>,
     pub acix: Option<AcixPublish>,
+    pub gdrive_folder_global: Option<String>,
+    pub gdrive_folder_local: Option<String>,
     pub worker: String,
     pub duplicate_source: Option<PathBuf>,
 }
@@ -1298,6 +1311,8 @@ impl Job {
             lang,
             server_id,
             acix: None,
+            gdrive_folder_global: None,
+            gdrive_folder_local: None,
             worker: "que-main".to_string(),
             duplicate_source: None,
         }
@@ -1344,6 +1359,8 @@ impl Job {
             lang,
             server_id,
             acix: None,
+            gdrive_folder_global: None,
+            gdrive_folder_local: None,
             worker: "que-main".to_string(),
             duplicate_source: None,
         }

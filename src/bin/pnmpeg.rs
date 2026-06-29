@@ -222,14 +222,14 @@ async fn main() {
         ).await;
     });
 
-    let mut last = Instant::now();
+    let mut last: Option<Instant> = None;
     while let Ok(val) = rx.recv() {
         match val {
             RpbData::Progress(fps, frame, total, bitrate) => {
-                if last.elapsed() < Duration::from_secs(5) {
+                if last.map(|t| t.elapsed() < Duration::from_secs(5)).unwrap_or(false) {
                     continue;
                 }
-                last = Instant::now();
+                last = Some(Instant::now());
                 println!("{}",
                     pn_emit!(
                         protocol = proto,

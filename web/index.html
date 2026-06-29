@@ -192,7 +192,7 @@
   .titlebar { cursor: move; }
   .jobwin {
     position: fixed; z-index: 120;
-    width: 380px; max-width: calc(100vw - 32px); max-height: 72vh;
+    width: 380px; max-width: calc(100vw - 32px); max-height: 58vh;
     display: flex; flex-direction: column;
     background: var(--panel); border: 1px solid var(--line);
     border-radius: var(--radius);
@@ -473,6 +473,7 @@
   .stat-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
   .stat-id { font-size: 12.5px; color: var(--ink); }
   .stat-type { font-size: 12.5px; color: var(--dim); }
+  .stat-worker { font-size: 12px; color: var(--k1); border: 1px solid var(--tint-line); background: var(--tint-bg); border-radius: 7px; padding: 2px 8px; }
   .pipe { display: flex; gap: 10px; margin: 6px 0 10px; }
   .seg { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 9px; }
   .seg-track { height: 8px; border-radius: 999px; background: var(--line); display: block; overflow: hidden; }
@@ -1221,17 +1222,15 @@
     }
     if (p.type === "upload") {
       var hosts = Array.isArray(p.hosts) ? p.hosts : [];
-      var names = ["Drive", "Doodstream", "Lulustream", "Voe", "Abyss"];
-      var detail = hosts.map(function (h, i) {
-        var s = h == null ? "" : String(h).trim();
-        if (!s) return "";
+      var nonempty = hosts.map(function (h) { return h == null ? "" : String(h).trim(); }).filter(Boolean);
+      var linksOnly = nonempty.length > 0 && nonempty.every(function (s) { return /^https?:\/\//.test(s); });
+      var detail = nonempty.map(function (s) {
         if (/^https?:\/\//.test(s)) {
-          return '<div class="link-row"><span class="link-host mono">' + esc(names[i] || ("host " + (i + 1))) +
-                 '</span><span><a href="' + esc(s) + '" target="_blank" rel="noopener">' + esc(s) + "</a></span></div>";
+          return '<div class="up-host"><a href="' + esc(s) + '" target="_blank" rel="noopener">' + esc(s) + "</a></div>";
         }
         return '<div class="up-host mono">' + esc(s) + "</div>";
       }).join("");
-      return progMeta(pct(p.percent) + "%") + (detail ? '<div class="up-hosts">' + detail + "</div>" : "");
+      return (linksOnly ? "" : progMeta(pct(p.percent) + "%")) + (detail ? '<div class="up-hosts">' + detail + "</div>" : "");
     }
     if (p.type === "upload_all") {
       var rows = p.rows ? '<div class="up-hosts"><pre>' + esc(p.rows) + "</pre></div>" : "";
@@ -1251,13 +1250,14 @@
       var cell = /^https?:\/\//.test(s)
         ? '<a href="' + esc(s) + '" target="_blank" rel="noopener">' + esc(s) + "</a>"
         : esc(s);
-      return '<div class="link-row"><span class="link-host mono">' + esc(host) + "</span><span>" + cell + "</span></div>";
+      return '<div class="up-host">' + cell + "</div>";
     }).join("");
     if (!rows) return "";
-    return '<div class="prog-label">Links</div>' + rows;
+    return '<div class="prog-label">Links</div><div class="up-hosts">' + rows + "</div>";
   }
   function summaryBlock(d) {
     var rows = "";
+    if (d.worker) rows += '<div class="link-row"><span class="link-host mono">Worker</span><span class="mono">' + esc(d.worker) + "</span></div>";
     if (d.preset) rows += '<div class="link-row"><span class="link-host mono">Preset</span><span>' + esc(d.preset) + "</span></div>";
     if (d.link) rows += '<div class="link-row"><span class="link-host mono">Source</span><span>' + esc(d.link) + "</span></div>";
     return rows ? '<div class="prog-label">Details</div>' + rows : "";
@@ -1284,6 +1284,7 @@
       var head = '<div class="stat-head">' + pill(res) + chip(d.stage) +
                  '<span class="stat-id mono">#' + esc(d.job_id) + "</span>" +
                  '<span class="stat-type">' + esc(d.job_type) + "</span>" +
+                 (d.worker ? '<span class="stat-worker mono">' + esc(d.worker) + "</span>" : "") +
                  '<button class="popout" type="button" data-job="' + esc(d.job_id) + '" title="Open in a window">⤢ pop out</button>' +
                  "</div>";
       var pipe = PIPELINE_STAGES.indexOf(d.stage) !== -1 ? renderPipeline(d.stage, d.progress) : "";
@@ -1311,10 +1312,10 @@
   function renderJobs(res) {
     if (!res.ok || !Array.isArray(res.data)) { renderResult(res); return; }
     if (!res.data.length) { outputEl.innerHTML = pill(res) + '<p class="muted">Nothing in the queue right now.</p>'; return; }
-    var html = pill(res) + "<table><thead><tr><th>Job</th><th>Type</th><th>Stage</th><th>Source</th><th></th></tr></thead><tbody>";
+    var html = pill(res) + "<table><thead><tr><th>Job</th><th>Type</th><th>Stage</th><th>Worker</th><th>Source</th><th></th></tr></thead><tbody>";
     res.data.forEach(function (j) {
       html += "<tr class='jobrow' data-job='" + esc(j.job_id) + "' title='Open in a window'><td class='mono'>" + esc(j.job_id) + "</td><td>" + esc(j.job_type) +
-              "</td><td>" + chip(j.stage) + "</td><td class='mono trunc' title='" + esc(j.link) + "'>" + esc(j.link) +
+              "</td><td>" + chip(j.stage) + "</td><td class='mono'>" + esc(j.worker || "") + "</td><td class='mono trunc' title='" + esc(j.link) + "'>" + esc(j.link) +
               "</td><td><button class='popout' type='button' data-job='" + esc(j.job_id) + "' title='Open in a window'>⤢</button></td></tr>";
     });
     html += "</tbody></table>";
@@ -1391,7 +1392,9 @@
       var d = res.data;
       var head = '<div class="stat-head">' + pill(res) + chip(d.stage) +
                  '<span class="stat-id mono">#' + esc(d.job_id) + "</span>" +
-                 '<span class="stat-type">' + esc(d.job_type) + "</span></div>";
+                 '<span class="stat-type">' + esc(d.job_type) + "</span>" +
+                 (d.worker ? '<span class="stat-worker mono">' + esc(d.worker) + "</span>" : "") +
+                 "</div>";
       var pipe = PIPELINE_STAGES.indexOf(d.stage) !== -1 ? renderPipeline(d.stage, d.progress) : "";
       var links = (d.progress && d.progress.type === "upload") ? "" : linksBlock(d.links);
       node.innerHTML = head + pipe + progressBlock(d.progress, d.stage) + links + summaryBlock(d);
