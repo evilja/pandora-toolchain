@@ -1008,7 +1008,9 @@
       busy(true);
       return COMMANDS.pancode.run(vals).then(function (res) {
         COMMANDS.pancode.render(res);
-        if (res.status === 202 && res.data && res.data.job_id) afterSubmit(res.data.job_id, true);
+        if (res.status === 202 && res.data && res.data.job_id) {
+          afterSubmit(res.data.job_id, true, pancodeProbeTorrent + " : " + vals.file_index);
+        }
       });
     }).catch(function (e) {
       showError(e && e.message ? e.message : String(e));
@@ -1288,6 +1290,10 @@
     var rows = "";
     if (d.worker) rows += '<div class="link-row"><span class="link-host mono">Worker</span><span class="mono">' + esc(d.worker) + "</span></div>";
     if (d.preset) rows += '<div class="link-row"><span class="link-host mono">Preset</span><span>' + esc(d.preset) + "</span></div>";
+    if (d.progress && d.progress.type === "pancode" && d.progress.file_index !== undefined) {
+      var src = d.progress.torrent || d.link || "";
+      rows += '<div class="link-row"><span class="link-host mono">Selection</span><span class="mono">' + esc(src + " : " + d.progress.file_index) + "</span></div>";
+    }
     if (d.link) rows += '<div class="link-row"><span class="link-host mono">Source</span><span>' + esc(d.link) + "</span></div>";
     return rows ? '<div class="prog-label">Details</div>' + rows : "";
   }
@@ -1479,12 +1485,13 @@
   }
 
   // after a job is submitted: pop it into its own window, keep the console output clean
-  function afterSubmit(jobId, lockEncode) {
+  function afterSubmit(jobId, lockEncode, detail) {
     if (wmMobile()) { startJobWatch(jobId, lockEncode); return; }
     popJob(jobId);
     outputEl.innerHTML = '<span class="pill ok">202</span>' +
       '<div class="accepted">' + chip("Queued") +
       '<span class="mono">#' + esc(jobId) + '</span>' +
+      (detail ? '<span class="mono">' + esc(detail) + '</span>' : "") +
       '<span class="muted">Popped out into its own window.</span></div>';
   }
 

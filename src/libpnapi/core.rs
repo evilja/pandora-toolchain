@@ -332,7 +332,13 @@ async fn submit_pancode(State(st): State<AppState>, Extension(auth): Extension<A
     );
     job.probe_job_id = Some(probe_id);
     job.probe_file_index = Some(req.file_index);
-    submit(&st, job).await
+    let progress = json!({
+        "type": "pancode",
+        "torrent": probe.link,
+        "probe_job_id": probe_id.to_string(),
+        "file_index": req.file_index,
+    });
+    submit_with_progress(&st, job, Some(progress)).await
 }
 
 #[derive(Deserialize)]
@@ -671,9 +677,18 @@ async fn git_smartcode(State(st): State<AppState>, Extension(auth): Extension<Ap
 }
 
 async fn submit(st: &AppState, job: Job) -> Response {
+    submit_with_progress(st, job, None).await
+}
+
+async fn submit_with_progress(st: &AppState, job: Job, progress: Option<serde_json::Value>) -> Response {
     let job_id = job.job_id;
     if let Err(e) = st.db.insert_job(&job).await {
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+    if let Some(v) = progress {
+        if let Err(e) = st.db.update_progress(job_id, &v.to_string()).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
     }
     if st.tx.send(JobClass::Job(job)).await.is_err() {
         let _ = st.db.update_stage(job_id, Stage::Failed).await;
