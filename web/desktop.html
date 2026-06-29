@@ -329,7 +329,7 @@
 
     el.addEventListener("pointerdown", function () { bringToFront(rec); }, true);
     el.querySelector("iframe").addEventListener("load", function (e) {
-      try { e.target.contentDocument.documentElement.setAttribute("data-theme", document.documentElement.getAttribute("data-theme") || "light"); } catch (err) {}
+      if (window.syncFrame && window.currentTheme) window.syncFrame(e.target, window.currentTheme());
     });
     el.querySelector(".dwin-close").addEventListener("click", function (e) { e.stopPropagation(); closeWin(key); });
     el.querySelector(".dwin-min").addEventListener("click", function (e) { e.stopPropagation(); minimizeWin(key); });
@@ -462,13 +462,26 @@
   (function () {
     var root = document.documentElement;
     var btn = document.getElementById("themeToggle");
+    function currentTheme() {
+      var t = null;
+      try { t = localStorage.getItem("pandora_theme"); } catch (e) {}
+      if (t !== "light" && t !== "dark") t = root.getAttribute("data-theme") === "dark" ? "dark" : "light";
+      return t;
+    }
+    window.currentTheme = currentTheme;
+    window.syncFrame = syncFrame;
+    function syncFrame(frame, theme) {
+      if (!frame) return;
+      try {
+        if (frame.contentWindow && typeof frame.contentWindow.pandoraSetTheme === "function") frame.contentWindow.pandoraSetTheme(theme);
+        if (frame.contentDocument) frame.contentDocument.documentElement.setAttribute("data-theme", theme);
+        if (frame.contentWindow) frame.contentWindow.postMessage({ type: "pandora:theme", theme: theme }, "*");
+      } catch (e) {}
+    }
     function syncFrames(theme) {
       Object.keys(wins).forEach(function (key) {
         var frame = wins[key].el.querySelector("iframe");
-        if (!frame) return;
-        try {
-          if (frame.contentDocument) frame.contentDocument.documentElement.setAttribute("data-theme", theme);
-        } catch (e) {}
+        syncFrame(frame, theme);
       });
     }
     function paint() {

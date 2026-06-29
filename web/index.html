@@ -666,23 +666,40 @@
   (function () {
     var root = document.documentElement;
     var btn = document.getElementById("themeToggle");
+    function storedTheme() {
+      var t = null;
+      try { t = localStorage.getItem("pandora_theme"); } catch (e) {}
+      if (t !== "light" && t !== "dark") {
+        t = (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+      }
+      return t;
+    }
+    function applyTheme(t) {
+      t = t === "dark" ? "dark" : "light";
+      root.setAttribute("data-theme", t);
+      paint();
+    }
     function paint() {
       var dark = root.getAttribute("data-theme") === "dark";
       if (btn) { btn.textContent = dark ? "☾" : "☀"; btn.title = dark ? "Light mode" : "Dark mode"; }
     }
+    applyTheme(storedTheme());
+    window.pandoraSetTheme = applyTheme;
     paint();
     if (btn) btn.addEventListener("click", function () {
       var next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
-      root.setAttribute("data-theme", next);
+      applyTheme(next);
       try { localStorage.setItem("pandora_theme", next); } catch (e) {}
-      paint();
     });
     window.addEventListener("storage", function (e) {
       if (e.key !== "pandora_theme") return;
-      var next = e.newValue === "dark" ? "dark" : "light";
-      root.setAttribute("data-theme", next);
-      paint();
+      applyTheme(e.newValue);
     });
+    window.addEventListener("message", function (e) {
+      var d = e.data || {};
+      if (d.type === "pandora:theme") applyTheme(d.theme);
+    });
+    window.addEventListener("pageshow", function () { applyTheme(storedTheme()); });
   })();
 
   var API = "";              // same origin; cloudflared/nginx proxies /api/v1
@@ -1141,12 +1158,13 @@
   // ---- API call ----
   function api(method, path, body) {
     var token = tokenEl.value.trim();
-    var opts = { method: method, headers: {} };
+    var opts = { method: method, headers: {}, cache: "no-store" };
     if (token) opts.headers["Authorization"] = "Bearer " + token;
     if (body !== undefined) {
       opts.headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(body);
     }
+    if (method === "GET") path += (path.indexOf("?") === -1 ? "?" : "&") + "_=" + Date.now();
     return fetch(API + path, opts).then(function (resp) {
       return resp.text().then(function (text) {
         var data;
@@ -1429,7 +1447,7 @@
     bringToFront(el);
     var rec = { el: el, body: body, timer: null };
     jobWindows[jobId] = rec;
-    function tick() { pollJob(jobId).then(function (res) { renderJobInto(body, res); }).catch(function () {}); }
+    function tick() { pollJob(jobId).then(function (res) { renderJobInto(body, res); if (isTerminal(res) && rec.timer) { clearInterval(rec.timer); rec.timer = null; } }).catch(function () {}); }
     tick();
     rec.timer = setInterval(tick, 2000);
   }
@@ -1482,9 +1500,10 @@
   if (jobOnly) {
     var onlyId = decodeURIComponent(jobOnly[1]);
     (function () {
-      function tick() { pollJob(onlyId).then(function (res) { renderJobInto(outputEl, res); }).catch(function () {}); }
+      var timer = null;
+      function tick() { pollJob(onlyId).then(function (res) { renderJobInto(outputEl, res); if (isTerminal(res) && timer) { clearInterval(timer); timer = null; } }).catch(function () {}); }
       tick();
-      setInterval(tick, 2000);
+      timer = setInterval(tick, 2000);
     })();
   } else if (/[?&]jobs=1\b/.test(location.search)) {
     (function () {
