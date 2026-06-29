@@ -181,6 +181,41 @@
   }
   .theme-toggle:hover { border-color: var(--k1); color: var(--ink); }
   .theme-toggle:focus-visible { outline: 2px solid var(--cool); outline-offset: 2px; }
+
+  /* window manager (desktop): drag handle + floating job windows */
+  .titlebar { cursor: move; }
+  .jobwin {
+    position: fixed; z-index: 120;
+    width: 380px; max-width: calc(100vw - 32px); max-height: 72vh;
+    display: flex; flex-direction: column;
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: 0 34px 80px -28px var(--shadow), 0 2px 0 0 var(--inset) inset;
+    overflow: hidden;
+  }
+  .jobwin-bar {
+    display: flex; align-items: center; gap: 9px;
+    padding: 0 12px; height: 40px; cursor: move; user-select: none;
+    background: var(--bar-bg); border-bottom: 1px solid var(--line);
+  }
+  .jobwin-bar .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--k1); flex-shrink: 0; }
+  .jobwin-bar .t { font-family: var(--mono); font-size: 12px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .jobwin-close {
+    margin-left: auto; cursor: pointer; width: 22px; height: 22px; line-height: 1; flex-shrink: 0;
+    font-size: 13px; color: var(--ink-2); background: transparent;
+    border: 1px solid var(--line); border-radius: 6px;
+  }
+  .jobwin-close:hover { border-color: var(--k1); color: var(--ink); }
+  .jobwin-body { padding: 16px; overflow: auto; }
+  .popout {
+    margin-left: auto; cursor: pointer; font-family: var(--mono); font-size: 11px;
+    color: var(--k1); background: transparent; border: 1px solid var(--line);
+    border-radius: 6px; padding: 2px 8px;
+  }
+  .popout:hover { border-color: var(--k1); color: var(--ink); }
+  .jobrow { cursor: pointer; }
+  .jobrow:hover td { background: var(--raise); }
+
   .notice {
     font-size: 12px; color: var(--ink-2); line-height: 1.45;
     background: var(--tint-bg);
@@ -492,6 +527,11 @@
 
   @media (max-width: 760px) {
     body { padding: 0; align-items: stretch; }
+    /* mobile: no window manager — keep the plain single-card layout */
+    .titlebar { cursor: default; }
+    .jobwin { display: none !important; }
+    .popout { display: none !important; }
+    .jobrow { cursor: default; }
     .window {
       width: 100%;
       max-width: none;
@@ -1008,6 +1048,53 @@
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
+
+  // ---- window manager (Phase 1: drag the console; desktop only) ----
+  function wmMobile() { return window.matchMedia("(max-width: 760px)").matches; }
+  var zTop = 100;
+  function bringToFront(el) { el.style.zIndex = String(++zTop); }
+
+  function makeDraggable(winEl, handleEl) {
+    handleEl.addEventListener("pointerdown", function (e) {
+      if (wmMobile()) return;
+      if (e.target.closest("button, a, input, select, textarea")) return;
+      var rect = winEl.getBoundingClientRect();
+      winEl.style.position = "fixed";
+      winEl.style.margin = "0";
+      winEl.style.width = rect.width + "px";
+      winEl.style.left = rect.left + "px";
+      winEl.style.top = rect.top + "px";
+      bringToFront(winEl);
+      var sx = e.clientX, sy = e.clientY, ox = rect.left, oy = rect.top;
+      try { handleEl.setPointerCapture(e.pointerId); } catch (err) {}
+      function move(ev) {
+        var nx = ox + (ev.clientX - sx), ny = oy + (ev.clientY - sy);
+        nx = Math.max(60 - rect.width, Math.min(nx, window.innerWidth - 60));
+        ny = Math.max(0, Math.min(ny, window.innerHeight - 44));
+        winEl.style.left = nx + "px";
+        winEl.style.top = ny + "px";
+      }
+      function up(ev) {
+        handleEl.removeEventListener("pointermove", move);
+        handleEl.removeEventListener("pointerup", up);
+        try { handleEl.releasePointerCapture(ev.pointerId); } catch (err) {}
+      }
+      handleEl.addEventListener("pointermove", move);
+      handleEl.addEventListener("pointerup", up);
+    });
+  }
+
+  var mainWin = document.querySelector(".window");
+  if (mainWin) {
+    var mainBar = mainWin.querySelector(".titlebar");
+    if (mainBar) makeDraggable(mainWin, mainBar);
+  }
+
+  window.addEventListener("resize", function () {
+    if (!wmMobile() || !mainWin) return;
+    mainWin.style.position = ""; mainWin.style.left = ""; mainWin.style.top = "";
+    mainWin.style.width = ""; mainWin.style.margin = ""; mainWin.style.zIndex = "";
+  });
 
   // ---- boot ----
   renderOptions(active);
