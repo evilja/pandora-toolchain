@@ -12,7 +12,7 @@ use pandora_toolchain::pnworker::tools::PNASS_MERGE_TL_ONLY;
 use pandora_toolchain::pnworker::tools::PNASS_SPLIT_SIGNS;
 use pandora_toolchain::libpnenv::{
     core::{add_env, get_pandora_env, get_perm, remove_env, upsert_env},
-    standard::{ENV_PATH, TOKEN},
+    standard::{ENV_PATH, TOKEN, CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN, PARENTID, DOODSTREAM, LULU, VOESX, ABYSS, ANIMECIX},
 };
 use pandora_toolchain::libpnmal::{fetch_anime, AnimeMeta, AnimeKind};
 use pandora_toolchain::libpnforgejo::{Forgejo, base64_encode, base64_encode_bytes};
@@ -80,7 +80,7 @@ fn min_rank_for_command(part: &str) -> u8 {
 }
 
 fn is_authorized(part: &str, id: u64) -> bool {
-    if part == "help" { return true; }
+    if part == "help" || part == "providers" { return true; }
     let min_rank = min_rank_for_command(part);
     if min_rank == u8::MAX { return false; }
     has_level_at_least(id, min_rank)
@@ -102,6 +102,13 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Show command help.",
             usage: "/help",
             details: "Opens this private command guide. Pick a command from the menu to see its required inputs and workflow notes.",
+        },
+        HelpCommand {
+            name: "providers",
+            rank: 0,
+            summary: "Show attached provider APIs.",
+            usage: "/providers",
+            details: "Shows built-in download and encode support plus the currently configured upload, distribution, and persistence providers for this server.",
         },
         HelpCommand {
             name: "encode",
@@ -304,7 +311,7 @@ fn help_catalog() -> &'static [HelpCommand] {
 
 fn user_help_commands(user_id: u64) -> Vec<&'static HelpCommand> {
     help_catalog().iter()
-        .filter(|cmd| cmd.name == "help" || has_level_at_least(user_id, cmd.rank))
+        .filter(|cmd| cmd.name == "help" || cmd.name == "providers" || has_level_at_least(user_id, cmd.rank))
         .collect()
 }
 
@@ -369,7 +376,7 @@ fn help_overview_embed(user_id: u64) -> CreateEmbed {
 }
 
 fn help_detail_embed(cmd: &HelpCommand) -> CreateEmbed {
-    let access = if cmd.name == "help" { "Everyone" } else { help_rank_label(cmd.rank) };
+    let access = if cmd.name == "help" || cmd.name == "providers" { "Everyone" } else { help_rank_label(cmd.rank) };
     CreateEmbed::new()
         .title(format!("/{}", cmd.name))
         .description(cmd.summary)
@@ -413,7 +420,7 @@ async fn handle_help_component(ctx: &Context, component: &ComponentInteraction) 
         component.create_response(ctx, CreateInteractionResponse::Acknowledge).await.ok();
         return;
     };
-    if cmd.name != "help" && !has_level_at_least(component.user.id.get(), cmd.rank) {
+    if cmd.name != "help" && cmd.name != "providers" && !has_level_at_least(component.user.id.get(), cmd.rank) {
         component.create_response(ctx, CreateInteractionResponse::Message(
             CreateInteractionResponseMessage::new()
                 .content("You do not have access to that command.")
@@ -896,6 +903,9 @@ impl EventHandler for Handler {
                 "help" => {
                     handle_help_command(&ctx, &command).await;
                 }
+                "providers" => {
+                    handle_providers(&ctx, &command).await;
+                }
                 "encode" => {
                     let torrent_url = match required_trimmed_option(&ctx, &command, "torrent", "Torrent URL").await {
                         Some(url) => url,
@@ -1123,6 +1133,8 @@ impl EventHandler for Handler {
         let commands = vec![
             CreateCommand::new("help")
                 .description("Open an interactive command guide"),
+            CreateCommand::new("providers")
+                .description("Show attached provider APIs"),
             CreateCommand::new("encode")
                 .description("Encode a video with subtitle")
                 .add_option(

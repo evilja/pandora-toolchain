@@ -152,14 +152,6 @@
   .brand { display: flex; align-items: baseline; gap: 9px; margin-left: 4px; }
   .brand b { font-family: var(--disp); font-weight: 800; font-size: 16px; letter-spacing: -0.2px; color: var(--ink); }
   .brand .sub { font-family: var(--mono); font-size: 11px; color: var(--dim); letter-spacing: 0.4px; }
-  .tc {
-    margin-left: auto;
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--faint);
-    letter-spacing: 0.3px;
-    white-space: nowrap;
-  }
   .navlink {
     margin-left: 14px;
     font-family: var(--mono);
@@ -176,7 +168,7 @@
   .navlink:hover { border-color: var(--k1); color: var(--ink); }
   .navlink:focus-visible { outline: 2px solid var(--cool); outline-offset: 2px; }
   .theme-toggle {
-    margin-left: 12px;
+    margin-left: auto;
     font-size: 13px;
     line-height: 1;
     color: var(--ink-2);
@@ -265,14 +257,6 @@
     letter-spacing: 0.5px;
     color: var(--faint);
     margin-bottom: 6px;
-  }
-  .opt-title {
-    font-family: var(--disp);
-    font-size: 21px;
-    font-weight: 700;
-    letter-spacing: -0.4px;
-    margin: 0 0 4px;
-    color: var(--ink);
   }
   .desc { font-size: 13px; color: var(--dim); margin: 0 0 18px; line-height: 1.45; }
 
@@ -549,7 +533,6 @@
   }
   @media (max-width: 380px) {
     .brand .sub { display: none; }
-    .tc { display: none; }
   }
   @media (prefers-reduced-motion: reduce) {
     .seg.active .seg-prog { animation: none; background: var(--karaoke); }
@@ -573,7 +556,6 @@
     <div class="titlebar">
       <div class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></div>
       <div class="brand"><b>pandora</b><span class="sub">encode console</span></div>
-      <div class="tc" id="tc">Dialogue: 0,00:00:00:00,pndc</div>
       <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle theme">☀</button>
       <a class="navlink" href="/git" title="Git operations console">git ›</a>
     </div>
@@ -628,7 +610,6 @@
   var tokenEl    = document.getElementById("token");
   var savedEl    = document.getElementById("saved");
   var runEl      = document.getElementById("run");
-  var tcEl       = document.getElementById("tc");
 
   var pollTimer = null;
   var pollMode = "";
@@ -640,27 +621,6 @@
   var pancodeProbeReady = false;
   var pancodeProbeFiles = "";
   var active = "encode";
-
-  // ---- ambient timecode in the titlebar (reads like an .ass event line) ----
-  var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  (function () {
-    var start = Date.now();
-    function pad(n) { return (n < 10 ? "0" : "") + n; }
-    function paint() {
-      var ms = Date.now() - start;
-      var s = Math.floor(ms / 1000);
-      var tc = pad(Math.floor(s / 3600)) + ":" + pad(Math.floor(s % 3600 / 60)) + ":" +
-               pad(s % 60) + ":" + pad(Math.floor((ms % 1000) / 1000 * 24));
-      tcEl.textContent = "Dialogue: 0," + tc + ",pndc";
-    }
-    if (reduceMotion) { return; }
-    var timer = setInterval(paint, 42);
-    document.addEventListener("visibilitychange", function () {
-      clearInterval(timer);
-      if (!document.hidden) { timer = setInterval(paint, 42); }
-    });
-    paint();
-  })();
 
   // ---- token persistence (lives in footer, never cleared on command switch) ----
   tokenEl.value = localStorage.getItem("pandora_token") || "";
@@ -777,7 +737,6 @@
   function renderOptions(key) {
     var cmd = COMMANDS[key];
     var html = '<div class="eyebrow">// ' + esc(key) + "</div>";
-    html += '<div class="opt-title">' + esc(cmd.label) + "</div>";
     if (cmd.desc) html += '<p class="desc">' + esc(cmd.desc) + "</p>";
     (cmd.fields || []).forEach(function (f) {
       var id = "f_" + f.name;

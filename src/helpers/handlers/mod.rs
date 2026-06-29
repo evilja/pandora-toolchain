@@ -27,6 +27,7 @@ mod readmebase;
 mod auth;
 mod remove;
 mod interaction;
+mod providers;
 #[allow(unused_imports)]
 pub use self::message::handle_message;
 pub use self::probe::handle_probe;
@@ -56,6 +57,7 @@ pub use self::readmebase::handle_readmebase;
 pub use self::auth::handle_auth;
 pub use self::remove::handle_remove;
 pub use self::interaction::handle_interaction;
+pub use self::providers::handle_providers;
 
 struct SmartMergeResult {
     link: String,
