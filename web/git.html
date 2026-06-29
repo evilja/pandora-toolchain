@@ -311,6 +311,30 @@
   }
   .hint { font-size: 12px; color: var(--dim); }
 
+  textarea.editor {
+    width: 100%;
+    min-height: 360px;
+    resize: vertical;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    color: var(--ink);
+    border-radius: var(--radius-sm);
+    padding: 12px 14px;
+    font-size: 13px;
+    font-family: var(--mono);
+    line-height: 1.5;
+    tab-size: 2;
+    outline: none;
+    transition: border-color .14s, box-shadow .14s;
+  }
+  textarea.editor:focus { border-color: var(--cool); box-shadow: 0 0 0 3px var(--focus); }
+  .editor-status { font-size: 12px; color: var(--dim); margin: 0 0 8px; }
+  .editor-status .tag {
+    display: inline-block; font-family: var(--mono); font-size: 11px;
+    padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line);
+    color: var(--ink-2); margin-right: 7px;
+  }
+
   .check { display: flex; align-items: center; gap: 11px; cursor: pointer; user-select: none; font-size: 13.5px; color: var(--ink-2); }
   .check input { position: absolute; opacity: 0; width: 0; height: 0; }
   .check .box {
@@ -708,9 +732,11 @@
     },
     readmebase: {
       label: "Credits/Readme",
-      desc: "Show this server's README template (base.md) used when bootstrapping repos. If none is set, a formatting guide is shown instead.",
-      fields: [],
-      run: function () { return api("GET", "/api/v1/git/readmebase"); }
+      desc: "Edit this server's README template (base.md) used when bootstrapping repos. It loads automatically; if none is set, the formatting guide is shown as a starting point. Run to save.",
+      fields: [
+        { name: "content", label: "README template (base.md)", type: "editor", loadPath: "/api/v1/git/readmebase" }
+      ],
+      run: function (v) { return api("POST", "/api/v1/git/readmebase", { content: v.content }); }
     }
   };
   var ORDER = ["init", "attach", "source", "smartcode", "detach", "destruct", "readmebase"];
@@ -752,7 +778,10 @@
       }
       var optTag = f.optional ? ' <span class="opt">(optional)</span>' : "";
       html += '<div class="field"><label for="' + id + '">' + esc(f.label) + optTag + "</label>";
-      if (f.type === "attachment" || f.type === "channelpick") {
+      if (f.type === "editor") {
+        html += '<div class="editor-status" id="s_' + f.name + '"></div>' +
+                '<textarea class="editor" id="' + id + '" placeholder="Loading…" spellcheck="false"></textarea>';
+      } else if (f.type === "attachment" || f.type === "channelpick") {
         html += '<div class="selrow"><select id="' + id + '"><option value="">Loading…</option></select>' +
                 '<button type="button" class="mini" id="r_' + f.name + '" title="Refresh">↻</button></div>';
       } else if (f.type === "select") {
@@ -768,6 +797,7 @@
     optionsEl.innerHTML = html;
 
     (cmd.fields || []).forEach(function (f) {
+      if (f.type === "editor" && f.loadPath) { loadEditor(f); return; }
       if (f.type !== "attachment" && f.type !== "channelpick") return;
       var sel = document.getElementById("f_" + f.name);
       var load = f.type === "attachment" ? loadAttachments : loadChannels;
@@ -775,6 +805,28 @@
       var btn = document.getElementById("r_" + f.name);
       if (btn) btn.addEventListener("click", function () { load(sel); });
     });
+  }
+
+  function loadEditor(f) {
+    var ta = document.getElementById("f_" + f.name);
+    var st = document.getElementById("s_" + f.name);
+    if (!ta) return;
+    ta.value = "";
+    ta.placeholder = "Loading…";
+    if (st) st.textContent = "Loading current template…";
+    api("GET", f.loadPath).then(function (res) {
+      if (res.status === 401) { ta.placeholder = "Enter a local token below"; if (st) st.textContent = ""; return; }
+      if (res.status === 403) { ta.placeholder = "Needs a local token (see above)"; if (st) st.textContent = ""; return; }
+      if (!res.ok || !res.data || typeof res.data.content !== "string") {
+        ta.placeholder = "Could not load"; if (st) st.textContent = ""; return;
+      }
+      ta.value = res.data.content;
+      if (st) {
+        st.innerHTML = res.data.is_guide
+          ? '<span class="tag">guide</span>No template set yet — this is the formatting guide. Edit and Run to save it as this server’s template.'
+          : '<span class="tag">base.md</span>This server’s current README template. Edit and Run to overwrite it.';
+      }
+    }).catch(function () { ta.placeholder = "Could not load"; if (st) st.textContent = ""; });
   }
 
   function fillSelect(sel, path, emptyMsg, optionFn) {
@@ -833,6 +885,7 @@
         out[f.name] = checked;
         return;
       }
+      if (f.type === "editor") { out[f.name] = el ? el.value : ""; return; }
       var val = el ? el.value.trim() : "";
       if (f.required && !val) throw new Error(f.label + " is required");
       out[f.name] = val;
@@ -952,17 +1005,12 @@
         '<p class="muted">Repo deleted and the channel was detached.</p>';
       return;
     }
-    if (isObj && typeof d.content === "string" && d.is_guide !== undefined) {
-      var chip = d.is_guide
-        ? '<span class="chip idle">guide</span><span class="stat-type">no template set — formatting guide</span>'
-        : '<span class="chip done">base.md</span><span class="stat-type">this server\'s README template</span>';
-      var head = d.is_guide
-        ? '<p class="muted">This server has no README template yet. Set one in Discord with ' +
-          '<span class="mono">/readmebase</span>. Below is the formatting guide.</p>'
-        : "";
-      outputEl.innerHTML = '<div class="stat-head">' + pill(res) + chip + "</div>" + head +
-        '<div class="prog-label">' + (d.is_guide ? "Readme guide" : "README template") + "</div>" +
-        "<pre>" + esc(d.content.replace(/\s+$/, "")) + "</pre>";
+    if (isObj && d.saved) {
+      outputEl.innerHTML = '<div class="stat-head">' + pill(res) +
+        '<span class="chip done">base.md</span>' +
+        '<span class="stat-type">README template saved</span></div>' +
+        '<p class="muted">Saved this server\'s README template (' + esc(d.bytes) +
+        ' bytes). It will be used as <span class="mono">README.md</span> the next time a repo is bootstrapped with Init/Attach.</p>';
       return;
     }
     if (isObj && d.path) {
@@ -992,7 +1040,8 @@
   function busy(on) { busyFlag = on; updateRunState(); }
   function updateRunState() {
     runEl.disabled = busyFlag;
-    runEl.textContent = busyFlag ? "Running…" : "Run";
+    var isSave = active === "readmebase";
+    runEl.textContent = busyFlag ? (isSave ? "Saving…" : "Running…") : (isSave ? "Save" : "Run");
   }
   function esc(s) {
     return String(s === undefined || s === null ? "" : s)

@@ -64,7 +64,7 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/jobs/:id/acix/confirm", post(acix_confirm))
         .route("/git/attachments", get(git_attachments))
         .route("/git/channels", get(git_channels))
-        .route("/git/readmebase", get(git_readmebase))
+        .route("/git/readmebase", get(git_readmebase).post(git_readmebase_set))
         .route("/git/init", post(git_init))
         .route("/git/attach", post(git_attach))
         .route("/git/source", post(git_source))
@@ -447,6 +447,24 @@ async fn git_readmebase(Extension(auth): Extension<ApiAuth>) -> Response {
     let content = tokio::fs::read_to_string("DB/config/global/base.md").await
         .unwrap_or_else(|_| crate::libpngit::README_BASE_GUIDE.to_string());
     Json(json!({ "content": content, "is_guide": true })).into_response()
+}
+
+#[derive(Deserialize)]
+struct GitReadmebaseReq {
+    content: String,
+}
+
+async fn git_readmebase_set(Extension(auth): Extension<ApiAuth>, Json(req): Json<GitReadmebaseReq>) -> Response {
+    let server_id = match require_local(&auth) { Ok(id) => id, Err(r) => return r };
+    let dir = format!("DB/config/{}", server_id);
+    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to create config dir: {}", e)).into_response();
+    }
+    let path = format!("{}/base.md", dir);
+    match tokio::fs::write(&path, req.content.as_bytes()).await {
+        Ok(()) => Json(json!({ "saved": true, "bytes": req.content.len() })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to write base.md: {}", e)).into_response(),
+    }
 }
 
 #[derive(Deserialize)]
