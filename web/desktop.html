@@ -42,6 +42,9 @@
     --tint-line: rgba(47,111,208,0.32);
     --on-accent: #ffffff;
     --accent-shadow: rgba(47,111,208,0.55);
+    --traffic-r: var(--k1);
+    --traffic-y: var(--cool);
+    --traffic-g: var(--line-2);
     --radius: 16px;
     --radius-sm: 9px;
     --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -80,6 +83,9 @@
     --tint-line: rgba(107,166,240,0.40);
     --on-accent: #0d1424;
     --accent-shadow: rgba(0,0,0,0.5);
+    --traffic-r: var(--line-2);
+    --traffic-y: var(--cool);
+    --traffic-g: var(--k1);
   }
 
   * { box-sizing: border-box; }
@@ -117,9 +123,9 @@
     font-family: var(--mono); font-size: 8px; line-height: 1; color: transparent;
     transition: filter .14s, color .14s;
   }
-  .tl.r { background: var(--line-2); }
-  .tl.y { background: var(--cool); }
-  .tl.g { background: var(--k1); }
+  .tl.r { background: var(--traffic-r); }
+  .tl.y { background: var(--traffic-y); }
+  .tl.g { background: var(--traffic-g); }
   .tl:hover { filter: brightness(1.15); }
   .dwin-bar:hover .tl { color: var(--on-accent); }
   .dwin-title { font-family: var(--mono); font-size: 12px; color: var(--ink-2); letter-spacing: 0.3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -322,6 +328,9 @@
     if (s.min) el.style.display = "none";
 
     el.addEventListener("pointerdown", function () { bringToFront(rec); }, true);
+    el.querySelector("iframe").addEventListener("load", function (e) {
+      try { e.target.contentDocument.documentElement.setAttribute("data-theme", document.documentElement.getAttribute("data-theme") || "light"); } catch (err) {}
+    });
     el.querySelector(".dwin-close").addEventListener("click", function (e) { e.stopPropagation(); closeWin(key); });
     el.querySelector(".dwin-min").addEventListener("click", function (e) { e.stopPropagation(); minimizeWin(key); });
     el.querySelector(".dwin-max").addEventListener("click", function (e) { e.stopPropagation(); maximizeWin(key); });
@@ -441,11 +450,27 @@
     b.addEventListener("click", function () { openOrFocus(app); });
     appsEl.appendChild(b);
   });
+  (function () {
+    var b = document.createElement("button");
+    b.className = "tb-app"; b.type = "button"; b.setAttribute("data-app", "jobs");
+    b.textContent = "jobs";
+    b.addEventListener("click", function () { openJobsWindow(); });
+    appsEl.appendChild(b);
+  })();
 
   // ---- theme toggle (shared key with the consoles) ----
   (function () {
     var root = document.documentElement;
     var btn = document.getElementById("themeToggle");
+    function syncFrames(theme) {
+      Object.keys(wins).forEach(function (key) {
+        var frame = wins[key].el.querySelector("iframe");
+        if (!frame) return;
+        try {
+          if (frame.contentDocument) frame.contentDocument.documentElement.setAttribute("data-theme", theme);
+        } catch (e) {}
+      });
+    }
     function paint() {
       var dark = root.getAttribute("data-theme") === "dark";
       btn.textContent = dark ? "☾" : "☀";
@@ -456,6 +481,14 @@
       var next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
       root.setAttribute("data-theme", next);
       try { localStorage.setItem("pandora_theme", next); } catch (e) {}
+      syncFrames(next);
+      paint();
+    });
+    window.addEventListener("storage", function (e) {
+      if (e.key !== "pandora_theme") return;
+      var next = e.newValue === "dark" ? "dark" : "light";
+      root.setAttribute("data-theme", next);
+      syncFrames(next);
       paint();
     });
   })();
@@ -493,11 +526,20 @@
     tick(); setInterval(tick, 15000);
   })();
 
-  // ---- job windows popped from the embedded consoles ----
+  function openJobsWindow() {
+    if (isMobile()) return;
+    var key = "jobs";
+    var w = wins[key];
+    if (w) { if (w.state.min) { w.state.min = false; w.el.style.display = ""; } bringToFront(w); return; }
+    createWin(key, { title: "jobs", w: 800, h: 440, src: "/encode?embed=1&jobs=1" });
+  }
+
+  // ---- windows popped from the embedded consoles ----
   window.addEventListener("message", function (e) {
     var d = e.data;
-    if (!d || d.type !== "pandora:openJob" || !d.jobId) return;
-    openJobWindow(String(d.jobId));
+    if (!d) return;
+    if (d.type === "pandora:openJob" && d.jobId) { openJobWindow(String(d.jobId)); return; }
+    if (d.type === "pandora:openJobs") { openJobsWindow(); return; }
   });
 
   // ---- boot: restore session (desktop only) ----

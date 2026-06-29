@@ -48,6 +48,9 @@
     --bad-line: rgba(210,104,127,0.40);
     --on-accent: #ffffff;
     --accent-shadow: rgba(47,111,208,0.55);
+    --traffic-r: var(--k1);
+    --traffic-y: var(--cool);
+    --traffic-g: var(--line-2);
     --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%236b7c9e' stroke-width='1.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
     --karaoke: linear-gradient(90deg, #dcecff, #a9cef4, #2f6fd0, #c4dcff, #ffffff, #a9cef4, #dcecff);
     --radius: 16px;
@@ -94,6 +97,9 @@
     --bad-line: rgba(229,138,160,0.42);
     --on-accent: #0d1424;
     --accent-shadow: rgba(0,0,0,0.5);
+    --traffic-r: var(--line-2);
+    --traffic-y: var(--cool);
+    --traffic-g: var(--k1);
     --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238a9cbf' stroke-width='1.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
     --karaoke: linear-gradient(90deg, #1f3a66, #6ba6f0, #bfe0ff, #ffffff, #bfe0ff, #6ba6f0, #1f3a66);
   }
@@ -146,9 +152,9 @@
   }
   .dots { display: flex; gap: 8px; }
   .dot { width: 12px; height: 12px; border-radius: 50%; opacity: 0.95; }
-  .dot.r { background: var(--line-2); }
-  .dot.y { background: var(--cool); }
-  .dot.g { background: var(--k1); }
+  .dot.r { background: var(--traffic-r); }
+  .dot.y { background: var(--traffic-y); }
+  .dot.g { background: var(--traffic-g); }
   .brand { display: flex; align-items: baseline; gap: 9px; margin-left: 4px; }
   .brand b { font-family: var(--disp); font-weight: 800; font-size: 16px; letter-spacing: -0.2px; color: var(--ink); }
   .brand .sub { font-family: var(--mono); font-size: 11px; color: var(--dim); letter-spacing: 0.4px; }
@@ -618,7 +624,7 @@
       }
       document.documentElement.setAttribute("data-theme", t);
       if (/[?&]embed=1\b/.test(location.search)) document.documentElement.classList.add("embed");
-      if (/[?&]job=/.test(location.search)) document.documentElement.classList.add("jobonly");
+      if (/[?&]job=/.test(location.search) || /[?&]jobs=1\b/.test(location.search)) document.documentElement.classList.add("jobonly");
     } catch (e) {}
   })();
 </script>
@@ -666,6 +672,12 @@
       var next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
       root.setAttribute("data-theme", next);
       try { localStorage.setItem("pandora_theme", next); } catch (e) {}
+      paint();
+    });
+    window.addEventListener("storage", function (e) {
+      if (e.key !== "pandora_theme") return;
+      var next = e.newValue === "dark" ? "dark" : "light";
+      root.setAttribute("data-theme", next);
       paint();
     });
   })();
