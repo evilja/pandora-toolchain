@@ -73,7 +73,7 @@ fn min_rank_for_command(part: &str) -> u8 {
         "encode" | "pancode" | "probe" | "backup" | "backupall" | "scrape" | "gitcode" | "smartcode" | "merge" | "release" | "source" => 0,
         "!enc" | "!encode" => 0,
         "job" | "get" | "acixconfirm" | "!ts" | "font" => 1,
-        "auth" | "remove" | "gitsync" | "hearts" | "configure" | "edit" | "acixtemplate" | "readmebase" | "addapi" | "!ban" | "!some" => 2,
+        "auth" | "remove" | "gitsync" | "hearts" | "configure" | "edit" | "acixtemplate" | "readmebase" | "addapi" | "addtranslation" | "gettranslation" | "addtranslationall" | "gettranslationall" | "!ban" | "!some" => 2,
         "attach" | "init" | "destruct" | "detach" | "gentoken" => 3,
         _ => u8::MAX,
     }
@@ -228,6 +228,34 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Write or update a toolchain environment token.",
             usage: "/addapi key_name:<name> token:<value>",
             details: "Updates the global pntools environment file with the provided token value.",
+        },
+        HelpCommand {
+            name: "gettranslation",
+            rank: 2,
+            summary: "Read a Pandora localization entry.",
+            usage: "/gettranslation language:<en|tr|jp> key:<MESSAGE_KEY>",
+            details: "Shows the current text and argument count for one localization key. Language files live at DB/config/en.toml, tr.toml, and jp.toml.",
+        },
+        HelpCommand {
+            name: "addtranslation",
+            rank: 2,
+            summary: "Add or update a Pandora localization entry.",
+            usage: "/addtranslation language:<en|tr|jp> key:<MESSAGE_KEY> text:<translation> [args]",
+            details: "Updates one translation. Existing keys keep args unless provided; new keys infer args from `{}`.",
+        },
+        HelpCommand {
+            name: "gettranslationall",
+            rank: 2,
+            summary: "Download a full Pandora localization TOML.",
+            usage: "/gettranslationall language:<en|tr|jp>",
+            details: "Uploads the selected language file as a TOML attachment.",
+        },
+        HelpCommand {
+            name: "addtranslationall",
+            rank: 2,
+            summary: "Replace a full Pandora localization TOML.",
+            usage: "/addtranslationall language:<en|tr|jp> file:<toml>",
+            details: "Validates and replaces the selected language file from a TOML attachment.",
         },
         HelpCommand {
             name: "gentoken",
@@ -1013,6 +1041,18 @@ impl EventHandler for Handler {
                 "addapi" => {
                     handle_addapi(&ctx, &command).await;
                 }
+                "gettranslation" => {
+                    handle_gettranslation(&ctx, &command).await;
+                }
+                "addtranslation" => {
+                    handle_addtranslation(&ctx, &command).await;
+                }
+                "gettranslationall" => {
+                    handle_gettranslationall(&ctx, &command).await;
+                }
+                "addtranslationall" => {
+                    handle_addtranslationall(&ctx, &command).await;
+                }
                 "gentoken" => {
                     handle_gentoken(&ctx, &command).await;
                 }
@@ -1446,6 +1486,63 @@ impl EventHandler for Handler {
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "token", "Token value to write")
+                        .required(true)
+                ),
+            CreateCommand::new("gettranslation")
+                .description("Read a translation")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "language", "Language")
+                        .required(true)
+                        .add_string_choice("English", "en")
+                        .add_string_choice("Türkçe", "tr")
+                        .add_string_choice("日本語", "jp")
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "key", "Message key")
+                        .required(true)
+                ),
+            CreateCommand::new("addtranslation")
+                .description("Edit a translation")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "language", "Language")
+                        .required(true)
+                        .add_string_choice("English", "en")
+                        .add_string_choice("Türkçe", "tr")
+                        .add_string_choice("日本語", "jp")
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "key", "Message key")
+                        .required(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "text", "Text")
+                        .required(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "args", "Placeholder count")
+                        .required(false)
+                        .min_int_value(0)
+                ),
+            CreateCommand::new("gettranslationall")
+                .description("Download translations")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "language", "Language")
+                        .required(true)
+                        .add_string_choice("English", "en")
+                        .add_string_choice("Türkçe", "tr")
+                        .add_string_choice("日本語", "jp")
+                ),
+            CreateCommand::new("addtranslationall")
+                .description("Upload translations")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "language", "Language")
+                        .required(true)
+                        .add_string_choice("English", "en")
+                        .add_string_choice("Türkçe", "tr")
+                        .add_string_choice("日本語", "jp")
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Attachment, "file", "TOML file")
                         .required(true)
                 ),
             CreateCommand::new("gentoken")

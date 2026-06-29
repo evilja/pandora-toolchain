@@ -1,5 +1,5 @@
 use crate::pnworker::core::{Job, Preset, Stage};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serenity::all::{Colour, CreateEmbed};
 use std::collections::HashMap;
 use std::path::Path;
@@ -171,7 +171,7 @@ static DEFAULT_ENTRIES: &[(&str, &str, usize)] = &[
     ("PRESET_DUMMY", "DEVELOPER", 0),
 ];
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct MessageEntry {
     pub text: String,
     pub args: usize,
@@ -203,7 +203,7 @@ pub fn get_arg_count(id: &str, lang: &str) -> Option<usize> {
 }
 
 fn lookup(id: &str, lang: &str) -> Option<(String, usize)> {
-    let path = format!("DB/config/{}.toml", lang);
+    let path = format!("DB/config/{}.toml", lang.to_ascii_lowercase());
     if let Ok(content) = std::fs::read_to_string(&path) {
         if let Ok(map) = toml::from_str::<HashMap<String, MessageEntry>>(&content) {
             if let Some(entry) = map.get(id) {
