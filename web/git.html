@@ -705,9 +705,15 @@
         { name: "confirm",    label: "I understand this permanently deletes the Forgejo repo", type: "checkbox", required: true }
       ],
       run: function (v) { return api("POST", "/api/v1/git/destruct", bodyFrom(v, ["channel_id"])); }
+    },
+    readmebase: {
+      label: "Credits/Readme",
+      desc: "Show this server's README template (base.md) used when bootstrapping repos. If none is set, a formatting guide is shown instead.",
+      fields: [],
+      run: function () { return api("GET", "/api/v1/git/readmebase"); }
     }
   };
-  var ORDER = ["init", "attach", "source", "smartcode", "detach", "destruct"];
+  var ORDER = ["init", "attach", "source", "smartcode", "detach", "destruct", "readmebase"];
 
   // ---- render command list ----
   var rail = document.createElement("div");
@@ -944,6 +950,19 @@
         '<div class="prog-label">Deleted repo</div>' +
         row("Owner/Repo", esc(d.owner_repo)) + (d.name ? row("Name", esc(d.name)) : "") +
         '<p class="muted">Repo deleted and the channel was detached.</p>';
+      return;
+    }
+    if (isObj && typeof d.content === "string" && d.is_guide !== undefined) {
+      var chip = d.is_guide
+        ? '<span class="chip idle">guide</span><span class="stat-type">no template set — formatting guide</span>'
+        : '<span class="chip done">base.md</span><span class="stat-type">this server\'s README template</span>';
+      var head = d.is_guide
+        ? '<p class="muted">This server has no README template yet. Set one in Discord with ' +
+          '<span class="mono">/readmebase</span>. Below is the formatting guide.</p>'
+        : "";
+      outputEl.innerHTML = '<div class="stat-head">' + pill(res) + chip + "</div>" + head +
+        '<div class="prog-label">' + (d.is_guide ? "Readme guide" : "README template") + "</div>" +
+        "<pre>" + esc(d.content.replace(/\s+$/, "")) + "</pre>";
       return;
     }
     if (isObj && d.path) {

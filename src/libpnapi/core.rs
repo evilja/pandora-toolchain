@@ -64,6 +64,7 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/jobs/:id/acix/confirm", post(acix_confirm))
         .route("/git/attachments", get(git_attachments))
         .route("/git/channels", get(git_channels))
+        .route("/git/readmebase", get(git_readmebase))
         .route("/git/init", post(git_init))
         .route("/git/attach", post(git_attach))
         .route("/git/source", post(git_source))
@@ -435,6 +436,17 @@ async fn git_channels(Extension(auth): Extension<ApiAuth>) -> Response {
         },
         Err(_) => Json(json!([])).into_response(),
     }
+}
+
+async fn git_readmebase(Extension(auth): Extension<ApiAuth>) -> Response {
+    let server_id = match require_local(&auth) { Ok(id) => id, Err(r) => return r };
+    let server_path = format!("DB/config/{}/base.md", server_id);
+    if let Ok(content) = tokio::fs::read_to_string(&server_path).await {
+        return Json(json!({ "content": content, "is_guide": false })).into_response();
+    }
+    let content = tokio::fs::read_to_string("DB/config/global/base.md").await
+        .unwrap_or_else(|_| crate::libpngit::README_BASE_GUIDE.to_string());
+    Json(json!({ "content": content, "is_guide": true })).into_response()
 }
 
 #[derive(Deserialize)]
