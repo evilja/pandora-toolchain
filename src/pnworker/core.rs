@@ -78,7 +78,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                             )
                             .await
                             .unwrap();
-                            if use_cache_or_wait(&mut job, &queue).await {
+                            if use_cache_or_wait(&db, &mut job, &queue).await {
                                 job.frontend
                                     .set_presence(Presence::Downloading {
                                         idx: queue.len(),
@@ -174,7 +174,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                                 }
                             };
 
-                            if use_cache_or_wait(&mut job, &queue).await {
+                            if use_cache_or_wait(&db, &mut job, &queue).await {
                                 job.frontend
                                     .set_presence(Presence::Downloading {
                                         idx: queue.len(),
@@ -231,7 +231,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                                     continue;
                                 }
                             }
-                            if use_cache_or_wait(&mut job, &queue).await {
+                            if use_cache_or_wait(&db, &mut job, &queue).await {
                                 job.frontend
                                     .set_presence(Presence::Downloading {
                                         idx: queue.len(),
@@ -414,6 +414,8 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                         if let Some(path) = args.get(0) {
                             i.duplicate_source = Some(duplicate_path_to_container(path));
                         }
+                        let v = serde_json::json!({ "type": "download", "waiting": "cache" });
+                        db.update_progress(i.job_id, &v.to_string()).await.ok();
                         let payload = commdata.1;
                         render(i, payload).await;
                         continue;
@@ -524,6 +526,8 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                         db.update_stage(queue[pos].job_id, Stage::Downloaded)
                             .await
                             .unwrap();
+                        let v = serde_json::json!({ "type": "download", "percent": 100, "cached": true });
+                        db.update_progress(queue[pos].job_id, &v.to_string()).await.ok();
                         render(
                             &mut queue[pos],
                             MessagePayload::Static(crate::pnworker::messages::TORRENT_DONE),
@@ -961,8 +965,10 @@ fn queued_duplicate_source(job: &Job, queue: &[Job]) -> Option<PathBuf> {
         })
 }
 
-async fn use_cache_or_wait(job: &mut Job, queue: &[Job]) -> bool {
+async fn use_cache_or_wait(db: &JobDb, job: &mut Job, queue: &[Job]) -> bool {
     if use_cached_input(job).await {
+        let v = serde_json::json!({ "type": "download", "percent": 100, "cached": true });
+        db.update_progress(job.job_id, &v.to_string()).await.ok();
         render(
             job,
             MessagePayload::Static(crate::pnworker::messages::TORRENT_DONE),
@@ -974,6 +980,8 @@ async fn use_cache_or_wait(job: &mut Job, queue: &[Job]) -> bool {
         job.duplicate_source = Some(source.clone());
         job.ready = Stage::Downloading;
         job.worker = "dwl-cache".to_string();
+        let v = serde_json::json!({ "type": "download", "waiting": "cache" });
+        db.update_progress(job.job_id, &v.to_string()).await.ok();
         render(
             job,
             MessagePayload::Progress(TORRENT_DUPLICATE_WAIT, vec![source.display().to_string()]),

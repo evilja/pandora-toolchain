@@ -161,6 +161,32 @@
     border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px;
   }
   .tb-toggle:hover { border-color: var(--k1); color: var(--ink); }
+  .tb-token {
+    font-family: var(--mono); font-size: 12px; cursor: pointer;
+    color: var(--ink-2); background: transparent;
+    border: 1px solid var(--line); border-radius: 7px; padding: 6px 11px;
+    transition: border-color .14s, color .14s, background .14s;
+  }
+  .tb-token:hover { border-color: var(--k1); color: var(--ink); }
+  .tb-token.set { color: var(--k1); border-color: var(--tint-line); background: var(--tint-bg); }
+  .tok-pop {
+    position: fixed; right: 14px; bottom: 58px; z-index: 60;
+    width: 340px; max-width: calc(100vw - 28px);
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm);
+    box-shadow: 0 24px 60px -24px var(--shadow); padding: 14px; display: none;
+  }
+  .tok-pop.open { display: block; }
+  .tok-pop label {
+    display: block; font-family: var(--mono); font-size: 10px; letter-spacing: 1px;
+    text-transform: uppercase; color: var(--faint); margin-bottom: 7px;
+  }
+  .tok-pop input {
+    width: 100%; background: var(--bg); border: 1px solid var(--line); color: var(--ink);
+    border-radius: var(--radius-sm); padding: 10px 12px; font-size: 13.5px;
+    font-family: var(--body); outline: none;
+  }
+  .tok-pop input:focus { border-color: var(--cool); box-shadow: 0 0 0 3px var(--focus); }
+  .tok-hint { margin: 9px 0 0; font-size: 11.5px; color: var(--dim); line-height: 1.45; }
 
   /* mobile: no window manager — a simple launcher to the standalone consoles */
   .mlaunch { display: none; }
@@ -206,7 +232,14 @@
     <div class="tb-apps" id="apps"></div>
     <div class="tb-spacer"></div>
     <div class="tb-clock" id="clock"></div>
+    <button class="tb-token" id="tokBtn" type="button" title="API token">⚿ token</button>
     <button class="tb-toggle" id="themeToggle" type="button" aria-label="Toggle theme">☀</button>
+  </div>
+
+  <div class="tok-pop" id="tokPop">
+    <label for="tokInput">API token</label>
+    <input type="password" id="tokInput" placeholder="Bearer token" autocomplete="off" spellcheck="false">
+    <p class="tok-hint">Shared by every console window. Git operations need a <b>local</b> token.</p>
   </div>
 
   <div class="mlaunch">
@@ -278,8 +311,8 @@
     el.innerHTML =
       '<div class="dwin-bar"><span class="dwin-lights">' +
         '<button class="tl r dwin-close" type="button" title="Close">✕</button>' +
-        '<button class="tl y dwin-min" type="button" title="Minimize">–</button>' +
-        '<button class="tl g dwin-max" type="button" title="Maximize">+</button>' +
+        '<button class="tl y dwin-max" type="button" title="Maximize">+</button>' +
+        '<button class="tl g dwin-min" type="button" title="Minimize">–</button>' +
       '</span><span class="dwin-title">' + cfg.title + '</span></div>' +
       '<div class="dwin-body"><iframe src="' + cfg.src + '" title="' + cfg.title + '"></iframe></div>' +
       '<div class="dwin-resize"></div>';
@@ -424,6 +457,31 @@
       root.setAttribute("data-theme", next);
       try { localStorage.setItem("pandora_theme", next); } catch (e) {}
       paint();
+    });
+  })();
+
+  // ---- API token (shared with every console via localStorage; consoles live-sync on the storage event) ----
+  (function () {
+    var btn = document.getElementById("tokBtn");
+    var pop = document.getElementById("tokPop");
+    var inp = document.getElementById("tokInput");
+    function refresh() {
+      var v = localStorage.getItem("pandora_token") || "";
+      inp.value = v;
+      btn.classList.toggle("set", !!v);
+    }
+    refresh();
+    btn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      pop.classList.toggle("open");
+      if (pop.classList.contains("open")) inp.focus();
+    });
+    inp.addEventListener("input", function () {
+      try { localStorage.setItem("pandora_token", inp.value); } catch (e) {}
+      btn.classList.toggle("set", !!inp.value);
+    });
+    document.addEventListener("click", function (e) {
+      if (pop.classList.contains("open") && !pop.contains(e.target) && e.target !== btn) pop.classList.remove("open");
     });
   })();
 

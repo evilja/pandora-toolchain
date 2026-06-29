@@ -228,6 +228,9 @@
   /* fill the iframe: let the command area grow so the footer pins to the bottom (no gap) */
   html.embed .grid { flex: 1 1 auto; min-height: 0; }
   html.embed .options { overflow: auto; }
+  /* the API token lives in the desktop taskbar when embedded */
+  html.embed .footer .tok { display: none; }
+  html.embed .footer { justify-content: flex-end; }
   /* job-only mode: a single job's live view, no command UI (used by desktop job windows) */
   html.jobonly .grid, html.jobonly .footer { display: none; }
   html.jobonly .output { flex: 1; height: 100%; max-height: none; overflow: auto; }
@@ -485,6 +488,17 @@
   }
   .seg.active .seg-name { color: var(--k1); font-weight: 600; }
   @keyframes ksweep { from { background-position: 200% 0; } to { background-position: 0 0; } }
+  /* indeterminate "waiting on a cached/duplicate input" state */
+  .seg.wait .seg-track { box-shadow: 0 0 0 1px var(--tint-line) inset; }
+  .seg.wait .seg-prog {
+    width: 100% !important;
+    background: repeating-linear-gradient(90deg, var(--k2) 0 9px, transparent 9px 18px);
+    background-size: 18px 100%;
+    animation: kslide 0.9s linear infinite;
+    opacity: 0.6;
+  }
+  @keyframes kslide { from { background-position: 0 0; } to { background-position: 18px 0; } }
+  .seg.wait .seg-name { color: var(--k1); font-weight: 600; }
   .accepted { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 12px 0; font-size: 13px; }
 
   /* progress readout + uploaded links */
@@ -669,6 +683,10 @@
 
   // ---- token persistence (shared with the encode console) ----
   tokenEl.value = localStorage.getItem("pandora_token") || "";
+  // when embedded in the desktop, the token is set from the taskbar — keep this copy in sync
+  window.addEventListener("storage", function (e) {
+    if (e.key === "pandora_token") tokenEl.value = e.newValue || "";
+  });
   var savedT;
   tokenEl.addEventListener("input", function () {
     localStorage.setItem("pandora_token", tokenEl.value);
