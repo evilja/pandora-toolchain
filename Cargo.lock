@@ -1742,7 +1742,7 @@ dependencies = [
 
 [[package]]
 name = "pandora-toolchain"
-version = "2.0.0-pancode"
+version = "3.0.15-kawari"
 dependencies = [
  "async_zip",
  "axum",
