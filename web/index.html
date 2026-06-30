@@ -1177,10 +1177,11 @@
     }
     if (method === "GET") path += (path.indexOf("?") === -1 ? "?" : "&") + "_=" + Date.now();
     return fetch(API + path, opts).then(function (resp) {
+      var retryAfter = resp.headers.get("Retry-After");
       return resp.text().then(function (text) {
         var data;
         try { data = JSON.parse(text); } catch (e) { data = text; }
-        return { status: resp.status, ok: resp.ok, data: data };
+        return { status: resp.status, ok: resp.ok, data: data, retryAfter: retryAfter };
       });
     });
   }
@@ -1188,6 +1189,15 @@
   // ---- renderers ----
   function pill(res) {
     return '<span class="pill ' + (res.ok ? "ok" : "err") + '">' + res.status + "</span>";
+  }
+  // 429: the API rate-limits write requests per token (default 30 / 60s, set via
+  // api_rate_limit / api_rate_window_secs). The Retry-After header is the wait in seconds.
+  function rateNote(res) {
+    if (!res || res.status !== 429) return "";
+    var secs = parseInt(res.retryAfter, 10);
+    var when = (secs > 0) ? (" Try again in " + secs + "s.") : "";
+    return '<p class="muted">Rate limit hit — too many requests on this token.' + when +
+      ' (The limit applies to submits/cancels, not status polling.)</p>';
   }
   function isJobStatus(d) {
     return d && typeof d === "object" && typeof d.stage === "string" && d.job_id !== undefined;
@@ -1219,7 +1229,7 @@
       var cls = "todo", w = 0;
       if (fin) { cls = "fin"; w = 100; }
       else if (i <= doneUpTo) { cls = "done"; w = 100; }
-      else if (i === active && stage === "Downloading" && progress && progress.waiting) { cls = "wait"; w = 100; }
+      else if (i === active && progress && (progress.type === "forward" || (stage === "Downloading" && progress.waiting))) { cls = "wait"; w = 100; }
       else if (i === active) { cls = "active"; w = (i === 0) ? 100 : phaseLivePercent(stage, progress); }
       var delay = cls === "active" ? ";animation-delay:-" + ((Date.now() % 1700) / 1000).toFixed(3) + "s" : "";
       return '<div class="seg ' + cls + '"><span class="seg-track">' +
@@ -1233,6 +1243,10 @@
   function progMeta(text) { return '<div class="prog-meta mono">' + esc(text) + "</div>"; }
   function progressBlock(p, stage) {
     if (!p || typeof p !== "object") return "";
+    if (p.type === "forward") {
+      var parent = p.parent_job_id ? (" job #" + esc(p.parent_job_id)) : " another job";
+      return progMeta("Shared with" + parent + " — same source, preset and subtitle, so this reuses that encode instead of downloading and encoding again.");
+    }
     if ((stage === "Downloading" || stage === "Downloaded") && p.type !== "download") return "";
     if ((stage === "Encoding" || stage === "Encoded") && p.type !== "encode") return "";
     if (stage === "Uploading" && p.type !== "upload" && p.type !== "upload_all") return "";
@@ -1337,6 +1351,7 @@
     }
     var note = "";
     if (res.status === 401) note = '<p class="muted">Invalid or missing token — check the field below.</p>';
+    if (res.status === 429) note = rateNote(res);
     if (res.status === 202 && (!res.data || res.data === "")) {
       outputEl.innerHTML = pill(res) + '<p class="muted">Accepted.</p>';
       return;
@@ -1435,6 +1450,8 @@
       node.innerHTML = head + pipe + progressBlock(d.progress, d.stage) + links + summaryBlock(d);
     } else if (res.status === 404) {
       node.innerHTML = pill(res) + '<p class="muted">Job not found (it may be archived).</p>';
+    } else if (res.status === 429) {
+      node.innerHTML = pill(res) + rateNote(res);
     } else {
       node.innerHTML = pill(res) + '<p class="muted">' + esc(messageText(res.data, res.ok)) + "</p>";
     }

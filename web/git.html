@@ -992,10 +992,11 @@
       opts.body = JSON.stringify(body);
     }
     return fetch(API + path, opts).then(function (resp) {
+      var retryAfter = resp.headers.get("Retry-After");
       return resp.text().then(function (text) {
         var data;
         try { data = JSON.parse(text); } catch (e) { data = text; }
-        return { status: resp.status, ok: resp.ok, data: data };
+        return { status: resp.status, ok: resp.ok, data: data, retryAfter: retryAfter };
       });
     });
   }
@@ -1036,6 +1037,14 @@
         '<p class="muted">This needs a <b>local</b> token. Mint one in Discord with ' +
         '<span class="mono">/gentoken local</span> (run it in the target server), then paste it below. ' +
         'A plain token works on the encode console but not here.</p>';
+      return;
+    }
+    if (res.status === 429) {
+      var secs = parseInt(res.retryAfter, 10);
+      var when = (secs > 0) ? (" Try again in " + secs + "s.") : "";
+      outputEl.innerHTML = pill(res) +
+        '<p class="muted">Rate limit hit — too many requests on this token.' + when +
+        ' The API caps write requests per token (default 30 / 60s).</p>';
       return;
     }
     if (isObj && d.job_id) {
