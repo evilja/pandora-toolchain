@@ -597,22 +597,23 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                 )
             })
             .collect();
-        let mut active_encode_parents: HashMap<String, (u64, Stage)> = queue
-            .iter()
-            .filter(|j| {
-                j.forward_parent.is_none()
-                    && is_forwardable_encode(j)
-                    && matches!(
-                        j.ready,
-                        Stage::Queued
-                            | Stage::Downloading
-                            | Stage::Encoding
-                            | Stage::Encoded
-                            | Stage::Uploading
-                    )
-            })
-            .map(|j| (encode_forward_key(j), (j.job_id, j.ready)))
-            .collect();
+        let mut active_encode_parents: HashMap<String, (u64, Stage)> = HashMap::new();
+        for j in queue.iter().filter(|j| {
+            j.forward_parent.is_none()
+                && is_forwardable_encode(j)
+                && matches!(
+                    j.ready,
+                    Stage::Queued
+                        | Stage::Downloading
+                        | Stage::Encoding
+                        | Stage::Encoded
+                        | Stage::Uploading
+                )
+        }) {
+            for key in encode_forward_keys(j) {
+                active_encode_parents.entry(key).or_insert((j.job_id, j.ready));
+            }
+        }
         for (idx, job) in queue.iter_mut().enumerate() {
             if job.forward_parent.is_some() {
                 continue;
@@ -683,9 +684,9 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                         .set_presence(Presence::Uploading { idx, total: qlen })
                         .await;
                 } else {
-                    let forward_key = encode_forward_key(job);
-                    if let Some((parent_id, parent_stage)) =
-                        active_encode_parents.get(&forward_key).copied()
+                    if let Some((parent_id, parent_stage)) = encode_forward_keys(job)
+                        .iter()
+                        .find_map(|key| active_encode_parents.get(key).copied())
                     {
                         if parent_id != job.job_id {
                             mark_forwarded(job, parent_id, parent_stage);
@@ -742,7 +743,9 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                         key,
                         job.directory.join("contents").join("torrent"),
                     );
-                    active_encode_parents.insert(forward_key, (job.job_id, Stage::Encoding));
+                    for key in encode_forward_keys(job) {
+                        active_encode_parents.entry(key).or_insert((job.job_id, Stage::Encoding));
+                    }
                     db.update_stage(job.job_id, Stage::Encoding).await.unwrap();
                     job.frontend
                         .set_presence(Presence::Encoding { idx, total: qlen })
@@ -1135,14 +1138,18 @@ fn queued_encode_parent(job: &Job, queue: &[Job]) -> Option<(u64, Stage)> {
     if !is_forwardable_encode(job) {
         return None;
     }
-    let key = encode_forward_key(job);
+    let keys = encode_forward_keys(job);
     queue
         .iter()
         .filter(|other| other.job_id != job.job_id)
         .filter(|other| other.forward_parent.is_none())
         .filter(|other| is_forwardable_encode(other))
         .filter(|other| !is_terminal_stage(other.ready))
-        .find(|other| encode_forward_key(other) == key)
+        .find(|other| {
+            encode_forward_keys(other)
+                .iter()
+                .any(|key| keys.iter().any(|candidate| candidate == key))
+        })
         .map(|other| (other.job_id, other.ready))
 }
 
@@ -1207,10 +1214,17 @@ fn is_terminal_stage(stage: Stage) -> bool {
     )
 }
 
-fn encode_forward_key(job: &Job) -> String {
+fn encode_forward_keys(job: &Job) -> Vec<String> {
+    encode_source_keys(job)
+        .into_iter()
+        .map(|source_key| encode_forward_key(job, source_key))
+        .collect()
+}
+
+fn encode_forward_key(job: &Job, source_key: String) -> String {
     let payload = serde_json::json!([
         "v1",
-        encode_source_key(job),
+        source_key,
         job.probe_file_index,
         preset_forward_key(&job.preset),
         format!("{:x}", md5::compute(&job.attachment)),
@@ -1230,20 +1244,21 @@ fn preset_forward_key(preset: &Preset) -> serde_json::Value {
     }
 }
 
-fn encode_source_key(job: &Job) -> String {
+fn encode_source_keys(job: &Job) -> Vec<String> {
     match &job.torrent {
-        TorrentType::GDrive(link) => format!("gdrive:{}", link),
+        TorrentType::GDrive(link) => vec![format!("gdrive:{}", link)],
         TorrentType::Magnet(magnet) => magnet_info_hash(magnet)
-            .map(|hash| format!("torrent:{}", hash))
-            .unwrap_or_else(|| format!("magnet:{:x}", md5::compute(magnet.as_bytes()))),
+            .map(|hash| vec![format!("torrent:{}", hash)])
+            .unwrap_or_else(|| vec![format!("magnet:{:x}", md5::compute(magnet.as_bytes()))]),
         TorrentType::Link(link) => {
+            let mut keys = vec![format!("link:{}", link)];
             let fetch = job.directory.join("contents").join("fetch.torrent");
             if let Ok(data) = std::fs::read(fetch) {
                 if let Some(hash) = torrent_info_hash(&data) {
-                    return format!("torrent:{}", hash);
+                    keys.push(format!("torrent:{}", hash));
                 }
             }
-            format!("link:{}", link)
+            keys
         }
     }
 }
