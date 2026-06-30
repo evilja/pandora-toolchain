@@ -9,6 +9,9 @@ services:
       # container. host.docker.internal resolves to the host via the gateway
       # mapping below. Override creds with PNP2P_QBIT_USER/PNP2P_QBIT_PASS.
       - PNP2P_QBIT_HOST=http://host.docker.internal:8089
+      - PANDORA_GITSYNC_REPO=/repo
+      - PANDORA_GITSYNC_USERNAME=${PANDORA_GITSYNC_USERNAME:-x-access-token}
+      - PANDORA_GITSYNC_TOKEN=${PANDORA_GITSYNC_TOKEN:-}
       # The host qBittorrent writes to the HOST filesystem, but the container
       # reads from the bind-mounted ./DB. Set PNP2P_QBIT_SAVE_HOST in .env to
       # the host's absolute path to ./DB so downloads land where the container
