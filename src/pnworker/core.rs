@@ -79,8 +79,8 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                             )
                             .await
                             .unwrap();
-                            if let Some((parent_id, parent_stage)) = queued_encode_parent(&job, &queue) {
-                                mark_forwarded(&mut job, parent_id, parent_stage);
+                            if let Some((parent_id, parent_stage, forwarded_worker)) = queued_encode_parent(&job, &queue) {
+                                mark_forwarded(&mut job, parent_id, parent_stage, &forwarded_worker);
                                 render(
                                     &mut job,
                                     MessagePayload::Progress(TORRENT_DUPLICATE_WAIT, vec![parent_id.to_string()]),
@@ -440,8 +440,19 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                 if let MessagePayload::Progress(id, args) = &commdata.1 {
                     if *id == WORKER_ASSIGN {
                         if let Some(worker) = args.get(0) {
+                            let job_id = queue[pos].job_id;
+                            let worker = worker.clone();
                             queue[pos].worker = worker.clone();
-                            db.update_worker(queue[pos].job_id, &queue[pos].worker).await.ok();
+                            db.update_worker(job_id, &worker).await.ok();
+                            let forwarded_worker = forwarded_worker_for(&worker);
+                            sync_forwarded_state(
+                                &db,
+                                &mut queue,
+                                job_id,
+                                None,
+                                Some(&forwarded_worker),
+                            )
+                            .await;
                         }
                         continue;
                     }
@@ -500,7 +511,12 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                     }
                 }
 
-                sync_forwarded_jobs(&db, &mut queue, commdata.0, stage, &payload).await;
+                let parent_worker = queue
+                    .iter()
+                    .find(|job| job.job_id == commdata.0)
+                    .map(|job| job.worker.clone())
+                    .unwrap_or_else(|| "enc-forward".to_string());
+                sync_forwarded_jobs(&db, &mut queue, commdata.0, stage, &payload, &parent_worker).await;
 
                 if let Some((job_id, probe_job_id, directory)) = finished_job {
                     if let Some(probe_id) = probe_job_id {
@@ -587,6 +603,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
         }
         let qlen = queue.len();
         let mut dead: Vec<u64> = vec![];
+        let mut forwarded_state_updates: Vec<(u64, Stage, String)> = vec![];
         let mut active_encode_sources: HashMap<String, PathBuf> = queue
             .iter()
             .filter(|j| j.forward_parent.is_none() && j.ready == Stage::Encoding)
@@ -597,7 +614,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                 )
             })
             .collect();
-        let mut active_encode_parents: HashMap<String, (u64, Stage)> = HashMap::new();
+        let mut active_encode_parents: HashMap<String, (u64, Stage, String)> = HashMap::new();
         for j in queue.iter().filter(|j| {
             j.forward_parent.is_none()
                 && is_forwardable_encode(j)
@@ -611,7 +628,9 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                 )
         }) {
             for key in encode_forward_keys(j) {
-                active_encode_parents.entry(key).or_insert((j.job_id, j.ready));
+                active_encode_parents
+                    .entry(key)
+                    .or_insert((j.job_id, j.ready, forwarded_worker_for(&j.worker)));
             }
         }
         for (idx, job) in queue.iter_mut().enumerate() {
@@ -684,12 +703,12 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                         .set_presence(Presence::Uploading { idx, total: qlen })
                         .await;
                 } else {
-                    if let Some((parent_id, parent_stage)) = encode_forward_keys(job)
+                    if let Some((parent_id, parent_stage, forwarded_worker)) = encode_forward_keys(job)
                         .iter()
-                        .find_map(|key| active_encode_parents.get(key).copied())
+                        .find_map(|key| active_encode_parents.get(key).cloned())
                     {
                         if parent_id != job.job_id {
-                            mark_forwarded(job, parent_id, parent_stage);
+                            mark_forwarded(job, parent_id, parent_stage, &forwarded_worker);
                             persist_forwarded_wait(&db, job).await;
                             render(
                                 job,
@@ -744,7 +763,9 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                         job.directory.join("contents").join("torrent"),
                     );
                     for key in encode_forward_keys(job) {
-                        active_encode_parents.entry(key).or_insert((job.job_id, Stage::Encoding));
+                        active_encode_parents
+                            .entry(key)
+                            .or_insert((job.job_id, Stage::Encoding, forwarded_worker_for(&job.worker)));
                     }
                     db.update_stage(job.job_id, Stage::Encoding).await.unwrap();
                     job.frontend
@@ -783,10 +804,18 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                 }
                 job.ready = Stage::Uploading;
                 db.update_stage(job.job_id, Stage::Uploading).await.unwrap();
+                forwarded_state_updates.push((
+                    job.job_id,
+                    Stage::Uploading,
+                    forwarded_worker_for(&job.worker),
+                ));
                 job.frontend
                     .set_presence(Presence::Uploading { idx, total: qlen })
                     .await;
             }
+        }
+        for (parent_id, stage, worker) in forwarded_state_updates {
+            sync_forwarded_state(&db, &mut queue, parent_id, Some(stage), Some(&worker)).await;
         }
         queue.retain(|j| !dead.contains(&j.job_id));
     }
@@ -1131,10 +1160,10 @@ async fn use_cache_or_wait(db: &JobDb, job: &mut Job, queue: &[Job]) -> bool {
 }
 
 fn is_forwardable_encode(job: &Job) -> bool {
-    matches!(&job.frontend, Frontend::Web) && job.job_type == JobType::Encode
+    job.job_type == JobType::Encode
 }
 
-fn queued_encode_parent(job: &Job, queue: &[Job]) -> Option<(u64, Stage)> {
+fn queued_encode_parent(job: &Job, queue: &[Job]) -> Option<(u64, Stage, String)> {
     if !is_forwardable_encode(job) {
         return None;
     }
@@ -1150,14 +1179,22 @@ fn queued_encode_parent(job: &Job, queue: &[Job]) -> Option<(u64, Stage)> {
                 .iter()
                 .any(|key| keys.iter().any(|candidate| candidate == key))
         })
-        .map(|other| (other.job_id, other.ready))
+        .map(|other| (other.job_id, other.ready, forwarded_worker_for(&other.worker)))
 }
 
-fn mark_forwarded(job: &mut Job, parent_id: u64, parent_stage: Stage) {
+fn mark_forwarded(job: &mut Job, parent_id: u64, parent_stage: Stage, worker: &str) {
     job.forward_parent = Some(parent_id);
     job.duplicate_source = None;
     job.ready = parent_stage;
-    job.worker = "enc-forward".to_string();
+    job.worker = worker.to_string();
+}
+
+fn forwarded_worker_for(parent_worker: &str) -> String {
+    if parent_worker.starts_with("upl-") {
+        "upl-forward".to_string()
+    } else {
+        "enc-forward".to_string()
+    }
 }
 
 async fn persist_forwarded_wait(db: &JobDb, job: &Job) {
@@ -1176,6 +1213,7 @@ async fn sync_forwarded_jobs(
     parent_id: u64,
     stage: Option<Stage>,
     payload: &MessagePayload,
+    parent_worker: &str,
 ) {
     let ids: Vec<u64> = queue
         .iter()
@@ -1185,10 +1223,13 @@ async fn sync_forwarded_jobs(
 
     for id in ids {
         if let Some(pos) = queue.iter().position(|job| job.job_id == id) {
+            let worker = forwarded_worker_for(parent_worker);
             if let Some(stage) = stage {
                 queue[pos].ready = stage;
                 db.update_stage(queue[pos].job_id, stage).await.ok();
             }
+            queue[pos].worker = worker.clone();
+            db.update_worker(queue[pos].job_id, &worker).await.ok();
             persist_side_effects(db, queue[pos].job_id, payload, stage).await;
             render(&mut queue[pos], payload.clone()).await;
             if stage.map(is_terminal_stage).unwrap_or(false) {
@@ -1202,6 +1243,33 @@ async fn sync_forwarded_jobs(
                 )
                 .await;
                 queue.remove(pos);
+            }
+        }
+    }
+}
+
+async fn sync_forwarded_state(
+    db: &JobDb,
+    queue: &mut Vec<Job>,
+    parent_id: u64,
+    stage: Option<Stage>,
+    worker: Option<&str>,
+) {
+    let ids: Vec<u64> = queue
+        .iter()
+        .filter(|job| job.forward_parent == Some(parent_id))
+        .map(|job| job.job_id)
+        .collect();
+
+    for id in ids {
+        if let Some(pos) = queue.iter().position(|job| job.job_id == id) {
+            if let Some(stage) = stage {
+                queue[pos].ready = stage;
+                db.update_stage(queue[pos].job_id, stage).await.ok();
+            }
+            if let Some(worker) = worker {
+                queue[pos].worker = worker.to_string();
+                db.update_worker(queue[pos].job_id, worker).await.ok();
             }
         }
     }

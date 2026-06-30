@@ -470,6 +470,11 @@
   .chip.done { color: var(--done); border-color: var(--ok-line); background: var(--ok-bg); }
   .chip.bad { color: var(--bad); border-color: var(--bad-line); background: var(--bad-bg); }
   .chip.idle { color: var(--dim); }
+  .term-banner {
+    font-family: var(--mono); font-size: 12.5px; font-weight: 600; letter-spacing: 0.3px;
+    padding: 8px 12px; border-radius: var(--radius-sm); margin-bottom: 12px;
+    border: 1px solid var(--bad-line); color: var(--bad); background: var(--bad-bg);
+  }
 
   /* signature: karaoke pipeline */
   .stat-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
@@ -1241,8 +1246,27 @@
 
   function pct(v) { return Math.max(0, Math.min(100, Math.round(Number(v) || 0))); }
   function progMeta(text) { return '<div class="prog-meta mono">' + esc(text) + "</div>"; }
+  function phaseLabel(t) {
+    if (t === "download") return "downloading";
+    if (t === "encode") return "encoding";
+    if (t === "upload" || t === "upload_all") return "uploading";
+    if (t === "probe") return "probing";
+    if (t === "forward") return "waiting on a shared job";
+    return "";
+  }
+  // Visible terminal status — the job-window header (with its stage chip) is hidden by CSS,
+  // so a cancelled/failed job needs its state shown in the body instead.
+  function statusBlock(d) {
+    if (TERMINAL.indexOf(d.stage) === -1 || d.stage === "Uploaded") return "";
+    var phase = d.progress && typeof d.progress === "object" ? phaseLabel(d.progress.type) : "";
+    var txt = d.stage + (phase ? " while " + phase : "");
+    return '<div class="term-banner">' + esc(txt) + "</div>";
+  }
   function progressBlock(p, stage) {
     if (!p || typeof p !== "object") return "";
+    // Cancelled/Failed/Declined keep whatever progress they died with; don't render it as
+    // if still running (a cancelled upload would otherwise show a live "0%" host list).
+    if (stage === "Cancelled" || stage === "Failed" || stage === "Declined") return "";
     if (p.type === "forward") {
       var parent = p.parent_job_id ? (" job #" + esc(p.parent_job_id)) : " another job";
       return progMeta("Shared with" + parent + " — same source, preset and subtitle, so this reuses that encode instead of downloading and encoding again.");
@@ -1337,8 +1361,8 @@
                  '<button class="popout" type="button" data-job="' + esc(d.job_id) + '" title="Open in a window">⤢ pop out</button>' +
                  "</div>";
       var pipe = PIPELINE_STAGES.indexOf(d.stage) !== -1 ? renderPipeline(d.stage, d.progress) : "";
-      var links = (d.progress && d.progress.type === "upload") ? "" : linksBlock(d.links);
-      outputEl.innerHTML = head + pipe + progressBlock(d.progress, d.stage) + links + summaryBlock(d);
+      var links = (["Cancelled","Failed","Declined"].indexOf(d.stage) === -1 && d.progress && d.progress.type === "upload") ? "" : linksBlock(d.links);
+      outputEl.innerHTML = head + statusBlock(d) + pipe + progressBlock(d.progress, d.stage) + links + summaryBlock(d);
       return;
     }
     if (res.status === 202 && res.data && res.data.job_id) {
@@ -1446,8 +1470,8 @@
                  (d.worker ? '<span class="stat-worker mono">' + esc(d.worker) + "</span>" : "") +
                  "</div>";
       var pipe = PIPELINE_STAGES.indexOf(d.stage) !== -1 ? renderPipeline(d.stage, d.progress) : "";
-      var links = (d.progress && d.progress.type === "upload") ? "" : linksBlock(d.links);
-      node.innerHTML = head + pipe + progressBlock(d.progress, d.stage) + links + summaryBlock(d);
+      var links = (["Cancelled","Failed","Declined"].indexOf(d.stage) === -1 && d.progress && d.progress.type === "upload") ? "" : linksBlock(d.links);
+      node.innerHTML = head + statusBlock(d) + pipe + progressBlock(d.progress, d.stage) + links + summaryBlock(d);
     } else if (res.status === 404) {
       node.innerHTML = pill(res) + '<p class="muted">Job not found (it may be archived).</p>';
     } else if (res.status === 429) {

@@ -100,11 +100,14 @@ async fn run_upload_job(
             let expected_hosts = if release { 5 } else { 1 };
 
             let (drive_env, local_drive) = drive_env_path(&directory, server_id).await;
-            let drive_folder = if local_drive {
-                gdrive_folder_local.unwrap_or_default()
-            } else {
-                gdrive_folder_global.unwrap_or_default()
-            };
+            let drive_folder = drive_folder_path(
+                local_drive,
+                if local_drive {
+                    gdrive_folder_local
+                } else {
+                    gdrive_folder_global
+                },
+            );
 
             let spec = if release && !drive_folder.is_empty() {
                 PNCURL_UPLOAD_FOLDER
@@ -444,7 +447,13 @@ async fn run_upload_job(
             ))
             .ok();
 
-            let (drive_env, _) = drive_env_path(&directory, server_id).await;
+            let (drive_env, local_drive) = drive_env_path(&directory, server_id).await;
+            let drive_folder = drive_folder_path(local_drive, None);
+            let spec = if drive_folder.is_empty() {
+                PNCURL_BACKUP
+            } else {
+                PNCURL_BACKUP_FOLDER
+            };
             for (idx, file) in files.iter().enumerate() {
                 let label = format!("episode {:02}", idx + 1);
                 let out_name = file
@@ -457,11 +466,12 @@ async fn run_upload_job(
                 let upload_job_id = job_id.saturating_mul(1000).saturating_add(idx as u64);
                 let result = run_tool(
                     &pncurl_path,
-                    PNCURL_BACKUP,
+                    spec,
                     &HashMap::from([
                         ("LINK", PathValue::from(file.display().to_string())),
                         ("OPCODE", PathValue::from(out_name)),
                         ("ENV", PathValue::from(drive_env.clone())),
+                        ("DRIVEFOLDER", PathValue::from(drive_folder.clone())),
                         ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),
                     ]),
                     upload_job_id,
@@ -655,6 +665,25 @@ async fn drive_env_path(directory: &PathBuf, server_id: Option<u64>) -> (String,
         (path.display().to_string(), true)
     } else {
         (ENV_PATH.to_string(), false)
+    }
+}
+
+fn drive_folder_path(local_drive: bool, folder: Option<String>) -> String {
+    let folder = folder
+        .unwrap_or_default()
+        .trim()
+        .trim_matches('/')
+        .to_string();
+    if !local_drive {
+        return folder;
+    }
+    if folder.is_empty() {
+        return "pntools".to_string();
+    }
+    if folder == "pntools" || folder.starts_with("pntools/") {
+        folder
+    } else {
+        format!("pntools/{}", folder)
     }
 }
 
