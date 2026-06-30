@@ -1,14 +1,23 @@
 use crate::libpndb::core::JobDb;
-use crate::libpnp2p::core::{cleanup_pandora_qbit, magnet_info_hash, torrent_info_hash};
+use crate::libpnp2p::core::cleanup_pandora_qbit;
 use crate::libpnp2p::nyaaise::TorrentType;
+use crate::pnworker::cache::{
+    cache_encode_input, cleanup_expired_input_cache, cleanup_input_cache_startup,
+    duplicate_input_path, duplicate_path_to_container, duplicate_source_ready, input_cache_key,
+    past_downloaded, use_cache_or_wait, use_cached_input,
+};
 use crate::pnworker::frontend::Frontend;
+use crate::pnworker::forwarding::{
+    encode_forward_keys, forwarded_worker_for, is_forwardable_encode, mark_forwarded,
+    persist_forwarded_wait, queued_encode_parent, sync_forwarded_jobs, sync_forwarded_state,
+};
 use crate::pnworker::heartbeat::core::{TypedShrine, Worker};
+use crate::pnworker::lifecycle::{cleanup_job, render};
 use crate::pnworker::messages::{
-    BACKUPALL_PROG, ENCODE_CONCAT_PROG, ENCODE_PROG, MessagePayload, PROBE_ROW, PROBE_TIMEOUT,
-    QUEUE_TOO_LONG, QUEUED, TORRENT_DUPLICATE_WAIT, TORRENT_PROG, TORRENT_PROG_SELECT,
-    UPLOAD_BACKUP_PROG, UPLOAD_DONE, UPLOAD_PROG, WORKER_ASSIGN,
+    MessagePayload, PROBE_TIMEOUT, QUEUE_TOO_LONG, QUEUED, TORRENT_DUPLICATE_WAIT, WORKER_ASSIGN,
 };
 use crate::pnworker::presence::{Presence, presence_from_queue};
+use crate::pnworker::progress::{drive_link_from_payload, persist_side_effects};
 use crate::pnworker::pull::git_pull;
 use crate::pnworker::workers::downloadworker::*;
 use crate::pnworker::workers::encodeworker::*;
@@ -19,7 +28,7 @@ use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::fs::{File, create_dir_all, remove_dir_all, rename, write};
+use tokio::fs::{File, create_dir_all, remove_dir_all, write};
 use tokio::sync::mpsc::Receiver;
 use tokio::time::Duration;
 use tokio::time::sleep;
@@ -58,743 +67,619 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
         shrine.drain_heartbeats().await;
         cleanup_expired_input_cache().await;
 
-        if let Ok(jobclass) = rx.try_recv() {
-            match jobclass {
-                JobClass::Job(mut job) => {
-                    if queue.len() > 4 {
-                        job.ready = Stage::Declined;
-                        render(&mut job, MessagePayload::Static(QUEUE_TOO_LONG)).await;
-                        continue;
-                    }
-                    match job.job_type {
-                        JobType::Encode => {
-                            job.worker = "dwl-pending".to_string();
-                            render(&mut job, MessagePayload::Static(QUEUED)).await;
-                            for i in STRUCT {
-                                create_dir_all(job.directory.join(i)).await.unwrap();
-                            }
-                            write(
-                                job.directory.join("contents").join("subtitle.ass"),
-                                &job.attachment,
-                            )
-                            .await
-                            .unwrap();
-                            if let Some((parent_id, parent_stage, forwarded_worker)) = queued_encode_parent(&job, &queue) {
-                                mark_forwarded(&mut job, parent_id, parent_stage, &forwarded_worker);
-                                render(
-                                    &mut job,
-                                    MessagePayload::Progress(TORRENT_DUPLICATE_WAIT, vec![parent_id.to_string()]),
-                                )
-                                .await;
-                                db.insert_job(&job).await.unwrap();
-                                persist_forwarded_wait(&db, &job).await;
-                                queue.push(job);
-                                continue;
-                            }
-                            if use_cache_or_wait(&db, &mut job, &queue).await {
-                                job.frontend
-                                    .set_presence(Presence::Downloading {
-                                        idx: queue.len(),
-                                        total: queue.len() + 1,
-                                    })
-                                    .await;
-                            } else if !dispatch_or_kill(
-                                &mut shrine,
-                                &Worker::Download,
-                                WorkerMsg::Download((
-                                    job.directory.clone(),
-                                    job.torrent.clone(),
-                                    job.job_id,
-                                    None,
-                                    false,
-                                )),
-                                &mut job,
-                                &db,
-                                true,
-                            )
-                            .await
-                            {
-                                continue;
-                            }
-                            if job.ready == Stage::Queued {
-                                job.ready = Stage::Downloading;
-                                job.frontend
-                                    .set_presence(Presence::Downloading {
-                                        idx: queue.len(),
-                                        total: queue.len() + 1,
-                                    })
-                                    .await;
-                            }
-                        }
-                        JobType::Probe => {
-                            job.worker = "prb-main".to_string();
-                            render(&mut job, MessagePayload::Static(QUEUED)).await;
-                            for i in STRUCT {
-                                create_dir_all(job.directory.join(i)).await.unwrap();
-                            }
-                            // no subtitle to write
-                            if !dispatch_or_kill(
-                                &mut shrine,
-                                &Worker::Probe,
-                                WorkerMsg::Probe((
-                                    job.directory.clone(),
-                                    job.torrent.clone(),
-                                    job.job_id,
-                                )),
-                                &mut job,
-                                &db,
-                                true,
-                            )
-                            .await
-                            {
-                                continue;
-                            }
-                            job.ready = Stage::Probing;
-                            job.frontend
-                                .set_presence(Presence::Probing {
-                                    idx: queue.len(),
-                                    total: queue.len() + 1,
-                                })
-                                .await;
-                        }
-                        JobType::Pancode => {
-                            let probe_dir = env::current_dir()
-                                .unwrap()
-                                .join("DB")
-                                .join("work")
-                                .join(job.probe_job_id.unwrap().to_string());
-
-                            job.worker = "dwl-pending".to_string();
-                            render(&mut job, MessagePayload::Static(QUEUED)).await;
-                            for i in STRUCT {
-                                create_dir_all(job.directory.join(i)).await.unwrap();
-                            }
-                            write(
-                                job.directory.join("contents").join("subtitle.ass"),
-                                &job.attachment,
-                            )
-                            .await
-                            .unwrap();
-
-                            let torrent_src = probe_dir.join("contents").join("fetch.torrent");
-                            let torrent_dst = job.directory.join("contents").join("fetch.torrent");
-                            match tokio::fs::copy(&torrent_src, &torrent_dst).await {
-                                Ok(_) => {
-                                    ();
-                                }
-                                Err(_) => {
-                                    continue;
-                                }
-                            };
-
-                            if use_cache_or_wait(&db, &mut job, &queue).await {
-                                job.frontend
-                                    .set_presence(Presence::Downloading {
-                                        idx: queue.len(),
-                                        total: queue.len() + 1,
-                                    })
-                                    .await;
-                            } else if !dispatch_or_kill(
-                                &mut shrine,
-                                &Worker::Download,
-                                WorkerMsg::Download((
-                                    job.directory.clone(),
-                                    job.torrent.clone(),
-                                    job.job_id,
-                                    job.probe_file_index,
-                                    false,
-                                )),
-                                &mut job,
-                                &db,
-                                true,
-                            )
-                            .await
-                            {
-                                continue;
-                            }
-                            if job.ready == Stage::Queued {
-                                job.ready = Stage::Downloading;
-                                job.frontend
-                                    .set_presence(Presence::Downloading {
-                                        idx: queue.len(),
-                                        total: queue.len() + 1,
-                                    })
-                                    .await;
-                            }
-                        }
-                        JobType::Backup => {
-                            let probe_dir = job.probe_job_id.map(|id| {
-                                env::current_dir()
-                                    .unwrap()
-                                    .join("DB")
-                                    .join("work")
-                                    .join(id.to_string())
-                            });
-
-                            job.worker = "dwl-pending".to_string();
-                            render(&mut job, MessagePayload::Static(QUEUED)).await;
-                            for i in STRUCT {
-                                create_dir_all(job.directory.join(i)).await.unwrap();
-                            }
-                            if let Some(probe_dir) = probe_dir {
-                                let torrent_src = probe_dir.join("contents").join("fetch.torrent");
-                                let torrent_dst =
-                                    job.directory.join("contents").join("fetch.torrent");
-                                if tokio::fs::copy(&torrent_src, &torrent_dst).await.is_err() {
-                                    continue;
-                                }
-                            }
-                            if use_cache_or_wait(&db, &mut job, &queue).await {
-                                job.frontend
-                                    .set_presence(Presence::Downloading {
-                                        idx: queue.len(),
-                                        total: queue.len() + 1,
-                                    })
-                                    .await;
-                            } else if !dispatch_or_kill(
-                                &mut shrine,
-                                &Worker::Download,
-                                WorkerMsg::Download((
-                                    job.directory.clone(),
-                                    job.torrent.clone(),
-                                    job.job_id,
-                                    job.probe_file_index,
-                                    false,
-                                )),
-                                &mut job,
-                                &db,
-                                true,
-                            )
-                            .await
-                            {
-                                continue;
-                            }
-                            if job.ready == Stage::Queued {
-                                job.ready = Stage::Downloading;
-                                job.frontend
-                                    .set_presence(Presence::Downloading {
-                                        idx: queue.len(),
-                                        total: queue.len() + 1,
-                                    })
-                                    .await;
-                            }
-                        }
-                        JobType::BackupAll => {
-                            job.worker = "dwl-pending".to_string();
-                            render(&mut job, MessagePayload::Static(QUEUED)).await;
-                            for i in STRUCT {
-                                create_dir_all(job.directory.join(i)).await.unwrap();
-                            }
-                            if !dispatch_or_kill(
-                                &mut shrine,
-                                &Worker::Download,
-                                WorkerMsg::Download((
-                                    job.directory.clone(),
-                                    job.torrent.clone(),
-                                    job.job_id,
-                                    None,
-                                    true,
-                                )),
-                                &mut job,
-                                &db,
-                                true,
-                            )
-                            .await
-                            {
-                                continue;
-                            }
-                            if job.ready == Stage::Queued {
-                                job.ready = Stage::Downloading;
-                                job.frontend
-                                    .set_presence(Presence::Downloading {
-                                        idx: queue.len(),
-                                        total: queue.len() + 1,
-                                    })
-                                    .await;
-                            }
-                        }
-                        _ => {}
-                    }
-                    db.insert_job(&job).await.unwrap();
-                    queue.push(job);
-                }
-                JobClass::HalfJob(halfjob) => match halfjob.job_type {
-                    JobType::Cancel => {
-                        if let Some(pos) = queue
-                            .iter()
-                            .position(|i| halfjob.job_id == i.job_id && halfjob.author == i.author)
-                        {
-                            if queue[pos].forward_parent.is_some() {
-                                queue[pos].ready = Stage::Cancelled;
-                                db.update_stage(queue[pos].job_id, Stage::Cancelled).await.ok();
-                                render(
-                                    &mut queue[pos],
-                                    MessagePayload::Static(crate::pnworker::messages::JOB_CANCELLED),
-                                )
-                                .await;
-                                let directory = queue[pos].directory.clone();
-                                db.archive_job(queue[pos].job_id).await.ok();
-                                cleanup_job(
-                                    &directory,
-                                    &PathBuf::from("DB")
-                                        .join("saved_data")
-                                        .join(queue[pos].job_id.to_string()),
-                                )
-                                .await;
-                                queue.remove(pos);
-                            } else {
-                                File::create(queue[pos].directory.join("CANCEL")).await.unwrap();
-                            }
-                        }
-                    }
-                    JobType::Hearts => {
-                        let mut frontend = halfjob.frontend;
-                        let statuses = shrine.hearts();
-                        let mut embed_text = String::new();
-                        for status in statuses {
-                            let beat = if status.alive {
-                                format!("✅ Last beat {}s ago", status.last_beat_secs)
-                            } else {
-                                format!("❌ Dead")
-                            };
-                            embed_text.push_str(&format!(
-                                "**{:?}** — {} | Reboots: {}\n",
-                                status.worker, beat, status.reboot_count
-                            ));
-                        }
-                        frontend.set_text(&embed_text).await;
-                    }
-                    JobType::GitSync => {
-                        let mut frontend = halfjob.frontend;
-                        frontend.notify_recompiling();
-                        shrine.kill().await;
-                        let repo_path = env::var("PANDORA_GITSYNC_REPO").unwrap_or_else(|_| {
-                            std::env::current_dir()
-                                .unwrap()
-                                .to_str()
-                                .unwrap()
-                                .to_owned()
-                        });
-                        println!("{}", repo_path);
-                        let mut rebuild_requested = false;
-                        match git_pull(&repo_path) {
-                            Ok(_) => {
-                                if let Ok(request_path) = env::var("PANDORA_GITSYNC_REQUEST") {
-                                    let request_path = PathBuf::from(request_path);
-                                    if let Some(parent) = request_path.parent() {
-                                        let _ = create_dir_all(parent).await;
-                                    }
-                                    rebuild_requested =
-                                        write(request_path, b"rebuild\n").await.is_ok();
-                                }
-                                frontend.set_text("Kaynak kodlar git ile güncellendi.\nBot yeniden başlatılıyor.").await
-                            }
-                            Err(e) => {
-                                println!("{}", e);
-                                frontend.set_text("Git güncellemesi başarısız oldu.\nBot yine de yeniden başlatılıyor.").await
-                            }
-                        }
-                        let _ = remove_dir_all(PathBuf::from("DB").join("work")).await;
-                        if rebuild_requested {
-                            tokio::time::sleep(Duration::from_secs(3600)).await;
-                        } else {
-                            tokio::time::sleep(Duration::from_secs(1)).await;
-                        }
-                        std::process::exit(0);
-                    }
-                    _ => {}
-                },
-            }
+        if do_queue_things(&mut rx, &db, &mut queue, &mut shrine).await {
+            continue;
         }
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or(Duration::from_secs(0));
-        let timed_out: Vec<u64> = queue
-            .iter()
-            .filter(|j| j.ready == Stage::Probed)
-            .filter(|j| now.saturating_sub(j.requested_at) > Duration::from_secs(180))
-            .map(|j| j.job_id)
-            .collect();
-        for id in timed_out {
-            if let Some(pos) = queue.iter().position(|j| j.job_id == id) {
-                let directory = queue[pos].directory.clone();
-                let mut frontend = queue[pos].frontend.clone();
+        do_probe_timeout_things(&db, &mut queue).await;
+        if do_worker_message_things(&db, &mut queue, &mut shrine).await {
+            continue;
+        }
+        do_duplicate_waiting_things(&db, &mut queue).await;
+        do_job_progression_things(&db, &mut queue, &mut shrine).await;
+    }
+}
 
-                frontend
-                    .update(&queue[pos], &MessagePayload::Static(PROBE_TIMEOUT))
+async fn do_queue_things(
+    rx: &mut Receiver<JobClass>,
+    db: &JobDb,
+    queue: &mut Vec<Job>,
+    shrine: &mut TypedShrine<WorkerMsg>,
+) -> bool {
+    let Ok(jobclass) = rx.try_recv() else {
+        return false;
+    };
+    match jobclass {
+        JobClass::Job(mut job) => {
+            if queue.len() > 4 {
+                job.ready = Stage::Declined;
+                render(&mut job, MessagePayload::Static(QUEUE_TOO_LONG)).await;
+                return true;
+            }
+            if queue_new_job(db, queue, shrine, &mut job).await {
+                return true;
+            }
+            db.insert_job(&job).await.unwrap();
+            queue.push(job);
+        }
+        JobClass::HalfJob(halfjob) => {
+            handle_half_job(db, queue, shrine, halfjob).await;
+        }
+    }
+    false
+}
+
+async fn queue_new_job(
+    db: &JobDb,
+    queue: &mut Vec<Job>,
+    shrine: &mut TypedShrine<WorkerMsg>,
+    job: &mut Job,
+) -> bool {
+    match job.job_type {
+        JobType::Encode => queue_encode_job(db, queue, shrine, job).await,
+        JobType::Probe => queue_probe_job(db, queue, shrine, job).await,
+        JobType::Pancode => queue_pancode_job(db, queue, shrine, job).await,
+        JobType::Backup => queue_backup_job(db, queue, shrine, job).await,
+        JobType::BackupAll => queue_backup_all_job(db, queue, shrine, job).await,
+        _ => false,
+    }
+}
+
+async fn prepare_queued_job(job: &mut Job, worker: &str, write_subtitle: bool) {
+    job.worker = worker.to_string();
+    render(job, MessagePayload::Static(QUEUED)).await;
+    for i in STRUCT {
+        create_dir_all(job.directory.join(i)).await.unwrap();
+    }
+    if write_subtitle {
+        write(
+            job.directory.join("contents").join("subtitle.ass"),
+            &job.attachment,
+        )
+        .await
+        .unwrap();
+    }
+}
+
+async fn queue_encode_job(
+    db: &JobDb,
+    queue: &mut Vec<Job>,
+    shrine: &mut TypedShrine<WorkerMsg>,
+    job: &mut Job,
+) -> bool {
+    prepare_queued_job(job, "dwl-pending", true).await;
+    if let Some((parent_id, parent_stage, forwarded_worker)) = queued_encode_parent(job, queue) {
+        mark_forwarded(job, parent_id, parent_stage, &forwarded_worker);
+        render(
+            job,
+            MessagePayload::Progress(TORRENT_DUPLICATE_WAIT, vec![parent_id.to_string()]),
+        )
+        .await;
+        db.insert_job(job).await.unwrap();
+        persist_forwarded_wait(db, job).await;
+        queue.push(job.clone());
+        return true;
+    }
+    queue_download_job(db, queue, shrine, job, None, false).await
+}
+
+async fn queue_probe_job(
+    db: &JobDb,
+    queue: &[Job],
+    shrine: &mut TypedShrine<WorkerMsg>,
+    job: &mut Job,
+) -> bool {
+    prepare_queued_job(job, "prb-main", false).await;
+    if !dispatch_or_kill(
+        shrine,
+        &Worker::Probe,
+        WorkerMsg::Probe((job.directory.clone(), job.torrent.clone(), job.job_id)),
+        job,
+        db,
+        true,
+    )
+    .await
+    {
+        return true;
+    }
+    job.ready = Stage::Probing;
+    job.frontend
+        .set_presence(Presence::Probing {
+            idx: queue.len(),
+            total: queue.len() + 1,
+        })
+        .await;
+    false
+}
+
+async fn queue_pancode_job(
+    db: &JobDb,
+    queue: &[Job],
+    shrine: &mut TypedShrine<WorkerMsg>,
+    job: &mut Job,
+) -> bool {
+    let probe_dir = env::current_dir()
+        .unwrap()
+        .join("DB")
+        .join("work")
+        .join(job.probe_job_id.unwrap().to_string());
+    prepare_queued_job(job, "dwl-pending", true).await;
+
+    let torrent_src = probe_dir.join("contents").join("fetch.torrent");
+    let torrent_dst = job.directory.join("contents").join("fetch.torrent");
+    if tokio::fs::copy(&torrent_src, &torrent_dst).await.is_err() {
+        return true;
+    }
+
+    queue_download_job(db, queue, shrine, job, job.probe_file_index, false).await
+}
+
+async fn queue_backup_job(
+    db: &JobDb,
+    queue: &[Job],
+    shrine: &mut TypedShrine<WorkerMsg>,
+    job: &mut Job,
+) -> bool {
+    let probe_dir = job.probe_job_id.map(|id| {
+        env::current_dir()
+            .unwrap()
+            .join("DB")
+            .join("work")
+            .join(id.to_string())
+    });
+    prepare_queued_job(job, "dwl-pending", false).await;
+    if let Some(probe_dir) = probe_dir {
+        let torrent_src = probe_dir.join("contents").join("fetch.torrent");
+        let torrent_dst = job.directory.join("contents").join("fetch.torrent");
+        if tokio::fs::copy(&torrent_src, &torrent_dst).await.is_err() {
+            return true;
+        }
+    }
+    queue_download_job(db, queue, shrine, job, job.probe_file_index, false).await
+}
+
+async fn queue_backup_all_job(
+    db: &JobDb,
+    queue: &[Job],
+    shrine: &mut TypedShrine<WorkerMsg>,
+    job: &mut Job,
+) -> bool {
+    prepare_queued_job(job, "dwl-pending", false).await;
+    if !dispatch_or_kill(
+        shrine,
+        &Worker::Download,
+        WorkerMsg::Download((job.directory.clone(), job.torrent.clone(), job.job_id, None, true)),
+        job,
+        db,
+        true,
+    )
+    .await
+    {
+        return true;
+    }
+    if job.ready == Stage::Queued {
+        job.ready = Stage::Downloading;
+        job.frontend
+            .set_presence(Presence::Downloading {
+                idx: queue.len(),
+                total: queue.len() + 1,
+            })
+            .await;
+    }
+    false
+}
+
+async fn queue_download_job(
+    db: &JobDb,
+    queue: &[Job],
+    shrine: &mut TypedShrine<WorkerMsg>,
+    job: &mut Job,
+    file_index: Option<u64>,
+    preserve_all: bool,
+) -> bool {
+    if use_cache_or_wait(db, job, queue).await {
+        job.frontend
+            .set_presence(Presence::Downloading {
+                idx: queue.len(),
+                total: queue.len() + 1,
+            })
+            .await;
+    } else if !dispatch_or_kill(
+        shrine,
+        &Worker::Download,
+        WorkerMsg::Download((
+            job.directory.clone(),
+            job.torrent.clone(),
+            job.job_id,
+            file_index,
+            preserve_all,
+        )),
+        job,
+        db,
+        true,
+    )
+    .await
+    {
+        return true;
+    }
+    if job.ready == Stage::Queued {
+        job.ready = Stage::Downloading;
+        job.frontend
+            .set_presence(Presence::Downloading {
+                idx: queue.len(),
+                total: queue.len() + 1,
+            })
+            .await;
+    }
+    false
+}
+
+async fn handle_half_job(
+    db: &JobDb,
+    queue: &mut Vec<Job>,
+    shrine: &mut TypedShrine<WorkerMsg>,
+    halfjob: HalfJob,
+) {
+    match halfjob.job_type {
+        JobType::Cancel => {
+            if let Some(pos) = queue
+                .iter()
+                .position(|i| halfjob.job_id == i.job_id && halfjob.author == i.author)
+            {
+                if queue[pos].forward_parent.is_some() {
+                    queue[pos].ready = Stage::Cancelled;
+                    db.update_stage(queue[pos].job_id, Stage::Cancelled).await.ok();
+                    render(
+                        &mut queue[pos],
+                        MessagePayload::Static(crate::pnworker::messages::JOB_CANCELLED),
+                    )
                     .await;
-
-                cleanup_job(
-                    &directory,
-                    &PathBuf::from("DB").join("saved_data").join(id.to_string()),
-                )
-                .await;
-                db.archive_job(id).await.unwrap();
-                queue.remove(pos);
-                frontend.set_presence(presence_from_queue(&queue)).await;
-            }
-        }
-        if let Some((_, commdata)) = shrine.receive(500).await {
-            let mut finished_fe: Option<Frontend> = None;
-            if let Some(pos) = queue.iter().position(|j| j.job_id == commdata.0) {
-                if let MessagePayload::Progress(id, args) = &commdata.1 {
-                    if *id == WORKER_ASSIGN {
-                        if let Some(worker) = args.get(0) {
-                            let job_id = queue[pos].job_id;
-                            let worker = worker.clone();
-                            queue[pos].worker = worker.clone();
-                            db.update_worker(job_id, &worker).await.ok();
-                            let forwarded_worker = forwarded_worker_for(&worker);
-                            sync_forwarded_state(
-                                &db,
-                                &mut queue,
-                                job_id,
-                                None,
-                                Some(&forwarded_worker),
-                            )
-                            .await;
-                        }
-                        continue;
-                    }
-                    if *id == TORRENT_DUPLICATE_WAIT {
-                        if let Some(path) = args.get(0) {
-                            queue[pos].duplicate_source = Some(duplicate_path_to_container(path));
-                        }
-                        let v = serde_json::json!({ "type": "download", "waiting": "cache" });
-                        db.update_progress(queue[pos].job_id, &v.to_string()).await.ok();
-                        let payload = commdata.1;
-                        render(&mut queue[pos], payload).await;
-                        continue;
-                    }
-                }
-
-                let payload = commdata.1.clone();
-                let stage = commdata.2;
-                let mut finished_job: Option<(u64, Option<u64>, PathBuf)> = None;
-
-                {
-                    let i = &mut queue[pos];
-                    if let Some(a) = stage {
-                        let previous_ready = i.ready;
-                        i.ready = a;
-                        db.update_stage(i.job_id, i.ready).await.unwrap();
-                        if a == Stage::Encoded
-                            || (a == Stage::Cancelled && past_downloaded(previous_ready))
-                        {
-                            cache_encode_input(i).await;
-                        }
-                    }
-                    if stage == Some(Stage::Uploaded) {
-                        if let Some(acix) = i.acix.clone() {
-                            if let Some(drive) = drive_link_from_payload(&payload) {
-                                if drive.starts_with("http") {
-                                    let pending = crate::pnworker::acix::AcixPending {
-                                        status: "pending".to_string(),
-                                        acix,
-                                        drive,
-                                    };
-                                    if let Ok(j) = serde_json::to_string(&pending) {
-                                        db.set_acix_pending(i.job_id, &j).await.ok();
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    persist_side_effects(&db, i.job_id, &payload, stage).await;
-                    render(i, payload.clone()).await;
-
-                    let finished =
-                        matches!(i.ready, Stage::Uploaded | Stage::Failed | Stage::Cancelled);
-                    if finished {
-                        finished_fe = Some(i.frontend.clone());
-                        finished_job = Some((i.job_id, i.probe_job_id, i.directory.clone()));
-                    }
-                }
-
-                let parent_worker = queue
-                    .iter()
-                    .find(|job| job.job_id == commdata.0)
-                    .map(|job| job.worker.clone())
-                    .unwrap_or_else(|| "enc-forward".to_string());
-                sync_forwarded_jobs(&db, &mut queue, commdata.0, stage, &payload, &parent_worker).await;
-
-                if let Some((job_id, probe_job_id, directory)) = finished_job {
-                    if let Some(probe_id) = probe_job_id {
-                        if let Some(probe_pos) = queue.iter().position(|j| j.job_id == probe_id) {
-                            let probe = &queue[probe_pos];
-                            cleanup_job(
-                                &probe.directory.clone(),
-                                &PathBuf::from("DB")
-                                    .join("saved_data")
-                                    .join(probe_id.to_string()),
-                            )
-                            .await;
-                            db.archive_job(probe_id).await.unwrap();
-                            queue.remove(probe_pos);
-                        }
-                    }
-                    db.archive_job(job_id).await.unwrap();
+                    let directory = queue[pos].directory.clone();
+                    db.archive_job(queue[pos].job_id).await.ok();
                     cleanup_job(
                         &directory,
                         &PathBuf::from("DB")
                             .join("saved_data")
-                            .join(job_id.to_string()),
+                            .join(queue[pos].job_id.to_string()),
                     )
                     .await;
-                    queue.retain(|j| j.job_id != job_id);
+                    queue.remove(pos);
+                } else {
+                    File::create(queue[pos].directory.join("CANCEL")).await.unwrap();
                 }
             }
-            if let Some(fe) = finished_fe {
-                fe.set_presence(presence_from_queue(&queue)).await;
+        }
+        JobType::Hearts => {
+            let mut frontend = halfjob.frontend;
+            let statuses = shrine.hearts();
+            let mut embed_text = String::new();
+            for status in statuses {
+                let beat = if status.alive {
+                    format!("✅ Last beat {}s ago", status.last_beat_secs)
+                } else {
+                    format!("❌ Dead")
+                };
+                embed_text.push_str(&format!(
+                    "**{:?}** — {} | Reboots: {}\n",
+                    status.worker, beat, status.reboot_count
+                ));
+            }
+            frontend.set_text(&embed_text).await;
+        }
+        JobType::GitSync => {
+            let mut frontend = halfjob.frontend;
+            frontend.notify_recompiling();
+            shrine.kill().await;
+            let repo_path = env::var("PANDORA_GITSYNC_REPO").unwrap_or_else(|_| {
+                std::env::current_dir()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_owned()
+            });
+            println!("{}", repo_path);
+            let mut rebuild_requested = false;
+            match git_pull(&repo_path) {
+                Ok(_) => {
+                    if let Ok(request_path) = env::var("PANDORA_GITSYNC_REQUEST") {
+                        let request_path = PathBuf::from(request_path);
+                        if let Some(parent) = request_path.parent() {
+                            let _ = create_dir_all(parent).await;
+                        }
+                        rebuild_requested = write(request_path, b"rebuild\n").await.is_ok();
+                    }
+                    frontend.set_text("Kaynak kodlar git ile güncellendi.\nBot yeniden başlatılıyor.").await
+                }
+                Err(e) => {
+                    println!("{}", e);
+                    frontend.set_text("Git güncellemesi başarısız oldu.\nBot yine de yeniden başlatılıyor.").await
+                }
+            }
+            let _ = remove_dir_all(PathBuf::from("DB").join("work")).await;
+            if rebuild_requested {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+            } else {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            std::process::exit(0);
+        }
+        _ => {}
+    }
+}
+
+async fn do_probe_timeout_things(db: &JobDb, queue: &mut Vec<Job>) {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::from_secs(0));
+    let timed_out: Vec<u64> = queue
+        .iter()
+        .filter(|j| j.ready == Stage::Probed)
+        .filter(|j| now.saturating_sub(j.requested_at) > Duration::from_secs(180))
+        .map(|j| j.job_id)
+        .collect();
+    for id in timed_out {
+        if let Some(pos) = queue.iter().position(|j| j.job_id == id) {
+            let directory = queue[pos].directory.clone();
+            let mut frontend = queue[pos].frontend.clone();
+
+            frontend
+                .update(&queue[pos], &MessagePayload::Static(PROBE_TIMEOUT))
+                .await;
+
+            cleanup_job(
+                &directory,
+                &PathBuf::from("DB").join("saved_data").join(id.to_string()),
+            )
+            .await;
+            db.archive_job(id).await.unwrap();
+            queue.remove(pos);
+            frontend.set_presence(presence_from_queue(queue)).await;
+        }
+    }
+}
+
+async fn do_worker_message_things(
+    db: &JobDb,
+    queue: &mut Vec<Job>,
+    shrine: &mut TypedShrine<WorkerMsg>,
+) -> bool {
+    let Some((_, commdata)) = shrine.receive(500).await else {
+        return false;
+    };
+    let mut finished_fe: Option<Frontend> = None;
+    if let Some(pos) = queue.iter().position(|j| j.job_id == commdata.0) {
+        if let MessagePayload::Progress(id, args) = &commdata.1 {
+            if *id == WORKER_ASSIGN {
+                if let Some(worker) = args.get(0) {
+                    let job_id = queue[pos].job_id;
+                    let worker = worker.clone();
+                    queue[pos].worker = worker.clone();
+                    db.update_worker(job_id, &worker).await.ok();
+                    let forwarded_worker = forwarded_worker_for(&worker);
+                    sync_forwarded_state(db, queue, job_id, None, Some(&forwarded_worker)).await;
+                }
+                return true;
+            }
+            if *id == TORRENT_DUPLICATE_WAIT {
+                if let Some(path) = args.get(0) {
+                    queue[pos].duplicate_source = Some(duplicate_path_to_container(path));
+                }
+                let v = serde_json::json!({ "type": "download", "waiting": "cache" });
+                db.update_progress(queue[pos].job_id, &v.to_string()).await.ok();
+                let payload = commdata.1;
+                render(&mut queue[pos], payload).await;
+                return true;
             }
         }
-        let duplicate_waiting: Vec<u64> = queue
+
+        let payload = commdata.1.clone();
+        let stage = commdata.2;
+        let mut finished_job: Option<(u64, Option<u64>, PathBuf)> = None;
+
+        {
+            let i = &mut queue[pos];
+            if let Some(a) = stage {
+                let previous_ready = i.ready;
+                i.ready = a;
+                db.update_stage(i.job_id, i.ready).await.unwrap();
+                if a == Stage::Encoded || (a == Stage::Cancelled && past_downloaded(previous_ready))
+                {
+                    cache_encode_input(i).await;
+                }
+            }
+            if stage == Some(Stage::Uploaded) {
+                if let Some(acix) = i.acix.clone() {
+                    if let Some(drive) = drive_link_from_payload(&payload) {
+                        if drive.starts_with("http") {
+                            let pending = crate::pnworker::acix::AcixPending {
+                                status: "pending".to_string(),
+                                acix,
+                                drive,
+                            };
+                            if let Ok(j) = serde_json::to_string(&pending) {
+                                db.set_acix_pending(i.job_id, &j).await.ok();
+                            }
+                        }
+                    }
+                }
+            }
+            persist_side_effects(db, i.job_id, &payload, stage).await;
+            render(i, payload.clone()).await;
+
+            let finished = matches!(i.ready, Stage::Uploaded | Stage::Failed | Stage::Cancelled);
+            if finished {
+                finished_fe = Some(i.frontend.clone());
+                finished_job = Some((i.job_id, i.probe_job_id, i.directory.clone()));
+            }
+        }
+
+        let parent_worker = queue
             .iter()
-            .filter(|j| {
-                j.forward_parent.is_none()
-                    && j.ready == Stage::Downloading
-                    && j.duplicate_source.is_some()
-            })
-            .map(|j| j.job_id)
-            .collect();
-        for id in duplicate_waiting {
-            if let Some(pos) = queue.iter().position(|j| j.job_id == id) {
-                if use_cached_input(&mut queue[pos]).await {
+            .find(|job| job.job_id == commdata.0)
+            .map(|job| job.worker.clone())
+            .unwrap_or_else(|| "enc-forward".to_string());
+        sync_forwarded_jobs(db, queue, commdata.0, stage, &payload, &parent_worker).await;
+
+        if let Some((job_id, probe_job_id, directory)) = finished_job {
+            if let Some(probe_id) = probe_job_id {
+                if let Some(probe_pos) = queue.iter().position(|j| j.job_id == probe_id) {
+                    let probe = &queue[probe_pos];
+                    cleanup_job(
+                        &probe.directory.clone(),
+                        &PathBuf::from("DB")
+                            .join("saved_data")
+                            .join(probe_id.to_string()),
+                    )
+                    .await;
+                    db.archive_job(probe_id).await.unwrap();
+                    queue.remove(probe_pos);
+                }
+            }
+            db.archive_job(job_id).await.unwrap();
+            cleanup_job(
+                &directory,
+                &PathBuf::from("DB")
+                    .join("saved_data")
+                    .join(job_id.to_string()),
+            )
+            .await;
+            queue.retain(|j| j.job_id != job_id);
+        }
+    }
+    if let Some(fe) = finished_fe {
+        fe.set_presence(presence_from_queue(queue)).await;
+    }
+    false
+}
+
+async fn do_duplicate_waiting_things(db: &JobDb, queue: &mut Vec<Job>) {
+    let duplicate_waiting: Vec<u64> = queue
+        .iter()
+        .filter(|j| {
+            j.forward_parent.is_none()
+                && j.ready == Stage::Downloading
+                && j.duplicate_source.is_some()
+        })
+        .map(|j| j.job_id)
+        .collect();
+    for id in duplicate_waiting {
+        if let Some(pos) = queue.iter().position(|j| j.job_id == id) {
+            if use_cached_input(&mut queue[pos]).await {
+                db.update_stage(queue[pos].job_id, Stage::Downloaded)
+                    .await
+                    .unwrap();
+                render(
+                    &mut queue[pos],
+                    MessagePayload::Static(crate::pnworker::messages::TORRENT_DONE),
+                )
+                .await;
+                continue;
+            }
+            let Some(source_dir) = queue[pos].duplicate_source.clone() else {
+                continue;
+            };
+            if !duplicate_source_ready(queue, &source_dir) {
+                continue;
+            }
+            let source = duplicate_input_path(&source_dir);
+            let target_dir = queue[pos].directory.join("contents").join("torrent");
+            let target = target_dir.join("input.mkv");
+            create_dir_all(&target_dir).await.unwrap();
+            match tokio::fs::copy(&source, &target).await {
+                Ok(_) => {
+                    queue[pos].duplicate_source = None;
+                    queue[pos].ready = Stage::Downloaded;
                     db.update_stage(queue[pos].job_id, Stage::Downloaded)
                         .await
                         .unwrap();
+                    let v = serde_json::json!({ "type": "download", "percent": 100, "cached": true });
+                    db.update_progress(queue[pos].job_id, &v.to_string()).await.ok();
                     render(
                         &mut queue[pos],
                         MessagePayload::Static(crate::pnworker::messages::TORRENT_DONE),
                     )
                     .await;
-                    continue;
                 }
-                let Some(source_dir) = queue[pos].duplicate_source.clone() else {
-                    continue;
-                };
-                if !duplicate_source_ready(&queue, &source_dir) {
-                    continue;
-                }
-                let source = duplicate_input_path(&source_dir);
-                let target_dir = queue[pos].directory.join("contents").join("torrent");
-                let target = target_dir.join("input.mkv");
-                create_dir_all(&target_dir).await.unwrap();
-                match tokio::fs::copy(&source, &target).await {
-                    Ok(_) => {
-                        queue[pos].duplicate_source = None;
-                        queue[pos].ready = Stage::Downloaded;
-                        db.update_stage(queue[pos].job_id, Stage::Downloaded)
-                            .await
-                            .unwrap();
-                        let v = serde_json::json!({ "type": "download", "percent": 100, "cached": true });
-                        db.update_progress(queue[pos].job_id, &v.to_string()).await.ok();
-                        render(
-                            &mut queue[pos],
-                            MessagePayload::Static(crate::pnworker::messages::TORRENT_DONE),
-                        )
-                        .await;
-                    }
-                    Err(e) => {
-                        eprintln!("[Pandora] duplicate cache copy failed for {}: {}", id, e);
-                    }
+                Err(e) => {
+                    eprintln!("[Pandora] duplicate cache copy failed for {}: {}", id, e);
                 }
             }
         }
-        let qlen = queue.len();
-        let mut dead: Vec<u64> = vec![];
-        let mut forwarded_state_updates: Vec<(u64, Stage, String)> = vec![];
-        let mut active_encode_sources: HashMap<String, PathBuf> = queue
-            .iter()
-            .filter(|j| j.forward_parent.is_none() && j.ready == Stage::Encoding)
-            .map(|j| {
-                (
-                    input_cache_key(j),
-                    j.directory.join("contents").join("torrent"),
-                )
-            })
-            .collect();
-        let mut active_encode_parents: HashMap<String, (u64, Stage, String)> = HashMap::new();
-        for j in queue.iter().filter(|j| {
-            j.forward_parent.is_none()
-                && is_forwardable_encode(j)
-                && matches!(
-                    j.ready,
-                    Stage::Queued
-                        | Stage::Downloading
-                        | Stage::Encoding
-                        | Stage::Encoded
-                        | Stage::Uploading
-                )
-        }) {
-            for key in encode_forward_keys(j) {
-                active_encode_parents
-                    .entry(key)
-                    .or_insert((j.job_id, j.ready, forwarded_worker_for(&j.worker)));
-            }
-        }
-        for (idx, job) in queue.iter_mut().enumerate() {
-            if job.forward_parent.is_some() {
-                continue;
-            }
-            if job.ready == Stage::Probed {
-                continue;
-            }
+    }
+}
 
-            if job.ready == Stage::Downloaded {
-                if job.job_type == JobType::Backup {
-                    let src = job
-                        .directory
-                        .join("contents")
-                        .join("torrent")
-                        .join("input.mkv");
-                    let dst = job.directory.join("work").join("output.mp4");
-                    let _ = tokio::fs::rename(&src, &dst).await;
-                    job.worker = "upl-pending".to_string();
-                    db.update_worker(job.job_id, &job.worker).await.ok();
-                    if !dispatch_or_kill(
-                        &mut shrine,
-                        &Worker::Upload,
-                        WorkerMsg::Upload((
-                            job.directory.clone(),
-                            format!(
-                                "{}.mkv",
-                                job.directory.file_name().unwrap_or_default().display()
-                            ),
-                            false,
-                            job.job_id,
-                            job.server_id,
-                            None,
-                            None,
-                        )),
-                        job,
-                        &db,
-                        false,
-                    )
-                    .await
-                    {
-                        dead.push(job.job_id);
-                        continue;
-                    }
-                    job.ready = Stage::Uploading;
-                    db.update_stage(job.job_id, Stage::Uploading).await.unwrap();
-                    job.frontend
-                        .set_presence(Presence::Uploading { idx, total: qlen })
-                        .await;
-                } else if job.job_type == JobType::BackupAll {
-                    job.worker = "upl-pending".to_string();
-                    db.update_worker(job.job_id, &job.worker).await.ok();
-                    if !dispatch_or_kill(
-                        &mut shrine,
-                        &Worker::Upload,
-                        WorkerMsg::UploadAll((job.directory.clone(), job.job_id, job.server_id)),
-                        job,
-                        &db,
-                        false,
-                    )
-                    .await
-                    {
-                        dead.push(job.job_id);
-                        continue;
-                    }
-                    job.ready = Stage::Uploading;
-                    db.update_stage(job.job_id, Stage::Uploading).await.unwrap();
-                    job.frontend
-                        .set_presence(Presence::Uploading { idx, total: qlen })
-                        .await;
-                } else {
-                    if let Some((parent_id, parent_stage, forwarded_worker)) = encode_forward_keys(job)
-                        .iter()
-                        .find_map(|key| active_encode_parents.get(key).cloned())
-                    {
-                        if parent_id != job.job_id {
-                            mark_forwarded(job, parent_id, parent_stage, &forwarded_worker);
-                            persist_forwarded_wait(&db, job).await;
-                            render(
-                                job,
-                                MessagePayload::Progress(
-                                    TORRENT_DUPLICATE_WAIT,
-                                    vec![parent_id.to_string()],
-                                ),
-                            )
-                            .await;
-                            continue;
-                        }
-                    }
-                    let key = input_cache_key(job);
-                    if let Some(source) = active_encode_sources.get(&key).cloned() {
-                        job.duplicate_source = Some(source.clone());
-                        job.ready = Stage::Downloading;
-                        job.worker = "dwl-cache".to_string();
-                        let v = serde_json::json!({ "type": "download", "waiting": "cache" });
-                        db.update_stage(job.job_id, Stage::Downloading).await.unwrap();
-                        db.update_progress(job.job_id, &v.to_string()).await.ok();
-                        db.update_worker(job.job_id, &job.worker).await.ok();
-                        render(
-                            job,
-                            MessagePayload::Progress(TORRENT_DUPLICATE_WAIT, vec![source.display().to_string()]),
-                        )
-                        .await;
-                        continue;
-                    }
-                    job.worker = "enc-main".to_string();
-                    db.update_worker(job.job_id, &job.worker).await.ok();
-                    if !dispatch_or_kill(
-                        &mut shrine,
-                        &Worker::Encode,
-                        WorkerMsg::Encode((
-                            job.directory.clone(),
-                            job.preset.clone(),
-                            job.job_id,
-                            job.server_id,
-                        )),
-                        job,
-                        &db,
-                        false,
-                    )
-                    .await
-                    {
-                        dead.push(job.job_id);
-                        continue;
-                    }
-                    job.ready = Stage::Encoding;
-                    active_encode_sources.insert(
-                        key,
-                        job.directory.join("contents").join("torrent"),
-                    );
-                    for key in encode_forward_keys(job) {
-                        active_encode_parents
-                            .entry(key)
-                            .or_insert((job.job_id, Stage::Encoding, forwarded_worker_for(&job.worker)));
-                    }
-                    db.update_stage(job.job_id, Stage::Encoding).await.unwrap();
-                    job.frontend
-                        .set_presence(Presence::Encoding { idx, total: qlen })
-                        .await;
-                }
-            } else if job.ready == Stage::Encoded {
+async fn do_job_progression_things(
+    db: &JobDb,
+    queue: &mut Vec<Job>,
+    shrine: &mut TypedShrine<WorkerMsg>,
+) {
+    let qlen = queue.len();
+    let mut dead: Vec<u64> = vec![];
+    let mut forwarded_state_updates: Vec<(u64, Stage, String)> = vec![];
+    let mut active_encode_sources: HashMap<String, PathBuf> = queue
+        .iter()
+        .filter(|j| j.forward_parent.is_none() && j.ready == Stage::Encoding)
+        .map(|j| {
+            (
+                input_cache_key(j),
+                j.directory.join("contents").join("torrent"),
+            )
+        })
+        .collect();
+    let mut active_encode_parents: HashMap<String, (u64, Stage, String)> = HashMap::new();
+    for j in queue.iter().filter(|j| {
+        j.forward_parent.is_none()
+            && is_forwardable_encode(j)
+            && matches!(
+                j.ready,
+                Stage::Queued
+                    | Stage::Downloading
+                    | Stage::Encoding
+                    | Stage::Encoded
+                    | Stage::Uploading
+            )
+    }) {
+        for key in encode_forward_keys(j) {
+            active_encode_parents
+                .entry(key)
+                .or_insert((j.job_id, j.ready, forwarded_worker_for(&j.worker)));
+        }
+    }
+    for (idx, job) in queue.iter_mut().enumerate() {
+        if job.forward_parent.is_some() {
+            continue;
+        }
+        if job.ready == Stage::Probed {
+            continue;
+        }
+
+        if job.ready == Stage::Downloaded {
+            if job.job_type == JobType::Backup {
+                let src = job
+                    .directory
+                    .join("contents")
+                    .join("torrent")
+                    .join("input.mkv");
+                let dst = job.directory.join("work").join("output.mp4");
+                let _ = tokio::fs::rename(&src, &dst).await;
                 job.worker = "upl-pending".to_string();
                 db.update_worker(job.job_id, &job.worker).await.ok();
                 if !dispatch_or_kill(
-                    &mut shrine,
+                    shrine,
                     &Worker::Upload,
                     WorkerMsg::Upload((
                         job.directory.clone(),
                         format!(
-                            "{}.mp4",
+                            "{}.mkv",
                             job.directory.file_name().unwrap_or_default().display()
                         ),
-                        match job.preset {
-                            Preset::Dummy(_) => false,
-                            _ => true,
-                        },
+                        false,
                         job.job_id,
                         job.server_id,
-                        job.gdrive_folder_global.clone(),
-                        job.gdrive_folder_local.clone(),
+                        None,
+                        None,
                     )),
                     job,
-                    &db,
+                    db,
                     false,
                 )
                 .await
@@ -804,606 +689,151 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
                 }
                 job.ready = Stage::Uploading;
                 db.update_stage(job.job_id, Stage::Uploading).await.unwrap();
-                forwarded_state_updates.push((
-                    job.job_id,
-                    Stage::Uploading,
-                    forwarded_worker_for(&job.worker),
-                ));
                 job.frontend
                     .set_presence(Presence::Uploading { idx, total: qlen })
                     .await;
-            }
-        }
-        for (parent_id, stage, worker) in forwarded_state_updates {
-            sync_forwarded_state(&db, &mut queue, parent_id, Some(stage), Some(&worker)).await;
-        }
-        queue.retain(|j| !dead.contains(&j.job_id));
-    }
-}
-
-async fn render(job: &mut Job, payload: MessagePayload) {
-    let mut fe = std::mem::replace(&mut job.frontend, Frontend::None);
-    fe.update(job, &payload).await;
-    job.frontend = fe;
-}
-
-async fn persist_side_effects(
-    db: &JobDb,
-    job_id: u64,
-    payload: &MessagePayload,
-    stage: Option<Stage>,
-) {
-    let MessagePayload::Progress(id, args) = payload else {
-        return;
-    };
-    if *id == ENCODE_PROG {
-        let frame = args.get(1).cloned().unwrap_or_default();
-        let total = args.get(2).cloned().unwrap_or_default();
-        let v = serde_json::json!({
-            "type": "encode", "frame": frame, "total": total,
-            "fps": args.get(3), "kbps": args.get(4),
-            "percent": encode_percent(&frame, &total),
-        });
-        db.update_progress(job_id, &v.to_string()).await.ok();
-    } else if *id == ENCODE_CONCAT_PROG {
-        let frame = args.get(0).cloned().unwrap_or_default();
-        let total = args.get(1).cloned().unwrap_or_default();
-        let v = serde_json::json!({
-            "type": "encode", "frame": frame, "total": total,
-            "fps": args.get(2), "percent": encode_percent(&frame, &total),
-        });
-        db.update_progress(job_id, &v.to_string()).await.ok();
-    } else if *id == TORRENT_PROG {
-        let v = serde_json::json!({
-            "type": "download",
-            "percent": args.get(0).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0),
-            "done": args.get(1), "total": args.get(2),
-        });
-        db.update_progress(job_id, &v.to_string()).await.ok();
-    } else if *id == TORRENT_PROG_SELECT {
-        let v = serde_json::json!({
-            "type": "download",
-            "percent": args.get(0).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0),
-            "done": args.get(1),
-        });
-        db.update_progress(job_id, &v.to_string()).await.ok();
-    } else if *id == UPLOAD_PROG {
-        if stage == Some(Stage::Uploaded) {
-            let v = serde_json::json!({
-                "drive": args.get(0), "doodstream": args.get(1), "lulustream": args.get(2),
-                "voe": args.get(3), "abyss": args.get(4),
-            });
-            db.update_links(job_id, &v.to_string()).await.ok();
-            let p = serde_json::json!({ "type": "upload", "percent": 100, "hosts": args });
-            db.update_progress(job_id, &p.to_string()).await.ok();
-        } else {
-            let v = serde_json::json!({
-                "type": "upload",
-                "percent": upload_percent(args),
-                "hosts": args,
-            });
-            db.update_progress(job_id, &v.to_string()).await.ok();
-        }
-    } else if *id == PROBE_ROW {
-        let files = args.get(0).cloned().unwrap_or_default();
-        let v = serde_json::json!({ "type": "probe", "files": files, "file_options": parse_probe_options(&files) });
-        db.update_progress(job_id, &v.to_string()).await.ok();
-    } else if *id == UPLOAD_DONE {
-        let v = serde_json::json!({
-            "drive": args.get(0), "doodstream": args.get(1), "lulustream": args.get(2),
-            "voe": args.get(3), "abyss": args.get(4),
-        });
-        db.update_links(job_id, &v.to_string()).await.ok();
-        let p = serde_json::json!({ "type": "upload", "percent": 100, "hosts": args });
-        db.update_progress(job_id, &p.to_string()).await.ok();
-    } else if *id == UPLOAD_BACKUP_PROG {
-        if stage == Some(Stage::Uploaded) {
-            let v = serde_json::json!({ "drive": args.get(0) });
-            db.update_links(job_id, &v.to_string()).await.ok();
-            let p = serde_json::json!({ "type": "upload", "percent": 100, "hosts": args });
-            db.update_progress(job_id, &p.to_string()).await.ok();
-        } else {
-            let v = serde_json::json!({
-                "type": "upload",
-                "percent": upload_percent(args),
-                "hosts": args,
-            });
-            db.update_progress(job_id, &v.to_string()).await.ok();
-        }
-    } else if *id == BACKUPALL_PROG {
-        let rows = args.get(0).cloned().unwrap_or_default();
-        if stage == Some(Stage::Uploaded) {
-            let v = serde_json::json!({ "episodes": rows });
-            db.update_links(job_id, &v.to_string()).await.ok();
-            let p = serde_json::json!({ "type": "upload_all", "percent": 100, "rows": rows });
-            db.update_progress(job_id, &p.to_string()).await.ok();
-        } else {
-            let v = serde_json::json!({
-                "type": "upload_all",
-                "percent": backupall_percent(&rows),
-                "rows": rows,
-            });
-            db.update_progress(job_id, &v.to_string()).await.ok();
-        }
-    }
-}
-
-fn parse_probe_options(files: &str) -> Vec<serde_json::Value> {
-    files
-        .lines()
-        .filter_map(|line| {
-            let rest = line.strip_prefix('`')?;
-            let end = rest.find('`')?;
-            let index = &rest[..end];
-            let label = line.replace('`', "");
-            Some(serde_json::json!({ "index": index, "label": label }))
-        })
-        .collect()
-}
-
-fn encode_percent(frame: &str, total: &str) -> u64 {
-    let f = frame.parse::<f64>().unwrap_or(0.0);
-    let t = total.parse::<f64>().unwrap_or(0.0);
-    if t <= 0.0 {
-        return 0;
-    }
-    ((f / t) * 100.0).clamp(0.0, 100.0) as u64
-}
-
-fn upload_percent(hosts: &[String]) -> u64 {
-    let mut sum = 0.0;
-    let mut n = 0.0;
-    for h in hosts {
-        let h = h.trim();
-        if h.is_empty() {
-            continue;
-        }
-        if h.starts_with("http") {
-            sum += 100.0;
-            n += 1.0;
-            continue;
-        }
-        for tok in h.split_whitespace() {
-            if let Some((a, b)) = tok.split_once('/') {
-                if let (Ok(a), Ok(b)) = (a.parse::<f64>(), b.parse::<f64>()) {
-                    if b > 0.0 {
-                        sum += (a / b * 100.0).min(100.0);
-                        n += 1.0;
-                    }
-                    break;
-                }
-            }
-        }
-    }
-    if n > 0.0 { (sum / n).round() as u64 } else { 0 }
-}
-
-fn backupall_percent(rows: &str) -> u64 {
-    let mut sum = 0.0;
-    let mut n = 0.0;
-    for row in rows.lines() {
-        let row = row.trim();
-        if row.is_empty() {
-            continue;
-        }
-        n += 1.0;
-        if row.contains("http") || row.contains("Başarısız") || row.contains("İptal") {
-            sum += 100.0;
-            continue;
-        }
-        for tok in row.split_whitespace() {
-            if let Some((a, b)) = tok.trim_end_matches("MB").split_once('/') {
-                if let (Ok(a), Ok(b)) = (a.parse::<f64>(), b.parse::<f64>()) {
-                    if b > 0.0 {
-                        sum += (a / b * 100.0).min(100.0);
-                    }
-                    break;
-                }
-            }
-        }
-    }
-    if n > 0.0 { (sum / n).round() as u64 } else { 0 }
-}
-
-const INPUT_CACHE_TTL_SECS: u64 = 30 * 60;
-
-fn past_downloaded(stage: Stage) -> bool {
-    matches!(
-        stage,
-        Stage::Downloaded | Stage::Encoding | Stage::Encoded | Stage::Uploading | Stage::Uploaded
-    )
-}
-
-fn input_cache_key(job: &Job) -> String {
-    format!(
-        "{:x}",
-        md5::compute(format!("{}|{:?}", job.torrent.get(), job.probe_file_index))
-    )
-}
-
-fn input_cache_dir(key: &str) -> PathBuf {
-    PathBuf::from("DB").join("cache").join("inputs").join(key)
-}
-
-fn input_cache_input(key: &str) -> PathBuf {
-    input_cache_dir(key).join("input.mkv")
-}
-
-fn input_cache_touch(key: &str) -> PathBuf {
-    input_cache_dir(key).join("touch")
-}
-
-async fn cleanup_input_cache_startup() {
-    remove_dir_all(PathBuf::from("DB").join("cache").join("inputs"))
-        .await
-        .ok();
-}
-
-async fn cleanup_expired_input_cache() {
-    let root = PathBuf::from("DB").join("cache").join("inputs");
-    let mut entries = match tokio::fs::read_dir(&root).await {
-        Ok(entries) => entries,
-        Err(_) => return,
-    };
-    let now = SystemTime::now();
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let touch = entry.path().join("touch");
-        let expired = tokio::fs::metadata(&touch)
-            .await
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .and_then(|m| now.duration_since(m).ok())
-            .map(|d| d.as_secs() > INPUT_CACHE_TTL_SECS)
-            .unwrap_or(true);
-        if expired {
-            remove_dir_all(entry.path()).await.ok();
-        }
-    }
-}
-
-async fn touch_input_cache(key: &str) {
-    let dir = input_cache_dir(key);
-    create_dir_all(&dir).await.ok();
-    write(input_cache_touch(key), b"touch\n").await.ok();
-}
-
-async fn cache_encode_input(job: &Job) {
-    let source = job
-        .directory
-        .join("contents")
-        .join("torrent")
-        .join("input.mkv");
-    if !source.exists() {
-        return;
-    }
-    let key = input_cache_key(job);
-    let dir = input_cache_dir(&key);
-    create_dir_all(&dir).await.ok();
-    if tokio::fs::copy(&source, input_cache_input(&key))
-        .await
-        .is_ok()
-    {
-        touch_input_cache(&key).await;
-    }
-}
-
-async fn use_cached_input(job: &mut Job) -> bool {
-    let key = input_cache_key(job);
-    let source = input_cache_input(&key);
-    if !source.exists() {
-        return false;
-    }
-    let target_dir = job.directory.join("contents").join("torrent");
-    let target = target_dir.join("input.mkv");
-    create_dir_all(&target_dir).await.unwrap();
-    match tokio::fs::copy(&source, &target).await {
-        Ok(_) => {
-            touch_input_cache(&key).await;
-            job.ready = Stage::Downloaded;
-            job.worker = "dwl-cache".to_string();
-            true
-        }
-        Err(e) => {
-            eprintln!(
-                "[Pandora] input cache copy failed for {}: {}",
-                job.job_id, e
-            );
-            false
-        }
-    }
-}
-
-fn queued_duplicate_source(job: &Job, queue: &[Job]) -> Option<PathBuf> {
-    let key = input_cache_key(job);
-    queue
-        .iter()
-        .find(|other| {
-            other.forward_parent.is_none()
-                && other.job_id != job.job_id
-                && input_cache_key(other) == key
-        })
-        .map(|other| {
-            other
-                .duplicate_source
-                .clone()
-                .unwrap_or_else(|| other.directory.join("contents").join("torrent"))
-        })
-}
-
-async fn use_cache_or_wait(db: &JobDb, job: &mut Job, queue: &[Job]) -> bool {
-    if use_cached_input(job).await {
-        let v = serde_json::json!({ "type": "download", "percent": 100, "cached": true });
-        db.update_progress(job.job_id, &v.to_string()).await.ok();
-        db.update_worker(job.job_id, &job.worker).await.ok();
-        render(
-            job,
-            MessagePayload::Static(crate::pnworker::messages::TORRENT_DONE),
-        )
-        .await;
-        return true;
-    }
-    if let Some(source) = queued_duplicate_source(job, queue) {
-        job.duplicate_source = Some(source.clone());
-        job.ready = Stage::Downloading;
-        job.worker = "dwl-cache".to_string();
-        let v = serde_json::json!({ "type": "download", "waiting": "cache" });
-        db.update_progress(job.job_id, &v.to_string()).await.ok();
-        db.update_worker(job.job_id, &job.worker).await.ok();
-        render(
-            job,
-            MessagePayload::Progress(TORRENT_DUPLICATE_WAIT, vec![source.display().to_string()]),
-        )
-        .await;
-        return true;
-    }
-    false
-}
-
-fn is_forwardable_encode(job: &Job) -> bool {
-    job.job_type == JobType::Encode
-}
-
-fn queued_encode_parent(job: &Job, queue: &[Job]) -> Option<(u64, Stage, String)> {
-    if !is_forwardable_encode(job) {
-        return None;
-    }
-    let keys = encode_forward_keys(job);
-    queue
-        .iter()
-        .filter(|other| other.job_id != job.job_id)
-        .filter(|other| other.forward_parent.is_none())
-        .filter(|other| is_forwardable_encode(other))
-        .filter(|other| !is_terminal_stage(other.ready))
-        .find(|other| {
-            encode_forward_keys(other)
-                .iter()
-                .any(|key| keys.iter().any(|candidate| candidate == key))
-        })
-        .map(|other| (other.job_id, other.ready, forwarded_worker_for(&other.worker)))
-}
-
-fn mark_forwarded(job: &mut Job, parent_id: u64, parent_stage: Stage, worker: &str) {
-    job.forward_parent = Some(parent_id);
-    job.duplicate_source = None;
-    job.ready = parent_stage;
-    job.worker = worker.to_string();
-}
-
-fn forwarded_worker_for(parent_worker: &str) -> String {
-    if parent_worker.starts_with("upl-") {
-        "upl-forward".to_string()
-    } else {
-        "enc-forward".to_string()
-    }
-}
-
-async fn persist_forwarded_wait(db: &JobDb, job: &Job) {
-    db.update_stage(job.job_id, job.ready).await.ok();
-    db.update_worker(job.job_id, &job.worker).await.ok();
-    let v = serde_json::json!({
-        "type": "forward",
-        "parent_job_id": job.forward_parent.map(|id| id.to_string()),
-    });
-    db.update_progress(job.job_id, &v.to_string()).await.ok();
-}
-
-async fn sync_forwarded_jobs(
-    db: &JobDb,
-    queue: &mut Vec<Job>,
-    parent_id: u64,
-    stage: Option<Stage>,
-    payload: &MessagePayload,
-    parent_worker: &str,
-) {
-    let ids: Vec<u64> = queue
-        .iter()
-        .filter(|job| job.forward_parent == Some(parent_id))
-        .map(|job| job.job_id)
-        .collect();
-
-    for id in ids {
-        if let Some(pos) = queue.iter().position(|job| job.job_id == id) {
-            let worker = forwarded_worker_for(parent_worker);
-            if let Some(stage) = stage {
-                queue[pos].ready = stage;
-                db.update_stage(queue[pos].job_id, stage).await.ok();
-            }
-            queue[pos].worker = worker.clone();
-            db.update_worker(queue[pos].job_id, &worker).await.ok();
-            persist_side_effects(db, queue[pos].job_id, payload, stage).await;
-            render(&mut queue[pos], payload.clone()).await;
-            if stage.map(is_terminal_stage).unwrap_or(false) {
-                let directory = queue[pos].directory.clone();
-                db.archive_job(id).await.ok();
-                cleanup_job(
-                    &directory,
-                    &PathBuf::from("DB")
-                        .join("saved_data")
-                        .join(id.to_string()),
+            } else if job.job_type == JobType::BackupAll {
+                job.worker = "upl-pending".to_string();
+                db.update_worker(job.job_id, &job.worker).await.ok();
+                if !dispatch_or_kill(
+                    shrine,
+                    &Worker::Upload,
+                    WorkerMsg::UploadAll((job.directory.clone(), job.job_id, job.server_id)),
+                    job,
+                    db,
+                    false,
                 )
-                .await;
-                queue.remove(pos);
-            }
-        }
-    }
-}
-
-async fn sync_forwarded_state(
-    db: &JobDb,
-    queue: &mut Vec<Job>,
-    parent_id: u64,
-    stage: Option<Stage>,
-    worker: Option<&str>,
-) {
-    let ids: Vec<u64> = queue
-        .iter()
-        .filter(|job| job.forward_parent == Some(parent_id))
-        .map(|job| job.job_id)
-        .collect();
-
-    for id in ids {
-        if let Some(pos) = queue.iter().position(|job| job.job_id == id) {
-            if let Some(stage) = stage {
-                queue[pos].ready = stage;
-                db.update_stage(queue[pos].job_id, stage).await.ok();
-            }
-            if let Some(worker) = worker {
-                queue[pos].worker = worker.to_string();
-                db.update_worker(queue[pos].job_id, worker).await.ok();
-            }
-        }
-    }
-}
-
-fn is_terminal_stage(stage: Stage) -> bool {
-    matches!(
-        stage,
-        Stage::Uploaded | Stage::Failed | Stage::Declined | Stage::Cancelled
-    )
-}
-
-fn encode_forward_keys(job: &Job) -> Vec<String> {
-    encode_source_keys(job)
-        .into_iter()
-        .map(|source_key| encode_forward_key(job, source_key))
-        .collect()
-}
-
-fn encode_forward_key(job: &Job, source_key: String) -> String {
-    let payload = serde_json::json!([
-        "v1",
-        source_key,
-        job.probe_file_index,
-        preset_forward_key(&job.preset),
-        format!("{:x}", md5::compute(&job.attachment)),
-        job.server_id,
-        job.gdrive_folder_global.as_deref(),
-        job.gdrive_folder_local.as_deref(),
-    ]);
-    format!("{:x}", md5::compute(payload.to_string()))
-}
-
-fn preset_forward_key(preset: &Preset) -> serde_json::Value {
-    match preset {
-        Preset::PseudoLossless(candidates) => serde_json::json!(["pseudolossless", candidates]),
-        Preset::Dummy(candidates) => serde_json::json!(["dummy", candidates]),
-        Preset::Standard(candidates) => serde_json::json!(["standard", candidates]),
-        Preset::Gpu(candidates) => serde_json::json!(["gpu", candidates]),
-    }
-}
-
-fn encode_source_keys(job: &Job) -> Vec<String> {
-    match &job.torrent {
-        TorrentType::GDrive(link) => vec![format!("gdrive:{}", link)],
-        TorrentType::Magnet(magnet) => magnet_info_hash(magnet)
-            .map(|hash| vec![format!("torrent:{}", hash)])
-            .unwrap_or_else(|| vec![format!("magnet:{:x}", md5::compute(magnet.as_bytes()))]),
-        TorrentType::Link(link) => {
-            let mut keys = vec![format!("link:{}", link)];
-            let fetch = job.directory.join("contents").join("fetch.torrent");
-            if let Ok(data) = std::fs::read(fetch) {
-                if let Some(hash) = torrent_info_hash(&data) {
-                    keys.push(format!("torrent:{}", hash));
+                .await
+                {
+                    dead.push(job.job_id);
+                    continue;
                 }
+                job.ready = Stage::Uploading;
+                db.update_stage(job.job_id, Stage::Uploading).await.unwrap();
+                job.frontend
+                    .set_presence(Presence::Uploading { idx, total: qlen })
+                    .await;
+            } else {
+                if let Some((parent_id, parent_stage, forwarded_worker)) = encode_forward_keys(job)
+                    .iter()
+                    .find_map(|key| active_encode_parents.get(key).cloned())
+                {
+                    if parent_id != job.job_id {
+                        mark_forwarded(job, parent_id, parent_stage, &forwarded_worker);
+                        persist_forwarded_wait(db, job).await;
+                        render(
+                            job,
+                            MessagePayload::Progress(
+                                TORRENT_DUPLICATE_WAIT,
+                                vec![parent_id.to_string()],
+                            ),
+                        )
+                        .await;
+                        continue;
+                    }
+                }
+                let key = input_cache_key(job);
+                if let Some(source) = active_encode_sources.get(&key).cloned() {
+                    job.duplicate_source = Some(source.clone());
+                    job.ready = Stage::Downloading;
+                    job.worker = "dwl-cache".to_string();
+                    let v = serde_json::json!({ "type": "download", "waiting": "cache" });
+                    db.update_stage(job.job_id, Stage::Downloading).await.unwrap();
+                    db.update_progress(job.job_id, &v.to_string()).await.ok();
+                    db.update_worker(job.job_id, &job.worker).await.ok();
+                    render(
+                        job,
+                        MessagePayload::Progress(
+                            TORRENT_DUPLICATE_WAIT,
+                            vec![source.display().to_string()],
+                        ),
+                    )
+                    .await;
+                    continue;
+                }
+                job.worker = "enc-main".to_string();
+                db.update_worker(job.job_id, &job.worker).await.ok();
+                if !dispatch_or_kill(
+                    shrine,
+                    &Worker::Encode,
+                    WorkerMsg::Encode((
+                        job.directory.clone(),
+                        job.preset.clone(),
+                        job.job_id,
+                        job.server_id,
+                    )),
+                    job,
+                    db,
+                    false,
+                )
+                .await
+                {
+                    dead.push(job.job_id);
+                    continue;
+                }
+                job.ready = Stage::Encoding;
+                active_encode_sources.insert(key, job.directory.join("contents").join("torrent"));
+                for key in encode_forward_keys(job) {
+                    active_encode_parents
+                        .entry(key)
+                        .or_insert((job.job_id, Stage::Encoding, forwarded_worker_for(&job.worker)));
+                }
+                db.update_stage(job.job_id, Stage::Encoding).await.unwrap();
+                forwarded_state_updates.push((
+                    job.job_id,
+                    Stage::Encoding,
+                    forwarded_worker_for(&job.worker),
+                ));
+                job.frontend
+                    .set_presence(Presence::Encoding { idx, total: qlen })
+                    .await;
             }
-            keys
+        } else if job.ready == Stage::Encoded {
+            job.worker = "upl-pending".to_string();
+            db.update_worker(job.job_id, &job.worker).await.ok();
+            if !dispatch_or_kill(
+                shrine,
+                &Worker::Upload,
+                WorkerMsg::Upload((
+                    job.directory.clone(),
+                    format!(
+                        "{}.mp4",
+                        job.directory.file_name().unwrap_or_default().display()
+                    ),
+                    match job.preset {
+                        Preset::Dummy(_) => false,
+                        _ => true,
+                    },
+                    job.job_id,
+                    job.server_id,
+                    job.gdrive_folder_global.clone(),
+                    job.gdrive_folder_local.clone(),
+                )),
+                job,
+                db,
+                false,
+            )
+            .await
+            {
+                dead.push(job.job_id);
+                continue;
+            }
+            job.ready = Stage::Uploading;
+            db.update_stage(job.job_id, Stage::Uploading).await.unwrap();
+            forwarded_state_updates.push((
+                job.job_id,
+                Stage::Uploading,
+                forwarded_worker_for(&job.worker),
+            ));
+            job.frontend
+                .set_presence(Presence::Uploading { idx, total: qlen })
+                .await;
         }
     }
-}
-
-fn duplicate_path_to_container(raw: &str) -> PathBuf {
-    let mut path = raw.replace('\\', "/");
-    if let Ok(host_prefix) = env::var("PNP2P_QBIT_SAVE_HOST") {
-        let host_prefix = host_prefix
-            .replace('\\', "/")
-            .trim_end_matches('/')
-            .to_string();
-        if !host_prefix.is_empty() && path.starts_with(&host_prefix) {
-            let container_prefix =
-                env::var("PNP2P_QBIT_SAVE_CONTAINER").unwrap_or_else(|_| "/app/DB".to_string());
-            path = format!(
-                "{}{}",
-                container_prefix.trim_end_matches('/'),
-                &path[host_prefix.len()..]
-            );
-        }
+    for (parent_id, stage, worker) in forwarded_state_updates {
+        sync_forwarded_state(db, queue, parent_id, Some(stage), Some(&worker)).await;
     }
-    PathBuf::from(path)
-}
-
-fn duplicate_input_path(source: &PathBuf) -> PathBuf {
-    if source.file_name().and_then(|n| n.to_str()) == Some("input.mkv") {
-        source.clone()
-    } else {
-        source.join("input.mkv")
-    }
-}
-
-fn duplicate_source_ready(queue: &[Job], source: &PathBuf) -> bool {
-    let input = duplicate_input_path(source);
-    if !input.exists() {
-        return false;
-    }
-    for owner in queue {
-        let owner_torrent_dir = owner.directory.join("contents").join("torrent");
-        if source.starts_with(&owner_torrent_dir) || input.starts_with(&owner_torrent_dir) {
-            return matches!(
-                owner.ready,
-                Stage::Encoded
-                    | Stage::Uploading
-                    | Stage::Uploaded
-                    | Stage::Failed
-                    | Stage::Cancelled
-            );
-        }
-    }
-    true
-}
-
-fn drive_link_from_payload(payload: &MessagePayload) -> Option<String> {
-    let MessagePayload::Progress(id, args) = payload else {
-        return None;
-    };
-    if *id == UPLOAD_DONE || *id == UPLOAD_PROG || *id == UPLOAD_BACKUP_PROG {
-        return args.get(0).cloned();
-    }
-    None
-}
-
-async fn cleanup_job(source: &PathBuf, dest: &PathBuf) {
-    create_dir_all(dest).await.unwrap();
-    let _ = rename(
-        source.join("contents").join("subtitle.ass"),
-        dest.join("subtitle.ass"),
-    )
-    .await;
-    let _ = rename(
-        source.join("contents").join("fetch.torrent"),
-        dest.join("fetch.torrent"),
-    )
-    .await;
-    let _ = rename(source.join("log"), dest.join("log")).await;
-    remove_dir_all(source).await.ok();
+    queue.retain(|j| !dead.contains(&j.job_id));
 }
 
 async fn dispatch_or_kill(

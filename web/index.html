@@ -513,6 +513,17 @@
   }
   @keyframes kslide { from { background-position: 0 0; } to { background-position: 18px 0; } }
   .seg.wait .seg-name { color: var(--k1); font-weight: 600; }
+  /* indeterminate-but-moving "forwarded — riding another job's encode" state */
+  .seg.forward .seg-track { box-shadow: 0 0 0 1px var(--tint-line) inset; }
+  .seg.forward .seg-prog {
+    width: 42% !important;
+    background: var(--karaoke);
+    background-size: 300% 100%;
+    box-shadow: 0 0 14px -2px var(--k2);
+    animation: kindet 1.25s ease-in-out infinite, ksweep 1.7s linear infinite;
+  }
+  @keyframes kindet { from { transform: translateX(-100%); } to { transform: translateX(238%); } }
+  .seg.forward .seg-name { color: var(--k1); font-weight: 600; }
   .accepted { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 12px 0; font-size: 13px; }
 
   /* progress readout + uploaded links */
@@ -625,6 +636,7 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .seg.active .seg-prog { animation: none; background: var(--karaoke); }
+    .seg.forward .seg-prog { animation: none; width: 100% !important; transform: none; opacity: 0.6; }
     .mini:hover { transform: none; }
   }
 </style>
@@ -1234,7 +1246,8 @@
       var cls = "todo", w = 0;
       if (fin) { cls = "fin"; w = 100; }
       else if (i <= doneUpTo) { cls = "done"; w = 100; }
-      else if (i === active && progress && (progress.type === "forward" || (stage === "Downloading" && progress.waiting))) { cls = "wait"; w = 100; }
+      else if (i === active && progress && progress.type === "forward") { cls = "forward"; w = 42; }
+      else if (i === active && stage === "Downloading" && progress && progress.waiting) { cls = "wait"; w = 100; }
       else if (i === active) { cls = "active"; w = (i === 0) ? 100 : phaseLivePercent(stage, progress); }
       var delay = cls === "active" ? ";animation-delay:-" + ((Date.now() % 1700) / 1000).toFixed(3) + "s" : "";
       return '<div class="seg ' + cls + '"><span class="seg-track">' +
