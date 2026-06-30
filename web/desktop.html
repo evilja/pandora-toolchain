@@ -160,6 +160,15 @@
   }
   .tb-app:hover { border-color: var(--k1); color: var(--ink); }
   .tb-app.active { color: var(--k1); border-color: var(--tint-line); background: var(--tint-bg); }
+  .tb-mins { display: flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; }
+  .tb-min {
+    font-family: var(--mono); font-size: 11.5px; cursor: pointer;
+    color: var(--dim); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 8px; padding: 6px 11px;
+    max-width: 170px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 1;
+    transition: border-color .14s, color .14s, background .14s;
+  }
+  .tb-min:hover { border-color: var(--k1); color: var(--ink); }
   .tb-spacer { margin-left: auto; }
   .tb-clock { font-family: var(--mono); font-size: 11px; color: var(--dim); letter-spacing: 0.3px; }
   .tb-toggle {
@@ -239,6 +248,7 @@
   <div class="taskbar">
     <div class="tb-brand"><b>pandora</b><span>desktop</span></div>
     <div class="tb-apps" id="apps"></div>
+    <div class="tb-mins" id="mins"></div>
     <div class="tb-spacer"></div>
     <div class="tb-clock" id="clock"></div>
     <button class="tb-token" id="tokBtn" type="button" title="API token">⚿ token</button>
@@ -271,6 +281,7 @@
 
   var desktop = document.getElementById("desktop");
   var appsEl  = document.getElementById("apps");
+  var minsEl  = document.getElementById("mins");
   var wins = {};   // app -> { el, body, iframe, state }
   var zTop = 10;
 
@@ -283,7 +294,7 @@
     var out = {};
     ORDER.forEach(function (app) {
       var w = wins[app];
-      if (w) out[app] = { open: true, x: w.state.x, y: w.state.y, w: w.state.w, h: w.state.h, min: w.state.min };
+      if (w) out[app] = { open: true, x: w.state.x, y: w.state.y, w: w.state.w, h: w.state.h, min: w.state.min, max: w.state.max, prev: w.prev };
       else out[app] = { open: false };
     });
     try { localStorage.setItem(STORE, JSON.stringify(out)); } catch (e) {}
@@ -303,7 +314,7 @@
     var n = Object.keys(wins).length;
     var w = Math.min(cfg && cfg.w || 900, desktop.clientWidth - 40);
     var h = Math.min(cfg && cfg.h || 640, desktop.clientHeight - 40);
-    return { x: 24 + n * 34, y: 18 + n * 30, w: w, h: h, min: false };
+    return { x: 24 + n * 34, y: 18 + n * 30, w: w, h: h, min: false, max: false };
   }
 
   function applyRect(rec) {
@@ -313,10 +324,12 @@
 
   function createWin(key, cfg, state) {
     var s = state || defaultState(cfg);
+    var prev = s.prev || null;
+    delete s.prev;
     clampRect(s);
     var el = document.createElement("div");
     el.className = "dwin";
-    var rec = { el: el, state: s, prev: null };
+    var rec = { el: el, state: s, prev: prev };
     el.innerHTML =
       '<div class="dwin-bar"><span class="dwin-lights">' +
         '<button class="tl r dwin-close" type="button" title="Close">✕</button>' +
@@ -339,7 +352,9 @@
     el.querySelector(".dwin-max").addEventListener("click", function (e) { e.stopPropagation(); maximizeWin(key); });
     makeDraggable(rec, el.querySelector(".dwin-bar"));
     makeResizable(rec, el.querySelector(".dwin-resize"));
+    updateMaxBtn(rec);
     bringToFront(rec);
+    renderMins();
     return rec;
   }
 
@@ -348,40 +363,71 @@
     var w = wins[app];
     if (!w) { createWin(app, APPS[app]); saveStore(); markActive(); return; }
     if (w.state.min) { w.state.min = false; w.el.style.display = ""; }
-    bringToFront(w); saveStore();
+    bringToFront(w); saveStore(); markActive(); renderMins();
   }
 
   function openJobWindow(id) {
     if (isMobile()) return;
     var key = "job:" + id;
     var w = wins[key];
-    if (w) { if (w.state.min) { w.state.min = false; w.el.style.display = ""; } bringToFront(w); return; }
+    if (w) { if (w.state.min) { w.state.min = false; w.el.style.display = ""; renderMins(); } bringToFront(w); return; }
     createWin(key, { title: "job #" + id, w: 420, h: 340, src: "/encode?embed=1&job=" + encodeURIComponent(id) });
   }
 
   function minimizeWin(key) {
     var w = wins[key]; if (!w) return;
     w.state.min = true; w.el.style.display = "none";
-    saveStore(); markActive();
+    saveStore(); markActive(); renderMins();
+  }
+
+  function restoreWin(key) {
+    var w = wins[key]; if (!w) return;
+    w.state.min = false; w.el.style.display = "";
+    bringToFront(w); saveStore(); markActive(); renderMins();
+  }
+
+  function updateMaxBtn(w) {
+    var btn = w.el.querySelector(".dwin-max");
+    if (!btn) return;
+    btn.textContent = w.state.max ? "❐" : "+";
+    btn.title = w.state.max ? "Restore" : "Maximize";
   }
 
   function maximizeWin(key) {
     var w = wins[key]; if (!w) return;
-    if (w.prev) {
+    if (w.state.max && w.prev) {
       w.state.x = w.prev.x; w.state.y = w.prev.y; w.state.w = w.prev.w; w.state.h = w.prev.h;
-      w.prev = null;
+      w.prev = null; w.state.max = false;
     } else {
       w.prev = { x: w.state.x, y: w.state.y, w: w.state.w, h: w.state.h };
       w.state.x = 0; w.state.y = 0; w.state.w = desktop.clientWidth; w.state.h = desktop.clientHeight;
+      w.state.max = true;
     }
-    applyRect(w); bringToFront(w); saveStore();
+    clampRect(w.state); applyRect(w); updateMaxBtn(w); bringToFront(w); saveStore();
   }
 
   function closeWin(key) {
     var w = wins[key]; if (!w) return;
     if (w.el.parentNode) w.el.parentNode.removeChild(w.el);
     delete wins[key];
-    saveStore(); markActive();
+    saveStore(); markActive(); renderMins();
+  }
+
+  // ---- taskbar tray: minimized job windows (fixed apps restore via their app buttons) ----
+  function renderMins() {
+    minsEl.innerHTML = "";
+    Object.keys(wins).forEach(function (key) {
+      var w = wins[key];
+      if (!w.state.min) return;
+      if (key === "encode" || key === "git" || key === "jobs") return;
+      var titleEl = w.el.querySelector(".dwin-title");
+      var label = titleEl ? titleEl.textContent : key;
+      var b = document.createElement("button");
+      b.className = "tb-min"; b.type = "button";
+      b.textContent = label; b.title = "Restore " + label;
+      b.addEventListener("click", function () { restoreWin(key); });
+      minsEl.appendChild(b);
+    });
   }
 
   function makeDraggable(rec, handle) {
@@ -391,6 +437,7 @@
       document.body.classList.add("dragging");
       bringToFront(rec);
       rec.prev = null;
+      if (rec.state.max) { rec.state.max = false; updateMaxBtn(rec); }
       var sx = e.clientX, sy = e.clientY, ox = rec.state.x, oy = rec.state.y;
       try { handle.setPointerCapture(e.pointerId); } catch (err) {}
       function move(ev) {
@@ -553,7 +600,7 @@
     if (isMobile()) return;
     var key = "jobs";
     var w = wins[key];
-    if (w) { if (w.state.min) { w.state.min = false; w.el.style.display = ""; } bringToFront(w); return; }
+    if (w) { if (w.state.min) { w.state.min = false; w.el.style.display = ""; renderMins(); } bringToFront(w); return; }
     createWin(key, { title: "jobs", w: 800, h: 360, src: "/encode?embed=1&jobs=1" });
   }
 
@@ -572,7 +619,7 @@
     var any = false;
     ORDER.forEach(function (app) {
       var st = saved[app];
-      if (st && st.open) { createWin(app, APPS[app], { x: st.x, y: st.y, w: st.w, h: st.h, min: !!st.min }); any = true; }
+      if (st && st.open) { createWin(app, APPS[app], { x: st.x, y: st.y, w: st.w, h: st.h, min: !!st.min, max: !!st.max, prev: st.prev || null }); any = true; }
     });
     if (!any) createWin("encode", APPS.encode);
     saveStore();

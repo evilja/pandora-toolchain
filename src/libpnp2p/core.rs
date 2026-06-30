@@ -634,7 +634,7 @@ async fn source_info_hash(
     Ok(torrent_info_hash(&data))
 }
 
-fn magnet_info_hash(magnet: &str) -> Option<String> {
+pub fn magnet_info_hash(magnet: &str) -> Option<String> {
     for part in magnet.split(['?', '&']) {
         if let Some(value) = part.strip_prefix("xt=urn:btih:") {
             if value.len() == 40 && value.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -645,7 +645,7 @@ fn magnet_info_hash(magnet: &str) -> Option<String> {
     None
 }
 
-fn torrent_info_hash(data: &[u8]) -> Option<String> {
+pub fn torrent_info_hash(data: &[u8]) -> Option<String> {
     let info_start = find_info_value_start(data)?;
     let info_end = bencode_value_end(data, info_start)?;
     let mut hasher = Sha1::new();

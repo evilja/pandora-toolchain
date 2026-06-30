@@ -1,9 +1,10 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Extension, Path, Query, Request, State},
-    http::{StatusCode, header},
+    http::{Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -11,7 +12,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 use tokio::net::TcpListener;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::{Mutex, mpsc::Sender};
 
 use crate::pnworker::core::{HalfJob, Job, JobClass, JobType, Preset, Stage};
 use crate::pnworker::acix::confirm_acix;
@@ -23,18 +24,63 @@ use crate::libpngit::{
 };
 use crate::libpnp2p::nyaaise::nyaaise;
 use crate::libpnenv::core::{get_pandora_env, get_perm};
-use crate::libpnenv::standard::{API_AUTHOR_ID, API_HOST, API_TOKENS_PATH};
+use crate::libpnenv::standard::{
+    API_AUTHOR_ID, API_HOST, API_RATE_LIMIT, API_RATE_WINDOW_SECS, API_TOKENS_PATH,
+};
 
 #[derive(Clone)]
 struct AppState {
     tx: Sender<JobClass>,
     db: Arc<JobDb>,
     api_author: u64,
+    rate_limiter: Arc<ApiRateLimiter>,
 }
 
 #[derive(Clone)]
 struct ApiAuth {
     local_server_id: Option<u64>,
+    token_hash: String,
+}
+
+struct ApiRateLimiter {
+    buckets: Mutex<std::collections::HashMap<String, RateBucket>>,
+    max: u32,
+    window: Duration,
+}
+
+struct RateBucket {
+    start: Instant,
+    count: u32,
+}
+
+impl ApiRateLimiter {
+    fn new(max: u32, window: Duration) -> Self {
+        Self {
+            buckets: Mutex::new(std::collections::HashMap::new()),
+            max: max.max(1),
+            window,
+        }
+    }
+
+    async fn check(&self, key: &str) -> Result<(), u64> {
+        let now = Instant::now();
+        let mut buckets = self.buckets.lock().await;
+        buckets.retain(|_, bucket| now.duration_since(bucket.start) < self.window);
+        let bucket = buckets.entry(key.to_string()).or_insert(RateBucket {
+            start: now,
+            count: 0,
+        });
+        let elapsed = now.duration_since(bucket.start);
+        if elapsed >= self.window {
+            bucket.start = now;
+            bucket.count = 0;
+        }
+        if bucket.count >= self.max {
+            return Err(self.window.saturating_sub(elapsed).as_secs().max(1));
+        }
+        bucket.count += 1;
+        Ok(())
+    }
 }
 
 pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -52,7 +98,23 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .get(API_HOST)
         .and_then(|s| s.trim().parse::<IpAddr>().ok())
         .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
-    let state = AppState { tx, db, api_author };
+    let rate_limit = env
+        .get(API_RATE_LIMIT)
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .unwrap_or(30);
+    let rate_window = env
+        .get(API_RATE_WINDOW_SECS)
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(60);
+    let state = AppState {
+        tx,
+        db,
+        api_author,
+        rate_limiter: Arc::new(ApiRateLimiter::new(
+            rate_limit,
+            Duration::from_secs(rate_window.max(1)),
+        )),
+    };
 
     let protected = Router::new()
         .route("/jobs", get(list_jobs))
@@ -79,7 +141,7 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/acix/translators", get(acix_translators))
         .route("/acix/publish", post(acix_publish))
         .layer(DefaultBodyLimit::max(8 * 1024 * 1024))
-        .layer(middleware::from_fn(auth));
+        .layer(middleware::from_fn_with_state(state.clone(), auth));
 
     let app = Router::new()
         .route("/", get(desktop))
@@ -141,7 +203,7 @@ async fn health() -> &'static str {
     "ok"
 }
 
-async fn auth(mut req: Request, next: Next) -> Response {
+async fn auth(State(st): State<AppState>, mut req: Request, next: Next) -> Response {
     let presented = req
         .headers()
         .get(header::AUTHORIZATION)
@@ -157,6 +219,17 @@ async fn auth(mut req: Request, next: Next) -> Response {
     let Some(auth) = api_auth_for_token(&token) else {
         return (StatusCode::UNAUTHORIZED, "invalid token").into_response();
     };
+
+    if req.method() != Method::GET && req.method() != Method::HEAD {
+        if let Err(retry_after) = st.rate_limiter.check(&auth.token_hash).await {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(header::RETRY_AFTER, retry_after.to_string())],
+                "rate limit exceeded",
+            )
+                .into_response();
+        }
+    }
 
     req.extensions_mut().insert(auth);
     next.run(req).await
@@ -177,7 +250,10 @@ fn api_auth_for_token(token: &str) -> Option<ApiAuth> {
             (Some("local"), Some(server_id)) => server_id.trim().parse::<u64>().ok(),
             _ => None,
         };
-        return Some(ApiAuth { local_server_id });
+        return Some(ApiAuth {
+            local_server_id,
+            token_hash: format!("{:x}", md5::compute(token.as_bytes())),
+        });
     }
     None
 }
