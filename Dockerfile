@@ -11,7 +11,7 @@ RUN --mount=type=cache,id=pandora-cargo-registry,target=/usr/local/cargo/registr
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates ffmpeg curl \
+ && apt-get install -y --no-install-recommends ca-certificates ffmpeg curl fontconfig \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 ENV PANDORA_GITSYNC_REPO=/repo

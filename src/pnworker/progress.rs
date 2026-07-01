@@ -10,6 +10,7 @@ pub(crate) async fn persist_side_effects(
     job_id: u64,
     payload: &MessagePayload,
     stage: Option<Stage>,
+    encode_warnings: &[String],
 ) {
     let MessagePayload::Progress(id, args) = payload else {
         return;
@@ -47,10 +48,7 @@ pub(crate) async fn persist_side_effects(
         db.update_progress(job_id, &v.to_string()).await.ok();
     } else if *id == UPLOAD_PROG {
         if stage == Some(Stage::Uploaded) {
-            let v = serde_json::json!({
-                "drive": args.get(0), "doodstream": args.get(1), "lulustream": args.get(2),
-                "voe": args.get(3), "abyss": args.get(4),
-            });
+            let v = upload_links_json(args, encode_warnings);
             db.update_links(job_id, &v.to_string()).await.ok();
             let p = serde_json::json!({ "type": "upload", "percent": 100, "hosts": args });
             db.update_progress(job_id, &p.to_string()).await.ok();
@@ -67,16 +65,14 @@ pub(crate) async fn persist_side_effects(
         let v = serde_json::json!({ "type": "probe", "files": files, "file_options": parse_probe_options(&files) });
         db.update_progress(job_id, &v.to_string()).await.ok();
     } else if *id == UPLOAD_DONE {
-        let v = serde_json::json!({
-            "drive": args.get(0), "doodstream": args.get(1), "lulustream": args.get(2),
-            "voe": args.get(3), "abyss": args.get(4),
-        });
+        let v = upload_links_json(args, encode_warnings);
         db.update_links(job_id, &v.to_string()).await.ok();
         let p = serde_json::json!({ "type": "upload", "percent": 100, "hosts": args });
         db.update_progress(job_id, &p.to_string()).await.ok();
     } else if *id == UPLOAD_BACKUP_PROG {
         if stage == Some(Stage::Uploaded) {
-            let v = serde_json::json!({ "drive": args.get(0) });
+            let mut v = serde_json::json!({ "drive": args.get(0) });
+            add_warnings(&mut v, encode_warnings);
             db.update_links(job_id, &v.to_string()).await.ok();
             let p = serde_json::json!({ "type": "upload", "percent": 100, "hosts": args });
             db.update_progress(job_id, &p.to_string()).await.ok();
@@ -103,6 +99,24 @@ pub(crate) async fn persist_side_effects(
             });
             db.update_progress(job_id, &v.to_string()).await.ok();
         }
+    }
+}
+
+fn upload_links_json(args: &[String], encode_warnings: &[String]) -> serde_json::Value {
+    let mut v = serde_json::json!({
+        "drive": args.get(0), "doodstream": args.get(1), "lulustream": args.get(2),
+        "voe": args.get(3), "abyss": args.get(4),
+    });
+    add_warnings(&mut v, encode_warnings);
+    v
+}
+
+fn add_warnings(v: &mut serde_json::Value, encode_warnings: &[String]) {
+    if encode_warnings.is_empty() {
+        return;
+    }
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert("warnings".to_string(), serde_json::json!(encode_warnings));
     }
 }
 

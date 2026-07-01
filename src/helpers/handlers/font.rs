@@ -81,7 +81,7 @@ pub async fn handle_font(
 
     let source = if has_attachment { "attachment" } else { "link" };
     let mut message = format!("Extracted {} file(s) from {} into `{}`.", count, source, dir.display());
-    match install_fonts_to_linux_folder(&dir, server_id).await {
+    match install_fonts_to_linux_folder(&dir, &server_id.to_string()).await {
         Ok(Some(installed)) => {
             let cache = if installed.cache_refreshed { "refreshed" } else { "not refreshed" };
             message.push_str(&format!(" Installed {} font file(s) to `{}` (font cache {}).", installed.count, installed.dir.display(), cache));
@@ -92,6 +92,12 @@ pub async fn handle_font(
     font_response(ctx, command, message).await;
 }
 
+pub struct PersistedFontInstall {
+    pub count: usize,
+    pub dirs: Vec<PathBuf>,
+    pub cache_refreshed: bool,
+}
+
 struct LinuxFontInstall {
     dir: PathBuf,
     count: usize,
@@ -99,8 +105,52 @@ struct LinuxFontInstall {
 }
 
 #[cfg(target_os = "linux")]
-async fn install_fonts_to_linux_folder(src: &Path, server_id: u64) -> Result<Option<LinuxFontInstall>, String> {
-    let dir = linux_font_dir(server_id).await?;
+pub async fn install_persisted_pandora_fonts() -> Result<Option<PersistedFontInstall>, String> {
+    let root = PathBuf::from("DB").join("fontconfig");
+    match tokio::fs::metadata(&root).await {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    }
+
+    let mut entries = tokio::fs::read_dir(&root).await.map_err(|e| e.to_string())?;
+    let mut count = 0usize;
+    let mut dirs = Vec::new();
+    let mut cache_refreshed = false;
+    while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
+        let kind = entry.file_type().await.map_err(|e| e.to_string())?;
+        if !kind.is_dir() {
+            continue;
+        }
+        let bucket = entry.file_name().to_string_lossy().trim().to_string();
+        if bucket.is_empty() {
+            continue;
+        }
+        if let Some(installed) = install_fonts_to_linux_folder(&entry.path(), &bucket).await? {
+            if installed.count > 0 {
+                count += installed.count;
+                cache_refreshed |= installed.cache_refreshed;
+                dirs.push(installed.dir);
+            }
+        }
+    }
+
+    if count == 0 {
+        Ok(None)
+    } else {
+        Ok(Some(PersistedFontInstall { count, dirs, cache_refreshed }))
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn install_persisted_pandora_fonts() -> Result<Option<PersistedFontInstall>, String> {
+    Ok(None)
+}
+
+#[cfg(target_os = "linux")]
+async fn install_fonts_to_linux_folder(src: &Path, bucket: &str) -> Result<Option<LinuxFontInstall>, String> {
+    let dir = linux_font_dir(bucket).await?;
     let count = copy_font_files(src, &dir).await?;
     let cache_refreshed = if count > 0 {
         tokio::process::Command::new("fc-cache")
@@ -117,13 +167,13 @@ async fn install_fonts_to_linux_folder(src: &Path, server_id: u64) -> Result<Opt
 }
 
 #[cfg(not(target_os = "linux"))]
-async fn install_fonts_to_linux_folder(_src: &Path, _server_id: u64) -> Result<Option<LinuxFontInstall>, String> {
+async fn install_fonts_to_linux_folder(_src: &Path, _bucket: &str) -> Result<Option<LinuxFontInstall>, String> {
     Ok(None)
 }
 
 #[cfg(target_os = "linux")]
-async fn linux_font_dir(server_id: u64) -> Result<PathBuf, String> {
-    let system = PathBuf::from("/usr/local/share/fonts").join("pandora").join(server_id.to_string());
+async fn linux_font_dir(bucket: &str) -> Result<PathBuf, String> {
+    let system = PathBuf::from("/usr/local/share/fonts").join("pandora").join(bucket);
     match tokio::fs::create_dir_all(&system).await {
         Ok(()) => return Ok(system),
         Err(system_err) => {
@@ -131,7 +181,7 @@ async fn linux_font_dir(server_id: u64) -> Result<PathBuf, String> {
                 .map(PathBuf::from)
                 .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local").join("share")))
                 .ok_or_else(|| format!("{} and no user font directory is available", system_err))?;
-            let user = base.join("fonts").join("pandora").join(server_id.to_string());
+            let user = base.join("fonts").join("pandora").join(bucket);
             tokio::fs::create_dir_all(&user).await
                 .map_err(|e| format!("{}; fallback {}: {}", system_err, user.display(), e))?;
             Ok(user)

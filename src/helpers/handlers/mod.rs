@@ -53,7 +53,7 @@ pub use self::addapi::handle_addapi;
 pub use self::gentoken::handle_gentoken;
 pub use self::acixconfirm::handle_acixconfirm;
 pub use self::acixtemplate::handle_acixtemplate;
-pub use self::font::handle_font;
+pub use self::font::{handle_font, install_persisted_pandora_fonts};
 pub use self::readmebase::handle_readmebase;
 pub use self::auth::handle_auth;
 pub use self::remove::handle_remove;

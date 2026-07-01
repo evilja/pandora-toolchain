@@ -1326,6 +1326,7 @@
   function linksBlock(l) {
     if (!l || typeof l !== "object") return "";
     var rows = Object.keys(l).map(function (host) {
+      if (host === "warnings") return "";
       var val = l[host];
       if (val === null || val === undefined || val === "") return "";
       var s = String(val);
@@ -1337,6 +1338,13 @@
     if (!rows) return "";
     return '<div class="prog-label">Links</div><div class="up-hosts">' + rows + "</div>";
   }
+  function warningsBlock(w) {
+    if (!w) return "";
+    var list = Array.isArray(w) ? w : [String(w)];
+    list = list.map(function (s) { return String(s || "").trim(); }).filter(Boolean);
+    if (!list.length) return "";
+    return '<div class="prog-label">Warnings</div><pre>' + esc(list.join("\n")) + "</pre>";
+  }
   function summaryBlock(d) {
     var rows = "";
     if (d.worker) rows += '<div class="link-row"><span class="link-host mono">Worker</span><span class="mono">' + esc(d.worker) + "</span></div>";
@@ -1346,7 +1354,8 @@
       rows += '<div class="link-row"><span class="link-host mono">Selection</span><span class="mono">' + esc(src + " : " + d.progress.file_index) + "</span></div>";
     }
     if (d.link) rows += '<div class="link-row"><span class="link-host mono">Source</span><span>' + esc(d.link) + "</span></div>";
-    return rows ? '<div class="prog-label">Details</div>' + rows : "";
+    var warnings = warningsBlock(d.links && d.links.warnings);
+    return (rows ? '<div class="prog-label">Details</div>' + rows : "") + warnings;
   }
   function messageText(data, ok) {
     if (typeof data === "string") return data;

@@ -14,7 +14,8 @@ use crate::pnworker::forwarding::{
 use crate::pnworker::heartbeat::core::{TypedShrine, Worker};
 use crate::pnworker::lifecycle::{cleanup_job, render};
 use crate::pnworker::messages::{
-    MessagePayload, PROBE_TIMEOUT, QUEUE_TOO_LONG, QUEUED, TORRENT_DUPLICATE_WAIT, WORKER_ASSIGN,
+    ENCODE_WARNING, MessagePayload, PROBE_TIMEOUT, QUEUE_TOO_LONG, QUEUED, TORRENT_DUPLICATE_WAIT,
+    WORKER_ASSIGN,
 };
 use crate::pnworker::presence::{Presence, presence_from_queue};
 use crate::pnworker::progress::{drive_link_from_payload, persist_side_effects};
@@ -459,6 +460,21 @@ async fn do_worker_message_things(
                 }
                 return true;
             }
+            if *id == ENCODE_WARNING {
+                if let Some(warning) = args.get(0) {
+                    let warning = warning.clone();
+                    if !queue[pos].encode_warnings.iter().any(|w| w == &warning) {
+                        queue[pos].encode_warnings.push(warning.clone());
+                    }
+                    let parent_id = queue[pos].job_id;
+                    for child in queue.iter_mut().filter(|j| j.forward_parent == Some(parent_id)) {
+                        if !child.encode_warnings.iter().any(|w| w == &warning) {
+                            child.encode_warnings.push(warning.clone());
+                        }
+                    }
+                }
+                return true;
+            }
             if *id == TORRENT_DUPLICATE_WAIT {
                 if let Some(path) = args.get(0) {
                     queue[pos].duplicate_source = Some(duplicate_path_to_container(path));
@@ -502,7 +518,7 @@ async fn do_worker_message_things(
                     }
                 }
             }
-            persist_side_effects(db, i.job_id, &payload, stage).await;
+            persist_side_effects(db, i.job_id, &payload, stage, &i.encode_warnings).await;
             render(i, payload.clone()).await;
 
             let finished = matches!(i.ready, Stage::Uploaded | Stage::Failed | Stage::Cancelled);
@@ -1020,6 +1036,7 @@ pub struct Job {
     pub worker: String,
     pub duplicate_source: Option<PathBuf>,
     pub forward_parent: Option<u64>,
+    pub encode_warnings: Vec<String>,
 }
 
 impl PartialEq for Job {
@@ -1075,6 +1092,7 @@ impl Job {
             worker: "que-main".to_string(),
             duplicate_source: None,
             forward_parent: None,
+            encode_warnings: Vec::new(),
         }
     }
 
@@ -1124,6 +1142,7 @@ impl Job {
             worker: "que-main".to_string(),
             duplicate_source: None,
             forward_parent: None,
+            encode_warnings: Vec::new(),
         }
     }
 }

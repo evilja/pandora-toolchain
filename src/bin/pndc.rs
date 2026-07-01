@@ -1828,6 +1828,18 @@ async fn main() {
     migrate_pandora_files().await;
     ensure_command_ranks_file();
     pandora_toolchain::libpnbin::ensure_startup_binaries().await;
+    match install_persisted_pandora_fonts().await {
+        Ok(Some(installed)) => {
+            let dirs = installed.dirs.iter()
+                .map(|dir| dir.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let cache = if installed.cache_refreshed { "refreshed" } else { "not refreshed" };
+            println!("[fonts] installed {} persisted font file(s) to {} (font cache {})", installed.count, dirs, cache);
+        }
+        Ok(None) => {}
+        Err(e) => eprintln!("[fonts] persisted font install failed: {}", e),
+    }
     let env = get_pandora_env();
     let (tx, rx): (Sender<JobClass>, Receiver<JobClass>) = channel(5);
     tokio::spawn(pn_worker(rx));

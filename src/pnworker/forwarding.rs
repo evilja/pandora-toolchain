@@ -84,7 +84,7 @@ pub(crate) async fn sync_forwarded_jobs(
             queue[pos].worker = worker.clone();
             db.update_worker(queue[pos].job_id, &worker).await.ok();
             if !is_forwarded_download_payload(payload) {
-                persist_side_effects(db, queue[pos].job_id, payload, stage).await;
+                persist_side_effects(db, queue[pos].job_id, payload, stage, &queue[pos].encode_warnings).await;
                 render(&mut queue[pos], payload.clone()).await;
             }
             if stage.map(is_terminal_stage).unwrap_or(false) {

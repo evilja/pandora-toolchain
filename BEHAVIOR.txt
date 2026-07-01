@@ -38,6 +38,8 @@ Common worker behavior
   Encoded, Uploading, Uploaded, Failed, Declined, Cancelled.
 - On startup, the worker marks stale non-terminal jobs failed, removes
   pandora-job-* qBittorrent torrents, and clears the encode input cache.
+- On pndc startup, persisted font folders under DB/fontconfig/* are
+  auto-installed into the Linux font folder before workers/API are started.
 - Probe jobs idle in Probed for 180 seconds, then archive if no follow-up uses
   them.
 - A cross reaction creates a CANCEL sentinel in the job work directory. Only a
@@ -62,6 +64,10 @@ Discord slash commands
 - Preset choices map to Standard, PseudoLossless, or Dummy. "gpu" currently
   maps to Standard in slash/API parsing. concat selects an intros.toml group.
 - The pipeline downloads input, encodes with ffmpeg, then uploads.
+- PNmpeg watches FFmpeg stderr for libass fontselect fallbacks where a
+  non-Arial font maps to ArialMT. Those warnings are deduplicated, shown in the
+  Discord job embed, and persisted in uploaded link JSON as warnings for the
+  web/API encode console.
 
 /probe torrent:<link>
 - Rank 0. Queues JobType::Probe. Downloads/probes a torrent and lists files for
@@ -210,6 +216,8 @@ Discord slash commands
 /gitsync
 - Rank 3. Sends a HalfJob to kill shrine layers, git pull the configured repo,
   optionally write PANDORA_GITSYNC_REQUEST, remove DB/work, and exit for restart.
+- The restarted pndc process auto-installs persisted DB/fontconfig fonts before
+  accepting new jobs.
 
 /gettranslation language:<en|tr|jp> key:<key>
 - Rank 2. Initializes language files if needed, uppercases the key, and replies
@@ -242,6 +250,8 @@ Discord slash commands
 - Extracts the zip under DB/fontconfig/<server_id>. Unsafe paths are rejected.
 - On Linux, recursively copies font files to /usr/local/share/fonts/pandora or a
   user font directory fallback and runs fc-cache when fonts were copied.
+- Stored DB/fontconfig folders are replayed on pndc startup, including after a
+  /gitsync restart.
 
 /readmebase file:<attachment>
 - Rank 2. Stores the attachment bytes as DB/config/<server_id>/base.md.

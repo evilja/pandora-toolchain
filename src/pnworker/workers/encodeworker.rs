@@ -5,7 +5,7 @@ use tokio::time::sleep;
 use crate::libpnenv::core::get_pandora_env;
 use crate::libpnenv::standard::PNMPEG;
 use crate::libpnprotocol::core::Protocol;
-use crate::pnworker::messages::{ENCODE_CONCAT_PROG, ENCODE_DONE, ENCODE_FAIL, ENCODE_PROG, JOB_CANCELLED, MessagePayload};
+use crate::pnworker::messages::{ENCODE_CONCAT_PROG, ENCODE_DONE, ENCODE_FAIL, ENCODE_PROG, ENCODE_WARNING, JOB_CANCELLED, MessagePayload};
 use crate::pnworker::util::{ToolResult, run_tool};
 use crate::pnworker::tools::{PNMPEG_CONCAT, PNMPEG_ENCODE};
 use tokio::fs::rename;
@@ -84,6 +84,13 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                         1 => return Some(ToolResult::Success),
                         2 => return Some(ToolResult::Fail),
                         3 => return Some(ToolResult::Cancel),
+                        4 => {
+                            if let Some(warning) = data.get(1).and_then(|v| v.as_str()) {
+                                tx.try_send((job_id, MessagePayload::Progress(ENCODE_WARNING, vec![
+                                    warning.to_string(),
+                                ]), None)).ok();
+                            }
+                        }
                         _ => {}
                     }
                     None
@@ -137,6 +144,13 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                             1 => return Some(ToolResult::Success),
                             2 => return Some(ToolResult::Fail),
                             3 => return Some(ToolResult::Cancel),
+                            4 => {
+                                if let Some(warning) = data.get(1).and_then(|v| v.as_str()) {
+                                    tx.try_send((job_id, MessagePayload::Progress(ENCODE_WARNING, vec![
+                                        warning.to_string(),
+                                    ]), None)).ok();
+                                }
+                            }
                             _ => {}
                         }
                         None

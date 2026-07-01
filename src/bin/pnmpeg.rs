@@ -235,6 +235,16 @@ async fn main() {
                     ).unwrap()
                 )
             }
+            RpbData::Warning(warning) => {
+                println!("{}",
+                    pn_emit!(
+                        protocol = proto,
+                        negkey = &neg,
+                        schema = [leaf, leaf],
+                        data   = ["4", warning]
+                    ).unwrap()
+                )
+            }
             RpbData::Done(a) => {
                 println!("{}",
                     pn_emit!(

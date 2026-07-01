@@ -22,6 +22,7 @@ pub const TORRENT_FAIL: &str = "TORRENT_FAIL";
 pub const TORRENT_DUPLICATE_WAIT: &str = "TORRENT_DUPLICATE_WAIT";
 pub const ENCODE_PROG: &str = "ENCODE_PROG";
 pub const ENCODE_CONCAT_PROG: &str = "ENCODE_CONCAT_PROG";
+pub const ENCODE_WARNING: &str = "ENCODE_WARNING";
 pub const ENCODE_DONE: &str = "ENCODE_DONE";
 pub const ENCODE_FAIL: &str = "ENCODE_FAIL";
 pub const UPLOAD_PROG: &str = "UPLOAD_PROG";
@@ -281,7 +282,7 @@ pub fn create_job_embed(job: &Job, payload: &MessagePayload) -> CreateEmbed {
         Stage::Cancelled => Colour::DARK_GREY,
     };
 
-    CreateEmbed::new()
+    let mut embed = CreateEmbed::new()
         .title(substitute(
             &get_message(EMBED_TITLE, lang),
             &[PKGVER.to_string()],
@@ -307,9 +308,38 @@ pub fn create_job_embed(job: &Job, payload: &MessagePayload) -> CreateEmbed {
             get_message(FIELD_TORRENT, lang),
             format!("{}", job.torrent.display()),
             false,
-        )
+        );
+    if !job.encode_warnings.is_empty() {
+        embed = embed.field("Warnings", warnings_field(&job.encode_warnings), false);
+    }
+    embed
         .field(get_message(FIELD_PROGRESS, lang), status_message, false)
         .timestamp(serenity::model::Timestamp::now())
+}
+
+fn warnings_field(warnings: &[String]) -> String {
+    let mut out = String::new();
+    let mut hidden = 0usize;
+    for warning in warnings {
+        let next = if out.is_empty() {
+            warning.clone()
+        } else {
+            format!("\n{}", warning)
+        };
+        if out.len() + next.len() > 1000 {
+            hidden += 1;
+        } else {
+            out.push_str(&next);
+        }
+    }
+    if hidden > 0 {
+        out.push_str(&format!("\n...and {} more", hidden));
+    }
+    if out.is_empty() {
+        "None".to_string()
+    } else {
+        out
+    }
 }
 
 pub fn get_stage_text(stage: Stage, lang: &str) -> String {

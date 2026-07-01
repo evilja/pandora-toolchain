@@ -9,9 +9,11 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use regex::Regex;
 use std::sync::mpsc::Sender;
+use std::collections::HashSet;
 
 pub enum RpbData {
     Progress(u64, u64, u64, u64),
+    Warning(String),
     Done(String),
     Fail,
     CancelFile,
@@ -186,11 +188,13 @@ where
     let frame_re   = Regex::new(r"frame=\s*(\d+)").unwrap();
     let fps_re     = Regex::new(r"fps=\s*([\d\.]+)").unwrap();
     let bitrate_re = Regex::new(r"bitrate=\s*([\d\.]+)").unwrap();
+    let fontselect_re = Regex::new(r"fontselect:\s*\(([^,\)]*).*->\s*(.*)$").unwrap();
 
     let mut last_fps: u64 = 0;
     let mut last_frame: u64 = 0;
     let mut last_bitrate: u64 = 0;
     let total_frame: u64 = totalframe.unwrap_or(0);
+    let mut emitted_warnings: HashSet<String> = HashSet::new();
 
     for line in reader.lines().flatten() {
         log!(handle, &(line.clone() + "\n"));
@@ -217,7 +221,12 @@ where
                 .unwrap_or(0.0) as u64;
         }
 
-        // Only emit when we actually got frame info
+        if let Some(warning) = fontselect_warning(&line, &fontselect_re) {
+            if emitted_warnings.insert(warning.clone()) {
+                let _ = tx.send(RpbData::Warning(warning));
+            }
+        }
+
         if line.contains("frame=") {
             let _ = tx.send(
                 RpbData::Progress(
@@ -238,5 +247,53 @@ where
         let _ = tx.send(RpbData::Done("DONE".into()));
     } else {
         let _ = tx.send(RpbData::Fail);
+    }
+}
+
+fn fontselect_warning(line: &str, re: &Regex) -> Option<String> {
+    if !line.contains("fontselect") {
+        return None;
+    }
+    let cap = re.captures(line)?;
+    let source = cap.get(1)?.as_str().trim();
+    let target = cap.get(2)?.as_str();
+    if !target.contains("ArialMT") || source.to_ascii_lowercase().contains("arial") || source.is_empty() {
+        return None;
+    }
+    Some(format!("{} -> ArialMT", source))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_non_arial_fontselect_fallback_to_arialmt() {
+        let re = Regex::new(r"fontselect:\s*\(([^,\)]*).*->\s*(.*)$").unwrap();
+        let line = "[Parsed_ass_0] fontselect: (Gumbo DEMO, 400, 0) -> ArialMT, 0, ArialMT";
+
+        assert_eq!(
+            fontselect_warning(line, &re),
+            Some("Gumbo DEMO -> ArialMT".to_string())
+        );
+    }
+
+    #[test]
+    fn ignores_arial_fontselect_fallback_to_arialmt() {
+        let re = Regex::new(r"fontselect:\s*\(([^,\)]*).*->\s*(.*)$").unwrap();
+        let line = "[Parsed_ass_0] fontselect: (Arial, 400, 0) -> ArialMT, 0, ArialMT";
+
+        assert_eq!(fontselect_warning(line, &re), None);
+    }
+
+    #[test]
+    fn detects_path_fontselect_fallback_to_arialmt() {
+        let re = Regex::new(r"fontselect:\s*\(([^,\)]*).*->\s*(.*)$").unwrap();
+        let line = "[Parsed_ass_0] fontselect: (Vesta-Bold, 700, 0) -> /usr/share/fonts/arial.ttf, 0, ArialMT";
+
+        assert_eq!(
+            fontselect_warning(line, &re),
+            Some("Vesta-Bold -> ArialMT".to_string())
+        );
     }
 }
