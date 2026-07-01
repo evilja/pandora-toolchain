@@ -153,14 +153,10 @@ async fn main() {
         params = Vec::from(CPU_SANE_DEFAULTS);
     }
 
-    let jpn_index = if !args.concat || args.legacyconcat {
-        match ffprobe_lang(&args.input, &match args.lang {
-            Some(l) => format!("{}", l),
-            None => wrap("jpn"),
-        }) {
-            Some(v) => format!("{}", v),
-            None => wrap("a")
-        }
+    let audio_index = if !args.concat || args.legacyconcat {
+        args.lang.as_deref()
+            .and_then(|lang| ffprobe_lang(&args.input, lang).map(|idx| idx.to_string()))
+            .unwrap_or_else(|| wrap("a:0"))
     } else {
         wrap("1")
     };
@@ -169,7 +165,7 @@ async fn main() {
     for i in params.iter_mut() {
         match i {
             FfmpegParams::Map(a) => {
-                *i = FfmpegParams::Map(Cow::Owned(a.replace("JPN_INDEX", &format!("{}", jpn_index))));
+                *i = FfmpegParams::Map(Cow::Owned(a.replace("JPN_INDEX", &format!("{}", audio_index))));
             },
             FfmpegParams::Input(a) => {
                 let mut c = a.to_string();
