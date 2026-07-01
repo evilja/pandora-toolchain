@@ -94,6 +94,8 @@ Discord slash commands
   the first non-empty, non-; line from SOURCE.md and strips a leading #.
 - If TS is missing, runs pnass split-signs, uploads the sign-stripped TL and
   generated TS, then merges.
+- During pnass merge, unused styles are pruned from TL and TS separately before
+  duplicate TS style names are renamed.
 - Runs pnass merge, uploads Release - <name> - E<NN>.ass, writes SOURCE.md when
   link was supplied, and queues a regular encode against the merged ASS.
 - If pnass produces no Dialogue lines, smartcode fails before uploading the

@@ -95,7 +95,8 @@ async fn main() {
     }
 
     let warning_event_count = sub.events.len();
-    let prune_styles = args.merge.is_some() || args.negkey.as_deref() == Some("PNassMerge");
+    let has_merge = args.merge.is_some();
+    let prune_styles = has_merge || args.negkey.as_deref() == Some("PNassMerge");
 
     if let Some(merge_path) = args.merge.as_deref() {
         let mut secondary = SubstationAlpha::load(PathBuf::from(merge_path), adv_parsing).await;
@@ -105,13 +106,7 @@ async fn main() {
                 schema = [leaf, leaf], data = ["4", e]).unwrap());
             std::process::exit(1);
         }
-        let overlap: std::collections::HashSet<String> = style_names(&sub)
-            .intersection(&style_names(&secondary))
-            .cloned()
-            .collect();
-        if !overlap.is_empty() {
-            rename_overlapping_styles(&mut secondary, &overlap);
-        }
+        prepare_merge_styles(&mut sub, &mut secondary);
         append_sub(&mut sub, secondary);
     }
 
@@ -147,7 +142,7 @@ async fn main() {
             schema = [leaf, leaf], data = ["4", more]).unwrap());
     }
 
-    if prune_styles {
+    if prune_styles && !has_merge {
         prune_unused_styles(&mut sub);
     }
 
@@ -494,6 +489,18 @@ fn append_sub(dst: &mut SubstationAlpha, src: SubstationAlpha) {
     dst.events.extend(src.events);
 }
 
+fn prepare_merge_styles(primary: &mut SubstationAlpha, secondary: &mut SubstationAlpha) {
+    prune_unused_styles(primary);
+    prune_unused_styles(secondary);
+    let overlap: std::collections::HashSet<String> = style_names(primary)
+        .intersection(&style_names(secondary))
+        .cloned()
+        .collect();
+    if !overlap.is_empty() {
+        rename_overlapping_styles(secondary, &overlap);
+    }
+}
+
 fn prune_unused_styles(sub: &mut SubstationAlpha) {
     let used = used_style_names(sub);
     sub.v4p_styles.retain(|style| used.contains(&style.name));
@@ -685,6 +692,49 @@ mod tests {
             ASSText::Override(ASSOverride::TransformI(tags))
                 if matches!(&tags[0], ASSOverride::R(Some(name)) if name == &renamed)
         ));
+    }
+
+    #[test]
+    fn merge_prunes_inputs_before_duplicate_style_renaming() {
+        let mut primary = SubstationAlpha {
+            script_info: ScriptInfo {
+                title: String::new(),
+                script_type: String::new(),
+                wrap_style: 0,
+                scaled_border_and_shadow: false,
+                playresx: 0,
+                playresy: 0,
+                ycbcr_matrix: String::new(),
+                layout_res_x: 0,
+                layout_res_y: 0,
+            },
+            v4p_styles: vec![style("Default"), style("Shared")],
+            events: vec![event("Default", vec![ASSText::RawText("tl".to_string())])],
+        };
+        let mut secondary = SubstationAlpha {
+            script_info: ScriptInfo {
+                title: String::new(),
+                script_type: String::new(),
+                wrap_style: 0,
+                scaled_border_and_shadow: false,
+                playresx: 0,
+                playresy: 0,
+                ycbcr_matrix: String::new(),
+                layout_res_x: 0,
+                layout_res_y: 0,
+            },
+            v4p_styles: vec![style("Shared")],
+            events: vec![event("Shared", vec![ASSText::RawText("ts".to_string())])],
+        };
+
+        prepare_merge_styles(&mut primary, &mut secondary);
+
+        assert_eq!(
+            primary.v4p_styles.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            vec!["Default"]
+        );
+        assert_eq!(secondary.v4p_styles[0].name, "Shared");
+        assert_eq!(secondary.events[0].style, "Shared");
     }
 
     #[test]
