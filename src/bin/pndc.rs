@@ -7,6 +7,7 @@ use serenity::{
 use pandora_toolchain::libpnp2p::nyaaise::nyaaise;
 use pandora_toolchain::pnworker::core::{HalfJob, Job, JobClass, JobType, Preset};
 use pandora_toolchain::pnworker::util::{CliParam, IntrosConfig, PathValue, ToolResult, run_tool};
+use pandora_toolchain::pnworker::tools::PNASS_JOB;
 use pandora_toolchain::pnworker::tools::PNASS_MERGE;
 use pandora_toolchain::pnworker::tools::PNASS_MERGE_TL_ONLY;
 use pandora_toolchain::pnworker::tools::PNASS_SPLIT_SIGNS;

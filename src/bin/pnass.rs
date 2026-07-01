@@ -39,6 +39,9 @@ struct Args {
     title: Option<String>,
 
     #[arg(long)]
+    no_adv_parsing: bool,
+
+    #[arg(long)]
     negkey: Option<String>,
 
     #[arg(long)]
@@ -64,7 +67,8 @@ async fn main() {
     );
 
     let wrap_style = parse_wrap_style_arg(args.wrap_style.as_deref());
-    let mut sub = SubstationAlpha::load(PathBuf::from(&args.input), true).await;
+    let adv_parsing = !args.no_adv_parsing;
+    let mut sub = SubstationAlpha::load(PathBuf::from(&args.input), adv_parsing).await;
 
     if let Some(t) = args.title {
         sub.script_info.title = t;
@@ -94,7 +98,7 @@ async fn main() {
     let prune_styles = args.merge.is_some() || args.negkey.as_deref() == Some("PNassMerge");
 
     if let Some(merge_path) = args.merge.as_deref() {
-        let mut secondary = SubstationAlpha::load(PathBuf::from(merge_path), true).await;
+        let mut secondary = SubstationAlpha::load(PathBuf::from(merge_path), adv_parsing).await;
         fill_script_info_defaults(&mut secondary.script_info, wrap_style);
         if let Err(e) = normalize_merge_resolutions(&mut sub, &mut secondary) {
             println!("{}", pn_emit!(protocol = proto, negkey = &neg,
@@ -156,23 +160,64 @@ async fn main() {
 fn visible_lines(line: &ASSLine) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     let mut current = String::new();
+    let mut drawing_mode = 0u8;
     for item in &line.data {
-        if let ASSText::RawText(t) = item {
-            let chars: Vec<char> = t.chars().collect();
-            let mut k = 0;
-            while k < chars.len() {
-                if chars[k] == '\\' && k + 1 < chars.len() && chars[k + 1] == 'N' {
-                    lines.push(std::mem::take(&mut current));
-                    k += 2;
-                    continue;
-                }
-                current.push(chars[k]);
-                k += 1;
-            }
+        match item {
+            ASSText::RawText(t) => push_visible_raw(t, &mut lines, &mut current, &mut drawing_mode),
+            ASSText::Override(ASSOverride::P(n)) => drawing_mode = *n,
+            ASSText::Override(_) => {}
+            ASSText::Drawing(_) => {}
         }
     }
     lines.push(current);
     lines
+}
+
+fn push_visible_raw(text: &str, lines: &mut Vec<String>, current: &mut String, drawing_mode: &mut u8) {
+    let chars: Vec<char> = text.chars().collect();
+    let mut k = 0;
+    while k < chars.len() {
+        if chars[k] == '{' {
+            if let Some(end) = chars.iter().enumerate().skip(k + 1).find(|(_, ch)| **ch == '}').map(|(i, _)| i) {
+                let block: String = chars[k + 1..end].iter().collect();
+                update_drawing_mode_from_block(&block, drawing_mode);
+                k = end + 1;
+                continue;
+            }
+        }
+        if *drawing_mode == 0 && chars[k] == '\\' && k + 1 < chars.len() && chars[k + 1] == 'N' {
+            lines.push(std::mem::take(current));
+            k += 2;
+            continue;
+        }
+        if *drawing_mode == 0 {
+            current.push(chars[k]);
+        }
+        k += 1;
+    }
+}
+
+fn update_drawing_mode_from_block(block: &str, drawing_mode: &mut u8) {
+    let bytes = block.as_bytes();
+    let mut i = 0;
+    while i + 2 <= bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() && bytes[i + 1] == b'p' {
+            let mut j = i + 2;
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            let start = j;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j > start {
+                *drawing_mode = block[start..j].parse().unwrap_or(0);
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
+    }
 }
 
 fn parse_wrap_style_arg(value: Option<&str>) -> Option<u8> {

@@ -221,6 +221,24 @@ pub const PNASS_LAYER: &[CliParam] = &[
     CliParam::Literal("0.1.1"),
 ];
 
+pub const PNASS_JOB: &[CliParam] = &[
+    CliParam::Literal("--input"),
+    CliParam::Path("INPUT"),
+    CliParam::Literal("--output"),
+    CliParam::Path("OUTPUT"),
+    CliParam::Literal("--title"),
+    CliParam::Path("TITLE"),
+    CliParam::Literal("--wrap-style"),
+    CliParam::Path("WRAPSTYLE"),
+    CliParam::Literal("--no-adv-parsing"),
+    CliParam::Literal("--negkey"),
+    CliParam::Literal("PNassJob"),
+    CliParam::Literal("--negotiator"),
+    CliParam::Literal("PNdc"),
+    CliParam::Literal("--negver"),
+    CliParam::Literal("0.1.1"),
+];
+
 pub const PNASS_SPLIT_SIGNS: &[CliParam] = &[
     CliParam::Literal("--input"),
     CliParam::Path("INPUT"),
