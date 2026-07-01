@@ -59,13 +59,12 @@ pub async fn handle_rmtoken(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,
 ) {
-    let label = match option_trimmed(command, "label") {
-        Some(s) => s,
-        None => {
-            command_error(ctx, command, "Error: `label` is required.").await;
-            return;
-        }
-    };
+    let label = option_trimmed(command, "label");
+    let token = option_trimmed(command, "token");
+    if label.is_some() == token.is_some() {
+        command_error(ctx, command, "Error: provide exactly one of `label` or `token`.").await;
+        return;
+    }
     let contents = match tokio::fs::read_to_string(TOKENS_PATH).await {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -77,11 +76,23 @@ pub async fn handle_rmtoken(
             return;
         }
     };
-    let (updated, removed) = remove_labelled_tokens(&contents, &label);
+    let (updated, removed, matched) = if let Some(label) = label {
+        let (updated, removed) = remove_labelled_tokens(&contents, &label);
+        (updated, removed, format!("label `{}`", inline(&label)))
+    } else {
+        let token = token.unwrap();
+        match remove_masked_token(&contents, &token) {
+            Ok((updated, removed)) => (updated, removed, format!("token `{}`", inline(&token))),
+            Err(e) => {
+                command_error(ctx, command, e).await;
+                return;
+            }
+        }
+    };
     if removed == 0 {
         command.create_response(ctx, CreateInteractionResponse::Message(
             CreateInteractionResponseMessage::new()
-                .content(format!("No tokens matched label `{}`.", inline(&label)))
+                .content(format!("No tokens matched {}.", matched))
                 .ephemeral(true)
         )).await.ok();
         return;
@@ -92,7 +103,7 @@ pub async fn handle_rmtoken(
     }
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
-            .content(format!("Removed {} token(s) labelled `{}`.", removed, inline(&label)))
+            .content(format!("Removed {} token(s) matching {}.", removed, matched))
             .ephemeral(true)
     )).await.ok();
 }
@@ -164,6 +175,53 @@ fn remove_labelled_tokens(contents: &str, target: &str) -> (String, usize) {
         text.push('\n');
     }
     (text, removed)
+}
+
+fn remove_masked_token(contents: &str, target: &str) -> Result<(String, usize), String> {
+    let matches = parse_token_entries(contents)
+        .into_iter()
+        .filter(|entry| masked_token(&entry.token) == target)
+        .count();
+    if matches == 0 {
+        return Err(format!("No token matched `{}`.", inline(target)));
+    }
+    if matches > 1 {
+        return Err(format!("Token mask `{}` matched {} tokens; use labels to disambiguate.", inline(target), matches));
+    }
+
+    let mut out = Vec::new();
+    let mut pending = Vec::new();
+    let mut removed = 0usize;
+
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with(';') {
+            pending.push(line.to_string());
+            continue;
+        }
+        if trimmed.is_empty() {
+            if pending.is_empty() {
+                out.push(line.to_string());
+            } else {
+                pending.push(line.to_string());
+            }
+            continue;
+        }
+        let stored = trimmed.split('|').next().unwrap_or("").trim();
+        if masked_token(stored) == target {
+            pending.clear();
+            removed += 1;
+            continue;
+        }
+        out.append(&mut pending);
+        out.push(line.to_string());
+    }
+    out.append(&mut pending);
+    let mut text = out.join("\n");
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    Ok((text, removed))
 }
 
 fn parse_label_comment(line: &str) -> Option<String> {

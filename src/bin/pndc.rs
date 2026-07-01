@@ -426,9 +426,9 @@ fn help_catalog() -> &'static [HelpCommand] {
         },
         HelpCommand {
             name: "rmtoken",
-            summary: "Remove API bearer tokens by exact label.",
-            usage: "/rmtoken label:<label>",
-            details: "Removes every token whose stored label exactly matches the supplied label.",
+            summary: "Remove API bearer tokens by label or token mask.",
+            usage: "/rmtoken [label:<label>] [token:<abc...xyz>]",
+            details: "Removes every token whose stored label exactly matches the supplied label, or one token whose displayed mask matches token.",
         },
         HelpCommand {
             name: "lsauth",
@@ -1684,10 +1684,14 @@ impl EventHandler for Handler {
                         .min_int_value(1)
                 ),
             CreateCommand::new("rmtoken")
-                .description("Remove API bearer tokens by exact label")
+                .description("Remove API tokens by exact label or displayed mask")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "label", "Exact token label to remove")
-                        .required(true)
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "token", "Displayed token mask, for example c79...d03")
+                        .required(false)
                 ),
             CreateCommand::new("lsauth")
                 .description("List authorized users in one rank level")

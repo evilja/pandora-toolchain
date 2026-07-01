@@ -185,9 +185,10 @@ Discord slash commands
 - Rank 3. Lists API bearer tokens by their first 3 and last 3 characters, label,
   and local binding state. page selects a 10-token page.
 
-/rmtoken label:<label>
+/rmtoken [label:<label>] [token:<abc...xyz>]
 - Rank 3. Removes every API bearer token whose stored label exactly matches the
-  supplied label.
+  supplied label, or removes one token whose displayed first3...last3 mask
+  matches token. Exactly one of label/token is required.
 
 /lsauth level:<level>
 - Rank 3. Lists users in the selected auth level as <@ID> mentions. Supports
