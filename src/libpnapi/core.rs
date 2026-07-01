@@ -23,7 +23,7 @@ use crate::libpngit::{
     smartcode_merge, Credits, RepoOutcome,
 };
 use crate::libpnp2p::nyaaise::nyaaise;
-use crate::libpnenv::core::{get_pandora_env, get_perm};
+use crate::libpnenv::core::get_pandora_env;
 use crate::libpnenv::standard::{
     API_AUTHOR_ID, API_HOST, API_RATE_LIMIT, API_RATE_WINDOW_SECS, API_TOKENS_PATH,
 };
@@ -40,6 +40,7 @@ struct AppState {
 struct ApiAuth {
     local_server_id: Option<u64>,
     token_hash: String,
+    label: Option<String>,
 }
 
 struct ApiRateLimiter {
@@ -220,7 +221,7 @@ async fn auth(State(st): State<AppState>, mut req: Request, next: Next) -> Respo
         return (StatusCode::UNAUTHORIZED, "invalid token").into_response();
     };
 
-    if req.method() != Method::GET && req.method() != Method::HEAD {
+    if should_rate_limit(req.method(), req.uri().path()) {
         if let Err(retry_after) = st.rate_limiter.check(&auth.token_hash).await {
             return (
                 StatusCode::TOO_MANY_REQUESTS,
@@ -235,14 +236,37 @@ async fn auth(State(st): State<AppState>, mut req: Request, next: Next) -> Respo
     next.run(req).await
 }
 
+fn should_rate_limit(method: &Method, path: &str) -> bool {
+    if method == Method::GET || method == Method::HEAD {
+        return false;
+    }
+    !(method == Method::POST && is_cancel_path(path))
+}
+
+fn is_cancel_path(path: &str) -> bool {
+    let path = path.strip_prefix("/api/v1").unwrap_or(path);
+    let parts = path.trim_matches('/').split('/').collect::<Vec<_>>();
+    parts.len() == 3
+        && parts[0] == "jobs"
+        && parts[1].parse::<u64>().is_ok()
+        && parts[2] == "cancel"
+}
+
 fn api_auth_for_token(token: &str) -> Option<ApiAuth> {
-    for line in get_perm(API_TOKENS_PATH.to_string()) {
+    let contents = std::fs::read_to_string(API_TOKENS_PATH).ok()?;
+    let mut pending_label: Option<String> = None;
+    for line in contents.lines() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with(';') {
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with(';') {
+            pending_label = parse_token_label(line);
             continue;
         }
         let mut parts = line.split('|');
         let stored = parts.next().unwrap_or("").trim();
+        let label = pending_label.take();
         if stored != token {
             continue;
         }
@@ -253,9 +277,34 @@ fn api_auth_for_token(token: &str) -> Option<ApiAuth> {
         return Some(ApiAuth {
             local_server_id,
             token_hash: format!("{:x}", md5::compute(token.as_bytes())),
+            label,
         });
     }
     None
+}
+
+fn parse_token_label(line: &str) -> Option<String> {
+    let body = line.trim_start_matches(';').trim();
+    if body.is_empty() {
+        return None;
+    }
+    let label = body.split_once(" (added ")
+        .map(|(l, _)| l)
+        .unwrap_or(body)
+        .trim();
+    if label.is_empty() {
+        None
+    } else {
+        Some(label.to_string())
+    }
+}
+
+fn require_pnwitch(auth: &ApiAuth) -> Result<(), Response> {
+    if auth.label.as_deref() == Some("PNwitch") {
+        Ok(())
+    } else {
+        Err((StatusCode::FORBIDDEN, "PNwitch token required").into_response())
+    }
 }
 
 fn effective_server_id(auth: &ApiAuth, requested: Option<u64>) -> Option<u64> {
@@ -455,7 +504,7 @@ fn github_blob_to_raw(url: &str) -> String {
 
 async fn fetch_subtitle(url: &str) -> Result<Vec<u8>, String> {
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
+        .timeout(std::time::Duration::from_secs(180))
         .build()
         .map_err(|e| e.to_string())?;
     let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
@@ -490,7 +539,10 @@ async fn cancel_job(State(st): State<AppState>, Extension(auth): Extension<ApiAu
     StatusCode::ACCEPTED.into_response()
 }
 
-async fn gitsync(State(st): State<AppState>) -> Response {
+async fn gitsync(State(st): State<AppState>, Extension(auth): Extension<ApiAuth>) -> Response {
+    if let Err(resp) = require_pnwitch(&auth) {
+        return resp;
+    }
     let hj = HalfJob::new_gitsync_api(st.api_author, 0);
     let job_id = hj.job_id.to_string();
     if st.tx.send(JobClass::HalfJob(hj)).await.is_err() {
@@ -790,7 +842,7 @@ struct AcixSearchQuery {
     limit: u32,
 }
 
-async fn acix_search(Query(q): Query<AcixSearchQuery>) -> Response {
+async fn acix_search(Json(q): Json<AcixSearchQuery>) -> Response {
     let client = match AnimeCix::from_env() {
         Ok(c) => c,
         Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, e).into_response(),
@@ -846,7 +898,10 @@ struct AcixPublishReq {
     episode_num: Option<i64>,
 }
 
-async fn acix_publish(Json(req): Json<AcixPublishReq>) -> Response {
+async fn acix_publish(Extension(auth): Extension<ApiAuth>, Json(req): Json<AcixPublishReq>) -> Response {
+    if let Err(resp) = require_pnwitch(&auth) {
+        return resp;
+    }
     let client = match AnimeCix::from_env() {
         Ok(c) => c,
         Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, e).into_response(),

@@ -13,7 +13,7 @@ use pandora_toolchain::pnworker::tools::PNASS_MERGE_TL_ONLY;
 use pandora_toolchain::pnworker::tools::PNASS_SPLIT_SIGNS;
 use pandora_toolchain::libpnenv::{
     core::{add_env, get_pandora_env, get_perm, remove_env, upsert_env},
-    standard::{ENV_PATH, TOKEN, CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN, PARENTID, DOODSTREAM, LULU, VOESX, ABYSS, ANIMECIX},
+    standard::{ENV_PATH, ENV_SEP, TOKEN, CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN, PARENTID, DOODSTREAM, LULU, VOESX, ABYSS, ANIMECIX},
 };
 use pandora_toolchain::libpnmal::{fetch_anime, AnimeMeta, AnimeKind};
 use pandora_toolchain::libpnforgejo::{Forgejo, base64_encode, base64_encode_bytes};
@@ -42,6 +42,7 @@ pub struct Handler {
 }
 
 const ALL_LEVELS: &[&str] = &[
+    "witch.pandora",
     "upper.pandora",
     "admin.pandora",
     "fansubber.pandora",
@@ -50,6 +51,7 @@ const ALL_LEVELS: &[&str] = &[
 
 fn level_rank(name: &str) -> u8 {
     match name {
+        "witch.pandora" => 4,
         "upper.pandora" => 3,
         "admin.pandora" => 2,
         "fansubber.pandora" => 1,
@@ -69,19 +71,135 @@ fn has_level_at_least(id: u64, min_rank: u8) -> bool {
     })
 }
 
-fn min_rank_for_command(part: &str) -> u8 {
-    match part {
-        "encode" | "pancode" | "probe" | "backup" | "backupall" | "scrape" | "gitcode" | "smartcode" | "merge" | "release" | "source" => 0,
-        "!enc" | "!encode" => 0,
-        "job" | "get" | "acixconfirm" | "!ts" | "font" => 1,
-        "auth" | "remove" | "gitsync" | "hearts" | "configure" | "edit" | "acixtemplate" | "readmebase" | "addapi" | "addtranslation" | "gettranslation" | "addtranslationall" | "gettranslationall" | "!ban" | "!some" => 2,
-        "attach" | "init" | "destruct" | "detach" | "gentoken" => 3,
-        _ => u8::MAX,
+const COMMAND_RANKS_PATH: &str = "DB/config/global/environment/command_ranks.pandora";
+
+const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
+    ("encode", 0),
+    ("pancode", 0),
+    ("probe", 0),
+    ("backup", 0),
+    ("backupall", 0),
+    ("gitcode", 0),
+    ("smartcode", 0),
+    ("merge", 0),
+    ("release", 0),
+    ("source", 0),
+    ("get", 0),
+    ("job", 0),
+    ("!enc", 0),
+    ("!encode", 0),
+    ("attach", 1),
+    ("init", 1),
+    ("detach", 1),
+    ("font", 1),
+    ("!ts", 1),
+    ("destruct", 2),
+    ("hearts", 2),
+    ("configure", 2),
+    ("edit", 2),
+    ("readmebase", 2),
+    ("addapi", 2),
+    ("addtranslation", 2),
+    ("gettranslation", 2),
+    ("addtranslationall", 2),
+    ("gettranslationall", 2),
+    ("auth", 2),
+    ("remove", 2),
+    ("!ban", 2),
+    ("!some", 2),
+    ("gitsync", 3),
+    ("gentoken", 3),
+    ("lstoken", 3),
+    ("rmtoken", 3),
+    ("lsauth", 3),
+    ("acixconfirm", 4),
+    ("acixtemplate", 4),
+    ("changerank", 4),
+];
+
+fn public_command(part: &str) -> bool {
+    matches!(part, "help" | "providers")
+}
+
+fn parse_command_ranks(contents: &str) -> HashMap<String, u8> {
+    let mut ranks = HashMap::new();
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once(ENV_SEP) {
+            if let Ok(rank) = value.trim().parse::<u8>() {
+                if rank <= 4 {
+                    ranks.insert(key.trim().to_string(), rank);
+                }
+            }
+        }
     }
+    ranks
+}
+
+fn write_command_ranks(ranks: &HashMap<String, u8>) -> Result<(), String> {
+    if let Some(parent) = Path::new(COMMAND_RANKS_PATH).parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let mut out = String::new();
+    let mut written = HashSet::new();
+    for (name, _) in DEFAULT_COMMAND_RANKS {
+        if let Some(rank) = ranks.get(*name) {
+            out.push_str(&format!("{}{}{}\n", name, ENV_SEP, rank));
+            written.insert((*name).to_string());
+        }
+    }
+    let mut extra = ranks.keys()
+        .filter(|name| !written.contains(*name))
+        .cloned()
+        .collect::<Vec<_>>();
+    extra.sort();
+    for name in extra {
+        if let Some(rank) = ranks.get(&name) {
+            out.push_str(&format!("{}{}{}\n", name, ENV_SEP, rank));
+        }
+    }
+    std::fs::write(COMMAND_RANKS_PATH, out).map_err(|e| e.to_string())
+}
+
+fn ensure_command_ranks_file() -> HashMap<String, u8> {
+    let existing = std::fs::read_to_string(COMMAND_RANKS_PATH).unwrap_or_default();
+    let mut ranks = parse_command_ranks(&existing);
+    let mut changed = existing.is_empty();
+    for (name, rank) in DEFAULT_COMMAND_RANKS {
+        if !ranks.contains_key(*name) {
+            ranks.insert((*name).to_string(), *rank);
+            changed = true;
+        }
+    }
+    if changed {
+        if let Err(e) = write_command_ranks(&ranks) {
+            eprintln!("Failed to write command rank file: {}", e);
+        }
+    }
+    ranks
+}
+
+fn set_command_rank(name: &str, rank: u8) -> Result<(), String> {
+    if rank > 4 {
+        return Err("rank must be between 0 and 4".to_string());
+    }
+    if !DEFAULT_COMMAND_RANKS.iter().any(|(cmd, _)| *cmd == name) {
+        return Err(format!("unknown ranked command `{}`", name));
+    }
+    let mut ranks = ensure_command_ranks_file();
+    ranks.insert(name.to_string(), rank);
+    write_command_ranks(&ranks)
+}
+
+fn min_rank_for_command(part: &str) -> u8 {
+    ensure_command_ranks_file().get(part).copied().unwrap_or(u8::MAX)
 }
 
 fn is_authorized(part: &str, id: u64) -> bool {
-    if part == "help" || part == "providers" { return true; }
+    if public_command(part) { return true; }
     let min_rank = min_rank_for_command(part);
     if min_rank == u8::MAX { return false; }
     has_level_at_least(id, min_rank)
@@ -89,7 +207,6 @@ fn is_authorized(part: &str, id: u64) -> bool {
 
 struct HelpCommand {
     name: &'static str,
-    rank: u8,
     summary: &'static str,
     usage: &'static str,
     details: &'static str,
@@ -99,248 +216,238 @@ fn help_catalog() -> &'static [HelpCommand] {
     &[
         HelpCommand {
             name: "help",
-            rank: 0,
             summary: "Show command help.",
             usage: "/help",
             details: "Opens this private command guide. Pick a command from the menu to see its required inputs and workflow notes.",
         },
         HelpCommand {
             name: "providers",
-            rank: 0,
             summary: "Show attached provider APIs.",
             usage: "/providers",
             details: "Shows built-in download and encode support plus the currently configured upload, distribution, and persistence providers for this server.",
         },
         HelpCommand {
             name: "encode",
-            rank: 0,
             summary: "Encode a torrent or Google Drive source with an ASS subtitle.",
             usage: "/encode torrent:<link> subtitle:<ass> [preset] [concat]",
             details: "Accepts torrent URLs, magnet links, and Google Drive links. The attached subtitle must be ASS. Optional presets control encoder mode; concat selects an intro group.",
         },
         HelpCommand {
             name: "probe",
-            rank: 0,
             summary: "Inspect a torrent and list selectable files.",
             usage: "/probe torrent:<link>",
             details: "Downloads and probes a torrent or magnet link, then returns file indexes. Use the resulting job id and index with /pancode or /backup. Google Drive links are not supported here.",
         },
         HelpCommand {
             name: "pancode",
-            rank: 0,
             summary: "Encode one file from a previous /probe job.",
             usage: "/pancode job_id:<probe_job> index:<file_index> subtitle:<ass> [preset] [concat]",
             details: "Uses the torrent data saved by /probe and encodes the selected file with the provided ASS subtitle.",
         },
         HelpCommand {
             name: "backup",
-            rank: 0,
             summary: "Upload a downloaded source to Drive without release encoding.",
             usage: "/backup torrent:<link> or /backup job_id:<probe_job> index:<file_index>",
             details: "Can download a direct torrent/magnet/Google Drive source, or reuse a probed torrent file when job_id and index are supplied.",
         },
         HelpCommand {
             name: "backupall",
-            rank: 0,
             summary: "Upload every MKV from a torrent to Drive.",
             usage: "/backupall torrent:<link>",
             details: "Downloads the torrent or magnet link and backs up all MKV outputs instead of selecting a single file.",
         },
         HelpCommand {
             name: "gitcode",
-            rank: 0,
             summary: "Encode with a subtitle fetched from a URL.",
             usage: "/gitcode torrent:<link> subtitle_url:<url> [preset] [concat]",
             details: "Fetches the ASS file from a URL. GitHub blob links are rewritten to raw GitHub links automatically.",
         },
         HelpCommand {
             name: "smartcode",
-            rank: 0,
             summary: "Merge attached repo subtitles and encode an episode.",
             usage: "/smartcode episode:<n> [link] [preset] [concat]",
             details: "Requires this channel to be attached to an anime repo. Reads TL and TS files for the episode, merges them, then encodes using the source link or SOURCE.md.",
         },
         HelpCommand {
             name: "merge",
-            rank: 0,
             summary: "Merge TL and TS subtitles for an attached episode.",
             usage: "/merge episode:<n> [link]",
             details: "Requires an attached anime repo. Produces and uploads the release ASS for the episode without starting an encode.",
         },
         HelpCommand {
             name: "release",
-            rank: 0,
             summary: "Upload release fonts for an attached episode.",
             usage: "/release episode:<n>",
             details: "Requires an attached anime repo and an existing release ASS. Reads the release ASS font list and uploads only fonts.zip for that episode folder.",
         },
         HelpCommand {
             name: "source",
-            rank: 0,
             summary: "Write SOURCE.md for an attached episode folder.",
             usage: "/source episode:<n> link:<source_link>",
             details: "Stores the episode source link in the attached Forgejo repo. Source links can be torrent URLs, magnet links, or Google Drive links.",
         },
         HelpCommand {
             name: "job",
-            rank: 1,
             summary: "Upload one episode work file to the attached repo.",
             usage: "/job type:<TL|TLC|TS> episode:<n> subtitle:<ass_or_zip> [commit]",
             details: "Requires a channel attachment. Normalizes the uploaded ASS or root-level ASS zip, then uploads it under the selected job type.",
         },
         HelpCommand {
             name: "get",
-            rank: 1,
             summary: "Get a download link for an episode work file.",
             usage: "/get type:<Translation|Typeset> episode:<n>",
             details: "Returns a repo download link for the requested attached episode file.",
         },
         HelpCommand {
             name: "hearts",
-            rank: 2,
             summary: "Show worker health.",
             usage: "/hearts",
             details: "Reports shrine worker liveness, heartbeat age, and reboot counts.",
         },
         HelpCommand {
             name: "gitsync",
-            rank: 2,
             summary: "Fast-forward the bot repo and restart workers.",
             usage: "/gitsync",
             details: "Runs the configured git sync workflow, archives active work, stops the shrine, and exits for restart.",
         },
         HelpCommand {
             name: "configure",
-            rank: 2,
             summary: "Configure server language, Forgejo, and Google Drive credentials.",
             usage: "/configure language:<EN|TR|JP> [forgejo] [api_key] [gdrive_client_id] [gdrive_client_secret] [gdrive_refresh_token] [gdrive_folder_id] [wrapstyle]",
             details: "Writes server metadata. Run this before /init if the server needs a Forgejo org/base or per-guild Google Drive upload credentials configured. wrapstyle controls ASS WrapStyle normalization; default dont_touch leaves existing subtitles unchanged.",
         },
         HelpCommand {
             name: "edit",
-            rank: 2,
             summary: "Edit individual server metadata fields, leaving the rest untouched.",
             usage: "/edit [language] [forgejo] [api_key] [gdrive_client_id] [gdrive_client_secret] [gdrive_refresh_token] [gdrive_folder_id] [wrapstyle] [announcement_channel]",
             details: "Like /configure but every field is optional — omitted fields keep their current value. Pass `-` to clear a text field. wrapstyle can be dont_touch or 0-3. Set announcement_channel:true to point announcements at the current channel. Requires the server to already be configured.",
         },
         HelpCommand {
             name: "addapi",
-            rank: 2,
             summary: "Write or update a toolchain environment token.",
             usage: "/addapi key_name:<name> token:<value>",
             details: "Updates the global pntools environment file with the provided token value.",
         },
         HelpCommand {
             name: "gettranslation",
-            rank: 2,
             summary: "Read a Pandora localization entry.",
             usage: "/gettranslation language:<en|tr|jp> key:<MESSAGE_KEY>",
             details: "Shows the current text and argument count for one localization key. Language files live at DB/config/en.toml, tr.toml, and jp.toml.",
         },
         HelpCommand {
             name: "addtranslation",
-            rank: 2,
             summary: "Add or update a Pandora localization entry.",
             usage: "/addtranslation language:<en|tr|jp> key:<MESSAGE_KEY> text:<translation> [args]",
             details: "Updates one translation. Existing keys keep args unless provided; new keys infer args from `{}`.",
         },
         HelpCommand {
             name: "gettranslationall",
-            rank: 2,
             summary: "Download a full Pandora localization TOML.",
             usage: "/gettranslationall language:<en|tr|jp>",
             details: "Uploads the selected language file as a TOML attachment.",
         },
         HelpCommand {
             name: "addtranslationall",
-            rank: 2,
             summary: "Replace a full Pandora localization TOML.",
             usage: "/addtranslationall language:<en|tr|jp> file:<toml>",
             details: "Validates and replaces the selected language file from a TOML attachment.",
         },
         HelpCommand {
             name: "gentoken",
-            rank: 3,
             summary: "Generate a new API bearer token.",
             usage: "/gentoken [label:<note>] [local:<true|false>]",
             details: "Mints a random bearer token for the HTTP API and appends it to the token file. With local enabled, jobs submitted with the token use this server's Google Drive credentials when available, falling back to global credentials. The token is shown once, privately. Upper only.",
         },
         HelpCommand {
             name: "acixconfirm",
-            rank: 1,
             summary: "Publish a finished encode to AnimeciX.",
             usage: "/acixconfirm job_id:<id>",
             details: "Confirms the pending AnimeciX publish for an uploaded job and pushes it to AnimeciX (the multishare upload).",
         },
         HelpCommand {
             name: "acixtemplate",
-            rank: 2,
             summary: "Set this channel's AnimeciX fansub id.",
             usage: "/acixtemplate template:<id>",
             details: "Stores the AnimeciX fansub template id (e.g. AkiraSubs=50, SomeSubs=218) on this channel so smartcode publishes are attributed correctly.",
         },
         HelpCommand {
             name: "font",
-            rank: 2,
             summary: "Install a font zip for this server.",
             usage: "/font [file:<zip>] [link:<zip_url>]",
             details: "Accepts either an attached zip or an HTTP(S) zip link, extracts fonts to this server's fontconfig directory, and installs them into the Linux font folder when running on Linux.",
         },
         HelpCommand {
             name: "readmebase",
-            rank: 2,
             summary: "Set the server README template.",
             usage: "/readmebase file:<base.md>",
             details: "Stores base.md for repo bootstrapping. /init and /attach can use it when creating or updating README.md.",
         },
         HelpCommand {
             name: "auth",
-            rank: 2,
             summary: "Authorize a user for a permission level.",
             usage: "/auth user_id:<discord_id> [level]",
             details: "Adds a user id to an allowlist. If level is omitted, authorize.pandora is used.",
         },
         HelpCommand {
             name: "remove",
-            rank: 2,
             summary: "Remove a user from a permission level.",
             usage: "/remove user_id:<discord_id> level:<allowlist>",
             details: "Removes a user id from the chosen allowlist.",
         },
         HelpCommand {
             name: "attach",
-            rank: 3,
             summary: "Attach this channel to an existing Forgejo anime repo.",
             usage: "/attach mal:<mal_url> repo:<forgejo_repo> [season] [tl] [tlc] [ts] [qc]",
             details: "Fetches MAL metadata, writes channel metadata, and bootstraps episode folders plus repo helper files.",
         },
         HelpCommand {
             name: "init",
-            rank: 3,
             summary: "Create and attach a new Forgejo repo for an anime.",
             usage: "/init mal:<mal_url> [season] [tl] [tlc] [ts] [qc]",
             details: "Uses the configured Forgejo org, creates a public repo from MAL metadata, bootstraps folders, and attaches this channel.",
         },
         HelpCommand {
             name: "destruct",
-            rank: 3,
             summary: "Delete the attached Forgejo repo and detach this channel.",
             usage: "/destruct",
             details: "Deletes the repo configured for this channel and removes the channel attachment.",
         },
         HelpCommand {
             name: "detach",
-            rank: 3,
             summary: "Detach this channel without deleting the repo.",
             usage: "/detach",
             details: "Removes this channel's anime attachment metadata. The Forgejo repo is left untouched.",
+        },
+        HelpCommand {
+            name: "lstoken",
+            summary: "List API bearer tokens.",
+            usage: "/lstoken [page]",
+            details: "Lists stored API tokens by first and last characters, label, and local binding state.",
+        },
+        HelpCommand {
+            name: "rmtoken",
+            summary: "Remove API bearer tokens by exact label.",
+            usage: "/rmtoken label:<label>",
+            details: "Removes every token whose stored label exactly matches the supplied label.",
+        },
+        HelpCommand {
+            name: "lsauth",
+            summary: "List authorized users in one rank.",
+            usage: "/lsauth level:<rank>",
+            details: "Lists users from the selected permission file as Discord mentions.",
+        },
+        HelpCommand {
+            name: "changerank",
+            summary: "Edit a command's required rank.",
+            usage: "/changerank command:<name> rank:<0-4>",
+            details: "Updates the command rank file for a known command. It cannot change its own rank.",
         },
     ]
 }
 
 fn user_help_commands(user_id: u64) -> Vec<&'static HelpCommand> {
     help_catalog().iter()
-        .filter(|cmd| cmd.name == "help" || cmd.name == "providers" || has_level_at_least(user_id, cmd.rank))
+        .filter(|cmd| public_command(cmd.name) || has_level_at_least(user_id, min_rank_for_command(cmd.name)))
         .collect()
 }
 
@@ -354,6 +461,7 @@ fn help_rank_label(rank: u8) -> &'static str {
         1 => "Fansubber",
         2 => "Admin",
         3 => "Upper",
+        4 => "Witch",
         _ => "Unknown",
     }
 }
@@ -405,7 +513,7 @@ fn help_overview_embed(user_id: u64) -> CreateEmbed {
 }
 
 fn help_detail_embed(cmd: &HelpCommand) -> CreateEmbed {
-    let access = if cmd.name == "help" || cmd.name == "providers" { "Everyone" } else { help_rank_label(cmd.rank) };
+    let access = if public_command(cmd.name) { "Everyone" } else { help_rank_label(min_rank_for_command(cmd.name)) };
     CreateEmbed::new()
         .title(format!("/{}", cmd.name))
         .description(cmd.summary)
@@ -449,7 +557,7 @@ async fn handle_help_component(ctx: &Context, component: &ComponentInteraction) 
         component.create_response(ctx, CreateInteractionResponse::Acknowledge).await.ok();
         return;
     };
-    if cmd.name != "help" && cmd.name != "providers" && !has_level_at_least(component.user.id.get(), cmd.rank) {
+    if !public_command(cmd.name) && !has_level_at_least(component.user.id.get(), min_rank_for_command(cmd.name)) {
         component.create_response(ctx, CreateInteractionResponse::Message(
             CreateInteractionResponseMessage::new()
                 .content("You do not have access to that command.")
@@ -540,7 +648,7 @@ async fn migrate_pandora_files() {
     let _ = tokio::fs::create_dir_all("DB/config/global/perms").await;
     let _ = tokio::fs::create_dir_all("DB/config/global/environment").await;
 
-    for name in ["authorize.pandora", "upper.pandora", "fansubber.pandora", "admin.pandora"] {
+    for name in ["authorize.pandora", "fansubber.pandora", "admin.pandora", "upper.pandora", "witch.pandora"] {
         let old = name.to_string();
         let new_path = format!("DB/config/global/perms/{}", name);
         if std::path::Path::new(&old).exists() && !std::path::Path::new(&new_path).exists() {
@@ -1057,6 +1165,18 @@ impl EventHandler for Handler {
                 "gentoken" => {
                     handle_gentoken(&ctx, &command).await;
                 }
+                "lstoken" => {
+                    handle_lstoken(&ctx, &command).await;
+                }
+                "rmtoken" => {
+                    handle_rmtoken(&ctx, &command).await;
+                }
+                "lsauth" => {
+                    handle_lsauth(&ctx, &command).await;
+                }
+                "changerank" => {
+                    handle_changerank(&ctx, &command).await;
+                }
                 "acixconfirm" => {
                     handle_acixconfirm(&ctx, &command).await;
                 }
@@ -1556,14 +1676,50 @@ impl EventHandler for Handler {
                     CreateCommandOption::new(CommandOptionType::Boolean, "local", "Bind token to this server for Drive creds and git console access")
                         .required(false)
                 ),
+            CreateCommand::new("lstoken")
+                .description("List API bearer tokens")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "page", "Page number")
+                        .required(false)
+                        .min_int_value(1)
+                ),
+            CreateCommand::new("rmtoken")
+                .description("Remove API bearer tokens by exact label")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "label", "Exact token label to remove")
+                        .required(true)
+                ),
+            CreateCommand::new("lsauth")
+                .description("List authorized users in one rank level")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "level", "Auth level file")
+                        .required(true)
+                        .add_string_choice("Authorize", "authorize.pandora")
+                        .add_string_choice("Fansubber", "fansubber.pandora")
+                        .add_string_choice("Admin", "admin.pandora")
+                        .add_string_choice("Upper", "upper.pandora")
+                        .add_string_choice("Witch", "witch.pandora")
+                ),
+            CreateCommand::new("changerank")
+                .description("Edit a command's required rank")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "command", "Command name without slash")
+                        .required(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "rank", "Required rank, 0 through 4")
+                        .required(true)
+                        .min_int_value(0)
+                        .max_int_value(4)
+                ),
             CreateCommand::new("acixconfirm")
-                .description("Confirm and publish a finished encode to AnimeciX")
+                .description("[BETA-TESTING] Confirm and publish an encode to AnimeciX")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "job_id", "The job id (from the upload message)")
                         .required(true)
                 ),
             CreateCommand::new("acixtemplate")
-                .description("Set this channel's AnimeciX fansub template id")
+                .description("[BETA-TESTING] Set channel AnimeciX fansub template id")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::Integer, "template", "Fansub id (e.g. AkiraSubs=50, SomeSubs=218)")
                         .required(true)
@@ -1594,9 +1750,10 @@ impl EventHandler for Handler {
                     CreateCommandOption::new(CommandOptionType::String, "level", "The auth level file. Defaults to `authorize.pandora`.")
                         .required(false)
                         .add_string_choice("Authorize", "authorize.pandora")
-                        .add_string_choice("Upper", "upper.pandora")
                         .add_string_choice("Fansubber", "fansubber.pandora")
                         .add_string_choice("Admin", "admin.pandora")
+                        .add_string_choice("Upper", "upper.pandora")
+                        .add_string_choice("Witch", "witch.pandora")
                 ),
             CreateCommand::new("remove")
                 .description("Remove a user id from an auth level file")
@@ -1608,9 +1765,10 @@ impl EventHandler for Handler {
                     CreateCommandOption::new(CommandOptionType::String, "level", "The auth level file")
                         .required(true)
                         .add_string_choice("Authorize", "authorize.pandora")
-                        .add_string_choice("Upper", "upper.pandora")
                         .add_string_choice("Fansubber", "fansubber.pandora")
                         .add_string_choice("Admin", "admin.pandora")
+                        .add_string_choice("Upper", "upper.pandora")
+                        .add_string_choice("Witch", "witch.pandora")
                 ),
             CreateCommand::new("job")
                 .description("Submit a single-episode job against the channel's attached anime")
@@ -1664,6 +1822,7 @@ impl EventHandler for Handler {
 #[tokio::main]
 async fn main() {
     migrate_pandora_files().await;
+    ensure_command_ranks_file();
     pandora_toolchain::libpnbin::ensure_startup_binaries().await;
     let env = get_pandora_env();
     let (tx, rx): (Sender<JobClass>, Receiver<JobClass>) = channel(5);

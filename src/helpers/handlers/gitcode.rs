@@ -10,7 +10,7 @@ pub async fn handle_gitcode(
 
     let normalized = github_blob_to_raw(&subtitle_url);
     let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
+        .timeout(std::time::Duration::from_secs(180))
         .build()
     {
         Ok(c) => c,
