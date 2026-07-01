@@ -115,6 +115,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("acixconfirm", 4),
     ("acixtemplate", 4),
     ("changerank", 4),
+    ("fontcheck", 4),
 ];
 
 fn public_command(part: &str) -> bool {
@@ -375,6 +376,12 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Install a font zip for this server.",
             usage: "/font [file:<zip>] [link:<zip_url>]",
             details: "Accepts either an attached zip or an HTTP(S) zip link, extracts fonts to this server's fontconfig directory, and installs them into the Linux font folder when running on Linux.",
+        },
+        HelpCommand {
+            name: "fontcheck",
+            summary: "Count usable unique fonts in the DB fontconfig directories.",
+            usage: "/fontcheck",
+            details: "Scans DB/fontconfig/global and DB/fontconfig/<server_id>, counts font files and extracts unique usable font names from their name tables.",
         },
         HelpCommand {
             name: "readmebase",
@@ -1186,6 +1193,9 @@ impl EventHandler for Handler {
                 "font" => {
                     handle_font(&ctx, &command).await;
                 }
+                "fontcheck" => {
+                    handle_fontcheck(&ctx, &command).await;
+                }
                 "readmebase" => {
                     handle_readmebase(&ctx, &command).await;
                 }
@@ -1738,6 +1748,8 @@ impl EventHandler for Handler {
                     CreateCommandOption::new(CommandOptionType::String, "link", "HTTP(S) link to a .zip archive of fonts")
                         .required(false)
                 ),
+            CreateCommand::new("fontcheck")
+                .description("Count usable unique fonts in the DB fontconfig directories"),
             CreateCommand::new("readmebase")
                 .description("Set the base.md for this server (used as the README template when bootstrapping repos)")
                 .add_option(

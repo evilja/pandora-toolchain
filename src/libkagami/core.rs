@@ -604,7 +604,7 @@ fn insert_font_name(out: &mut BTreeSet<String>, name: &str) {
     }
 }
 
-fn normalize_font_name(name: &str) -> String {
+pub fn normalize_font_name(name: &str) -> String {
     name.chars()
         .filter(|c| !c.is_whitespace() && *c != '-' && *c != '_')
         .flat_map(|c| c.to_lowercase())
@@ -639,7 +639,7 @@ fn system_font_files() -> Vec<PathBuf> {
     out
 }
 
-fn collect_font_files(dir: &Path, out: &mut Vec<PathBuf>) {
+pub fn collect_font_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -658,7 +658,7 @@ fn collect_font_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn font_file_names(path: &Path) -> Result<Vec<String>, ()> {
+pub fn font_file_names(path: &Path) -> Result<Vec<String>, ()> {
     let data = std::fs::read(path).map_err(|_| ())?;
     let mut offsets = Vec::new();
     if data.get(0..4) == Some(b"ttcf") {
