@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::libkagami::core::SubstationAlpha;
 use crate::libpnenv::core::get_pandora_env;
 use crate::libpnenv::standard::PNASS;
 use crate::libpnforgejo::core::{base64_encode, base64_encode_bytes, Forgejo};
@@ -510,13 +509,11 @@ async fn smartcode_merge_inner(
         return Err(format!("ASS merge failed (warnings so far: {}).", warnings.len()));
     }
 
-    let merged_sub = SubstationAlpha::load(merged_local.clone(), true).await;
-    if merged_sub.dump_to_file(merged_local.clone()).await.is_err() {
-        return Err("failed to write advanced-parsed merged ASS.".to_string());
-    }
-
     let merged_bytes = tokio::fs::read(&merged_local).await
         .map_err(|e| format!("failed to read merged ASS: {}", e))?;
+    if !ass_has_dialogue(&merged_bytes) {
+        return Err("ASS merge produced no dialogue lines; release upload was skipped.".to_string());
+    }
 
     let release_path = format!("{}/Release - {} - E{:02}.ass", folder, safe_name, episode);
     let uploaded_release_path = upsert_repo_ass(fg, owner_repo, &release_path, &merged_bytes, "Smartcode merge").await
@@ -787,6 +784,12 @@ async fn read_repo_ass(fg: &Forgejo, owner_repo: &str, ass_path: &str) -> Result
         Some((b64, _)) => Ok(Some((base64_decode_bytes(&b64)?, ass_path.to_string()))),
         None => Ok(None),
     }
+}
+
+fn ass_has_dialogue(bytes: &[u8]) -> bool {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .any(|line| line.trim_start().starts_with("Dialogue:"))
 }
 
 async fn upsert_repo_ass(fg: &Forgejo, owner_repo: &str, ass_path: &str, bytes: &[u8], message: &str) -> Result<String, String> {

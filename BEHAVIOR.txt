@@ -96,6 +96,8 @@ Discord slash commands
   generated TS, then merges.
 - Runs pnass merge, uploads Release - <name> - E<NN>.ass, writes SOURCE.md when
   link was supplied, and queues a regular encode against the merged ASS.
+- If pnass produces no Dialogue lines, smartcode fails before uploading the
+  release ASS.
 - If the channel has an AnimeciX template, the queued job carries pending
   AnimeciX publish metadata.
 
@@ -387,6 +389,8 @@ POST /git/smartcode
 - Runs libpngit::smartcode_merge, queues an API encode against the merged ASS,
   stores GDrive folder overrides on the job, and returns job id, link, repo,
   release/source paths, folder ids, and warnings.
+- If pnass produces no Dialogue lines, the route returns an error before writing
+  the release ASS.
 
 POST /gitsync
 - Authenticated with an API token labelled PNwitch, rate-limited. Queues an API

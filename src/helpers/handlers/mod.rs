@@ -314,13 +314,6 @@ async fn smartcode_merge_upload(
         return None;
     }
 
-    let merged_sub = SubstationAlpha::load(merged_local.clone(), true).await;
-    if merged_sub.dump_to_file(merged_local.clone()).await.is_err() {
-        let _ = response_msg.edit(ctx, EditMessage::new()
-            .content("Failed to write advanced-parsed merged ASS.")).await;
-        return None;
-    }
-
     let merged_bytes = match tokio::fs::read(&merged_local).await {
         Ok(b) => b,
         Err(e) => {
@@ -329,6 +322,11 @@ async fn smartcode_merge_upload(
             return None;
         }
     };
+    if !ass_has_dialogue(&merged_bytes) {
+        let _ = response_msg.edit(ctx, EditMessage::new()
+            .content("ASS merge produced no dialogue lines; release upload was skipped.")).await;
+        return None;
+    }
 
     let release_path = format!("{}/Release - {} - E{:02}.ass", folder, safe_name, episode);
     let release_commit = "Smartcode merge".to_string();
@@ -711,6 +709,12 @@ async fn read_repo_ass(fg: &Forgejo, owner_repo: &str, ass_path: &str) -> Result
         Some((b64, _)) => Ok(Some((base64_decode_bytes(&b64)?, ass_path.to_string()))),
         None => Ok(None),
     }
+}
+
+fn ass_has_dialogue(bytes: &[u8]) -> bool {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .any(|line| line.trim_start().starts_with("Dialogue:"))
 }
 
 async fn upsert_repo_ass(fg: &Forgejo, owner_repo: &str, ass_path: &str, bytes: &[u8], message: &str) -> Result<String, String> {

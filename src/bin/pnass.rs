@@ -151,6 +151,12 @@ async fn main() {
         prune_unused_styles(&mut sub);
     }
 
+    if sub.events.is_empty() {
+        println!("{}", pn_emit!(protocol = proto, negkey = &neg,
+            schema = [leaf, leaf], data = ["4", "ASS output has no dialogue lines"]).unwrap());
+        std::process::exit(1);
+    }
+
     if sub.dump_to_file(PathBuf::from(&args.output)).await.is_err() {
         eprintln!("pnass: failed to write {}", args.output);
         std::process::exit(1);
