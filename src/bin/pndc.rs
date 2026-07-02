@@ -38,6 +38,7 @@ use handlers::*;
 
 pub struct Handler {
     pub tx: Sender<JobClass>,
+    pub intros: IntrosConfig,
 }
 
 const ALL_LEVELS: &[&str] = &[
@@ -1061,8 +1062,7 @@ impl EventHandler for Handler {
                         Some(url) => url,
                         None => return,
                     };
-                    let intros = IntrosConfig::load();
-                    let preset = resolve_preset(&command, &intros);
+                    let preset = resolve_preset(&command, &self.intros);
 
                     if let Some(job) = handle_interaction(&ctx, &command, torrent_url, preset).await {
                         self.tx.send(JobClass::Job(job)).await.unwrap();
@@ -1097,8 +1097,7 @@ impl EventHandler for Handler {
                             return;
                         }
                     };
-                    let intros = IntrosConfig::load();
-                    let preset = resolve_preset(&command, &intros);
+                    let preset = resolve_preset(&command, &self.intros);
 
                     if let Some(mut job) = handle_interaction(&ctx, &command, String::new(), preset).await {
                         // Override job type and carry the probe linkage via job_id
@@ -1242,8 +1241,7 @@ impl EventHandler for Handler {
                     handle_detach(&ctx, &command).await;
                 }
                 "smartcode" => {
-                    let intros = IntrosConfig::load();
-                    if let Some(job) = handle_smartcode(&ctx, &command, &intros).await {
+                    if let Some(job) = handle_smartcode(&ctx, &command, &self.intros).await {
                         self.tx.send(JobClass::Job(job)).await.unwrap();
                     }
                 }
@@ -1267,8 +1265,7 @@ impl EventHandler for Handler {
                         Some(url) => url,
                         None => return,
                     };
-                    let intros = IntrosConfig::load();
-                    let preset = resolve_preset(&command, &intros);
+                    let preset = resolve_preset(&command, &self.intros);
 
                     if let Some(job) = handle_gitcode(&ctx, &command, torrent_url, preset).await {
                         self.tx.send(JobClass::Job(job)).await.unwrap();
@@ -1304,11 +1301,15 @@ impl EventHandler for Handler {
         ctx.set_presence(Some(ActivityData::custom("Pandora is active.")), OnlineStatus::Online);
         pandora_toolchain::pnworker::presence::set_global_context(ctx.clone());
 
-        let concat_option = CreateCommandOption::new(
+        let mut concat_option = CreateCommandOption::new(
             CommandOptionType::String,
             "concat",
             "Intro"
         ).required(false);
+
+        for group_name in self.intros.groups.keys() {
+            concat_option = concat_option.add_string_choice(group_name, group_name);
+        }
 
         let commands = vec![
             CreateCommand::new("help")
@@ -1886,9 +1887,11 @@ async fn main() {
             }
         });
     }
+    let intros = IntrosConfig::load();
+    println!("{:?}", intros);
     pandora_toolchain::pnworker::messages::init_language_files();
     let mut discord = Client::builder(env.get(TOKEN).cloned().unwrap_or_default(), GatewayIntents::all())
-        .event_handler(Handler { tx })
+        .event_handler(Handler { tx, intros })
         .await
         .unwrap();
 
