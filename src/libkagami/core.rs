@@ -533,20 +533,53 @@ pub fn find_fonts_with_roots(names: &[String], extra_roots: &[PathBuf]) -> Vec<P
     }
     font_files.extend(system_font_files());
     for path in font_files {
-        let font_names = match font_file_names(&path) {
-            Ok(n) => n,
-            Err(_) => continue,
-        };
-        for name in font_names {
-            let normalized = normalize_font_name(&name);
-            if wanted.contains(&normalized) {
-                found.insert(path.clone());
-            }
+        if font_normalized_names(&path).iter().any(|n| wanted.contains(n)) {
+            found.insert(path);
         }
     }
     let mut out: Vec<PathBuf> = found.into_iter().collect();
     out.sort();
     out
+}
+
+// Returns the normalized font names for a file, cached by file mtime so repeated
+// lookups don't re-read (and re-parse) every font file on disk. Reading a font's
+// `name` table requires the whole file (offsets can point anywhere), so the read
+// itself is unavoidable on a miss — but unchanged fonts are served from cache.
+fn font_normalized_names(path: &Path) -> Vec<String> {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, (std::time::SystemTime, Vec<String>)>>,
+    > = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+    let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+
+    if let Some(mtime) = mtime {
+        if let Some((cached_mtime, names)) = cache.lock().unwrap().get(path) {
+            if *cached_mtime == mtime {
+                return names.clone();
+            }
+        }
+        let names = read_normalized_font_names(path);
+        cache
+            .lock()
+            .unwrap()
+            .insert(path.to_path_buf(), (mtime, names.clone()));
+        names
+    } else {
+        read_normalized_font_names(path)
+    }
+}
+
+fn read_normalized_font_names(path: &Path) -> Vec<String> {
+    font_file_names(path)
+        .map(|ns| {
+            ns.iter()
+                .map(|n| normalize_font_name(n))
+                .filter(|n| !n.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn collect_line_fonts(line: &ASSLine, out: &mut BTreeSet<String>) {

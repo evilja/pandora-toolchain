@@ -5,10 +5,10 @@ use crate::libpnbin::resolve_runtime_binary;
 use crate::libpnlogging::core::LoggingHandle;
 use crate::log;
 use std::process::{Command, Stdio};
-use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use regex::Regex;
-use std::sync::mpsc::Sender;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::sync::mpsc::UnboundedSender;
 use std::collections::HashSet;
 
 pub enum RpbData {
@@ -158,7 +158,7 @@ pub fn run_ffmpeg_params(params: Vec<FfmpegParams>) -> bool {
 pub async fn do_comm_encode_ffmpeg<T, I>(
     encoder: &mut T,
     params: Vec<I>,
-    tx: Sender<RpbData>,
+    tx: UnboundedSender<RpbData>,
     totalframe: Option<u64>,
     cancelfile: Option<String>,
     logfile: Option<String>
@@ -188,14 +188,17 @@ where
     l.push('\n');
     log!(handle, &l);
     let ffmpeg = encoder.as_mut();
-    ffmpeg.out.stderr(Stdio::piped());
-    ffmpeg.out.stdout(Stdio::null());
-    let mut child = ffmpeg.out.spawn().expect("Failed to spawn ffmpeg");
+    let mut command = tokio::process::Command::new(ffmpeg.out.get_program());
+    command.args(ffmpeg.out.get_args());
+    command.stderr(Stdio::piped());
+    command.stdout(Stdio::null());
+    let mut child = command.spawn().expect("Failed to spawn ffmpeg");
     log!(handle, "FFmpeg spawned\n");
     let stderr = child.stderr.take().expect("No stderr");
     log!(handle, "stderr taken\n");
 
     let reader = BufReader::new(stderr);
+    let mut lines = reader.lines();
 
     let frame_re   = Regex::new(r"frame=\s*(\d+)").unwrap();
     let fps_re     = Regex::new(r"fps=\s*([\d\.]+)").unwrap();
@@ -208,11 +211,11 @@ where
     let total_frame: u64 = totalframe.unwrap_or(0);
     let mut emitted_warnings: HashSet<String> = HashSet::new();
 
-    for line in reader.lines().flatten() {
-        log!(handle, &(line.clone() + "\n"));
+    while let Ok(Some(line)) = lines.next_line().await {
+        log!(handle, &format!("{line}\n"));
         if let Some(ref cancelfile) = cfile {
             if cancelfile.try_exists().unwrap_or(false) {
-                child.kill().unwrap();
+                let _ = child.kill().await;
                 tx.send(RpbData::CancelFile).unwrap();
                 return;
             }
@@ -253,7 +256,7 @@ where
     if let Some(mut a) = handle {
         a.flush().await;
     }
-    let status = child.wait().expect("Failed to wait ffmpeg");
+    let status = child.wait().await.expect("Failed to wait ffmpeg");
 
     if status.success() {
         let _ = tx.send(RpbData::Done("DONE".into()));

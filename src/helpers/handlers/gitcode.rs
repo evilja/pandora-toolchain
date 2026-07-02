@@ -9,7 +9,19 @@ pub async fn handle_gitcode(
     let subtitle_url = required_trimmed_option(ctx, command, "subtitle_url", "subtitle_url").await?;
 
     let normalized = github_blob_to_raw(&subtitle_url);
+    let normalized = match pandora_toolchain::libpnnet::sanitize_fetch_url(&normalized).await {
+        Ok(u) => u,
+        Err(e) => {
+            command.create_response(ctx, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(format!("Refused to fetch subtitle: {}", e))
+                    .ephemeral(true)
+            )).await.ok();
+            return None;
+        }
+    };
     let client = match reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(180))
         .build()
     {

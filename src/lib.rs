@@ -14,6 +14,7 @@ pub mod libpnanisub;
 pub mod libacix;
 pub mod libpnbin;
 pub mod libpnapi;
+pub mod libpnnet;
 
 #[macro_export]
 macro_rules! pn_schema {

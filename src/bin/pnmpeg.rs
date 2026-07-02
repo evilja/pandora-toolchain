@@ -13,7 +13,7 @@ use pandora_toolchain::libpnprotocol::core::{Protocol, Schema, ToolInfo};
 use std::str::FromStr;
 use clap::Parser;
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use std::borrow::Cow;
 
 #[derive(Parser, Debug)]
@@ -206,7 +206,7 @@ async fn main() {
         }
     }
 
-    let (tx, rx): (Sender<RpbData>, Receiver<RpbData>) = mpsc::channel();
+    let (tx, mut rx): (UnboundedSender<RpbData>, UnboundedReceiver<RpbData>) = mpsc::unbounded_channel();
     let _thr = tokio::spawn(async move {
         do_comm_encode_ffmpeg(
             &mut encoder,
@@ -219,7 +219,7 @@ async fn main() {
     });
 
     let mut last: Option<Instant> = None;
-    while let Ok(val) = rx.recv() {
+    while let Some(val) = rx.recv().await {
         match val {
             RpbData::Progress(fps, frame, total, bitrate) => {
                 if last.map(|t| t.elapsed() < Duration::from_secs(5)).unwrap_or(false) {

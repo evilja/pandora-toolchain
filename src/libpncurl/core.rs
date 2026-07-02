@@ -15,10 +15,11 @@ use std::fs::File;
 use std::io::{Error, ErrorKind, Write};
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, mpsc::Sender};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::{collections::HashMap, path::PathBuf, time::Duration};
 use tokio::io::{AsyncRead, ReadBuf};
+use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::io::ReaderStream;
 
 const DRIVE_FOLDER_MIME: &str = "application/vnd.google-apps.folder";
@@ -41,7 +42,7 @@ struct ProgressReader<R> {
     inner: R,
     sent: u64,
     total: u64,
-    tx: Sender<RpbData>,
+    tx: UnboundedSender<RpbData>,
     host: Host,
     progress: Arc<Mutex<UploadProgress>>,
     cfile: Option<PathBuf>,
@@ -51,7 +52,7 @@ impl<R> ProgressReader<R> {
     fn new(
         inner: R,
         total: u64,
-        tx: Sender<RpbData>,
+        tx: UnboundedSender<RpbData>,
         host: Host,
         progress: Arc<Mutex<UploadProgress>>,
         cfile: Option<PathBuf>,
@@ -190,14 +191,19 @@ impl Req {
     }
 
     async fn download(&self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let target = match crate::libpnnet::sanitize_fetch_url(&self.target).await {
+            Ok(u) => u,
+            Err(e) => return Err(e.into()),
+        };
         let mut handle: Option<LoggingHandle> = match self.log {
             Some(ref pb) => Some(LoggingHandle::get_handle(pb).await.unwrap()),
             None => None,
         };
         let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(600))
             .build()?;
-        let response = client.get(&self.target).send().await?;
+        let response = client.get(&target).send().await?;
 
         if !response.status().is_success() {
             log!(handle, "Request failed\n");
@@ -241,7 +247,7 @@ impl Req {
         link_fn: impl Fn(&str) -> String,
         host: Host,
         outfile: Option<String>,
-        tx: Sender<RpbData>,
+        tx: UnboundedSender<RpbData>,
     ) -> bool {
         if is_cancelled(&self.cfile) {
             tx.send(RpbData::Cancel(host)).ok();
@@ -364,7 +370,7 @@ impl Req {
         &self,
         envpath: String,
         outfile: Option<String>,
-        tx: Sender<RpbData>,
+        tx: UnboundedSender<RpbData>,
     ) -> bool {
         let env = get_env(&envpath);
         let api_key = env.get(VOESX).cloned().unwrap_or_default();
@@ -395,7 +401,7 @@ impl Req {
         &self,
         envpath: String,
         outfile: Option<String>,
-        tx: Sender<RpbData>,
+        tx: UnboundedSender<RpbData>,
     ) -> bool {
         if is_cancelled(&self.cfile) {
             tx.send(RpbData::Cancel(Host::Abyss)).ok();
@@ -507,7 +513,7 @@ impl Req {
         &self,
         envpath: String,
         outfile: Option<String>,
-        tx: Sender<RpbData>,
+        tx: UnboundedSender<RpbData>,
     ) -> bool {
         let env = get_env(&envpath);
         let api_key = env.get(LULU).cloned().unwrap_or_default();
@@ -539,7 +545,7 @@ impl Req {
         &self,
         envpath: String,
         outfile: Option<String>,
-        tx: Sender<RpbData>,
+        tx: UnboundedSender<RpbData>,
     ) -> bool {
         let env = get_env(&envpath);
         let api_key = env.get(DOODSTREAM).cloned().unwrap_or_default();
@@ -570,7 +576,7 @@ impl Req {
         envpath: String,
         outfile: Option<String>,
         drive_folder: Option<String>,
-        tx: Sender<RpbData>,
+        tx: UnboundedSender<RpbData>,
     ) -> bool {
         println!(
             "[drive] upload requested target={} outfile={} env={} drive_folder={} logfile={} cancelfile={}",

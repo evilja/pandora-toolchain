@@ -8,7 +8,7 @@ use pandora_toolchain::{libpncurl::core::{
 use tokio::time::Instant;
 use std::{path::PathBuf, time::Duration};
 use clap::Parser;
-use std::sync::mpsc::{Sender, Receiver, self};
+use tokio::sync::mpsc::{UnboundedSender, UnboundedReceiver, self};
 use pandora_toolchain::{pn_data, pn_emit, pn_schema};
 use pandora_toolchain::libpnprotocol::core::{Protocol, Schema, ToolInfo};
 
@@ -112,7 +112,7 @@ async fn main() {
             std::process::exit(1);
         }
     } else if let Some(a) = args.env {
-        let (tx, rx): (Sender<RpbData>, Receiver<RpbData>) = mpsc::channel();
+        let (tx, mut rx): (UnboundedSender<RpbData>, UnboundedReceiver<RpbData>) = mpsc::unbounded_channel();
 
         let tx2 = tx.clone();
         let tx4 = tx.clone(); let tx5 = tx.clone(); let tx6 = tx.clone();
@@ -169,7 +169,7 @@ async fn main() {
         let mut voesx_result: Option<Result<String, ()>> = None;
         let mut abyss_result: Option<Result<String, ()>> = None;
 
-        while let Ok(val) = rx.recv() {
+        while let Some(val) = rx.recv().await {
             match val {
                 RpbData::Progress(done, total, extensions, Host::Drive) => {
                     if total != 0 { total_size = total; }

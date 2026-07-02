@@ -785,7 +785,12 @@ async fn upsert_fonts_zip(fg: &Forgejo, owner_repo: &str, server_id: u64, folder
         PathBuf::from("DB").join("fontconfig").join(server_id.to_string()),
         PathBuf::from("DB").join("fontconfig").join("global"),
     ];
-    let font_files = find_fonts_with_roots(font_names, &roots);
+    let font_files = {
+        let names = font_names.to_vec();
+        tokio::task::spawn_blocking(move || find_fonts_with_roots(&names, &roots))
+            .await
+            .map_err(|e| e.to_string())?
+    };
     println!("[fonts] owner_repo={} requested={} found={}", owner_repo, font_names.len(), font_files.len());
     for name in font_names {
         println!("[fonts] requested={}", name);

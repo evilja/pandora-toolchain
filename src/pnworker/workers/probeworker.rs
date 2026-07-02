@@ -13,6 +13,7 @@ use crate::pnworker::util::{ToolResult, run_tool, string_byte_to_mb};
 use regex::Regex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::{Duration, sleep};
 
@@ -246,12 +247,18 @@ fn basename(name: &str) -> String {
 }
 
 fn episode_token(name: &str) -> Option<String> {
-    for pattern in [
-        r"(?i)\s-\s*(\d{1,4}(?:v\d+)?)\b",
-        r"(?i)(?:^|[\s._\-\[])[Ss]\d{1,2}[Ee](\d{1,4}(?:v\d+)?)\b",
-        r"(?i)(?:^|[\s._\-\[])[Ee][Pp]?\s*(\d{1,4}(?:v\d+)?)\b",
-    ] {
-        let re = Regex::new(pattern).unwrap();
+    static RES: OnceLock<Vec<Regex>> = OnceLock::new();
+    let res = RES.get_or_init(|| {
+        [
+            r"(?i)\s-\s*(\d{1,4}(?:v\d+)?)\b",
+            r"(?i)(?:^|[\s._\-\[])[Ss]\d{1,2}[Ee](\d{1,4}(?:v\d+)?)\b",
+            r"(?i)(?:^|[\s._\-\[])[Ee][Pp]?\s*(\d{1,4}(?:v\d+)?)\b",
+        ]
+        .iter()
+        .map(|p| Regex::new(p).unwrap())
+        .collect()
+    });
+    for re in res {
         if let Some(caps) = re.captures(name) {
             if let Some(m) = caps.get(1) {
                 return Some(m.as_str().to_string());
@@ -299,15 +306,17 @@ fn sequence_tokens(names: &[String]) -> Vec<Option<String>> {
 }
 
 fn numeric_candidates(name: &str) -> Vec<String> {
+    static BRACKET_RE: OnceLock<Regex> = OnceLock::new();
+    static DELIM_RE: OnceLock<Regex> = OnceLock::new();
     let mut out = Vec::new();
-    let bracket_re = Regex::new(r"(?i)\[(\d{1,4}(?:v\d+)?)\]").unwrap();
+    let bracket_re = BRACKET_RE.get_or_init(|| Regex::new(r"(?i)\[(\d{1,4}(?:v\d+)?)\]").unwrap());
     for caps in bracket_re.captures_iter(name) {
         if let Some(m) = caps.get(1) {
             out.push(m.as_str().to_string());
         }
     }
-    let delim_re =
-        Regex::new(r"(?i)(?:^|[\s._\-])([0-9]{1,4}(?:v\d+)?)(?:$|[\s._\-\(\[])").unwrap();
+    let delim_re = DELIM_RE
+        .get_or_init(|| Regex::new(r"(?i)(?:^|[\s._\-])([0-9]{1,4}(?:v\d+)?)(?:$|[\s._\-\(\[])").unwrap());
     for caps in delim_re.captures_iter(name) {
         if let Some(m) = caps.get(1) {
             let token = m.as_str().to_string();

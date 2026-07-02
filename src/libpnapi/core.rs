@@ -137,7 +137,7 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/git/destruct", post(git_destruct))
         .route("/git/smartcode", post(git_smartcode))
         .route("/gitsync", post(gitsync))
-        .route("/acix/search", get(acix_search))
+        .route("/acix/search", post(acix_search))
         .route("/acix/tmdb", post(acix_tmdb))
         .route("/acix/translators", get(acix_translators))
         .route("/acix/publish", post(acix_publish))
@@ -252,8 +252,13 @@ fn is_cancel_path(path: &str) -> bool {
         && parts[2] == "cancel"
 }
 
-fn api_auth_for_token(token: &str) -> Option<ApiAuth> {
-    let contents = std::fs::read_to_string(API_TOKENS_PATH).ok()?;
+struct TokenEntry {
+    local_server_id: Option<u64>,
+    label: Option<String>,
+}
+
+fn parse_token_file(contents: &str) -> std::collections::HashMap<String, TokenEntry> {
+    let mut map = std::collections::HashMap::new();
     let mut pending_label: Option<String> = None;
     for line in contents.lines() {
         let line = line.trim();
@@ -267,20 +272,43 @@ fn api_auth_for_token(token: &str) -> Option<ApiAuth> {
         let mut parts = line.split('|');
         let stored = parts.next().unwrap_or("").trim();
         let label = pending_label.take();
-        if stored != token {
+        if stored.is_empty() {
             continue;
         }
         let local_server_id = match (parts.next(), parts.next()) {
             (Some("local"), Some(server_id)) => server_id.trim().parse::<u64>().ok(),
             _ => None,
         };
-        return Some(ApiAuth {
-            local_server_id,
-            token_hash: format!("{:x}", md5::compute(token.as_bytes())),
-            label,
-        });
+        map.entry(stored.to_string())
+            .or_insert(TokenEntry { local_server_id, label });
     }
-    None
+    map
+}
+
+fn api_auth_for_token(token: &str) -> Option<ApiAuth> {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<(Option<std::time::SystemTime>, std::collections::HashMap<String, TokenEntry>)>,
+    > = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new((None, std::collections::HashMap::new())));
+
+    let mtime = std::fs::metadata(API_TOKENS_PATH)
+        .and_then(|m| m.modified())
+        .ok();
+
+    let mut guard = cache.lock().unwrap();
+    if guard.0 != mtime {
+        let entries = std::fs::read_to_string(API_TOKENS_PATH)
+            .map(|c| parse_token_file(&c))
+            .unwrap_or_default();
+        *guard = (mtime, entries);
+    }
+
+    let entry = guard.1.get(token)?;
+    Some(ApiAuth {
+        local_server_id: entry.local_server_id,
+        token_hash: format!("{:x}", md5::compute(token.as_bytes())),
+        label: entry.label.clone(),
+    })
 }
 
 fn parse_token_label(line: &str) -> Option<String> {
@@ -503,11 +531,13 @@ fn github_blob_to_raw(url: &str) -> String {
 }
 
 async fn fetch_subtitle(url: &str) -> Result<Vec<u8>, String> {
+    let url = crate::libpnnet::sanitize_fetch_url(url).await?;
     let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(180))
         .build()
         .map_err(|e| e.to_string())?;
-    let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("status {}", resp.status()));
     }

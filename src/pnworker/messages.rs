@@ -203,15 +203,39 @@ pub fn get_arg_count(id: &str, lang: &str) -> Option<usize> {
     lookup(id, lang).map(|(_, args)| args)
 }
 
+struct LangTable {
+    mtime: Option<std::time::SystemTime>,
+    entries: HashMap<String, MessageEntry>,
+}
+
+fn lang_cache() -> &'static std::sync::Mutex<HashMap<String, LangTable>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<String, LangTable>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
 fn lookup(id: &str, lang: &str) -> Option<(String, usize)> {
-    let path = format!("DB/config/{}.toml", lang.to_ascii_lowercase());
-    if let Ok(content) = std::fs::read_to_string(&path) {
-        if let Ok(map) = toml::from_str::<HashMap<String, MessageEntry>>(&content) {
-            if let Some(entry) = map.get(id) {
-                return Some((entry.text.clone(), entry.args));
-            }
-        }
+    let lang = lang.to_ascii_lowercase();
+    let path = format!("DB/config/{}.toml", lang);
+    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+
+    let mut cache = lang_cache().lock().unwrap();
+    let needs_reload = match cache.get(&lang) {
+        Some(table) => table.mtime != mtime,
+        None => true,
+    };
+    if needs_reload {
+        let entries = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|content| toml::from_str::<HashMap<String, MessageEntry>>(&content).ok())
+            .unwrap_or_default();
+        cache.insert(lang.clone(), LangTable { mtime, entries });
     }
+    if let Some(entry) = cache.get(&lang).and_then(|t| t.entries.get(id)) {
+        return Some((entry.text.clone(), entry.args));
+    }
+    drop(cache);
+
     DEFAULT_ENTRIES
         .iter()
         .find(|(k, _, _)| *k == id)
