@@ -30,3 +30,4 @@ pub const API_AUTHOR_ID: &str = "api_author_id";
 pub const API_RATE_LIMIT: &str = "api_rate_limit";
 pub const API_RATE_WINDOW_SECS: &str = "api_rate_window_secs";
 pub const API_TOKENS_PATH: &str = "DB/config/global/environment/api.pandora";
+pub const FLAVOR_PATH: &str = "DB/config/global/environment/flavor.pandora";

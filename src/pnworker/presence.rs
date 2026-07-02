@@ -1,5 +1,6 @@
 use std::sync::OnceLock;
 use serenity::all::{ActivityData, Context, OnlineStatus};
+use crate::libpnenv::standard::FLAVOR_PATH;
 use crate::pnworker::core::{Job, Stage};
 
 static DISCORD_CTX: OnceLock<Context> = OnceLock::new();
@@ -24,8 +25,8 @@ pub enum Presence {
 
 pub async fn change_presence_job(gateway: &Context, p: Presence) {
     let (text, status) = match p {
-        Presence::Idle => ("No jobs in queue.".to_string(), OnlineStatus::Online),
-        Presence::QueueTotal(0) => ("No jobs in queue.".to_string(), OnlineStatus::Online),
+        Presence::Idle => (idle_presence_text().await, OnlineStatus::Online),
+        Presence::QueueTotal(0) => (idle_presence_text().await, OnlineStatus::Online),
         Presence::QueueTotal(n) => (format!("{} jobs in queue (idle).", n), OnlineStatus::Online),
         Presence::Downloading { idx, total } => (format!("Downloading #{} of {} jobs", idx + 1, total), OnlineStatus::DoNotDisturb),
         Presence::Encoding    { idx, total } => (format!("Encoding #{} of {} jobs", idx + 1, total), OnlineStatus::DoNotDisturb),
@@ -33,6 +34,32 @@ pub async fn change_presence_job(gateway: &Context, p: Presence) {
         Presence::Probing     { idx, total } => (format!("Probing #{} of {} jobs", idx + 1, total), OnlineStatus::DoNotDisturb),
     };
     gateway.set_presence(Some(ActivityData::custom(text)), status);
+}
+
+pub async fn idle_flavors() -> Vec<String> {
+    let contents = match tokio::fs::read_to_string(FLAVOR_PATH).await {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    contents.lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+async fn idle_presence_text() -> String {
+    let flavors = idle_flavors().await;
+    if flavors.is_empty() {
+        return "No jobs in queue.".to_string();
+    }
+    let mut bytes = [0u8; 8];
+    let idx = if getrandom::getrandom(&mut bytes).is_ok() {
+        (u64::from_ne_bytes(bytes) as usize) % flavors.len()
+    } else {
+        0
+    };
+    flavors[idx].clone()
 }
 
 pub fn presence_from_queue(queue: &[Job]) -> Presence {

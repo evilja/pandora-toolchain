@@ -111,6 +111,9 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("gentoken", 3),
     ("lstoken", 3),
     ("rmtoken", 3),
+    ("touchflavor", 4),
+    ("lsflavor", 4),
+    ("rmflavor", 4),
     ("lsauth", 3),
     ("acixconfirm", 4),
     ("acixtemplate", 4),
@@ -359,6 +362,24 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Generate a new API bearer token.",
             usage: "/gentoken [label:<note>] [local:<true|false>]",
             details: "Mints a random bearer token for the HTTP API and appends it to the token file. With local enabled, jobs submitted with the token use this server's Google Drive credentials when available, falling back to global credentials. The token is shown once, privately. Upper only.",
+        },
+        HelpCommand {
+            name: "touchflavor",
+            summary: "Add an idle presence flavor.",
+            usage: "/touchflavor text:<presence text>",
+            details: "Adds a custom text that can be shown while the queue is empty instead of the default `No jobs in queue.`. Upper only.",
+        },
+        HelpCommand {
+            name: "lsflavor",
+            summary: "List idle presence flavors.",
+            usage: "/lsflavor [page]",
+            details: "Lists stored idle presence texts with their removal indexes.",
+        },
+        HelpCommand {
+            name: "rmflavor",
+            summary: "Remove an idle presence flavor.",
+            usage: "/rmflavor index:<number>",
+            details: "Removes one idle presence text by the index shown in `/lsflavor`.",
         },
         HelpCommand {
             name: "acixconfirm",
@@ -1185,6 +1206,15 @@ impl EventHandler for Handler {
                 "rmtoken" => {
                     handle_rmtoken(&ctx, &command).await;
                 }
+                "touchflavor" => {
+                    handle_touchflavor(&ctx, &command).await;
+                }
+                "lsflavor" => {
+                    handle_lsflavor(&ctx, &command).await;
+                }
+                "rmflavor" => {
+                    handle_rmflavor(&ctx, &command).await;
+                }
                 "lsauth" => {
                     handle_lsauth(&ctx, &command).await;
                 }
@@ -1716,6 +1746,26 @@ impl EventHandler for Handler {
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "token", "Displayed token mask, for example c79...d03")
                         .required(false)
+                ),
+            CreateCommand::new("touchflavor")
+                .description("Add an idle presence text")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "text", "Text to show while no jobs are queued")
+                        .required(true)
+                ),
+            CreateCommand::new("lsflavor")
+                .description("List idle presence texts")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "page", "Page number")
+                        .required(false)
+                        .min_int_value(1)
+                ),
+            CreateCommand::new("rmflavor")
+                .description("Remove an idle presence text by index")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "index", "Index from /lsflavor")
+                        .required(true)
+                        .min_int_value(1)
                 ),
             CreateCommand::new("lsauth")
                 .description("List authorized users in one rank level")
