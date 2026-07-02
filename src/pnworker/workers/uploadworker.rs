@@ -102,6 +102,7 @@ async fn run_upload_job(
             let (drive_env, local_drive) = drive_env_path(&directory, server_id).await;
             let drive_folder = drive_folder_path(
                 local_drive,
+                server_id,
                 if local_drive {
                     gdrive_folder_local
                 } else {
@@ -448,7 +449,7 @@ async fn run_upload_job(
             .ok();
 
             let (drive_env, local_drive) = drive_env_path(&directory, server_id).await;
-            let drive_folder = drive_folder_path(local_drive, None);
+            let drive_folder = drive_folder_path(local_drive, server_id, None);
             let spec = if drive_folder.is_empty() {
                 PNCURL_BACKUP
             } else {
@@ -668,14 +669,18 @@ async fn drive_env_path(directory: &PathBuf, server_id: Option<u64>) -> (String,
     }
 }
 
-fn drive_folder_path(local_drive: bool, folder: Option<String>) -> String {
+fn drive_folder_path(local_drive: bool, server_id: Option<u64>, folder: Option<String>) -> String {
     let folder = folder
         .unwrap_or_default()
         .trim()
         .trim_matches('/')
         .to_string();
     if !local_drive {
-        return folder;
+        return match server_id {
+            Some(id) if folder.is_empty() => id.to_string(),
+            Some(id) => format!("{}/{}", id, folder),
+            None => folder,
+        };
     }
     if folder.is_empty() {
         return "pntools".to_string();
