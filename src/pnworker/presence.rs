@@ -48,7 +48,7 @@ pub async fn idle_flavors() -> Vec<String> {
         .collect()
 }
 
-async fn idle_presence_text() -> String {
+pub async fn idle_presence_text() -> String {
     let flavors = idle_flavors().await;
     if flavors.is_empty() {
         return "No jobs in queue.".to_string();

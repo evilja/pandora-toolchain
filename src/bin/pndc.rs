@@ -1328,7 +1328,10 @@ impl EventHandler for Handler {
         println!("Bot ID: {}", ready.user.id);
         println!("Serving {} guilds", ready.guilds.len());
 
-        ctx.set_presence(Some(ActivityData::custom("Pandora is active.")), OnlineStatus::Online);
+        ctx.set_presence(
+            Some(ActivityData::custom(pandora_toolchain::pnworker::presence::idle_presence_text().await)),
+            OnlineStatus::Online,
+        );
         pandora_toolchain::pnworker::presence::set_global_context(ctx.clone());
 
         let mut concat_option = CreateCommandOption::new(
