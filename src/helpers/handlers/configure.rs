@@ -51,6 +51,7 @@ pub async fn handle_configure(
     let existing_gdrive_refresh_token = existing_lines.get(6).copied().unwrap_or("").to_string();
     let existing_gdrive_folder_id = existing_lines.get(7).copied().unwrap_or("").to_string();
     let existing_wrap_style = existing_lines.get(8).copied().unwrap_or("").to_string();
+    let existing_local_gdrive = existing_lines.get(9).copied().unwrap_or("true").to_string();
 
     let wrap_style = match option_str(command, "wrapstyle").map(str::trim) {
         Some("dont_touch") | Some("keep") | Some("-") => String::new(),
@@ -93,7 +94,7 @@ pub async fn handle_configure(
         return;
     }
 
-    let body = format!("{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n", language, forgejo, command.channel_id.get(), new_api_key, gdrive_client_id, gdrive_client_secret, gdrive_refresh_token, gdrive_folder_id, wrap_style);
+    let body = format!("{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n", language, forgejo, command.channel_id.get(), new_api_key, gdrive_client_id, gdrive_client_secret, gdrive_refresh_token, gdrive_folder_id, wrap_style, existing_local_gdrive);
     let path = dir.join("meta.pandora");
     if let Err(e) = tokio::fs::write(&path, body).await {
         command.create_response(ctx, CreateInteractionResponse::Message(

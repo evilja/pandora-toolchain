@@ -1,5 +1,5 @@
 use crate::libpnprotocol::core::{Protocol, TypeC};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -153,7 +153,7 @@ where
     }
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 pub struct IntrosConfig {
     pub groups: HashMap<String, Vec<String>>,
 }

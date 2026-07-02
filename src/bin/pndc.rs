@@ -38,7 +38,6 @@ use handlers::*;
 
 pub struct Handler {
     pub tx: Sender<JobClass>,
-    pub intros: IntrosConfig,
 }
 
 const ALL_LEVELS: &[&str] = &[
@@ -114,6 +113,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("lsauth", 3),
     ("acixconfirm", 4),
     ("acixtemplate", 4),
+    ("addintro", 4),
     ("changerank", 4),
     ("fontcheck", 4),
 ];
@@ -320,8 +320,8 @@ fn help_catalog() -> &'static [HelpCommand] {
         HelpCommand {
             name: "edit",
             summary: "Edit individual server metadata fields, leaving the rest untouched.",
-            usage: "/edit [language] [forgejo] [api_key] [gdrive_client_id] [gdrive_client_secret] [gdrive_refresh_token] [gdrive_folder_id] [wrapstyle] [announcement_channel]",
-            details: "Like /configure but every field is optional — omitted fields keep their current value. Pass `-` to clear a text field. wrapstyle can be dont_touch or 0-3. Set announcement_channel:true to point announcements at the current channel. Requires the server to already be configured.",
+            usage: "/edit [language] [forgejo] [api_key] [gdrive_client_id] [gdrive_client_secret] [gdrive_refresh_token] [gdrive_folder_id] [local_gdrive] [wrapstyle] [announcement_channel]",
+            details: "Like /configure but every field is optional — omitted fields keep their current value. Pass `-` to clear a text field. Set local_gdrive:false to keep stored server Drive credentials but upload through global Drive. wrapstyle can be dont_touch or 0-3. Set announcement_channel:true to point announcements at the current channel. Requires the server to already be configured.",
         },
         HelpCommand {
             name: "addapi",
@@ -388,6 +388,12 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Set the server README template.",
             usage: "/readmebase file:<base.md>",
             details: "Stores base.md for repo bootstrapping. /init and /attach can use it when creating or updating README.md.",
+        },
+        HelpCommand {
+            name: "addintro",
+            summary: "Encode and register an intro group.",
+            usage: "/addintro name:<group> video:<attachment>",
+            details: "Encodes the uploaded video into 44100/23.976, 44100/24, 48000/23.976, and 48000/24 libx264 MP4 variants, stores them under DB/concat/<serverid>, and upserts the group in intros.toml.",
         },
         HelpCommand {
             name: "auth",
@@ -1055,7 +1061,8 @@ impl EventHandler for Handler {
                         Some(url) => url,
                         None => return,
                     };
-                    let preset = resolve_preset(&command, &self.intros);
+                    let intros = IntrosConfig::load();
+                    let preset = resolve_preset(&command, &intros);
 
                     if let Some(job) = handle_interaction(&ctx, &command, torrent_url, preset).await {
                         self.tx.send(JobClass::Job(job)).await.unwrap();
@@ -1090,7 +1097,8 @@ impl EventHandler for Handler {
                             return;
                         }
                     };
-                    let preset = resolve_preset(&command, &self.intros);
+                    let intros = IntrosConfig::load();
+                    let preset = resolve_preset(&command, &intros);
 
                     if let Some(mut job) = handle_interaction(&ctx, &command, String::new(), preset).await {
                         // Override job type and carry the probe linkage via job_id
@@ -1199,6 +1207,9 @@ impl EventHandler for Handler {
                 "readmebase" => {
                     handle_readmebase(&ctx, &command).await;
                 }
+                "addintro" => {
+                    handle_addintro(&ctx, &command).await;
+                }
                 "auth" => {
                     handle_auth(&ctx, &command).await;
                 }
@@ -1231,7 +1242,8 @@ impl EventHandler for Handler {
                     handle_detach(&ctx, &command).await;
                 }
                 "smartcode" => {
-                    if let Some(job) = handle_smartcode(&ctx, &command, &self.intros).await {
+                    let intros = IntrosConfig::load();
+                    if let Some(job) = handle_smartcode(&ctx, &command, &intros).await {
                         self.tx.send(JobClass::Job(job)).await.unwrap();
                     }
                 }
@@ -1255,7 +1267,8 @@ impl EventHandler for Handler {
                         Some(url) => url,
                         None => return,
                     };
-                    let preset = resolve_preset(&command, &self.intros);
+                    let intros = IntrosConfig::load();
+                    let preset = resolve_preset(&command, &intros);
 
                     if let Some(job) = handle_gitcode(&ctx, &command, torrent_url, preset).await {
                         self.tx.send(JobClass::Job(job)).await.unwrap();
@@ -1291,15 +1304,11 @@ impl EventHandler for Handler {
         ctx.set_presence(Some(ActivityData::custom("Pandora is active.")), OnlineStatus::Online);
         pandora_toolchain::pnworker::presence::set_global_context(ctx.clone());
 
-        let mut concat_option = CreateCommandOption::new(
+        let concat_option = CreateCommandOption::new(
             CommandOptionType::String,
             "concat",
             "Intro"
         ).required(false);
-
-        for group_name in self.intros.groups.keys() {
-            concat_option = concat_option.add_string_choice(group_name, group_name);
-        }
 
         let commands = vec![
             CreateCommand::new("help")
@@ -1597,6 +1606,10 @@ impl EventHandler for Handler {
                         .required(false)
                 )
                 .add_option(
+                    CreateCommandOption::new(CommandOptionType::Boolean, "local_gdrive", "Use this server's Google Drive credentials for uploads.")
+                        .required(false)
+                )
+                .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "wrapstyle", "ASS WrapStyle normalization. Use dont_touch to clear.")
                         .required(false)
                         .add_string_choice("dont_touch", "dont_touch")
@@ -1756,6 +1769,16 @@ impl EventHandler for Handler {
                     CreateCommandOption::new(CommandOptionType::Attachment, "file", "The base.md file")
                         .required(true)
                 ),
+            CreateCommand::new("addintro")
+                .description("Encode and register an intro group")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "name", "Intro group name")
+                        .required(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Attachment, "video", "Intro source video")
+                        .required(true)
+                ),
             CreateCommand::new("auth")
                 .description("Append a user id to an auth level file")
                 .add_option(
@@ -1863,11 +1886,9 @@ async fn main() {
             }
         });
     }
-    let intros = IntrosConfig::load();
-    println!("{:?}", intros);
     pandora_toolchain::pnworker::messages::init_language_files();
     let mut discord = Client::builder(env.get(TOKEN).cloned().unwrap_or_default(), GatewayIntents::all())
-        .event_handler(Handler { tx, intros })
+        .event_handler(Handler { tx })
         .await
         .unwrap();
 

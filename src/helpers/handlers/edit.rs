@@ -39,6 +39,7 @@ pub async fn handle_edit(
     let existing_gdrive_refresh_token = existing_lines.get(6).copied().unwrap_or("");
     let existing_gdrive_folder_id = existing_lines.get(7).copied().unwrap_or("");
     let existing_wrap_style = existing_lines.get(8).copied().unwrap_or("");
+    let existing_local_gdrive = existing_lines.get(9).copied().unwrap_or("true");
 
     let language = match option_str(command, "language") {
         Some(l) if matches!(l, "EN" | "TR" | "JP") => l.to_string(),
@@ -79,13 +80,16 @@ pub async fn handle_edit(
             return;
         }
     };
+    let local_gdrive = option_bool(command, "local_gdrive")
+        .map(|v| if v { "true" } else { "false" }.to_string())
+        .unwrap_or_else(|| existing_local_gdrive.to_string());
     let gdrive_parts = [&gdrive_client_id, &gdrive_client_secret, &gdrive_refresh_token, &gdrive_folder_id];
     if gdrive_parts.iter().any(|s| !s.is_empty()) && gdrive_parts.iter().any(|s| s.is_empty()) {
         command_error(ctx, command, "Error: Google Drive config requires client id, client secret, refresh token, and folder id.").await;
         return;
     }
 
-    let body = format!("{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n", language, forgejo, channel, new_api_key, gdrive_client_id, gdrive_client_secret, gdrive_refresh_token, gdrive_folder_id, wrap_style);
+    let body = format!("{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n", language, forgejo, channel, new_api_key, gdrive_client_id, gdrive_client_secret, gdrive_refresh_token, gdrive_folder_id, wrap_style, local_gdrive);
     let path = dir.join("meta.pandora");
     if let Err(e) = tokio::fs::write(&path, body).await {
         command.create_response(ctx, CreateInteractionResponse::Message(
@@ -101,10 +105,11 @@ pub async fn handle_edit(
     let gdrive_display = if gdrive_client_id.is_empty() && gdrive_client_secret.is_empty() && gdrive_refresh_token.is_empty() && gdrive_folder_id.is_empty() { "(unset)".to_string() } else { "(set)".to_string() };
     let channel_display = if channel.is_empty() { "(unset)".to_string() } else { format!("<#{}>", channel) };
     let wrap_display = if wrap_style.is_empty() { "dont_touch".to_string() } else { wrap_style.clone() };
+    let local_gdrive_display = if local_gdrive == "false" { "disabled" } else { "enabled" };
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
-            .content(format!("Edited server `{}` — language: {}, forgejo: {}, forgejo api_key: {}, gdrive: {}, wrapstyle: {}, announcement channel: {}",
-                server_id, language, forgejo_display, api_key_display, gdrive_display, wrap_display, channel_display))
+            .content(format!("Edited server `{}` — language: {}, forgejo: {}, forgejo api_key: {}, gdrive: {}, local_gdrive: {}, wrapstyle: {}, announcement channel: {}",
+                server_id, language, forgejo_display, api_key_display, gdrive_display, local_gdrive_display, wrap_display, channel_display))
             .ephemeral(true)
     )).await.ok();
 }

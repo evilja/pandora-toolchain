@@ -48,6 +48,7 @@ pub enum FfmpegParams {
     Crf(u8),
     Preset(Cow<'static, str>),
     Ca(Cow<'static, str>),
+    Ar(Cow<'static, str>),
     Ba(Cow<'static, str>),
     Format(Cow<'static, str>),
     Safe(Cow<'static, str>),
@@ -84,6 +85,7 @@ impl Decode for FfmpegParams {
             Self::Crf(a) => vec!["-crf".to_string(), a.to_string()],
             Self::Preset(a) => vec!["-preset".to_string(), a.to_string()],
             Self::Ca(a) => vec!["-c:a".to_string(), a.to_string()],
+            Self::Ar(a) => vec!["-ar".to_string(), a.to_string()],
             Self::Ba(a) => vec!["-b:a".to_string(), a.to_string()],
             Self::Format(a) => vec!["-f".to_string(), a.to_string()],
             Self::Safe(a) => vec!["-safe".to_string(), a.to_string()],
@@ -141,6 +143,16 @@ where T: Encode<I>, I: Decode
 
     encoder.run();
 
+}
+
+pub fn run_ffmpeg_params(params: Vec<FfmpegParams>) -> bool {
+    let mut encoder = FFmpeg::new();
+    for param in params {
+        encoder.insert_param(param);
+    }
+    encoder.out.stderr(Stdio::null());
+    encoder.out.stdout(Stdio::null());
+    encoder.out.status().map(|s| s.success()).unwrap_or(false)
 }
 
 pub async fn do_comm_encode_ffmpeg<T, I>(

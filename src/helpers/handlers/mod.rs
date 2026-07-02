@@ -32,6 +32,7 @@ mod changerank;
 mod interaction;
 mod providers;
 mod translation;
+mod addintro;
 #[allow(unused_imports)]
 pub use self::message::handle_message;
 pub use self::probe::handle_probe;
@@ -65,6 +66,7 @@ pub use self::changerank::handle_changerank;
 pub use self::interaction::handle_interaction;
 pub use self::providers::handle_providers;
 pub use self::translation::{handle_addtranslation, handle_addtranslationall, handle_gettranslation, handle_gettranslationall};
+pub use self::addintro::handle_addintro;
 
 struct SmartMergeResult {
     link: String,

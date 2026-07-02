@@ -15,8 +15,15 @@ pub async fn handle_providers(ctx: &Context, command: &serenity::all::CommandInt
         && env_set(&env, PARENTID);
     let server_gdrive = [4usize, 5, 6, 7].iter()
         .all(|idx| server_lines.get(*idx).map(|s| !s.trim().is_empty()).unwrap_or(false));
-    let gdrive_label = if server_gdrive {
+    let local_gdrive_enabled = !matches!(
+        server_lines.get(9).copied().unwrap_or("true").trim(),
+        "false" | "0" | "disabled" | "off"
+    );
+    let active_server_gdrive = server_gdrive && local_gdrive_enabled;
+    let gdrive_label = if active_server_gdrive {
         "server"
+    } else if server_gdrive && global_gdrive {
+        "global (server disabled)"
     } else if global_gdrive {
         "global"
     } else {
@@ -28,7 +35,7 @@ pub async fn handle_providers(ctx: &Context, command: &serenity::all::CommandInt
     let forgejo_attached = !persistence.is_empty() && !github_attached;
 
     let upload_lines = vec![
-        attached_line_with_note("Google Drive", server_gdrive || global_gdrive, gdrive_label),
+        attached_line_with_note("Google Drive", active_server_gdrive || global_gdrive, gdrive_label),
         attached_line("Doodstream", env_set(&env, DOODSTREAM)),
         attached_line("LuluStream", env_set(&env, LULU)),
         attached_line("Voe", env_set(&env, VOESX)),
