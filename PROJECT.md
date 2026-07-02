@@ -23,15 +23,6 @@ Guidance for coding agents working in this repository.
 - `src/helpers/` — pndc-only helper modules included by `src/bin/pndc.rs`: `pndc.rs` contains command option parsing, response helpers, attached-repo validation, and Forgejo config loading; `handlers/mod.rs` re-exports Discord command handlers (`handle_*`) split across `src/helpers/handlers/*.rs` plus shared handler-local helpers.
 - `src/pnworker/` — worker runtime used by `pndc`. `core.rs` runs the main loop and `pn_worker()`; `frontend.rs` defines the `Frontend` enum (`Discord { ctx, msg }` / `Web` / `None`) that decouples `Job` from serenity — every message edit, reaction, and presence update is routed through it, with `Web`/`None` as no-ops; `messages.rs` is the localization gate (consts, get_message, format_payload, create_job_embed); `workers/` contains `downloadworker`, `encodeworker`, `uploadworker`, `probeworker`; `tools.rs` declares CLI specs for each tool (`PNCURL_*`, `PNP2P_*`, `PNMPEG_*`, plus `PNASS_LAYER`, `PNASS_SPLIT_SIGNS`, `PNASS_MERGE`, `PNASS_MERGE_TL_ONLY`); `util.rs` has `run_tool` (spawns a tool and dispatches its protocol lines to a callback), `WorkerNamePool` (randomly assigns/reclaims per-task names), and `IntrosConfig` (loads `DB/config/global/environment/intros.toml`); `heartbeat/` is the `TypedShrine` supervisor (auto-reboots dead workers); `presence.rs` owns the `Presence` enum and `change_presence_job` / `presence_from_queue` helpers used by `core.rs` to update the Discord activity status and presence. See [WORKER.md](WORKER.md).
 
-## Build / verify
-
-- Build: `cargo build` (full workspace) or `cargo build --bin <name>`.
-- Lint check: `cargo check --all-targets`.
-- Tests: `cargo test --lib` (mostly in `libpnp2p::nyaaise::tests`).
-- No formatter / clippy config is enforced; match surrounding style.
-
-After any change, run `cargo check --all-targets` at minimum.
-
 ## Conventions
 
 - **No comments** unless explicitly requested. Existing reference URL comments in files are fine to preserve; do not add new ones.

@@ -635,25 +635,9 @@ async fn drive_env_path(directory: &PathBuf, server_id: Option<u64>) -> (String,
         Ok(s) => s,
         Err(_) => return (ENV_PATH.to_string(), false),
     };
-    let mut lines = meta.lines();
-    for _ in 0..4 {
-        lines.next();
-    }
-    let client_id = lines.next().unwrap_or("").trim().to_string();
-    let client_secret = lines.next().unwrap_or("").trim().to_string();
-    let refresh_token = lines.next().unwrap_or("").trim().to_string();
-    let parent_id = lines.next().unwrap_or("").trim().to_string();
-    let local_drive = lines.next().unwrap_or("true").trim();
-    if matches!(local_drive, "false" | "0" | "disabled" | "off") {
+    let Some((client_id, client_secret, refresh_token, parent_id)) = parse_server_drive_meta(&meta) else {
         return (ENV_PATH.to_string(), false);
-    }
-    if client_id.is_empty()
-        || client_secret.is_empty()
-        || refresh_token.is_empty()
-        || parent_id.is_empty()
-    {
-        return (ENV_PATH.to_string(), false);
-    }
+    };
 
     let mut env = get_pandora_env();
     env.insert(CLIENT_ID.to_string(), client_id);
@@ -671,6 +655,31 @@ async fn drive_env_path(directory: &PathBuf, server_id: Option<u64>) -> (String,
     } else {
         (ENV_PATH.to_string(), false)
     }
+}
+
+fn parse_server_drive_meta(meta: &str) -> Option<(String, String, String, String)> {
+    let lines: Vec<&str> = meta.lines().collect();
+    let client_id = lines.get(4).copied().unwrap_or("").trim();
+    let client_secret = lines.get(5).copied().unwrap_or("").trim();
+    let refresh_token = lines.get(6).copied().unwrap_or("").trim();
+    let parent_id = lines.get(7).copied().unwrap_or("").trim();
+    let local_drive = lines.get(9).copied().unwrap_or("true").trim();
+    if matches!(local_drive, "false" | "0" | "disabled" | "off") {
+        return None;
+    }
+    if client_id.is_empty()
+        || client_secret.is_empty()
+        || refresh_token.is_empty()
+        || parent_id.is_empty()
+    {
+        return None;
+    }
+    Some((
+        client_id.to_string(),
+        client_secret.to_string(),
+        refresh_token.to_string(),
+        parent_id.to_string(),
+    ))
 }
 
 fn drive_folder_path(local_drive: bool, server_id: Option<u64>, folder: Option<String>) -> String {
@@ -765,6 +774,37 @@ fn upload_progress_text(host: &str, sent: &str, total: &str, extensions: &str) -
         progress
     } else {
         format!("{} {}", host, progress)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn meta(wrap_style: &str, local_gdrive: &str) -> String {
+        format!(
+            "EN\nhttps://forgejo.example/org\n123\napi\nclient\nsecret\nrefresh\nparent\n{}\n{}\n",
+            wrap_style, local_gdrive
+        )
+    }
+
+    #[test]
+    fn parse_server_drive_meta_uses_local_gdrive_line_not_wrapstyle() {
+        let parsed = parse_server_drive_meta(&meta("0", "true"));
+        assert_eq!(
+            parsed,
+            Some((
+                "client".to_string(),
+                "secret".to_string(),
+                "refresh".to_string(),
+                "parent".to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_server_drive_meta_respects_disabled_local_gdrive() {
+        assert_eq!(parse_server_drive_meta(&meta("1", "false")), None);
     }
 }
 

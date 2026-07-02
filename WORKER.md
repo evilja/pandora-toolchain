@@ -1,0 +1,35 @@
+# WORKER.md
+
+Worker runtime, tool orchestration, torrent routing, and cache/duplicate behavior.
+
+## Patterns
+
+- **Worker → tool wiring pattern**: declare a `CliParam` slice in `pnworker/tools.rs`, then call `run_tool(&path, SPEC, &HashMap<&str, PathValue>, job_id, &mut proto, |data| {...})`. The closure inspects `data.get(0).and_then(|v| v.parse::<u16>())` — opcodes are `0` progress, `1` success, `2` fail, `3` cancel, `4` is custom (used by probe rows, downloader file selection, and pnass line-length warnings — see [TOOLS.md](TOOLS.md)), and `5` is pnp2p duplicate torrent (`["5", "DUPLICATE_TORRENT", save_path]`). Return `Some(ToolResult::...)` to break.
+- **Protocol output from binaries**: `pn_emit!(protocol = proto, negkey = &neg, schema = [leaf, leaf, ...], data = [..., ..., ...])`. The `data` macro splits on top-level commas only — `if/else` and other multi-token expressions inside the array confuse it; bind to a `let` first and use the binding.
+- **Tool progress throttling**: tools that throttle protocol progress to roughly 5s (`pnmpeg` encode progress and `pncurl` upload progress) should emit the **first** progress payload immediately, then start the 5s timer from that first emitted payload. Do not initialize throttle timers to process start time if that would hide the initial emit.
+- **CommData**: workers send `(u64, MessagePayload, Option<Stage>)` upstream — see [LOCALIZATION.md](LOCALIZATION.md) for the message types. Stage drives the `pn_worker` state machine in `pnworker/core.rs`. `MessagePayload::Progress(WORKER_ASSIGN, vec![worker_name])` is internal: `core.rs` updates `job.worker` and does not render it as progress text.
+- **Downloader/uploader orchestrators**: `pn_dloadworker` and `pn_uloadworker` are single shrine layers that spawn up to four per-job tasks each. Each spawned task owns its own `Protocol`. Downloader names are randomly assigned from `kawari`, `fuan`, `odo`, `shitai` and rendered as `dwl-<name>`; uploader names are randomly assigned from `tsuki`, `sora`, `tenki`, `suisei` and rendered as `upl-<name>`. Names are released through a done channel after the task exits. Non-parallel workers use fixed display names such as `prb-main` and `enc-main`; pending/cache states use `dwl-pending`, `upl-pending`, and `dwl-cache`.
+- **`Job`** carries a `lang: String` field. It's set at job creation in `pndc.rs` by reading `DB/config/<guild_id>/meta.pandora` line 0 and flowing through every worker call. The `lang` is what `create_job_embed` and `format_payload` use to look up strings.
+- **`Job.frontend: Frontend`** (in `pnworker/frontend.rs`) is the originating surface — `Discord { ctx, msg }`, `Web`, or `None` — replacing the old raw serenity context tuple. All status output goes through it (`update` / `set_text` / `mark_failed` / `set_presence` / `notify_recompiling`); `Web`/`None` variants are no-ops, so the worker pipeline is frontend-agnostic. Because a method borrows `frontend` mutably while reading the rest of the job, `core.rs`'s `render()` helper does `std::mem::replace(&mut job.frontend, Frontend::None)`, calls `update`, then restores it. Discord jobs use the normal constructor; API jobs use `Job::new_api(...)`, which sets `Frontend::Web`, `response_id = 0`, and a nanosecond `job_id`. `Job` also carries `server_id: Option<u64>` (originating guild, used by the upload workers), `worker: String` (shown in embeds instead of owner), and `duplicate_source: Option<PathBuf>` (used while waiting on duplicate/cached inputs).
+
+## Torrent routing
+
+- `nyaaise()` classifies the URL into `TorrentType::{Link, Magnet, GDrive}`.
+- `TorrentType::GDrive` short-circuits `pn_dloadworker` to `pncurl --gscrape` (writes straight to `contents/torrent/input.mkv`) and skips the BitTorrent step.
+- Torrent-backed `pnp2p` worker calls pass `--tag pandora-job-<job_id>`. `pnp2p` pre-checks duplicates by magnet BTIH or `.torrent` info-hash before adding; if the hash already exists in qBittorrent it emits opcode `5` as `["5", "DUPLICATE_TORRENT", save_path]`. The download worker then announces `TORRENT_DUPLICATE_WAIT`, stores `Job.duplicate_source`, and waits until `DB/cache/inputs` has the matching input or the owning job's `contents/torrent/input.mkv` is ready and the owner has left active download/encode (`Encoded`/uploading/uploaded/terminal), then copies `input.mkv` into the requester and marks it `Downloaded`.
+- Every encode input is copied into `DB/cache/inputs/<key>/input.mkv` when a job reaches `Encoded`; a cancelled job also caches if it was already past `Downloaded` (`Downloaded`, `Encoding`, `Encoded`, `Uploading`, `Uploaded`). New uses reset the cache timer to 30 minutes (`INPUT_CACHE_TTL_SECS`). `pn_worker` runs `cleanup_pandora_qbit()` and removes `DB/cache/inputs` at startup, so no qBittorrent `pandora-job-*` torrents or input cache survive restarts; a background tick (`cleanup_expired_input_cache`) also evicts cache dirs whose `touch` file is older than the TTL. The input-cache key (`input_cache_key`) is `md5(torrent.get() | probe_file_index)`; `use_cache_or_wait` (run at download dispatch) first tries a cache copy, then falls back to waiting on an in-queue duplicate (`queued_duplicate_source`).
+- `/probe` does **not** support GDrive — `pn_probeworker` fails the job immediately.
+- `/backup` does support GDrive (re-upload to the configured Drive parent + skips streaming hosts via `--backup`).
+
+## Encode forwarding
+
+A second **API** encode job (`Frontend::Web`, `JobType::Encode`) whose `encode_forward_key` matches a non-terminal parent already in the queue is *forwarded* instead of re-run — it skips download/encode/upload entirely and mirrors the parent's outcome. The key (`encode_forward_key`) is `md5` over `[source, probe_file_index, preset, md5(attachment), server_id, gdrive_folder_global, gdrive_folder_local]` (source via `encode_source_key`: gdrive link / magnet info-hash / `.torrent` info-hash / raw link). `mark_forwarded` sets `job.forward_parent`, worker `enc-forward`, and the job's stage to the parent's; `persist_forwarded_wait` writes progress JSON `{type:"forward", parent_job_id}`. `sync_forwarded_jobs` propagates the parent's every stage transition (and terminal archive/cleanup) to all of its forwarded children. Discord jobs are never forwardable (only `Frontend::Web`). The web renders the `forward` progress type as an indeterminate "shared with job #N — reuses that encode" pipeline state.
+
+## Adding a new TorrentType variant
+
+If you extend `TorrentType` in `libpnp2p/nyaaise.rs`, you must also update:
+
+- `impl TorrentType` (`get`, `get_arg`, `display`).
+- `nyaaise()` classifier.
+- Every match block in `pnworker/workers/downloadworker.rs` and `probeworker.rs`.
+- The exhaustive match blocks in `nyaaise.rs`'s `#[cfg(test)] mod tests`.
