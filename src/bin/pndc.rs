@@ -98,13 +98,13 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("configure", 2),
     ("edit", 2),
     ("readmebase", 2),
-    ("addapi", 2),
-    ("addtranslation", 2),
+    ("touchapi", 2),
+    ("touchtranslation", 2),
     ("gettranslation", 2),
-    ("addtranslationall", 2),
+    ("touchtranslationall", 2),
     ("gettranslationall", 2),
     ("auth", 2),
-    ("remove", 2),
+    ("rm", 2),
     ("!ban", 2),
     ("!some", 2),
     ("gitsync", 3),
@@ -117,7 +117,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("lsauth", 3),
     ("acixconfirm", 4),
     ("acixtemplate", 4),
-    ("addintro", 4),
+    ("touchintro", 4),
     ("changerank", 4),
     ("fontcheck", 4),
 ];
@@ -328,9 +328,9 @@ fn help_catalog() -> &'static [HelpCommand] {
             details: "Like /configure but every field is optional — omitted fields keep their current value. Pass `-` to clear a text field. Set local_gdrive:false to keep stored server Drive credentials but upload through global Drive. wrapstyle can be dont_touch or 0-3. Set announcement_channel:true to point announcements at the current channel. Requires the server to already be configured.",
         },
         HelpCommand {
-            name: "addapi",
+            name: "touchapi",
             summary: "Write or update a toolchain environment token.",
-            usage: "/addapi key_name:<name> token:<value>",
+            usage: "/touchapi key_name:<name> token:<value>",
             details: "Updates the global pntools environment file with the provided token value.",
         },
         HelpCommand {
@@ -340,9 +340,9 @@ fn help_catalog() -> &'static [HelpCommand] {
             details: "Shows the current text and argument count for one localization key. Language files live at DB/config/en.toml, tr.toml, and jp.toml.",
         },
         HelpCommand {
-            name: "addtranslation",
+            name: "touchtranslation",
             summary: "Add or update a Pandora localization entry.",
-            usage: "/addtranslation language:<en|tr|jp> key:<MESSAGE_KEY> text:<translation> [args]",
+            usage: "/touchtranslation language:<en|tr|jp> key:<MESSAGE_KEY> text:<translation> [args]",
             details: "Updates one translation. Existing keys keep args unless provided; new keys infer args from `{}`.",
         },
         HelpCommand {
@@ -352,9 +352,9 @@ fn help_catalog() -> &'static [HelpCommand] {
             details: "Uploads the selected language file as a TOML attachment.",
         },
         HelpCommand {
-            name: "addtranslationall",
+            name: "touchtranslationall",
             summary: "Replace a full Pandora localization TOML.",
-            usage: "/addtranslationall language:<en|tr|jp> file:<toml>",
+            usage: "/touchtranslationall language:<en|tr|jp> file:<toml>",
             details: "Validates and replaces the selected language file from a TOML attachment.",
         },
         HelpCommand {
@@ -412,9 +412,9 @@ fn help_catalog() -> &'static [HelpCommand] {
             details: "Stores base.md for repo bootstrapping. /init and /attach can use it when creating or updating README.md.",
         },
         HelpCommand {
-            name: "addintro",
+            name: "touchintro",
             summary: "Encode and register an intro group.",
-            usage: "/addintro name:<group> video:<attachment>",
+            usage: "/touchintro name:<group> video:<attachment>",
             details: "Encodes the uploaded video into 44100/23.976, 44100/24, 48000/23.976, and 48000/24 libx264 MP4 variants, stores them under DB/concat/<serverid>, and upserts the group in intros.toml.",
         },
         HelpCommand {
@@ -424,9 +424,9 @@ fn help_catalog() -> &'static [HelpCommand] {
             details: "Adds a user id to an allowlist. If level is omitted, authorize.pandora is used.",
         },
         HelpCommand {
-            name: "remove",
+            name: "rm",
             summary: "Remove a user from a permission level.",
-            usage: "/remove user_id:<discord_id> level:<allowlist>",
+            usage: "/rm user_id:<discord_id> level:<allowlist>",
             details: "Removes a user id from the chosen allowlist.",
         },
         HelpCommand {
@@ -1182,19 +1182,19 @@ impl EventHandler for Handler {
                 "edit" => {
                     handle_edit(&ctx, &command).await;
                 }
-                "addapi" => {
+                "touchapi" => {
                     handle_addapi(&ctx, &command).await;
                 }
                 "gettranslation" => {
                     handle_gettranslation(&ctx, &command).await;
                 }
-                "addtranslation" => {
+                "touchtranslation" => {
                     handle_addtranslation(&ctx, &command).await;
                 }
                 "gettranslationall" => {
                     handle_gettranslationall(&ctx, &command).await;
                 }
-                "addtranslationall" => {
+                "touchtranslationall" => {
                     handle_addtranslationall(&ctx, &command).await;
                 }
                 "gentoken" => {
@@ -1236,13 +1236,13 @@ impl EventHandler for Handler {
                 "readmebase" => {
                     handle_readmebase(&ctx, &command).await;
                 }
-                "addintro" => {
+                "touchintro" => {
                     handle_addintro(&ctx, &command).await;
                 }
                 "auth" => {
                     handle_auth(&ctx, &command).await;
                 }
-                "remove" => {
+                "rm" => {
                     handle_remove(&ctx, &command).await;
                 }
                 "hearts" => {
@@ -1656,7 +1656,7 @@ impl EventHandler for Handler {
                     CreateCommandOption::new(CommandOptionType::Boolean, "announcement_channel", "Set the announcement channel to this channel.")
                         .required(false)
                 ),
-            CreateCommand::new("addapi")
+            CreateCommand::new("touchapi")
                 .description("Write or update an API token in the toolchain env file")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "key_name", "Env key name (for example `forgejo_api_key`)")
@@ -1679,7 +1679,7 @@ impl EventHandler for Handler {
                     CreateCommandOption::new(CommandOptionType::String, "key", "Message key")
                         .required(true)
                 ),
-            CreateCommand::new("addtranslation")
+            CreateCommand::new("touchtranslation")
                 .description("Edit a translation")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "language", "Language")
@@ -1710,7 +1710,7 @@ impl EventHandler for Handler {
                         .add_string_choice("Türkçe", "tr")
                         .add_string_choice("日本語", "jp")
                 ),
-            CreateCommand::new("addtranslationall")
+            CreateCommand::new("touchtranslationall")
                 .description("Upload translations")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "language", "Language")
@@ -1823,7 +1823,7 @@ impl EventHandler for Handler {
                     CreateCommandOption::new(CommandOptionType::Attachment, "file", "The base.md file")
                         .required(true)
                 ),
-            CreateCommand::new("addintro")
+            CreateCommand::new("touchintro")
                 .description("Encode and register an intro group")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "name", "Intro group name")
@@ -1848,7 +1848,7 @@ impl EventHandler for Handler {
                         .add_string_choice("Upper", "upper.pandora")
                         .add_string_choice("Witch", "witch.pandora")
                 ),
-            CreateCommand::new("remove")
+            CreateCommand::new("rm")
                 .description("Remove a user id from an auth level file")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "user_id", "The Discord user id to deauthorize")

@@ -19,7 +19,7 @@ pub async fn handle_addintro(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,
 ) {
-    let server_id = match command_server_id(ctx, command, "/addintro").await {
+    let server_id = match command_server_id(ctx, command, "/touchintro").await {
         Some(id) => id,
         None => return,
     };

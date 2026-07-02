@@ -28,7 +28,7 @@ pub struct UploadResult {
 impl AniSub {
     pub fn new(api_key: String) -> Result<Self, String> {
         if api_key.is_empty() {
-            return Err("AniSub API key is empty. Set `anisub` via /addapi.".to_string());
+            return Err("AniSub API key is empty. Set `anisub` via /touchapi.".to_string());
         }
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(

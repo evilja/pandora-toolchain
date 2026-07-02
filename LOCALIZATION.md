@@ -16,7 +16,7 @@ User-facing strings (status updates, embed fields, stage labels, preset labels) 
 - `get_arg_count(id, lang) -> Option<usize>` reads the `args` field from the same TOML.
 - `create_job_embed(job, &MessagePayload) -> CreateEmbed` formats the embed using `job.lang`. It looks up every field label, stage name, and preset label through `get_message`. The embed title uses `{}` substitution (e.g. `"Encode İşlemi ({})"`), and the embed shows the translatable `FIELD_WORKER` header with the raw internal `job.worker` value (do not translate worker ids such as `dwl-pending` / `enc-main`).
 - `init_language_files()` writes `en.toml` / `tr.toml` / `jp.toml` from `DEFAULT_ENTRIES` at bot startup, but only if the file doesn't exist. So manual edits to those files are preserved across restarts.
-- Translation edits can be made live without restart because lookups read the TOML files on demand. `/addtranslation` and `/gettranslation` edit/read one key; `/addtranslationall` validates and replaces a full TOML attachment; `/gettranslationall` uploads the current TOML. These commands are Discord-only admin commands and are not exposed over the HTTP API.
+- Translation edits can be made live without restart because lookups read the TOML files on demand. `/touchtranslation` and `/gettranslation` edit/read one key; `/touchtranslationall` validates and replaces a full TOML attachment; `/gettranslationall` uploads the current TOML. These commands are Discord-only admin commands and are not exposed over the HTTP API.
 
 ### TOML format
 
