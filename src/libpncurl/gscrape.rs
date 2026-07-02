@@ -5,7 +5,7 @@
 
 use crate::{lib_pn_data, lib_pn_emit, lib_pn_schema, libpnlogging::core::LoggingHandle, libpnprotocol::core::{Protocol, Schema}, log};
 use regex::Regex;
-use reqwest::Client;
+use reqwest::{Client, Response};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::fs::{try_exists, File};
@@ -48,6 +48,60 @@ impl GScrape {
         format!("https://drive.usercontent.google.com/download?id={id}&export=download&confirm=t&uuid={uuid}")
     }
 
+    fn is_html_response(resp: &Response) -> bool {
+        resp.headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.to_ascii_lowercase().starts_with("text/html"))
+            .unwrap_or(false)
+    }
+
+    async fn write_response(
+        &self,
+        mut resp: Response,
+        path: &str,
+        proto: &Protocol,
+        neg: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let total = resp.content_length().unwrap_or(1) as f64;
+        let mut downloaded: f64 = 0.0;
+        let mut last_emit: Option<Instant> = None;
+        let mut file = File::create(Path::new(path)).await?;
+        while let Some(chunk) = resp.chunk().await? {
+            if let Some(ref cancelfile) = self.cfile {
+                if try_exists(cancelfile).await.unwrap_or(false) {
+                    println!("{}", lib_pn_emit!(
+                        protocol = proto,
+                        negkey = &neg,
+                        schema = [leaf, leaf],
+                        data = ["3", "CANCELFILE"]
+                    ).unwrap());
+                    return Ok(());
+                }
+            }
+            file.write_all(&chunk).await?;
+            let n = chunk.len() as f64;
+            downloaded += n;
+            let should_emit = match last_emit {
+                Some(t) => t.elapsed() >= Duration::from_secs(5),
+                None => true,
+            };
+            if should_emit {
+                let percent = (downloaded / total * 100.0).ceil();
+                println!("{}", lib_pn_emit!(
+                    protocol = proto,
+                    negkey = &neg,
+                    schema = [leaf, [leaf, leaf, leaf]],
+                    data = ["0", [percent, downloaded, total]]
+                ).unwrap());
+                last_emit = Some(Instant::now());
+            }
+        }
+        file.flush().await?;
+
+        Ok(())
+    }
+
     pub async fn send(&self, path: String, proto: &Protocol, neg: &str) -> bool {
         self.download(&path, proto, neg).await.is_ok()
     }
@@ -86,6 +140,14 @@ impl GScrape {
             log!(handle, "Confirmation request failed\n");
             return Err("confirmation request failed".into());
         }
+        if !Self::is_html_response(&resp) {
+            log!(handle, "Confirmation request returned file content directly\n");
+            self.write_response(resp, path, proto, neg).await?;
+            if let Some(mut h) = handle {
+                h.flush().await;
+            }
+            return Ok(());
+        }
 
         let body = resp.text().await?;
         let uuid = match Self::parse_uuid(&body) {
@@ -102,47 +164,12 @@ impl GScrape {
         let download = Self::download_url(&id, &uuid);
         log!(handle, &format!("Download GET: {download}\n"));
 
-        let mut resp = client.get(&download).send().await?;
+        let resp = client.get(&download).send().await?;
         if !resp.status().is_success() {
             log!(handle, "Download request failed\n");
             return Err("download failed".into());
         }
-
-        let total = resp.content_length().unwrap_or(1) as f64;
-        let mut downloaded: f64 = 0.0;
-        let mut last_emit: Option<Instant> = None;
-        let mut file = File::create(Path::new(path)).await?;
-        while let Some(chunk) = resp.chunk().await? {
-            if let Some(ref cancelfile) = self.cfile {
-                if try_exists(cancelfile).await.unwrap_or(false) {
-                    println!("{}", lib_pn_emit!(
-                        protocol = proto,
-                        negkey = &neg,
-                        schema = [leaf, leaf],
-                        data = ["3", "CANCELFILE"]
-                    ).unwrap());
-                    return Ok(());
-                }
-            }
-            file.write_all(&chunk).await?;
-            let n = chunk.len() as f64;
-            downloaded += n;
-            let should_emit = match last_emit {
-                Some(t) => t.elapsed() >= Duration::from_secs(5),
-                None => true,
-            };
-            if should_emit {
-                let percent = (downloaded / total * 100.0).ceil();
-                println!("{}", lib_pn_emit!(
-                    protocol = proto,
-                    negkey = &neg,
-                    schema = [leaf, [leaf, leaf, leaf]],
-                    data = ["0", [percent, downloaded, total]]
-                ).unwrap());
-                last_emit = Some(Instant::now());
-            }
-        }
-        file.flush().await?;
+        self.write_response(resp, path, proto, neg).await?;
 
         if let Some(mut h) = handle {
             h.flush().await;
