@@ -109,6 +109,8 @@ pub const PNCURL_UPLOAD: &[CliParam] = &[
     CliParam::NegVer("1"),
     CliParam::Literal("--cancelfile"),
     CliParam::Path("CANCELFILE"),
+    CliParam::Literal("--logfile"),
+    CliParam::Path("LOGFILE"),
 ];
 
 pub const PNCURL_UPLOAD_FOLDER: &[CliParam] = &[
@@ -129,6 +131,8 @@ pub const PNCURL_UPLOAD_FOLDER: &[CliParam] = &[
     CliParam::NegVer("1"),
     CliParam::Literal("--cancelfile"),
     CliParam::Path("CANCELFILE"),
+    CliParam::Literal("--logfile"),
+    CliParam::Path("LOGFILE"),
 ];
 
 pub const PNCURL_BACKUP: &[CliParam] = &[
@@ -147,6 +151,8 @@ pub const PNCURL_BACKUP: &[CliParam] = &[
     CliParam::NegVer("1"),
     CliParam::Literal("--cancelfile"),
     CliParam::Path("CANCELFILE"),
+    CliParam::Literal("--logfile"),
+    CliParam::Path("LOGFILE"),
     CliParam::Literal("--backup"),
 ];
 
@@ -168,6 +174,8 @@ pub const PNCURL_BACKUP_FOLDER: &[CliParam] = &[
     CliParam::NegVer("1"),
     CliParam::Literal("--cancelfile"),
     CliParam::Path("CANCELFILE"),
+    CliParam::Literal("--logfile"),
+    CliParam::Path("LOGFILE"),
     CliParam::Literal("--backup"),
 ];
 

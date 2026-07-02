@@ -109,6 +109,19 @@ async fn run_upload_job(
                     gdrive_folder_global
                 },
             );
+            let logfile = directory
+                .join("log")
+                .join(format!("PNcurl_Upload{}.log", job_id))
+                .display()
+                .to_string();
+            println!(
+                "[uploadworker] job={} drive_env={} local_drive={} drive_folder={} logfile={}",
+                job_id,
+                drive_env,
+                local_drive,
+                if drive_folder.is_empty() { "(none)" } else { drive_folder.as_str() },
+                logfile,
+            );
 
             let spec = if release && !drive_folder.is_empty() {
                 PNCURL_UPLOAD_FOLDER
@@ -129,6 +142,7 @@ async fn run_upload_job(
                     ("ENV", PathValue::from(drive_env)),
                     ("DRIVEFOLDER", PathValue::from(drive_folder)),
                     ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),
+                    ("LOGFILE", PathValue::from(logfile)),
                 ]),
                 job_id,
                 &mut proto,
@@ -450,6 +464,13 @@ async fn run_upload_job(
 
             let (drive_env, local_drive) = drive_env_path(&directory, server_id).await;
             let drive_folder = drive_folder_path(local_drive, server_id, None);
+            println!(
+                "[uploadworker] upload_all job={} drive_env={} local_drive={} drive_folder={}",
+                job_id,
+                drive_env,
+                local_drive,
+                if drive_folder.is_empty() { "(none)" } else { drive_folder.as_str() },
+            );
             let spec = if drive_folder.is_empty() {
                 PNCURL_BACKUP
             } else {
@@ -465,6 +486,17 @@ async fn run_upload_job(
                 let mut uploaded = false;
 
                 let upload_job_id = job_id.saturating_mul(1000).saturating_add(idx as u64);
+                let logfile = directory
+                    .join("log")
+                    .join(format!("PNcurl_UploadAll{}.log", upload_job_id))
+                    .display()
+                    .to_string();
+                println!(
+                    "[uploadworker] upload_all job={} file={} logfile={}",
+                    upload_job_id,
+                    file.display(),
+                    logfile,
+                );
                 let result = run_tool(
                     &pncurl_path,
                     spec,
@@ -474,6 +506,7 @@ async fn run_upload_job(
                         ("ENV", PathValue::from(drive_env.clone())),
                         ("DRIVEFOLDER", PathValue::from(drive_folder.clone())),
                         ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),
+                        ("LOGFILE", PathValue::from(logfile)),
                     ]),
                     upload_job_id,
                     &mut proto,

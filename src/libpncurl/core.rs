@@ -112,6 +112,14 @@ async fn send_upload_unlimited(
     request.send().await.map_err(|e| e.to_string())
 }
 
+async fn drive_log(handle: &mut Option<LoggingHandle>, message: impl AsRef<str>) {
+    let line = format!("[drive] {}\n", message.as_ref());
+    print!("{}", line);
+    if let Some(h) = handle.as_mut() {
+        h.write(&line).await;
+    }
+}
+
 #[derive(Deserialize)]
 struct TokenResponse {
     access_token: String,
@@ -564,66 +572,153 @@ impl Req {
         drive_folder: Option<String>,
         tx: Sender<RpbData>,
     ) -> bool {
+        println!(
+            "[drive] upload requested target={} outfile={} env={} drive_folder={} logfile={} cancelfile={}",
+            self.target,
+            outfile.as_deref().unwrap_or("(target name)"),
+            envpath,
+            drive_folder.as_deref().unwrap_or("(none)"),
+            self.log.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "(none)".to_string()),
+            self.cfile.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "(none)".to_string()),
+        );
         if is_cancelled(&self.cfile) {
+            println!("[drive] upload cancelled before start");
             tx.send(RpbData::Cancel(Host::Drive)).ok();
             return false;
         }
         let mut handle: Option<LoggingHandle> = match self.log {
-            Some(ref pb) => Some(LoggingHandle::get_handle(pb).await.unwrap()),
-            None => None,
+            Some(ref pb) => {
+                println!("[drive] logfile argument present: {}", pb.display());
+                match LoggingHandle::get_handle(pb).await {
+                    Ok(h) => {
+                        println!("[drive] logfile opened: {}", pb.display());
+                        Some(h)
+                    }
+                    Err(_) => {
+                        println!("[drive] logfile failed to open: {}", pb.display());
+                        None
+                    }
+                }
+            }
+            None => {
+                println!("[drive] logfile argument absent; using stdout only");
+                None
+            }
         };
+        drive_log(&mut handle, "starting Google Drive upload").await;
         let env = get_env(&envpath);
+        drive_log(
+            &mut handle,
+            format!(
+                "env loaded from {}; client_id_set={} client_secret_set={} refresh_token_set={} token_url_set={} parent_id_set={}",
+                envpath,
+                env.get(CLIENT_ID).map(|s| !s.is_empty()).unwrap_or(false),
+                env.get(CLIENT_SECRET).map(|s| !s.is_empty()).unwrap_or(false),
+                env.get(REFRESH_TOKEN).map(|s| !s.is_empty()).unwrap_or(false),
+                env.get(TOKEN_URL).map(|s| !s.is_empty()).unwrap_or(false),
+                env.get(PARENTID).map(|s| !s.is_empty()).unwrap_or(false),
+            ),
+        ).await;
+        drive_log(&mut handle, "requesting OAuth access token").await;
         let access_token = match get_access_token(&env).await {
             Ok(token) => {
-                log!(handle, "Access token taken\n");
+                drive_log(&mut handle, "OAuth access token acquired").await;
                 token
             }
-            Err(_) => {
+            Err(e) => {
+                drive_log(&mut handle, format!("OAuth access token failed: {e}")).await;
+                if let Some(mut h) = handle {
+                    h.flush().await;
+                }
                 return false;
             }
         };
-        let client = Client::builder()
+        let client = match Client::builder()
             .connect_timeout(Duration::from_secs(60))
             .build()
-            .unwrap();
+        {
+            Ok(c) => {
+                drive_log(&mut handle, "HTTP client created with 60s connect timeout").await;
+                c
+            }
+            Err(e) => {
+                drive_log(&mut handle, format!("HTTP client creation failed: {e}")).await;
+                if let Some(mut h) = handle {
+                    h.flush().await;
+                }
+                return false;
+            }
+        };
 
         let mut parent_id = env.get(PARENTID).cloned().unwrap_or_default();
+        drive_log(
+            &mut handle,
+            format!(
+                "root parent id {}",
+                if parent_id.is_empty() { "is empty" } else { "is set" }
+            ),
+        ).await;
         if let Some(folder_path) = drive_folder.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            drive_log(&mut handle, format!("ensuring Drive folder path: {folder_path}")).await;
             match ensure_drive_folder_path(&client, &access_token, &parent_id, folder_path, &mut handle).await {
-                Ok(id) => parent_id = id,
+                Ok(id) => {
+                    drive_log(&mut handle, format!("resolved Drive upload parent id: {id}")).await;
+                    parent_id = id;
+                }
                 Err(e) => {
-                    println!("{e}");
+                    drive_log(&mut handle, format!("Drive folder path resolution failed: {e}")).await;
+                    if let Some(mut h) = handle {
+                        h.flush().await;
+                    }
                     tx.send(RpbData::Fail(Host::Drive)).ok();
                     return false;
                 }
             }
+        } else {
+            drive_log(&mut handle, "no Drive folder path requested; uploading to root parent").await;
         }
 
         let upload_name = outfile.clone().unwrap_or(self.target.clone());
+        drive_log(&mut handle, format!("upload object name: {upload_name}")).await;
 
         let metadata = serde_json::json!({
             "name": upload_name,
             "parents": [parent_id],
         });
+        drive_log(&mut handle, format!("upload metadata: {metadata}")).await;
 
         let file = match tokio::fs::File::open(&self.target).await {
             Ok(f) => {
-                log!(handle, &format!("File created: {}\n", &self.target));
+                drive_log(&mut handle, format!("opened upload file: {}", &self.target)).await;
                 f
             }
             Err(a) => {
-                log!(handle, &format!("File creation failed: {a}\n"));
+                drive_log(&mut handle, format!("failed to open upload file: {a}")).await;
+                if let Some(mut h) = handle {
+                    h.flush().await;
+                }
                 return false;
             }
         };
 
-        let total_size = file.metadata().await.unwrap().len();
+        let total_size = match file.metadata().await {
+            Ok(m) => m.len(),
+            Err(e) => {
+                drive_log(&mut handle, format!("failed to read upload file metadata: {e}")).await;
+                if let Some(mut h) = handle {
+                    h.flush().await;
+                }
+                return false;
+            }
+        };
+        drive_log(&mut handle, format!("upload file size: {total_size} bytes")).await;
 
         let upload_name = outfile.clone().unwrap_or(self.target.clone());
 
         let progress = UploadProgress::new(total_size);
         let reader =
             ProgressReader::new(file, total_size, tx.clone(), Host::Drive, progress.clone(), self.cfile.clone());
+        drive_log(&mut handle, "progress reader attached").await;
 
         let stream = ReaderStream::new(reader);
         let body = reqwest::Body::wrap_stream(stream);
@@ -641,36 +736,80 @@ impl Req {
             .part("metadata", metadata_part)
             .part("file", part);
 
+        drive_log(&mut handle, "sending multipart upload request to Google Drive").await;
         let resp = match send_upload_unlimited(
             client
                 .post("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true")
                 .bearer_auth(access_token)
                 .multipart(form),
         ).await {
-            Ok(r) => r,
+            Ok(r) => {
+                drive_log(&mut handle, format!("upload response status: {}", r.status())).await;
+                r
+            }
             Err(a) => {
-                println!("{a}");
+                drive_log(&mut handle, format!("upload request failed: {a}")).await;
                 if is_cancelled(&self.cfile) {
+                    drive_log(&mut handle, "upload failure was caused by cancellation").await;
+                    if let Some(mut h) = handle {
+                        h.flush().await;
+                    }
                     tx.send(RpbData::Cancel(Host::Drive)).ok();
                     return false;
+                }
+                if let Some(mut h) = handle {
+                    h.flush().await;
                 }
                 tx.send(RpbData::Fail(Host::Drive)).ok();
                 return false;
             }
         };
 
-        let json: serde_json::Value = match resp.json().await {
-            Ok(j) => j,
+        let status = resp.status();
+        let body = match resp.text().await {
+            Ok(t) => t,
             Err(a) => {
-                println!("{:?}", a);
+                drive_log(&mut handle, format!("failed to read upload response body: {a}")).await;
+                if let Some(mut h) = handle {
+                    h.flush().await;
+                }
+                tx.send(RpbData::Fail(Host::Drive)).ok();
+                return false;
+            }
+        };
+        if !status.is_success() {
+            drive_log(&mut handle, format!("upload response body: {body}")).await;
+            if let Some(mut h) = handle {
+                h.flush().await;
+            }
+            tx.send(RpbData::Fail(Host::Drive)).ok();
+            return false;
+        }
+        let json: serde_json::Value = match serde_json::from_str(&body) {
+            Ok(j) => {
+                drive_log(&mut handle, "upload response JSON parsed").await;
+                j
+            }
+            Err(a) => {
+                drive_log(&mut handle, format!("upload response JSON parse failed: {a}; body: {body}")).await;
+                if let Some(mut h) = handle {
+                    h.flush().await;
+                }
                 tx.send(RpbData::Fail(Host::Drive)).ok();
                 return false;
             }
         };
 
         let file_id = match json["id"].as_str() {
-            Some(id) => id,
+            Some(id) => {
+                drive_log(&mut handle, format!("upload response file id: {id}")).await;
+                id
+            }
             None => {
+                drive_log(&mut handle, format!("upload response did not include id: {json}")).await;
+                if let Some(mut h) = handle {
+                    h.flush().await;
+                }
                 tx.send(RpbData::Fail(Host::Drive)).ok();
                 return false;
             }
@@ -680,8 +819,9 @@ impl Req {
             "https://drive.google.com/file/d/{}/view?usp=sharing",
             file_id
         );
-        log!(handle, &(link.clone() + "\n"));
+        drive_log(&mut handle, format!("upload complete: {link}")).await;
         if let Some(mut a) = handle {
+            a.write("[drive] flushing logfile\n").await;
             a.flush().await;
         }
         tx.send(RpbData::Done(link.clone(), Host::Drive)).ok();
@@ -697,11 +837,11 @@ async fn ensure_drive_folder_path(
     handle: &mut Option<LoggingHandle>,
 ) -> Result<String, String> {
     let mut parent_id = root_parent_id.to_string();
+    drive_log(handle, format!("folder path root parent: {parent_id}")).await;
     for name in folder_path.split('/').map(|s| s.trim()).filter(|s| !s.is_empty()) {
-        let next = ensure_drive_folder(client, access_token, &parent_id, name).await?;
-        if let Some(h) = handle.as_mut() {
-            h.write(&format!("Drive folder {name}: {next}\n")).await;
-        }
+        drive_log(handle, format!("folder path component start: {name} under {parent_id}")).await;
+        let next = ensure_drive_folder(client, access_token, &parent_id, name, handle).await?;
+        drive_log(handle, format!("folder path component resolved: {name} -> {next}")).await;
         parent_id = next;
     }
     Ok(parent_id)
@@ -712,6 +852,7 @@ async fn ensure_drive_folder(
     access_token: &str,
     parent_id: &str,
     name: &str,
+    handle: &mut Option<LoggingHandle>,
 ) -> Result<String, String> {
     let query = format!(
         "mimeType='{}' and trashed=false and name='{}' and '{}' in parents",
@@ -719,7 +860,8 @@ async fn ensure_drive_folder(
         drive_query_escape(name),
         drive_query_escape(parent_id),
     );
-    let found: serde_json::Value = client
+    drive_log(handle, format!("searching Drive folder `{name}`")).await;
+    let found_resp = client
         .get("https://www.googleapis.com/drive/v3/files")
         .bearer_auth(access_token)
         .query(&[
@@ -731,43 +873,61 @@ async fn ensure_drive_folder(
         ])
         .send()
         .await
-        .map_err(|e| e.to_string())?
-        .error_for_status()
-        .map_err(|e| e.to_string())?
-        .json()
+        .map_err(|e| format!("Drive folder search request failed for {name}: {e}"))?;
+    let found_status = found_resp.status();
+    drive_log(handle, format!("Drive folder search status for `{name}`: {found_status}")).await;
+    let found_body = found_resp
+        .text()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("Drive folder search body read failed for {name}: {e}"))?;
+    if !found_status.is_success() {
+        drive_log(handle, format!("Drive folder search body for `{name}`: {found_body}")).await;
+        return Err(format!("Drive folder search failed for {name}: {found_status}"));
+    }
+    let found: serde_json::Value = serde_json::from_str(&found_body)
+        .map_err(|e| format!("Drive folder search JSON parse failed for {name}: {e}; body: {found_body}"))?;
 
     if let Some(id) = found["files"]
         .as_array()
         .and_then(|files| files.first())
         .and_then(|file| file["id"].as_str())
     {
+        drive_log(handle, format!("found existing Drive folder `{name}`: {id}")).await;
         return Ok(id.to_string());
     }
 
+    drive_log(handle, format!("Drive folder `{name}` not found; creating it")).await;
     let metadata = serde_json::json!({
         "name": name,
         "mimeType": DRIVE_FOLDER_MIME,
         "parents": [parent_id],
     });
-    let created: serde_json::Value = client
+    let created_resp = client
         .post("https://www.googleapis.com/drive/v3/files")
         .bearer_auth(access_token)
         .query(&[("supportsAllDrives", "true"), ("fields", "id")])
         .json(&metadata)
         .send()
         .await
-        .map_err(|e| e.to_string())?
-        .error_for_status()
-        .map_err(|e| e.to_string())?
-        .json()
+        .map_err(|e| format!("Drive folder create request failed for {name}: {e}"))?;
+    let created_status = created_resp.status();
+    drive_log(handle, format!("Drive folder create status for `{name}`: {created_status}")).await;
+    let created_body = created_resp
+        .text()
         .await
-        .map_err(|e| e.to_string())?;
-    created["id"]
+        .map_err(|e| format!("Drive folder create body read failed for {name}: {e}"))?;
+    if !created_status.is_success() {
+        drive_log(handle, format!("Drive folder create body for `{name}`: {created_body}")).await;
+        return Err(format!("Drive folder create failed for {name}: {created_status}"));
+    }
+    let created: serde_json::Value = serde_json::from_str(&created_body)
+        .map_err(|e| format!("Drive folder create JSON parse failed for {name}: {e}; body: {created_body}"))?;
+    let id = created["id"]
         .as_str()
         .map(|id| id.to_string())
-        .ok_or_else(|| format!("Drive folder create response did not include an id for {name}"))
+        .ok_or_else(|| format!("Drive folder create response did not include an id for {name}"))?;
+    drive_log(handle, format!("created Drive folder `{name}`: {id}")).await;
+    Ok(id)
 }
 
 fn drive_query_escape(s: &str) -> String {
