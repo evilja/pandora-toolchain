@@ -13,8 +13,8 @@ use crate::pnworker::forwarding::{
 };
 use crate::pnworker::heartbeat::core::{TypedShrine, Worker};
 use crate::pnworker::keep::{
-    cleanup_expired_keeps, cleanup_keep_startup, prepare_keep, resolve_keywords, scope,
-    store_output,
+    cleanup_expired_keeps, cleanup_keep_startup, mark_output_failed, prepare_keep, reserve_output,
+    resolve_keywords_for_keycode, scope, store_output, KeywordResolve, ResolvedKeywords,
 };
 use crate::pnworker::lifecycle::{cleanup_job, render};
 use crate::pnworker::messages::{
@@ -107,6 +107,7 @@ async fn do_queue_things(
                 return true;
             }
             db.insert_job(&job).await.unwrap();
+            persist_keep_reserved(db, &job).await;
             queue.push(job);
         }
         JobClass::HalfJob(halfjob) => {
@@ -135,7 +136,18 @@ async fn queue_new_job(
 
 async fn prepare_queued_job(job: &mut Job, worker: &str, write_subtitle: bool) {
     job.worker = worker.to_string();
-    render(job, MessagePayload::Static(QUEUED)).await;
+    if let Some((parent, keyword)) = keep_keywords(job) {
+        render(
+            job,
+            MessagePayload::Progress(
+                crate::pnworker::messages::KEEP_READY,
+                vec![parent, keyword],
+            ),
+        )
+        .await;
+    } else {
+        render(job, MessagePayload::Static(QUEUED)).await;
+    }
     for i in STRUCT {
         create_dir_all(job.directory.join(i)).await.unwrap();
     }
@@ -269,7 +281,7 @@ async fn queue_backup_job(
 async fn queue_keycode_job(
     db: &JobDb,
     queue: &[Job],
-    shrine: &mut TypedShrine<WorkerMsg>,
+    _shrine: &mut TypedShrine<WorkerMsg>,
     job: &mut Job,
 ) -> bool {
     prepare_queued_job(job, "enc-main", !job.attachment.is_empty()).await;
@@ -279,31 +291,67 @@ async fn queue_keycode_job(
         ])).await;
         return true;
     };
-    let resolved = match resolve_keywords(&scope(job.server_id), &request.keywords).await {
-        Ok(resolved) => resolved,
-        Err(e) => {
-            render(job, MessagePayload::Progress(crate::pnworker::messages::KEYCODE_FAIL, vec![e])).await;
-            return true;
-        }
-    };
-    if resolved.kind == KeepKind::Backup && job.attachment.is_empty() {
+    if request.keywords.is_empty() {
         render(job, MessagePayload::Progress(crate::pnworker::messages::KEYCODE_FAIL, vec![
-            "backup keywords require a subtitle".to_string(),
+            "at least one keyword is required".to_string(),
         ])).await;
         return true;
     }
+    persist_keycode_waiting(db, job, &request.keywords).await;
+    job.frontend
+        .set_presence(Presence::QueueTotal(queue.len() + 1))
+        .await;
+    false
+}
+
+enum KeycodeDispatch {
+    Waiting,
+    Dispatched,
+    Failed,
+}
+
+async fn try_dispatch_keycode(
+    db: &JobDb,
+    shrine: &mut TypedShrine<WorkerMsg>,
+    job: &mut Job,
+) -> KeycodeDispatch {
+    let Some(request) = job.keycode.clone() else {
+        return fail_keycode(db, job, "missing keycode request").await;
+    };
+    let resolved = match resolve_keywords_for_keycode(&scope(job.server_id), &request.keywords).await {
+        Ok(KeywordResolve::Ready(resolved)) => resolved,
+        Ok(KeywordResolve::Waiting(waiting)) => {
+            persist_keycode_waiting(db, job, &waiting).await;
+            return KeycodeDispatch::Waiting;
+        }
+        Err(e) => return fail_keycode(db, job, &e).await,
+    };
+    dispatch_keycode_ready(db, shrine, job, request, resolved).await
+}
+
+async fn dispatch_keycode_ready(
+    db: &JobDb,
+    shrine: &mut TypedShrine<WorkerMsg>,
+    job: &mut Job,
+    request: KeycodeRequest,
+    resolved: ResolvedKeywords,
+) -> KeycodeDispatch {
+    if resolved.kind == KeepKind::Backup && job.attachment.is_empty() {
+        return fail_keycode(db, job, "backup keywords require a subtitle").await;
+    }
     let mut inputs = resolved.paths;
-    if let Some(intro) = request.concat_candidates.as_ref().and_then(|c| {
-        select_keycode_intro(inputs.first(), c)
-    }) {
+    if let Some(intro) = request
+        .concat_candidates
+        .as_ref()
+        .and_then(|c| select_keycode_intro(inputs.first(), c))
+    {
         inputs.insert(0, intro);
     }
     if inputs.is_empty() {
-        render(job, MessagePayload::Progress(crate::pnworker::messages::KEYCODE_FAIL, vec![
-            "no usable keyword outputs".to_string(),
-        ])).await;
-        return true;
+        return fail_keycode(db, job, "no usable keyword outputs").await;
     }
+    job.worker = "enc-main".to_string();
+    db.update_worker(job.job_id, &job.worker).await.ok();
     if !dispatch_or_kill(
         shrine,
         &Worker::Encode,
@@ -316,20 +364,57 @@ async fn queue_keycode_job(
         )),
         job,
         db,
-        true,
+        false,
     )
     .await
     {
-        return true;
+        return KeycodeDispatch::Failed;
     }
     job.ready = Stage::Encoding;
-    job.frontend
-        .set_presence(Presence::Encoding {
-            idx: queue.len(),
-            total: queue.len() + 1,
-        })
+    db.update_stage(job.job_id, Stage::Encoding).await.ok();
+    KeycodeDispatch::Dispatched
+}
+
+async fn fail_keycode(db: &JobDb, job: &mut Job, reason: &str) -> KeycodeDispatch {
+    job.ready = Stage::Failed;
+    job.worker = "key-fail".to_string();
+    db.update_stage(job.job_id, Stage::Failed).await.ok();
+    db.update_worker(job.job_id, &job.worker).await.ok();
+    render(
+        job,
+        MessagePayload::Progress(crate::pnworker::messages::KEYCODE_FAIL, vec![reason.to_string()]),
+    )
+    .await;
+    db.archive_job(job.job_id).await.ok();
+    cleanup_job(
+        &job.directory,
+        &PathBuf::from("DB")
+            .join("saved_data")
+            .join(job.job_id.to_string()),
+    )
+    .await;
+    KeycodeDispatch::Failed
+}
+
+async fn persist_keycode_waiting(db: &JobDb, job: &mut Job, keywords: &[String]) {
+    let first_wait = job.worker != "key-wait";
+    job.worker = "key-wait".to_string();
+    db.update_worker(job.job_id, &job.worker).await.ok();
+    let v = serde_json::json!({
+        "type": "keycode",
+        "waiting": keywords,
+    });
+    db.update_progress(job.job_id, &v.to_string()).await.ok();
+    if first_wait {
+        render(
+            job,
+            MessagePayload::Progress(
+                crate::pnworker::messages::KEYCODE_WAIT,
+                vec![keywords.join(", ")],
+            ),
+        )
         .await;
-    false
+    }
 }
 
 async fn prepare_keep_job(job: &mut Job, kind: KeepKind) -> bool {
@@ -345,11 +430,55 @@ async fn prepare_keep_job(job: &mut Job, kind: KeepKind) -> bool {
     };
     keep.parent_keyword = Some(prepared.parent_keyword);
     keep.output_keyword = Some(prepared.output_keyword);
-    if kind == KeepKind::Encode {
-        job.preset = Preset::Standard(None);
+    if kind == KeepKind::Encode && keep.keyword.is_some() {
+        job.preset = preset_without_intro(&job.preset);
     }
     job.keep = Some(keep);
+    if let Some(keep) = &job.keep {
+        if let Err(e) = reserve_output(
+            &scope(job.server_id),
+            kind,
+            keep,
+            if kind == KeepKind::Encode { Some(&job.preset) } else { None },
+            job.job_id,
+        )
+        .await
+        {
+            eprintln!("[Pandora] keep reservation failed for {}: {}", job.job_id, e);
+            return false;
+        }
+    }
     true
+}
+
+async fn persist_keep_reserved(db: &JobDb, job: &Job) {
+    let Some((parent, keyword)) = keep_keywords(job) else {
+        return;
+    };
+    let v = serde_json::json!({
+        "type": "keep",
+        "keyword": keyword,
+        "parent_keyword": parent,
+        "ready": false,
+    });
+    db.update_progress(job.job_id, &v.to_string()).await.ok();
+}
+
+fn keep_keywords(job: &Job) -> Option<(String, String)> {
+    let keep = job.keep.as_ref()?;
+    Some((
+        keep.parent_keyword.clone()?,
+        keep.output_keyword.clone()?,
+    ))
+}
+
+fn preset_without_intro(preset: &Preset) -> Preset {
+    match preset {
+        Preset::PseudoLossless(_) => Preset::PseudoLossless(None),
+        Preset::Dummy(_) => Preset::Dummy(None),
+        Preset::Standard(_) => Preset::Standard(None),
+        Preset::Gpu(_) => Preset::Gpu(None),
+    }
 }
 
 fn select_keycode_intro(first_input: Option<&PathBuf>, candidates: &[String]) -> Option<PathBuf> {
@@ -651,6 +780,11 @@ async fn do_worker_message_things(
                 {
                     cache_encode_input(i).await;
                 }
+                if matches!(a, Stage::Failed | Stage::Cancelled) {
+                    if let Some(keep) = &i.keep {
+                        mark_output_failed(&scope(i.server_id), keep).await.ok();
+                    }
+                }
             }
             if stage == Some(Stage::Uploaded) {
                 if let Some(acix) = i.acix.clone() {
@@ -816,6 +950,21 @@ async fn do_job_progression_things(
         }
         if job.ready == Stage::Probed {
             continue;
+        }
+        if job.job_type == JobType::Keycode && job.ready == Stage::Queued {
+            match try_dispatch_keycode(db, shrine, job).await {
+                KeycodeDispatch::Waiting => continue,
+                KeycodeDispatch::Dispatched => {
+                    job.frontend
+                        .set_presence(Presence::Encoding { idx, total: qlen })
+                        .await;
+                    continue;
+                }
+                KeycodeDispatch::Failed => {
+                    dead.push(job.job_id);
+                    continue;
+                }
+            }
         }
 
         if job.ready == Stage::Downloaded {
@@ -1036,6 +1185,7 @@ async fn finish_keep_job(db: &JobDb, job: &mut Job, kind: KeepKind) -> bool {
         &keep,
         source,
         if kind == KeepKind::Encode { Some(&job.preset) } else { None },
+        job.job_id,
     )
     .await
     {
@@ -1054,6 +1204,7 @@ async fn finish_keep_job(db: &JobDb, job: &mut Job, kind: KeepKind) -> bool {
         "parent_keyword": meta.parent_keyword,
         "kind": meta.kind.label(),
         "expires_at": meta.expires_at,
+        "ready": true,
     });
     db.update_progress(job.job_id, &progress.to_string()).await.ok();
     job.ready = Stage::Uploaded;

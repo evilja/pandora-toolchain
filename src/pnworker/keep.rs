@@ -7,7 +7,7 @@ use tokio::fs::{create_dir_all, read_to_string, remove_dir_all, write};
 use crate::libpnmpeg::probe::{ffprobe_framerate, ffprobe_samplerate};
 use crate::pnworker::core::{KeepKind, KeepRequest, Preset};
 
-const KEEP_TTL_SECS: u64 = 2 * 60 * 60;
+const KEEP_TTL_SECS: u64 = 5 * 60 * 60;
 pub const KEYWORD_POOL_PATH: &str = "DB/config/global/environment/keyword_pool.pandora";
 const DEFAULT_KEYWORDS: &[&str] = &[
     "akira", "aqua", "aster", "ciel", "ember", "fable", "glint", "hikari", "iris",
@@ -49,6 +49,12 @@ pub(crate) struct KeepMeta {
     pub preset: Option<String>,
     pub fps: Option<String>,
     pub sample_rate: Option<u32>,
+    #[serde(default)]
+    pub ready: bool,
+    #[serde(default)]
+    pub failed: bool,
+    #[serde(default)]
+    pub job_id: u64,
 }
 
 pub(crate) struct PreparedKeep {
@@ -59,6 +65,11 @@ pub(crate) struct PreparedKeep {
 pub(crate) struct ResolvedKeywords {
     pub kind: KeepKind,
     pub paths: Vec<PathBuf>,
+}
+
+pub(crate) enum KeywordResolve {
+    Ready(ResolvedKeywords),
+    Waiting(Vec<String>),
 }
 
 pub(crate) fn scope(server_id: Option<u64>) -> String {
@@ -153,6 +164,7 @@ pub(crate) async fn store_output(
     keep: &KeepRequest,
     source: PathBuf,
     preset: Option<&Preset>,
+    job_id: u64,
 ) -> Result<KeepMeta, String> {
     let output_keyword = keep
         .output_keyword
@@ -190,6 +202,9 @@ pub(crate) async fn store_output(
         preset: preset.map(preset_label),
         fps,
         sample_rate,
+        ready: true,
+        failed: false,
+        job_id,
     };
     let raw = serde_json::to_vec_pretty(&meta).map_err(|e| e.to_string())?;
     write(meta_path(server_scope, &meta.keyword), raw)
@@ -198,12 +213,74 @@ pub(crate) async fn store_output(
     Ok(meta)
 }
 
-pub(crate) async fn resolve_keywords(
+pub(crate) async fn reserve_output(
+    server_scope: &str,
+    kind: KeepKind,
+    keep: &KeepRequest,
+    preset: Option<&Preset>,
+    job_id: u64,
+) -> Result<KeepMeta, String> {
+    let output_keyword = keep
+        .output_keyword
+        .as_deref()
+        .and_then(sanitize_keyword)
+        .ok_or_else(|| "keep output keyword was not prepared".to_string())?;
+    let parent_keyword = keep
+        .parent_keyword
+        .as_deref()
+        .and_then(sanitize_keyword)
+        .unwrap_or_else(|| output_keyword.clone());
+    let dir = keyword_dir(server_scope, &output_keyword);
+    create_dir_all(&dir).await.map_err(|e| e.to_string())?;
+    let meta = KeepMeta {
+        keyword: output_keyword,
+        parent_keyword,
+        kind,
+        server_scope: server_scope.to_string(),
+        output: "output.mp4".to_string(),
+        expires_at: now_secs() + KEEP_TTL_SECS,
+        preset: preset.map(preset_label),
+        fps: None,
+        sample_rate: None,
+        ready: false,
+        failed: false,
+        job_id,
+    };
+    let raw = serde_json::to_vec_pretty(&meta).map_err(|e| e.to_string())?;
+    write(meta_path(server_scope, &meta.keyword), raw)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(meta)
+}
+
+pub(crate) async fn mark_output_failed(
+    server_scope: &str,
+    keep: &KeepRequest,
+) -> Result<(), String> {
+    let output_keyword = keep
+        .output_keyword
+        .as_deref()
+        .and_then(sanitize_keyword)
+        .ok_or_else(|| "keep output keyword was not prepared".to_string())?;
+    let Some(mut meta) = read_meta(server_scope, &output_keyword).await? else {
+        return Ok(());
+    };
+    meta.ready = false;
+    meta.failed = true;
+    let raw = serde_json::to_vec_pretty(&meta).map_err(|e| e.to_string())?;
+    write(meta_path(server_scope, &meta.keyword), raw)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub(crate) async fn resolve_keywords_for_keycode(
     server_scope: &str,
     keywords: &[String],
-) -> Result<ResolvedKeywords, String> {
+) -> Result<KeywordResolve, String> {
     cleanup_expired_keeps().await;
     let mut metas = Vec::new();
+    let mut waiting = Vec::new();
     for raw in keywords {
         let keyword = sanitize_keyword(raw).ok_or_else(|| format!("invalid keyword `{}`", raw))?;
         let meta = read_meta(server_scope, &keyword)
@@ -212,6 +289,12 @@ pub(crate) async fn resolve_keywords(
         if meta.expires_at <= now_secs() {
             remove_dir_all(keyword_dir(server_scope, &keyword)).await.ok();
             return Err(format!("keyword `{}` expired", keyword));
+        }
+        if meta.failed {
+            return Err(format!("keyword `{}` failed", keyword));
+        }
+        if !meta.ready || !output_path(&meta).exists() {
+            waiting.push(keyword);
         }
         metas.push(meta);
     }
@@ -222,8 +305,11 @@ pub(crate) async fn resolve_keywords(
     if metas.iter().any(|m| m.kind != kind) {
         return Err("mixed encode and backup keywords are not supported in one keycode".to_string());
     }
+    if !waiting.is_empty() {
+        return Ok(KeywordResolve::Waiting(waiting));
+    }
     let paths = metas.iter().map(output_path).collect::<Vec<_>>();
-    Ok(ResolvedKeywords { kind, paths })
+    Ok(KeywordResolve::Ready(ResolvedKeywords { kind, paths }))
 }
 
 async fn read_meta(server_scope: &str, keyword: &str) -> Result<Option<KeepMeta>, String> {
