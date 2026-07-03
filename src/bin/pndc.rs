@@ -4,8 +4,8 @@ use serenity::{
     builder::{CreateActionRow, CreateCommand, CreateCommandOption, CreateInteractionResponse, CreateInteractionResponseMessage, CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, EditChannel},
     prelude::*,
 };
-use pandora_toolchain::libpnp2p::nyaaise::nyaaise;
-use pandora_toolchain::pnworker::core::{HalfJob, Job, JobClass, JobType, Preset};
+use pandora_toolchain::libpnp2p::nyaaise::{nyaaise, TorrentType};
+use pandora_toolchain::pnworker::core::{HalfJob, Job, JobClass, JobType, KeepRequest, KeycodeRequest, Preset};
 use pandora_toolchain::pnworker::util::{CliParam, IntrosConfig, PathValue, ToolResult, run_tool};
 use pandora_toolchain::pnworker::tools::PNASS_JOB;
 use pandora_toolchain::pnworker::tools::PNASS_MERGE;
@@ -71,6 +71,23 @@ fn has_level_at_least(id: u64, min_rank: u8) -> bool {
     })
 }
 
+async fn keep_request_from_options(
+    ctx: &Context,
+    command: &serenity::all::CommandInteraction,
+) -> Option<Option<KeepRequest>> {
+    let keep = option_bool(command, "keep").unwrap_or(false);
+    let keyword = option_trimmed(command, "keyword");
+    if !keep && keyword.is_some() {
+        command_error(ctx, command, "Error: `keyword` requires `keep:true`.").await;
+        return None;
+    }
+    Some(if keep {
+        Some(KeepRequest::new(keyword))
+    } else {
+        None
+    })
+}
+
 const COMMAND_RANKS_PATH: &str = "DB/config/global/environment/command_ranks.pandora";
 
 const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
@@ -79,6 +96,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("probe", 0),
     ("backup", 0),
     ("backupall", 0),
+    ("keycode", 0),
     ("gitcode", 0),
     ("smartcode", 0),
     ("merge", 0),
@@ -1083,9 +1101,14 @@ impl EventHandler for Handler {
                         Some(url) => url,
                         None => return,
                     };
+                    let keep = match keep_request_from_options(&ctx, &command).await {
+                        Some(keep) => keep,
+                        None => return,
+                    };
                     let preset = resolve_preset(&command, &self.intros);
 
-                    if let Some(job) = handle_interaction(&ctx, &command, torrent_url, preset).await {
+                    if let Some(mut job) = handle_interaction(&ctx, &command, torrent_url, preset).await {
+                        job.keep = keep;
                         self.tx.send(JobClass::Job(job)).await.unwrap();
                     }
                 }
@@ -1119,16 +1142,25 @@ impl EventHandler for Handler {
                         }
                     };
                     let preset = resolve_preset(&command, &self.intros);
+                    let keep = match keep_request_from_options(&ctx, &command).await {
+                        Some(keep) => keep,
+                        None => return,
+                    };
 
                     if let Some(mut job) = handle_interaction(&ctx, &command, String::new(), preset).await {
                         // Override job type and carry the probe linkage via job_id
                         job.job_type = JobType::Pancode;
                         job.probe_job_id = Some(probe_job_id);
                         job.probe_file_index = Some(file_index);
+                        job.keep = keep;
                         self.tx.send(JobClass::Job(job)).await.unwrap();
                     }
                 }
                 "backup" => {
+                    let keep = match keep_request_from_options(&ctx, &command).await {
+                        Some(keep) => keep,
+                        None => return,
+                    };
                     let probe_job_id = match option_str(&command, "job_id") {
                         Some(id) => match id.parse::<u64>() {
                             Ok(x) => Some(x),
@@ -1162,6 +1194,7 @@ impl EventHandler for Handler {
                     if let Some(mut job) = handle_backup(&ctx, &command, torrent_url).await {
                         job.probe_job_id = probe_job_id;
                         job.probe_file_index = file_index;
+                        job.keep = keep;
                         self.tx.send(JobClass::Job(job)).await.unwrap();
                     }
                 }
@@ -1271,7 +1304,12 @@ impl EventHandler for Handler {
                     handle_detach(&ctx, &command).await;
                 }
                 "smartcode" => {
-                    if let Some(job) = handle_smartcode(&ctx, &command, &self.intros).await {
+                    let keep = match keep_request_from_options(&ctx, &command).await {
+                        Some(keep) => keep,
+                        None => return,
+                    };
+                    if let Some(mut job) = handle_smartcode(&ctx, &command, &self.intros).await {
+                        job.keep = keep;
                         self.tx.send(JobClass::Job(job)).await.unwrap();
                     }
                 }
@@ -1295,11 +1333,64 @@ impl EventHandler for Handler {
                         Some(url) => url,
                         None => return,
                     };
+                    let keep = match keep_request_from_options(&ctx, &command).await {
+                        Some(keep) => keep,
+                        None => return,
+                    };
                     let preset = resolve_preset(&command, &self.intros);
 
-                    if let Some(job) = handle_gitcode(&ctx, &command, torrent_url, preset).await {
+                    if let Some(mut job) = handle_gitcode(&ctx, &command, torrent_url, preset).await {
+                        job.keep = keep;
                         self.tx.send(JobClass::Job(job)).await.unwrap();
                     }
+                }
+                "keycode" => {
+                    let keywords_raw = match required_trimmed_option(&ctx, &command, "keywords", "keywords").await {
+                        Some(v) => v,
+                        None => return,
+                    };
+                    let keywords = keywords_raw
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<_>>();
+                    if keywords.is_empty() {
+                        command_error(&ctx, &command, "Error: keywords must not be empty").await;
+                        return;
+                    }
+                    let concat_candidates = option_str(&command, "concat")
+                        .and_then(|group| self.intros.resolve(group));
+                    let attachment_bytes = match option_attachment(&command, "subtitle") {
+                        Some(att) => match att.download().await {
+                            Ok(b) => b,
+                            Err(e) => {
+                                command_error(&ctx, &command, format!("Failed to download subtitle: {}", e)).await;
+                                return;
+                            }
+                        },
+                        None => Vec::new(),
+                    };
+                    let response_msg = match working_response(&ctx, &command, "...").await {
+                        Some(m) => m,
+                        None => return,
+                    };
+                    response_msg.react(&ctx, '❌').await.ok();
+                    let mut job = Job::new(
+                        command.user.id.get(),
+                        command.channel_id.get(),
+                        response_msg.id.get(),
+                        JobType::Keycode,
+                        response_msg.id.get(),
+                        Preset::Standard(None),
+                        TorrentType::Link("keycode".to_string()),
+                        attachment_bytes,
+                        ctx.clone(),
+                        response_msg,
+                        read_lang(command.guild_id),
+                        command.guild_id.map(|g| g.get()),
+                    );
+                    job.keycode = Some(KeycodeRequest { keywords, concat_candidates });
+                    self.tx.send(JobClass::Job(job)).await.unwrap();
                 }
                 "gitsync" => {
                     let response_msg = match working_response(&ctx, &command, "Tüm işlemler kapatılıyor.").await {
@@ -1343,6 +1434,16 @@ impl EventHandler for Handler {
         for group_name in self.intros.groups.keys() {
             concat_option = concat_option.add_string_choice(group_name, group_name);
         }
+        let keep_option = CreateCommandOption::new(
+            CommandOptionType::Boolean,
+            "keep",
+            "Keep output locally for /keycode instead of uploading"
+        ).required(false);
+        let keyword_option = CreateCommandOption::new(
+            CommandOptionType::String,
+            "keyword",
+            "Existing keep keyword; omit for New keyword"
+        ).required(false);
 
         let commands = vec![
             CreateCommand::new("help")
@@ -1367,7 +1468,9 @@ impl EventHandler for Handler {
                         .add_string_choice("GPU", "gpu")
                         .add_string_choice("DEV", "dummy")
                 )
-                .add_option(concat_option.clone()),
+                .add_option(concat_option.clone())
+                .add_option(keep_option.clone())
+                .add_option(keyword_option.clone()),
             CreateCommand::new("hearts")
                 .description("Check the health of all worker threads"),
             CreateCommand::new("probe")
@@ -1398,7 +1501,9 @@ impl EventHandler for Handler {
                         .add_string_choice("GPU", "gpu")
                         .add_string_choice("DEV", "dummy")
                 )
-                .add_option(concat_option.clone()),
+                .add_option(concat_option.clone())
+                .add_option(keep_option.clone())
+                .add_option(keyword_option.clone()),
             CreateCommand::new("gitsync")
                 .description("Sync with the git repo"),
             CreateCommand::new("backup")
@@ -1414,7 +1519,9 @@ impl EventHandler for Handler {
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::Integer, "index", "File index from probe results")
                         .required(false)
-                ),
+                )
+                .add_option(keep_option.clone())
+                .add_option(keyword_option.clone()),
             CreateCommand::new("backupall")
                 .description("Download a torrent and upload every MKV to GDrive")
                 .add_option(
@@ -1502,7 +1609,9 @@ impl EventHandler for Handler {
                         .add_string_choice("GPU", "gpu")
                         .add_string_choice("DEV", "dummy")
                 )
-                .add_option(concat_option.clone()),
+                .add_option(concat_option.clone())
+                .add_option(keep_option.clone())
+                .add_option(keyword_option.clone()),
             CreateCommand::new("merge")
                 .description("Merge the channel's attached TL and TS subtitles for an episode and upload the release ASS")
                 .add_option(
@@ -1563,7 +1672,20 @@ impl EventHandler for Handler {
                         .add_string_choice("GPU", "gpu")
                         .add_string_choice("DEV", "dummy")
                 )
-                .add_option(concat_option.clone()),
+                .add_option(concat_option.clone())
+                .add_option(keep_option.clone())
+                .add_option(keyword_option.clone()),
+            CreateCommand::new("keycode")
+                .description("[EXPERIMENTAL] Join kept keywords and upload")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "keywords", "Comma-separated keep keywords")
+                        .required(true)
+                )
+                .add_option(concat_option.clone())
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "ASS subtitle file; required for backup keywords")
+                        .required(false)
+                ),
             CreateCommand::new("configure")
                 .description("Configure this server (language, Forgejo, Google Drive)")
                 .add_option(

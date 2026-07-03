@@ -11,7 +11,7 @@ use crate::pnworker::messages::{
 use crate::pnworker::progress::persist_side_effects;
 
 pub(crate) fn is_forwardable_encode(job: &Job) -> bool {
-    job.job_type == JobType::Encode
+    job.job_type == JobType::Encode && job.keep.is_none()
 }
 
 pub(crate) fn queued_encode_parent(job: &Job, queue: &[Job]) -> Option<(u64, Stage, String)> {

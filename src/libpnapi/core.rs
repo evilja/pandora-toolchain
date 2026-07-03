@@ -14,7 +14,7 @@ use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, mpsc::Sender};
 
-use crate::pnworker::core::{HalfJob, Job, JobClass, JobType, Preset, Stage};
+use crate::pnworker::core::{HalfJob, Job, JobClass, JobType, KeepRequest, KeycodeRequest, Preset, Stage};
 use crate::pnworker::acix::confirm_acix;
 use crate::libacix::{AnimeCix, MediaType, MixedUpload};
 use crate::libpndb::core::{JobDb, JobStatus};
@@ -23,10 +23,12 @@ use crate::libpngit::{
     smartcode_merge, Credits, RepoOutcome,
 };
 use crate::libpnp2p::nyaaise::nyaaise;
+use crate::libpnp2p::nyaaise::TorrentType;
 use crate::libpnenv::core::get_pandora_env;
 use crate::libpnenv::standard::{
     API_AUTHOR_ID, API_HOST, API_RATE_LIMIT, API_RATE_WINDOW_SECS, API_TOKENS_PATH,
 };
+use crate::pnworker::util::IntrosConfig;
 
 #[derive(Clone)]
 struct AppState {
@@ -125,6 +127,7 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/jobs/probe", post(submit_probe))
         .route("/jobs/pancode", post(submit_pancode))
         .route("/jobs/gitcode", post(submit_gitcode))
+        .route("/jobs/keycode", post(submit_keycode))
         .route("/jobs/:id/cancel", post(cancel_job))
         .route("/jobs/:id/acix/confirm", post(acix_confirm))
         .route("/git/attachments", get(git_attachments))
@@ -377,6 +380,10 @@ struct EncodeReq {
     channel_id: Option<u64>,
     #[serde(default)]
     server_id: Option<u64>,
+    #[serde(default)]
+    keep: bool,
+    #[serde(default)]
+    keyword: Option<String>,
 }
 
 async fn submit_encode(State(st): State<AppState>, Extension(auth): Extension<ApiAuth>, Json(req): Json<EncodeReq>) -> Response {
@@ -384,7 +391,7 @@ async fn submit_encode(State(st): State<AppState>, Extension(auth): Extension<Ap
         Ok(b) => b,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("subtitle_b64: {e}")).into_response(),
     };
-    let job = Job::new_api(
+    let mut job = Job::new_api(
         st.api_author,
         req.channel_id.unwrap_or(0),
         JobType::Encode,
@@ -394,6 +401,11 @@ async fn submit_encode(State(st): State<AppState>, Extension(auth): Extension<Ap
         req.lang.unwrap_or_else(|| "EN".to_string()),
         effective_server_id(&auth, req.server_id),
     );
+    if req.keep {
+        job.keep = Some(KeepRequest::new(req.keyword));
+    } else if req.keyword.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false) {
+        return (StatusCode::BAD_REQUEST, "keyword requires keep=true").into_response();
+    }
     submit(&st, job).await
 }
 
@@ -408,11 +420,21 @@ struct BackupReq {
     server_id: Option<u64>,
     #[serde(default)]
     all: bool,
+    #[serde(default)]
+    keep: bool,
+    #[serde(default)]
+    keyword: Option<String>,
 }
 
 async fn submit_backup(State(st): State<AppState>, Extension(auth): Extension<ApiAuth>, Json(req): Json<BackupReq>) -> Response {
+    if req.keep && req.all {
+        return (StatusCode::BAD_REQUEST, "keep is not supported with backup all").into_response();
+    }
+    if !req.keep && req.keyword.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false) {
+        return (StatusCode::BAD_REQUEST, "keyword requires keep=true").into_response();
+    }
     let job_type = if req.all { JobType::BackupAll } else { JobType::Backup };
-    let job = Job::new_api(
+    let mut job = Job::new_api(
         st.api_author,
         req.channel_id.unwrap_or(0),
         job_type,
@@ -422,6 +444,9 @@ async fn submit_backup(State(st): State<AppState>, Extension(auth): Extension<Ap
         req.lang.unwrap_or_else(|| "EN".to_string()),
         effective_server_id(&auth, req.server_id),
     );
+    if req.keep {
+        job.keep = Some(KeepRequest::new(req.keyword));
+    }
     submit(&st, job).await
 }
 
@@ -451,6 +476,10 @@ struct PancodeReq {
     subtitle_b64: String,
     #[serde(default)]
     preset: Option<String>,
+    #[serde(default)]
+    keep: bool,
+    #[serde(default)]
+    keyword: Option<String>,
 }
 
 async fn submit_pancode(State(st): State<AppState>, Extension(auth): Extension<ApiAuth>, Json(req): Json<PancodeReq>) -> Response {
@@ -485,6 +514,11 @@ async fn submit_pancode(State(st): State<AppState>, Extension(auth): Extension<A
     );
     job.probe_job_id = Some(probe_id);
     job.probe_file_index = Some(req.file_index);
+    if req.keep {
+        job.keep = Some(KeepRequest::new(req.keyword));
+    } else if req.keyword.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false) {
+        return (StatusCode::BAD_REQUEST, "keyword requires keep=true").into_response();
+    }
     let progress = json!({
         "type": "pancode",
         "torrent": probe.link,
@@ -500,6 +534,10 @@ struct GitcodeReq {
     subtitle_url: String,
     #[serde(default)]
     preset: Option<String>,
+    #[serde(default)]
+    keep: bool,
+    #[serde(default)]
+    keyword: Option<String>,
 }
 
 async fn submit_gitcode(State(st): State<AppState>, Extension(auth): Extension<ApiAuth>, Json(req): Json<GitcodeReq>) -> Response {
@@ -508,7 +546,7 @@ async fn submit_gitcode(State(st): State<AppState>, Extension(auth): Extension<A
         Ok(b) => b,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("subtitle_url: {e}")).into_response(),
     };
-    let job = Job::new_api(
+    let mut job = Job::new_api(
         st.api_author,
         0,
         JobType::Encode,
@@ -518,6 +556,63 @@ async fn submit_gitcode(State(st): State<AppState>, Extension(auth): Extension<A
         "EN".to_string(),
         effective_server_id(&auth, None),
     );
+    if req.keep {
+        job.keep = Some(KeepRequest::new(req.keyword));
+    } else if req.keyword.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false) {
+        return (StatusCode::BAD_REQUEST, "keyword requires keep=true").into_response();
+    }
+    submit(&st, job).await
+}
+
+#[derive(Deserialize)]
+struct KeycodeReq {
+    keywords: Vec<String>,
+    #[serde(default)]
+    concat: Option<String>,
+    #[serde(default)]
+    subtitle_b64: Option<String>,
+    #[serde(default)]
+    lang: Option<String>,
+    #[serde(default)]
+    channel_id: Option<u64>,
+    #[serde(default)]
+    server_id: Option<u64>,
+}
+
+async fn submit_keycode(State(st): State<AppState>, Extension(auth): Extension<ApiAuth>, Json(req): Json<KeycodeReq>) -> Response {
+    let keywords = req
+        .keywords
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+    if keywords.is_empty() {
+        return (StatusCode::BAD_REQUEST, "keywords must not be empty").into_response();
+    }
+    let subtitle = match req.subtitle_b64.as_deref() {
+        Some(s) if !s.trim().is_empty() => match base64_decode_bytes(s) {
+            Ok(b) => b,
+            Err(e) => return (StatusCode::BAD_REQUEST, format!("subtitle_b64: {e}")).into_response(),
+        },
+        _ => Vec::new(),
+    };
+    let concat_candidates = req
+        .concat
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(|group| IntrosConfig::load().resolve(group));
+    let mut job = Job::new_api(
+        st.api_author,
+        req.channel_id.unwrap_or(0),
+        JobType::Keycode,
+        Preset::Standard(None),
+        TorrentType::Link("keycode".to_string()),
+        subtitle,
+        req.lang.unwrap_or_else(|| "EN".to_string()),
+        effective_server_id(&auth, req.server_id),
+    );
+    job.keycode = Some(KeycodeRequest { keywords, concat_candidates });
     submit(&st, job).await
 }
 
@@ -791,6 +886,10 @@ struct GitSmartcodeReq {
     link: Option<String>,
     #[serde(default)]
     preset: Option<String>,
+    #[serde(default)]
+    keep: bool,
+    #[serde(default)]
+    keyword: Option<String>,
 }
 
 async fn git_smartcode(State(st): State<AppState>, Extension(auth): Extension<ApiAuth>, Json(req): Json<GitSmartcodeReq>) -> Response {
@@ -813,6 +912,11 @@ async fn git_smartcode(State(st): State<AppState>, Extension(auth): Extension<Ap
     );
     job.gdrive_folder_global = Some(merge.gdrive_folder_global.clone());
     job.gdrive_folder_local = Some(merge.gdrive_folder_local.clone());
+    if req.keep {
+        job.keep = Some(KeepRequest::new(req.keyword));
+    } else if req.keyword.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false) {
+        return (StatusCode::BAD_REQUEST, "keyword requires keep=true").into_response();
+    }
     let job_id = job.job_id;
     if let Err(e) = st.db.insert_job(&job).await {
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();

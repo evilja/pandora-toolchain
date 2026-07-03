@@ -12,6 +12,10 @@ use crate::pnworker::forwarding::{
     persist_forwarded_wait, queued_encode_parent, sync_forwarded_jobs, sync_forwarded_state,
 };
 use crate::pnworker::heartbeat::core::{TypedShrine, Worker};
+use crate::pnworker::keep::{
+    cleanup_expired_keeps, cleanup_keep_startup, prepare_keep, resolve_keywords, scope,
+    store_output,
+};
 use crate::pnworker::lifecycle::{cleanup_job, render};
 use crate::pnworker::messages::{
     ENCODE_WARNING, MessagePayload, PROBE_TIMEOUT, QUEUE_TOO_LONG, QUEUED, TORRENT_DUPLICATE_WAIT,
@@ -41,6 +45,7 @@ pub enum WorkerMsg {
     Download(DownloadData),
     Probe(ProbeData),
     Encode(EncodeData),
+    Keycode(KeycodeData),
     Upload(UploadData),
     UploadAll(UploadAllData),
 }
@@ -54,6 +59,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
     db.fail_stale_active().await.unwrap();
     cleanup_pandora_qbit().await;
     cleanup_input_cache_startup().await;
+    cleanup_keep_startup().await;
 
     let mut queue: Vec<Job> = vec![];
     let mut shrine: TypedShrine<WorkerMsg> = TypedShrine::new();
@@ -67,6 +73,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
 
         shrine.drain_heartbeats().await;
         cleanup_expired_input_cache().await;
+        cleanup_expired_keeps().await;
 
         if do_queue_things(&mut rx, &db, &mut queue, &mut shrine).await {
             continue;
@@ -121,6 +128,7 @@ async fn queue_new_job(
         JobType::Pancode => queue_pancode_job(db, queue, shrine, job).await,
         JobType::Backup => queue_backup_job(db, queue, shrine, job).await,
         JobType::BackupAll => queue_backup_all_job(db, queue, shrine, job).await,
+        JobType::Keycode => queue_keycode_job(db, queue, shrine, job).await,
         _ => false,
     }
 }
@@ -147,6 +155,12 @@ async fn queue_encode_job(
     shrine: &mut TypedShrine<WorkerMsg>,
     job: &mut Job,
 ) -> bool {
+    if !prepare_keep_job(job, KeepKind::Encode).await {
+        render(job, MessagePayload::Progress(crate::pnworker::messages::KEEP_FAIL, vec![
+            "invalid or unavailable keyword".to_string(),
+        ])).await;
+        return true;
+    }
     prepare_queued_job(job, "dwl-pending", true).await;
     if let Some((parent_id, parent_stage, forwarded_worker)) = queued_encode_parent(job, queue) {
         mark_forwarded(job, parent_id, parent_stage, &forwarded_worker);
@@ -203,6 +217,12 @@ async fn queue_pancode_job(
         .join("DB")
         .join("work")
         .join(job.probe_job_id.unwrap().to_string());
+    if !prepare_keep_job(job, KeepKind::Encode).await {
+        render(job, MessagePayload::Progress(crate::pnworker::messages::KEEP_FAIL, vec![
+            "invalid or unavailable keyword".to_string(),
+        ])).await;
+        return true;
+    }
     prepare_queued_job(job, "dwl-pending", true).await;
 
     let torrent_src = probe_dir.join("contents").join("fetch.torrent");
@@ -227,6 +247,12 @@ async fn queue_backup_job(
             .join("work")
             .join(id.to_string())
     });
+    if !prepare_keep_job(job, KeepKind::Backup).await {
+        render(job, MessagePayload::Progress(crate::pnworker::messages::KEEP_FAIL, vec![
+            "invalid or unavailable keyword".to_string(),
+        ])).await;
+        return true;
+    }
     prepare_queued_job(job, "dwl-pending", false).await;
     if let Some(probe_dir) = probe_dir {
         let torrent_src = probe_dir.join("contents").join("fetch.torrent");
@@ -236,6 +262,147 @@ async fn queue_backup_job(
         }
     }
     queue_download_job(db, queue, shrine, job, job.probe_file_index, false).await
+}
+
+async fn queue_keycode_job(
+    db: &JobDb,
+    queue: &[Job],
+    shrine: &mut TypedShrine<WorkerMsg>,
+    job: &mut Job,
+) -> bool {
+    prepare_queued_job(job, "enc-main", !job.attachment.is_empty()).await;
+    let Some(request) = job.keycode.clone() else {
+        render(job, MessagePayload::Progress(crate::pnworker::messages::KEYCODE_FAIL, vec![
+            "missing keycode request".to_string(),
+        ])).await;
+        return true;
+    };
+    let resolved = match resolve_keywords(&scope(job.server_id), &request.keywords).await {
+        Ok(resolved) => resolved,
+        Err(e) => {
+            render(job, MessagePayload::Progress(crate::pnworker::messages::KEYCODE_FAIL, vec![e])).await;
+            return true;
+        }
+    };
+    if resolved.kind == KeepKind::Backup && job.attachment.is_empty() {
+        render(job, MessagePayload::Progress(crate::pnworker::messages::KEYCODE_FAIL, vec![
+            "backup keywords require a subtitle".to_string(),
+        ])).await;
+        return true;
+    }
+    let mut inputs = resolved.paths;
+    if let Some(intro) = request.concat_candidates.as_ref().and_then(|c| {
+        select_keycode_intro(inputs.first(), c)
+    }) {
+        inputs.insert(0, intro);
+    }
+    if inputs.is_empty() {
+        render(job, MessagePayload::Progress(crate::pnworker::messages::KEYCODE_FAIL, vec![
+            "no usable keyword outputs".to_string(),
+        ])).await;
+        return true;
+    }
+    if !dispatch_or_kill(
+        shrine,
+        &Worker::Encode,
+        WorkerMsg::Keycode((
+            job.directory.clone(),
+            inputs,
+            resolved.kind,
+            job.job_id,
+            job.server_id,
+        )),
+        job,
+        db,
+        true,
+    )
+    .await
+    {
+        return true;
+    }
+    job.ready = Stage::Encoding;
+    job.frontend
+        .set_presence(Presence::Encoding {
+            idx: queue.len(),
+            total: queue.len() + 1,
+        })
+        .await;
+    false
+}
+
+async fn prepare_keep_job(job: &mut Job, kind: KeepKind) -> bool {
+    let Some(mut keep) = job.keep.clone() else {
+        return true;
+    };
+    let prepared = match prepare_keep(&scope(job.server_id), kind, &keep).await {
+        Ok(prepared) => prepared,
+        Err(e) => {
+            eprintln!("[Pandora] keep prepare failed for {}: {}", job.job_id, e);
+            return false;
+        }
+    };
+    keep.parent_keyword = Some(prepared.parent_keyword);
+    keep.output_keyword = Some(prepared.output_keyword);
+    if kind == KeepKind::Encode && keep.keyword.is_some() {
+        job.preset = preset_from_keep_label(prepared.parent_preset.as_deref(), &job.preset);
+    }
+    job.keep = Some(keep);
+    true
+}
+
+fn preset_without_intro(preset: &Preset) -> Preset {
+    match preset {
+        Preset::PseudoLossless(_) => Preset::PseudoLossless(None),
+        Preset::Dummy(_) => Preset::Dummy(None),
+        Preset::Standard(_) => Preset::Standard(None),
+        Preset::Gpu(_) => Preset::Gpu(None),
+    }
+}
+
+fn preset_from_keep_label(label: Option<&str>, fallback: &Preset) -> Preset {
+    match label {
+        Some("pseudolossless") => Preset::PseudoLossless(None),
+        Some("dummy") => Preset::Dummy(None),
+        Some("gpu") => Preset::Gpu(None),
+        Some("standard") => Preset::Standard(None),
+        _ => preset_without_intro(fallback),
+    }
+}
+
+fn select_keycode_intro(first_input: Option<&PathBuf>, candidates: &[String]) -> Option<PathBuf> {
+    let first = first_input?.to_string_lossy().to_string();
+    let main_fps = crate::libpnmpeg::probe::ffprobe_framerate(&first);
+    let main_sr = crate::libpnmpeg::probe::ffprobe_samplerate(&first);
+    let mut best_match: Option<(usize, &String)> = None;
+    let mut highest_fps: Option<(&String, (u32, u32))> = None;
+    for candidate in candidates {
+        let cand_fps = crate::libpnmpeg::probe::ffprobe_framerate(candidate);
+        let cand_sr = crate::libpnmpeg::probe::ffprobe_samplerate(candidate);
+        if let Some(fps) = cand_fps {
+            match highest_fps {
+                None => highest_fps = Some((candidate, fps)),
+                Some((_, hfps)) => {
+                    if fps.0 * hfps.1 > hfps.0 * fps.1 {
+                        highest_fps = Some((candidate, fps));
+                    }
+                }
+            }
+        }
+        let mut score = 0usize;
+        if main_fps.is_some() && cand_fps == main_fps {
+            score += 1;
+        }
+        if main_sr.is_some() && cand_sr == main_sr {
+            score += 1;
+        }
+        if score > best_match.map(|(s, _)| s).unwrap_or(0) {
+            best_match = Some((score, candidate));
+        }
+    }
+    best_match
+        .filter(|(score, _)| *score >= 2)
+        .map(|(_, path)| PathBuf::from(path))
+        .or_else(|| highest_fps.map(|(path, _)| PathBuf::from(path)))
 }
 
 async fn queue_backup_all_job(
@@ -670,6 +837,12 @@ async fn do_job_progression_things(
 
         if job.ready == Stage::Downloaded {
             if job.job_type == JobType::Backup {
+                if job.keep.is_some() {
+                    if finish_keep_job(db, job, KeepKind::Backup).await {
+                        dead.push(job.job_id);
+                    }
+                    continue;
+                }
                 let src = job
                     .directory
                     .join("contents")
@@ -805,6 +978,12 @@ async fn do_job_progression_things(
                     .await;
             }
         } else if job.ready == Stage::Encoded {
+            if job.keep.is_some() {
+                if finish_keep_job(db, job, KeepKind::Encode).await {
+                    dead.push(job.job_id);
+                }
+                continue;
+            }
             job.worker = "upl-pending".to_string();
             db.update_worker(job.job_id, &job.worker).await.ok();
             if !dispatch_or_kill(
@@ -816,9 +995,13 @@ async fn do_job_progression_things(
                         "{}.mp4",
                         job.directory.file_name().unwrap_or_default().display()
                     ),
-                    match job.preset {
-                        Preset::Dummy(_) => false,
-                        _ => true,
+                    if job.job_type == JobType::Keycode {
+                        true
+                    } else {
+                        match job.preset {
+                            Preset::Dummy(_) => false,
+                            _ => true,
+                        }
                     },
                     job.job_id,
                     job.server_id,
@@ -850,6 +1033,71 @@ async fn do_job_progression_things(
         sync_forwarded_state(db, queue, parent_id, Some(stage), Some(&worker)).await;
     }
     queue.retain(|j| !dead.contains(&j.job_id));
+}
+
+async fn finish_keep_job(db: &JobDb, job: &mut Job, kind: KeepKind) -> bool {
+    let Some(keep) = job.keep.clone() else {
+        return false;
+    };
+    let source = match kind {
+        KeepKind::Encode => job.directory.join("work").join("output.mp4"),
+        KeepKind::Backup => job
+            .directory
+            .join("contents")
+            .join("torrent")
+            .join("input.mkv"),
+    };
+    let meta = match store_output(
+        &scope(job.server_id),
+        kind,
+        &keep,
+        source,
+        if kind == KeepKind::Encode { Some(&job.preset) } else { None },
+    )
+    .await
+    {
+        Ok(meta) => meta,
+        Err(e) => {
+            eprintln!("[Pandora] keep store failed for {}: {}", job.job_id, e);
+            job.ready = Stage::Failed;
+            db.update_stage(job.job_id, Stage::Failed).await.ok();
+            render(job, MessagePayload::Progress(crate::pnworker::messages::KEEP_FAIL, vec![e])).await;
+            return true;
+        }
+    };
+    let progress = serde_json::json!({
+        "type": "keep",
+        "keyword": meta.keyword,
+        "parent_keyword": meta.parent_keyword,
+        "kind": meta.kind.label(),
+        "expires_at": meta.expires_at,
+    });
+    db.update_progress(job.job_id, &progress.to_string()).await.ok();
+    job.ready = Stage::Uploaded;
+    job.worker = "keep-done".to_string();
+    db.update_worker(job.job_id, &job.worker).await.ok();
+    db.update_stage(job.job_id, Stage::Uploaded).await.ok();
+    render(
+        job,
+        MessagePayload::Progress(
+            crate::pnworker::messages::KEEP_DONE,
+            vec![
+                meta.keyword.clone(),
+                meta.parent_keyword.clone(),
+                meta.kind.label().to_string(),
+            ],
+        ),
+    )
+    .await;
+    db.archive_job(job.job_id).await.ok();
+    cleanup_job(
+        &job.directory,
+        &PathBuf::from("DB")
+            .join("saved_data")
+            .join(job.job_id.to_string()),
+    )
+    .await;
+    true
 }
 
 async fn dispatch_or_kill(
@@ -889,6 +1137,44 @@ pub enum Preset {
     Gpu(Option<Vec<String>>),
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum KeepKind {
+    Encode,
+    Backup,
+}
+
+impl KeepKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            KeepKind::Encode => "encode",
+            KeepKind::Backup => "backup",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct KeepRequest {
+    pub keyword: Option<String>,
+    pub parent_keyword: Option<String>,
+    pub output_keyword: Option<String>,
+}
+
+impl KeepRequest {
+    pub fn new(keyword: Option<String>) -> Self {
+        Self {
+            keyword,
+            parent_keyword: None,
+            output_keyword: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct KeycodeRequest {
+    pub keywords: Vec<String>,
+    pub concat_candidates: Option<Vec<String>>,
+}
+
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(u16)]
 pub enum JobType {
@@ -901,6 +1187,7 @@ pub enum JobType {
     Scrape = 007,
     Backup = 008,
     BackupAll = 009,
+    Keycode = 010,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -1037,6 +1324,8 @@ pub struct Job {
     pub duplicate_source: Option<PathBuf>,
     pub forward_parent: Option<u64>,
     pub encode_warnings: Vec<String>,
+    pub keep: Option<KeepRequest>,
+    pub keycode: Option<KeycodeRequest>,
 }
 
 impl PartialEq for Job {
@@ -1093,6 +1382,8 @@ impl Job {
             duplicate_source: None,
             forward_parent: None,
             encode_warnings: Vec::new(),
+            keep: None,
+            keycode: None,
         }
     }
 
@@ -1143,6 +1434,8 @@ impl Job {
             duplicate_source: None,
             forward_parent: None,
             encode_warnings: Vec::new(),
+            keep: None,
+            keycode: None,
         }
     }
 }

@@ -429,6 +429,7 @@ pub fn job_type_label(job_type: i64) -> &'static str {
         7 => "Scrape",
         8 => "Backup",
         9 => "BackupAll",
+        10 => "Keycode",
         _ => "Unknown",
     }
 }

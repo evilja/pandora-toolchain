@@ -44,6 +44,12 @@ struct Args {
     #[arg(long)]
     legacyconcat: bool,
 
+    #[arg(long)]
+    joinconcat: bool,
+
+    #[arg(long)]
+    joinass: bool,
+
     /// Input file
     #[arg(short, long)]
     input: String,
@@ -107,13 +113,72 @@ async fn main() {
                       None => "PNmpegCLI".to_string(),
                   });
 
-    let mut encoder = FFmpeg::new();
+    let encoder = FFmpeg::new();
     let concfilepath = PathBuf::from_str(&args.input).unwrap()
         .parent().unwrap()
         .canonicalize().unwrap()
         .join("PNmpeg_Concat.txt");
 
     let selected_subinput = select_subinput(&args.input, &args.candidate, &args.subinput);
+
+    if args.joinconcat || args.joinass {
+        let mut join_inputs = vec![args.input.clone()];
+        join_inputs.extend(args.candidate.iter().cloned());
+        let mut totalframe: u64 = 0;
+        let parent = PathBuf::from_str(&args.input).unwrap()
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let joinfile = parent
+            .canonicalize()
+            .unwrap_or(parent)
+            .join("PNmpeg_Keycode_Concat.txt");
+        let mut file = File::create(&joinfile).await.unwrap();
+        for input in &join_inputs {
+            totalframe += ffprobe_frame(input).unwrap_or(0);
+            let canon = PathBuf::from_str(input).unwrap()
+                .canonicalize()
+                .unwrap_or_else(|_| PathBuf::from(input))
+                .display()
+                .to_string();
+            file.write(format!("file '{}'\n", canon.replace('\'', "'\\''")).as_bytes()).await.unwrap();
+        }
+        drop(file);
+
+        let mut params = if args.joinconcat {
+            Vec::from(CONCAT)
+        } else {
+            let mut p = Vec::from(CPU_SANE_DEFAULTS);
+            p.insert(0, FfmpegParams::Safe(Cow::Borrowed("0")));
+            p.insert(0, FfmpegParams::Format(Cow::Borrowed("concat")));
+            p
+        };
+        for i in params.iter_mut() {
+            match i {
+                FfmpegParams::Input(a) => {
+                    let c = a
+                        .replace("CONCATFILEV", &joinfile.display().to_string())
+                        .replace("INPUTFILEV", &joinfile.display().to_string());
+                    *i = FfmpegParams::Input(Cow::Owned(c));
+                }
+                FfmpegParams::BasicFilter(a) => {
+                    if let Some(ref b) = args.ass {
+                        let ass = quote_filter_value(b);
+                        *i = FfmpegParams::BasicFilter(Cow::Owned(a.replace("INPUTFILEASS", &ass)));
+                    }
+                }
+                FfmpegParams::Map(a) => {
+                    *i = FfmpegParams::Map(Cow::Owned(a.replace("JPN_INDEX", "a:0")));
+                }
+                FfmpegParams::Output(a) => {
+                    *i = FfmpegParams::Output(Cow::Owned(a.replace("OUTFILEV", &args.output)));
+                }
+                _ => {}
+            }
+        }
+        run_with_progress(&mut proto, &neg, encoder, params, totalframe, args.cancelfile, args.logfile).await;
+        return;
+    }
 
     let use_legacy = args.concat && !args.candidate.is_empty() && selected_subinput.as_ref().map(|p| {
         ffprobe_framerate(p) != ffprobe_framerate(&args.input) ||
@@ -206,6 +271,18 @@ async fn main() {
         }
     }
 
+    run_with_progress(&mut proto, &neg, encoder, params, totalframe, args.cancelfile, args.logfile).await;
+}
+
+async fn run_with_progress(
+    proto: &mut Protocol,
+    neg: &str,
+    mut encoder: FFmpeg,
+    params: Vec<FfmpegParams>,
+    totalframe: u64,
+    cancelfile: Option<String>,
+    logfile: Option<String>,
+) {
     let (tx, mut rx): (UnboundedSender<RpbData>, UnboundedReceiver<RpbData>) = mpsc::unbounded_channel();
     let _thr = tokio::spawn(async move {
         do_comm_encode_ffmpeg(
@@ -213,8 +290,8 @@ async fn main() {
             params,
             tx,
             Some(totalframe),
-            args.cancelfile,
-            args.logfile,
+            cancelfile,
+            logfile,
         ).await;
     });
 
@@ -229,7 +306,7 @@ async fn main() {
                 println!("{}",
                     pn_emit!(
                         protocol = proto,
-                        negkey = &neg,
+                        negkey = neg,
                         schema = [leaf, [leaf, leaf, leaf, leaf]],
                         data   = ["0", [fps, frame, total, bitrate]]
                     ).unwrap()
@@ -239,7 +316,7 @@ async fn main() {
                 println!("{}",
                     pn_emit!(
                         protocol = proto,
-                        negkey = &neg,
+                        negkey = neg,
                         schema = [leaf, leaf],
                         data   = ["4", warning]
                     ).unwrap()
@@ -249,7 +326,7 @@ async fn main() {
                 println!("{}",
                     pn_emit!(
                         protocol = proto,
-                        negkey = &neg,
+                        negkey = neg,
                         schema = [leaf, leaf],
                         data   = ["1", a]
                     ).unwrap()
@@ -259,7 +336,7 @@ async fn main() {
                 println!("{}",
                     pn_emit!(
                         protocol = proto,
-                        negkey = &neg,
+                        negkey = neg,
                         schema = [leaf, leaf],
                         data   = ["2", "0"]
                     ).unwrap()
@@ -269,7 +346,7 @@ async fn main() {
                 println!("{}",
                     pn_emit!(
                         protocol = proto,
-                        negkey = &neg,
+                        negkey = neg,
                         schema = [leaf, leaf],
                         data   = ["3", "CANCELFILE"]
                     ).unwrap()

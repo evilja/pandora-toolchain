@@ -30,6 +30,9 @@ pub const UPLOAD_DONE: &str = "UPLOAD_DONE";
 pub const UPLOAD_FAIL: &str = "UPLOAD_FAIL";
 pub const UPLOAD_BACKUP_PROG: &str = "UPLOAD_BACKUP_PROG";
 pub const BACKUPALL_PROG: &str = "BACKUPALL_PROG";
+pub const KEEP_DONE: &str = "KEEP_DONE";
+pub const KEEP_FAIL: &str = "KEEP_FAIL";
+pub const KEYCODE_FAIL: &str = "KEYCODE_FAIL";
 pub const PROBE_DONE: &str = "PROBE_DONE";
 pub const PROBE_FAIL: &str = "PROBE_FAIL";
 pub const PROBE_ROW: &str = "PROBE_ROW";
@@ -115,6 +118,13 @@ static DEFAULT_ENTRIES: &[(&str, &str, usize)] = &[
     ),
     ("ENCODE_DONE", "\n\nÇıktı sunuculara yükleniyor.", 0),
     ("ENCODE_FAIL", "\n\nDosya encode edilemedi.", 0),
+    (
+        "KEEP_DONE",
+        "\n\nÇıktı 2 saatliğine saklandı.\nKeyword: `{}`\nParent keyword: `{}`\nTip: {}",
+        3,
+    ),
+    ("KEEP_FAIL", "\n\nKeep işlemi başarısız oldu: {}", 1),
+    ("KEYCODE_FAIL", "\n\nKeycode işlemi başarısız oldu: {}", 1),
     (
         "UPLOAD_PROG",
         "\n\nYükleme ilerlemesi:\n{}\n{}\n{}\n{}\n{}",

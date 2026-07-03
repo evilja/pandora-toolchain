@@ -775,10 +775,12 @@
       fields: [
         { name: "torrent",  label: "Torrent / Magnet / GDrive", type: "text", required: true, placeholder: "magnet:?... or https://..." },
         { name: "subtitle", label: "Subtitle (.ass)", type: "file", required: true, accept: ".ass" },
-        { name: "preset",   label: "Preset", type: "select", options: ["standard", "gpu", "pseudolossless", "dummy"] }
+        { name: "preset",   label: "Preset", type: "select", options: ["standard", "gpu", "pseudolossless", "dummy"] },
+        { name: "keep",     label: "Keep output for keycode", type: "checkbox" },
+        { name: "keyword",  label: "Keyword", type: "text", optional: true, placeholder: "New keyword" }
       ],
       run: function (v) {
-        return api("POST", "/api/v1/jobs/encode", { torrent: v.torrent, subtitle_b64: v.subtitle, preset: v.preset });
+        return api("POST", "/api/v1/jobs/encode", { torrent: v.torrent, subtitle_b64: v.subtitle, preset: v.preset, keep: !!v.keep, keyword: v.keyword || null });
       },
       render: renderResult
     },
@@ -788,10 +790,12 @@
       fields: [
         { name: "torrent",      label: "Torrent / Magnet / GDrive", type: "text", required: true, placeholder: "magnet:?... or https://..." },
         { name: "subtitle_url", label: "Subtitle URL (.ass)", type: "text", required: true, placeholder: "https://.../sub.ass" },
-        { name: "preset",       label: "Preset", type: "select", options: ["standard", "gpu", "pseudolossless", "dummy"] }
+        { name: "preset",       label: "Preset", type: "select", options: ["standard", "gpu", "pseudolossless", "dummy"] },
+        { name: "keep",         label: "Keep output for keycode", type: "checkbox" },
+        { name: "keyword",      label: "Keyword", type: "text", optional: true, placeholder: "New keyword" }
       ],
       run: function (v) {
-        return api("POST", "/api/v1/jobs/gitcode", { torrent: v.torrent, subtitle_url: v.subtitle_url, preset: v.preset });
+        return api("POST", "/api/v1/jobs/gitcode", { torrent: v.torrent, subtitle_url: v.subtitle_url, preset: v.preset, keep: !!v.keep, keyword: v.keyword || null });
       },
       render: renderResult
     },
@@ -800,10 +804,12 @@
       desc: "Archive the raw release to storage without re-encoding.",
       fields: [
         { name: "torrent", label: "Torrent / Magnet / GDrive", type: "text", required: true, placeholder: "magnet:?... or https://..." },
-        { name: "all",     label: "Back up every file in the torrent", type: "checkbox" }
+        { name: "all",     label: "Back up every file in the torrent", type: "checkbox" },
+        { name: "keep",    label: "Keep output for keycode", type: "checkbox" },
+        { name: "keyword", label: "Keyword", type: "text", optional: true, placeholder: "New keyword" }
       ],
       run: function (v) {
-        return api("POST", "/api/v1/jobs/backup", { torrent: v.torrent, all: !!v.all });
+        return api("POST", "/api/v1/jobs/backup", { torrent: v.torrent, all: !!v.all, keep: !!v.keep, keyword: v.keyword || null });
       },
       render: renderResult
     },
@@ -814,14 +820,35 @@
         { name: "torrent",    label: "Torrent / Magnet", type: "text", required: true, placeholder: "magnet:?... or https://..." },
         { name: "file_index", label: "File", type: "fileselect", required: true },
         { name: "subtitle",   label: "Subtitle (.ass)", type: "file", required: true, accept: ".ass" },
-        { name: "preset",     label: "Preset", type: "select", options: ["standard", "gpu", "pseudolossless", "dummy"] }
+        { name: "preset",     label: "Preset", type: "select", options: ["standard", "gpu", "pseudolossless", "dummy"] },
+        { name: "keep",       label: "Keep output for keycode", type: "checkbox" },
+        { name: "keyword",    label: "Keyword", type: "text", optional: true, placeholder: "New keyword" }
       ],
       run: function (v) {
         return api("POST", "/api/v1/jobs/pancode", {
           probe_job_id: pancodeProbeJobId,
           file_index: parseInt(v.file_index, 10) || 0,
           subtitle_b64: v.subtitle,
-          preset: v.preset
+          preset: v.preset,
+          keep: !!v.keep,
+          keyword: v.keyword || null
+        });
+      },
+      render: renderResult
+    },
+    keycode: {
+      label: "Keycode",
+      desc: "[EXPERIMENTAL] Join kept keywords and upload.",
+      fields: [
+        { name: "keywords", label: "Keywords", type: "text", required: true, placeholder: "somekey,anotherkey" },
+        { name: "concat",   label: "Intro code", type: "text", optional: true, placeholder: "optional intro group" },
+        { name: "subtitle", label: "Subtitle (.ass)", type: "file", optional: true, accept: ".ass" }
+      ],
+      run: function (v) {
+        return api("POST", "/api/v1/jobs/keycode", {
+          keywords: String(v.keywords || "").split(",").map(function (s) { return s.trim(); }).filter(Boolean),
+          concat: v.concat || null,
+          subtitle_b64: v.subtitle || null
         });
       },
       render: renderResult
@@ -843,7 +870,7 @@
       render: renderResult
     }
   };
-  var ORDER = ["encode", "gitcode", "backup", "pancode", "cancel"];
+  var ORDER = ["encode", "gitcode", "backup", "pancode", "keycode", "cancel"];
 
   // ---- render command list ----
   var rail = document.createElement("div");
@@ -1098,7 +1125,7 @@
   }
 
   function isEncodeStarter(key) {
-    return key === "encode" || key === "gitcode" || key === "pancode";
+    return key === "encode" || key === "gitcode" || key === "pancode" || key === "keycode";
   }
 
   function pollJob(jobId) {

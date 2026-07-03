@@ -93,6 +93,46 @@ pub const PNMPEG_CONCAT: &[CliParam] = &[
     CliParam::Path("LOGFILE"),
 ];
 
+pub const PNMPEG_JOIN: &[CliParam] = &[
+    CliParam::Literal("--input"),
+    CliParam::Path("INPUT"),
+    CliParam::Literal("--output"),
+    CliParam::Path("OUTPUT"),
+    CliParam::RepeatedPath("CANDIDATES"),
+    CliParam::Path("MODE"),
+    CliParam::Literal("--negkey"),
+    CliParam::JobId("PNmpegK"),
+    CliParam::Literal("--negotiator"),
+    CliParam::Literal("PNencdeworker"),
+    CliParam::Literal("--negver"),
+    CliParam::NegVer("1"),
+    CliParam::Literal("--cancelfile"),
+    CliParam::Path("CANCELFILE"),
+    CliParam::Literal("--logfile"),
+    CliParam::Path("LOGFILE"),
+];
+
+pub const PNMPEG_JOIN_ASS: &[CliParam] = &[
+    CliParam::Literal("--input"),
+    CliParam::Path("INPUT"),
+    CliParam::Literal("--output"),
+    CliParam::Path("OUTPUT"),
+    CliParam::Literal("--ass"),
+    CliParam::Path("ASS"),
+    CliParam::RepeatedPath("CANDIDATES"),
+    CliParam::Path("MODE"),
+    CliParam::Literal("--negkey"),
+    CliParam::JobId("PNmpegK"),
+    CliParam::Literal("--negotiator"),
+    CliParam::Literal("PNencdeworker"),
+    CliParam::Literal("--negver"),
+    CliParam::NegVer("1"),
+    CliParam::Literal("--cancelfile"),
+    CliParam::Path("CANCELFILE"),
+    CliParam::Literal("--logfile"),
+    CliParam::Path("LOGFILE"),
+];
+
 pub const PNCURL_UPLOAD: &[CliParam] = &[
     CliParam::Literal("--link"),
     CliParam::Path("LINK"),
