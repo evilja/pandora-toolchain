@@ -514,6 +514,7 @@ async fn submit_pancode(State(st): State<AppState>, Extension(auth): Extension<A
     );
     job.probe_job_id = Some(probe_id);
     job.probe_file_index = Some(req.file_index);
+    job.display_link = Some(format!("{} : {}", probe.link, req.file_index));
     if req.keep {
         job.keep = Some(KeepRequest::new(req.keyword));
     } else if req.keyword.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false) {

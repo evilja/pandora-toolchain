@@ -291,15 +291,24 @@ fn substitute(template: &str, args: &[String]) -> String {
 pub fn create_job_embed(job: &Job, payload: &MessagePayload) -> CreateEmbed {
     let lang = &job.lang;
     let status_message = format_payload(payload, lang);
-    let preset_text = match &job.preset {
-        Preset::PseudoLossless(Some(_)) => get_message(PRESET_PSEUDOLOSSLESS_INTRO, lang),
-        Preset::PseudoLossless(None) => get_message(PRESET_PSEUDOLOSSLESS_NOINTRO, lang),
-        Preset::Gpu(Some(_)) => get_message(PRESET_GPU_INTRO, lang),
-        Preset::Gpu(None) => get_message(PRESET_GPU_NOINTRO, lang),
-        Preset::Standard(Some(_)) => get_message(PRESET_STANDARD_INTRO, lang),
-        Preset::Standard(None) => get_message(PRESET_STANDARD_NOINTRO, lang),
-        Preset::Dummy(a) => format!("{} | {:?}", get_message(PRESET_DUMMY, lang), a),
-    };
+    let preset_text = job
+        .keep
+        .as_ref()
+        .and_then(|keep| {
+            match (&keep.parent_keyword, &keep.output_keyword) {
+                (Some(parent), Some(keyword)) => Some(format!("`{}` -> `{}`", parent, keyword)),
+                _ => None,
+            }
+        })
+        .unwrap_or_else(|| match &job.preset {
+            Preset::PseudoLossless(Some(_)) => get_message(PRESET_PSEUDOLOSSLESS_INTRO, lang),
+            Preset::PseudoLossless(None) => get_message(PRESET_PSEUDOLOSSLESS_NOINTRO, lang),
+            Preset::Gpu(Some(_)) => get_message(PRESET_GPU_INTRO, lang),
+            Preset::Gpu(None) => get_message(PRESET_GPU_NOINTRO, lang),
+            Preset::Standard(Some(_)) => get_message(PRESET_STANDARD_INTRO, lang),
+            Preset::Standard(None) => get_message(PRESET_STANDARD_NOINTRO, lang),
+            Preset::Dummy(a) => format!("{} | {:?}", get_message(PRESET_DUMMY, lang), a),
+        });
 
     let color = match job.ready {
         Stage::Queued => Colour::LIGHT_GREY,
@@ -340,7 +349,9 @@ pub fn create_job_embed(job: &Job, payload: &MessagePayload) -> CreateEmbed {
         .field(get_message(FIELD_PRESET, lang), preset_text, false)
         .field(
             get_message(FIELD_TORRENT, lang),
-            format!("{}", job.torrent.display()),
+            job.display_link
+                .clone()
+                .unwrap_or_else(|| format!("{}", job.torrent.display())),
             false,
         );
     if !job.encode_warnings.is_empty() {

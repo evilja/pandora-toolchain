@@ -228,7 +228,9 @@ async fn queue_pancode_job(
     let torrent_src = probe_dir.join("contents").join("fetch.torrent");
     let torrent_dst = job.directory.join("contents").join("fetch.torrent");
     if tokio::fs::copy(&torrent_src, &torrent_dst).await.is_err() {
-        return true;
+        if job.torrent.get().trim().is_empty() {
+            return true;
+        }
     }
 
     queue_download_job(db, queue, shrine, job, job.probe_file_index, false).await
@@ -343,30 +345,11 @@ async fn prepare_keep_job(job: &mut Job, kind: KeepKind) -> bool {
     };
     keep.parent_keyword = Some(prepared.parent_keyword);
     keep.output_keyword = Some(prepared.output_keyword);
-    if kind == KeepKind::Encode && keep.keyword.is_some() {
-        job.preset = preset_from_keep_label(prepared.parent_preset.as_deref(), &job.preset);
+    if kind == KeepKind::Encode {
+        job.preset = Preset::Standard(None);
     }
     job.keep = Some(keep);
     true
-}
-
-fn preset_without_intro(preset: &Preset) -> Preset {
-    match preset {
-        Preset::PseudoLossless(_) => Preset::PseudoLossless(None),
-        Preset::Dummy(_) => Preset::Dummy(None),
-        Preset::Standard(_) => Preset::Standard(None),
-        Preset::Gpu(_) => Preset::Gpu(None),
-    }
-}
-
-fn preset_from_keep_label(label: Option<&str>, fallback: &Preset) -> Preset {
-    match label {
-        Some("pseudolossless") => Preset::PseudoLossless(None),
-        Some("dummy") => Preset::Dummy(None),
-        Some("gpu") => Preset::Gpu(None),
-        Some("standard") => Preset::Standard(None),
-        _ => preset_without_intro(fallback),
-    }
 }
 
 fn select_keycode_intro(first_input: Option<&PathBuf>, candidates: &[String]) -> Option<PathBuf> {
@@ -1307,6 +1290,7 @@ pub struct Job {
     pub job_id: u64,
     pub preset: Preset,
     pub torrent: TorrentType,
+    pub display_link: Option<String>,
     pub attachment: Vec<u8>,
     pub frontend: Frontend,
     pub directory: PathBuf,
@@ -1360,6 +1344,7 @@ impl Job {
             job_id,
             preset,
             torrent,
+            display_link: None,
             attachment,
             frontend: Frontend::discord(context, msg),
             directory: env::current_dir()
@@ -1412,6 +1397,7 @@ impl Job {
             job_id,
             preset,
             torrent,
+            display_link: None,
             attachment,
             frontend: Frontend::Web,
             directory: env::current_dir()

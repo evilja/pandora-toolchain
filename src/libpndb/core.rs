@@ -143,6 +143,10 @@ impl JobDb {
             Preset::Gpu(c)            => (2i64, candidates_to_db(c)),
             Preset::Dummy(c)          => (3i64, candidates_to_db(c)),
         };
+        let link = job
+            .display_link
+            .clone()
+            .unwrap_or_else(|| job.torrent.get());
 
         sqlx::query(
             r#"
@@ -175,7 +179,7 @@ impl JobDb {
         .bind(job.job_type as u16 as i64)
         .bind(preset_type)
         .bind(candidates)
-        .bind(&job.torrent.get())
+        .bind(link)
         .bind(job.directory.to_string_lossy().to_string())
         .bind(stage_to_int(job.ready))
         .bind(job.server_id.map(|id| id as i64))

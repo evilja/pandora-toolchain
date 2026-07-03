@@ -19,9 +19,13 @@ use pandora_toolchain::libpnmal::{fetch_anime, AnimeMeta, AnimeKind};
 use pandora_toolchain::libpnforgejo::{Forgejo, base64_encode, base64_encode_bytes};
 use pandora_toolchain::libpnanisub::{AniSub, DEFAULT_FPS};
 use pandora_toolchain::pnworker::core::pn_worker;
+use pandora_toolchain::pnworker::keep::{
+    configured_keyword_pool, normalize_pool_keyword, KEYWORD_POOL_PATH,
+};
 use pandora_toolchain::libpnenv::standard::{PNASS, ANISUB, API_PORT};
 use pandora_toolchain::libkagami::core::{SubstationAlpha, find_fonts_with_roots};
 use pandora_toolchain::libpnprotocol::core::Protocol;
+use pandora_toolchain::libpndb::core::JobDb;
 use tokio::sync::mpsc::{channel, Sender, Receiver};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -88,6 +92,118 @@ async fn keep_request_from_options(
     })
 }
 
+async fn handle_lspool(ctx: &Context, command: &serenity::all::CommandInteraction) {
+    let pool = configured_keyword_pool();
+    let page_size = 20usize;
+    let total_pages = (pool.len() + page_size - 1) / page_size;
+    let requested = option_i64(command, "page").unwrap_or(1).max(1) as usize;
+    let page = requested.min(total_pages).max(1);
+    let start = (page - 1) * page_size;
+    let lines = pool
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(page_size)
+        .map(|(idx, keyword)| format!("`{}` `{}`", idx + 1, keyword))
+        .collect::<Vec<_>>();
+    let body = if lines.is_empty() {
+        "Keyword pool is empty.".to_string()
+    } else {
+        format!("Keyword pool page {}/{}:\n{}", page, total_pages, lines.join("\n"))
+    };
+    command
+        .create_response(
+            ctx,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(body)
+                    .ephemeral(true),
+            ),
+        )
+        .await
+        .ok();
+}
+
+async fn handle_touchpool(ctx: &Context, command: &serenity::all::CommandInteraction) {
+    let keyword = match option_trimmed(command, "keyword").and_then(|s| normalize_pool_keyword(&s)) {
+        Some(keyword) => keyword,
+        None => {
+            command_error(ctx, command, "Error: `keyword` must be 1-48 chars: letters, numbers, `_`, or `-`.").await;
+            return;
+        }
+    };
+    let mut pool = configured_keyword_pool();
+    if pool.iter().any(|k| k == &keyword) {
+        command_error(ctx, command, format!("`{}` is already in the keyword pool.", keyword)).await;
+        return;
+    }
+    pool.push(keyword.clone());
+    if let Err(e) = write_keyword_pool(&pool) {
+        command_error(ctx, command, format!("Failed to write keyword pool: {}", e)).await;
+        return;
+    }
+    command
+        .create_response(
+            ctx,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(format!("Added keyword pool entry `{}`.", keyword))
+                    .ephemeral(true),
+            ),
+        )
+        .await
+        .ok();
+}
+
+async fn handle_rmpool(ctx: &Context, command: &serenity::all::CommandInteraction) {
+    let keyword = match option_trimmed(command, "keyword").and_then(|s| normalize_pool_keyword(&s)) {
+        Some(keyword) => keyword,
+        None => {
+            command_error(ctx, command, "Error: `keyword` is required.").await;
+            return;
+        }
+    };
+    let mut pool = configured_keyword_pool();
+    let before = pool.len();
+    pool.retain(|k| k != &keyword);
+    if pool.len() == before {
+        command_error(ctx, command, format!("No keyword pool entry `{}` exists.", keyword)).await;
+        return;
+    }
+    if let Err(e) = write_keyword_pool(&pool) {
+        command_error(ctx, command, format!("Failed to write keyword pool: {}", e)).await;
+        return;
+    }
+    command
+        .create_response(
+            ctx,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(format!("Removed keyword pool entry `{}`.", keyword))
+                    .ephemeral(true),
+            ),
+        )
+        .await
+        .ok();
+}
+
+fn write_keyword_pool(pool: &[String]) -> Result<(), String> {
+    if let Some(parent) = Path::new(KEYWORD_POOL_PATH).parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let mut clean = pool
+        .iter()
+        .filter_map(|s| normalize_pool_keyword(s))
+        .collect::<Vec<_>>();
+    clean.sort();
+    clean.dedup();
+    let mut out = clean.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    std::fs::write(KEYWORD_POOL_PATH, out).map_err(|e| e.to_string())
+}
+
 const COMMAND_RANKS_PATH: &str = "DB/config/global/environment/command_ranks.pandora";
 
 const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
@@ -132,6 +248,9 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("touchflavor", 4),
     ("lsflavor", 4),
     ("rmflavor", 4),
+    ("touchpool", 4),
+    ("lspool", 4),
+    ("rmpool", 4),
     ("lsauth", 3),
     ("acixconfirm", 4),
     ("acixtemplate", 4),
@@ -278,6 +397,30 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Upload every MKV from a torrent to Drive.",
             usage: "/backupall torrent:<link>",
             details: "Downloads the torrent or magnet link and backs up all MKV outputs instead of selecting a single file.",
+        },
+        HelpCommand {
+            name: "keycode",
+            summary: "[EXPERIMENTAL] Join kept keyword outputs.",
+            usage: "/keycode keywords:<a,b,c> [concat] [subtitle]",
+            details: "Joins kept encode keywords by concat. Backup keywords require a subtitle and are re-encoded over the joined timeline.",
+        },
+        HelpCommand {
+            name: "lspool",
+            summary: "List keep keyword pool entries.",
+            usage: "/lspool [page]",
+            details: "Shows the keyword pool used when keep jobs need a new keyword. Rank 4 only.",
+        },
+        HelpCommand {
+            name: "touchpool",
+            summary: "Add a keep keyword pool entry.",
+            usage: "/touchpool keyword:<keyword>",
+            details: "Adds one keyword to the configurable keep keyword pool. Rank 4 only.",
+        },
+        HelpCommand {
+            name: "rmpool",
+            summary: "Remove a keep keyword pool entry.",
+            usage: "/rmpool keyword:<keyword>",
+            details: "Removes one keyword from the configurable keep keyword pool. Rank 4 only.",
         },
         HelpCommand {
             name: "gitcode",
@@ -1146,10 +1289,30 @@ impl EventHandler for Handler {
                         Some(keep) => keep,
                         None => return,
                     };
+                    let db = match JobDb::new().await {
+                        Ok(db) => db,
+                        Err(e) => {
+                            command_error(&ctx, &command, format!("Error: failed to open job DB: {}", e)).await;
+                            return;
+                        }
+                    };
+                    let probe_source = match db.get_job(probe_job_id).await {
+                        Ok(Some(row)) => row.link,
+                        Ok(None) => {
+                            command_error(&ctx, &command, "Error: probe job was not found.").await;
+                            return;
+                        }
+                        Err(e) => {
+                            command_error(&ctx, &command, format!("Error: failed to read probe job: {}", e)).await;
+                            return;
+                        }
+                    };
 
                     if let Some(mut job) = handle_interaction(&ctx, &command, String::new(), preset).await {
                         // Override job type and carry the probe linkage via job_id
                         job.job_type = JobType::Pancode;
+                        job.torrent = nyaaise(&probe_source);
+                        job.display_link = Some(format!("{} : {}", probe_source, file_index));
                         job.probe_job_id = Some(probe_job_id);
                         job.probe_file_index = Some(file_index);
                         job.keep = keep;
@@ -1247,6 +1410,15 @@ impl EventHandler for Handler {
                 }
                 "rmflavor" => {
                     handle_rmflavor(&ctx, &command).await;
+                }
+                "lspool" => {
+                    handle_lspool(&ctx, &command).await;
+                }
+                "touchpool" => {
+                    handle_touchpool(&ctx, &command).await;
+                }
+                "rmpool" => {
+                    handle_rmpool(&ctx, &command).await;
                 }
                 "lsauth" => {
                     handle_lsauth(&ctx, &command).await;
@@ -1891,6 +2063,25 @@ impl EventHandler for Handler {
                     CreateCommandOption::new(CommandOptionType::Integer, "index", "Index from /lsflavor")
                         .required(true)
                         .min_int_value(1)
+                ),
+            CreateCommand::new("lspool")
+                .description("List keep keyword pool entries")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "page", "Page number")
+                        .required(false)
+                        .min_int_value(1)
+                ),
+            CreateCommand::new("touchpool")
+                .description("Add a keep keyword pool entry")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "keyword", "Keyword to add")
+                        .required(true)
+                ),
+            CreateCommand::new("rmpool")
+                .description("Remove a keep keyword pool entry")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "keyword", "Keyword to remove")
+                        .required(true)
                 ),
             CreateCommand::new("lsauth")
                 .description("List authorized users in one rank level")

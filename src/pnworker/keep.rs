@@ -8,12 +8,35 @@ use crate::libpnmpeg::probe::{ffprobe_framerate, ffprobe_samplerate};
 use crate::pnworker::core::{KeepKind, KeepRequest, Preset};
 
 const KEEP_TTL_SECS: u64 = 2 * 60 * 60;
-const KEYWORDS: &[&str] = &[
+pub const KEYWORD_POOL_PATH: &str = "DB/config/global/environment/keyword_pool.pandora";
+const DEFAULT_KEYWORDS: &[&str] = &[
     "akira", "aqua", "aster", "ciel", "ember", "fable", "glint", "hikari", "iris",
     "jade", "kumo", "lumen", "mika", "nagi", "onyx", "ruri", "sora", "toki",
     "umi", "yuki", "zero", "altair", "bell", "clover", "dawn", "echo", "frost",
     "halo", "ivory", "lyra", "mira", "noa", "opal", "pulse", "quartz", "rei",
 ];
+
+pub fn normalize_pool_keyword(raw: &str) -> Option<String> {
+    sanitize_keyword(raw)
+}
+
+pub fn configured_keyword_pool() -> Vec<String> {
+    let mut out = match std::fs::read_to_string(KEYWORD_POOL_PATH) {
+        Ok(raw) => {
+            raw.lines()
+                .filter(|line| {
+                    let line = line.trim();
+                    !line.is_empty() && !line.starts_with('#') && !line.starts_with(';')
+                })
+                .filter_map(sanitize_keyword)
+                .collect::<Vec<_>>()
+        }
+        Err(_) => DEFAULT_KEYWORDS.iter().map(|s| (*s).to_string()).collect(),
+    };
+    out.sort();
+    out.dedup();
+    out
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct KeepMeta {
@@ -31,7 +54,6 @@ pub(crate) struct KeepMeta {
 pub(crate) struct PreparedKeep {
     pub output_keyword: String,
     pub parent_keyword: String,
-    pub parent_preset: Option<String>,
 }
 
 pub(crate) struct ResolvedKeywords {
@@ -100,7 +122,6 @@ pub(crate) async fn prepare_keep(
     request: &KeepRequest,
 ) -> Result<PreparedKeep, String> {
     cleanup_expired_keeps().await;
-    let mut parent_preset = None;
     let parent_keyword = match request.keyword.as_deref().and_then(sanitize_keyword) {
         Some(keyword) => {
             let meta = read_meta(server_scope, &keyword)
@@ -109,7 +130,6 @@ pub(crate) async fn prepare_keep(
             if meta.kind != kind {
                 return Err(format!("keyword `{}` is not a {} keyword", keyword, kind.label()));
             }
-            parent_preset = meta.preset.clone();
             meta.parent_keyword
         }
         None => String::new(),
@@ -124,7 +144,6 @@ pub(crate) async fn prepare_keep(
     Ok(PreparedKeep {
         output_keyword,
         parent_keyword,
-        parent_preset,
     })
 }
 
@@ -219,13 +238,14 @@ async fn read_meta(server_scope: &str, keyword: &str) -> Result<Option<KeepMeta>
 }
 
 async fn allocate_keyword(server_scope: &str) -> Result<String, String> {
-    for base in KEYWORDS {
+    let pool = configured_keyword_pool();
+    for base in &pool {
         if read_meta(server_scope, base).await?.is_none() {
-            return Ok((*base).to_string());
+            return Ok(base.clone());
         }
     }
     for idx in 1..=999 {
-        for base in KEYWORDS {
+        for base in &pool {
             let candidate = format!("{}{}", base, idx);
             if read_meta(server_scope, &candidate).await?.is_none() {
                 return Ok(candidate);
