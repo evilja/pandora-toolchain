@@ -18,7 +18,7 @@ use crate::pnworker::keep::{
 };
 use crate::pnworker::lifecycle::{cleanup_job, render};
 use crate::pnworker::messages::{
-    ENCODE_WARNING, MessagePayload, PROBE_TIMEOUT, QUEUE_TOO_LONG, QUEUED, TORRENT_DUPLICATE_WAIT,
+    ENCODE_WARNING, MessagePayload, QUEUE_TOO_LONG, QUEUED, TORRENT_DUPLICATE_WAIT,
     WORKER_ASSIGN,
 };
 use crate::pnworker::presence::{Presence, presence_from_queue};
@@ -699,11 +699,9 @@ async fn do_probe_timeout_things(db: &JobDb, queue: &mut Vec<Job>) {
     for id in timed_out {
         if let Some(pos) = queue.iter().position(|j| j.job_id == id) {
             let directory = queue[pos].directory.clone();
-            let mut frontend = queue[pos].frontend.clone();
+            let frontend = queue[pos].frontend.clone();
 
-            frontend
-                .update(&queue[pos], &MessagePayload::Static(PROBE_TIMEOUT))
-                .await;
+            frontend.delete().await;
 
             cleanup_job(
                 &directory,

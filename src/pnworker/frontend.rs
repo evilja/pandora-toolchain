@@ -36,6 +36,16 @@ impl Frontend {
         }
     }
 
+    pub async fn delete(&self) {
+        match self {
+            Frontend::Discord { ctx, msg } => {
+                let _ = msg.delete(&**ctx).await;
+            }
+            Frontend::Web => {}
+            Frontend::None => {}
+        }
+    }
+
     pub async fn mark_failed(&self) {
         match self {
             Frontend::Discord { ctx, msg } => {
