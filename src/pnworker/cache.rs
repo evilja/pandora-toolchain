@@ -5,6 +5,8 @@ use std::time::SystemTime;
 use tokio::fs::{create_dir_all, remove_dir_all, write};
 
 use crate::libpndb::core::JobDb;
+use crate::libpnp2p::core::{magnet_info_hash, torrent_info_hash};
+use crate::libpnp2p::nyaaise::TorrentType;
 use crate::pnworker::core::{Job, Stage};
 use crate::pnworker::lifecycle::render;
 use crate::pnworker::messages::{MessagePayload, TORRENT_DUPLICATE_WAIT};
@@ -18,11 +20,44 @@ pub(crate) fn past_downloaded(stage: Stage) -> bool {
     )
 }
 
-pub(crate) fn input_cache_key(job: &Job) -> String {
-    format!(
-        "{:x}",
-        md5::compute(format!("{}|{:?}", job.torrent.get(), job.probe_file_index))
-    )
+pub(crate) fn input_source_keys(job: &Job) -> Vec<String> {
+    let mut keys = Vec::new();
+    match &job.torrent {
+        TorrentType::GDrive(link) => keys.push(format!("gdrive:{}", link)),
+        TorrentType::Magnet(magnet) => {
+            if let Some(hash) = magnet_info_hash(magnet) {
+                keys.push(format!("torrent:{}", hash));
+            }
+            keys.push(format!("magnet:{:x}", md5::compute(magnet.as_bytes())));
+        }
+        TorrentType::Link(link) => {
+            let fetch = job.directory.join("contents").join("fetch.torrent");
+            if let Ok(data) = std::fs::read(fetch) {
+                if let Some(hash) = torrent_info_hash(&data) {
+                    keys.push(format!("torrent:{}", hash));
+                }
+            }
+            if !link.trim().is_empty() {
+                keys.push(format!("link:{}", link));
+            }
+        }
+    }
+    if keys.is_empty() {
+        keys.push(format!("job:{}", job.job_id));
+    }
+    keys.dedup();
+    keys
+}
+
+pub(crate) fn input_cache_keys(job: &Job) -> Vec<String> {
+    input_source_keys(job)
+        .into_iter()
+        .map(|source| input_cache_key_for(&source, job.probe_file_index))
+        .collect()
+}
+
+fn input_cache_key_for(source: &str, file_index: Option<u64>) -> String {
+    format!("{:x}", md5::compute(format!("{}|{:?}", source, file_index)))
 }
 
 fn input_cache_dir(key: &str) -> PathBuf {
@@ -80,23 +115,29 @@ pub(crate) async fn cache_encode_input(job: &Job) {
     if !source.exists() {
         return;
     }
-    let key = input_cache_key(job);
-    let dir = input_cache_dir(&key);
-    create_dir_all(&dir).await.ok();
-    if tokio::fs::copy(&source, input_cache_input(&key))
-        .await
-        .is_ok()
-    {
-        touch_input_cache(&key).await;
+    for key in input_cache_keys(job) {
+        let dir = input_cache_dir(&key);
+        create_dir_all(&dir).await.ok();
+        if tokio::fs::copy(&source, input_cache_input(&key))
+            .await
+            .is_ok()
+        {
+            touch_input_cache(&key).await;
+        }
     }
 }
 
 pub(crate) async fn use_cached_input(job: &mut Job) -> bool {
-    let key = input_cache_key(job);
-    let source = input_cache_input(&key);
-    if !source.exists() {
+    let Some((key, source)) = input_cache_keys(job)
+        .into_iter()
+        .map(|key| {
+            let source = input_cache_input(&key);
+            (key, source)
+        })
+        .find(|(_, source)| source.exists())
+    else {
         return false;
-    }
+    };
     let target_dir = job.directory.join("contents").join("torrent");
     let target = target_dir.join("input.mkv");
     create_dir_all(&target_dir).await.unwrap();
@@ -118,13 +159,15 @@ pub(crate) async fn use_cached_input(job: &mut Job) -> bool {
 }
 
 fn queued_duplicate_source(job: &Job, queue: &[Job]) -> Option<PathBuf> {
-    let key = input_cache_key(job);
+    let keys = input_cache_keys(job);
     queue
         .iter()
         .find(|other| {
             other.forward_parent.is_none()
                 && other.job_id != job.job_id
-                && input_cache_key(other) == key
+                && input_cache_keys(other)
+                    .iter()
+                    .any(|key| keys.iter().any(|candidate| candidate == key))
         })
         .map(|other| {
             other
@@ -196,18 +239,33 @@ pub(crate) fn duplicate_source_ready(queue: &[Job], source: &PathBuf) -> bool {
     if !input.exists() {
         return false;
     }
-    for owner in queue {
-        let owner_torrent_dir = owner.directory.join("contents").join("torrent");
-        if source.starts_with(&owner_torrent_dir) || input.starts_with(&owner_torrent_dir) {
-            return matches!(
-                owner.ready,
-                Stage::Encoded
-                    | Stage::Uploading
-                    | Stage::Uploaded
-                    | Stage::Failed
-                    | Stage::Cancelled
-            );
-        }
+    if let Some(owner) = duplicate_source_owner(queue, source) {
+        return matches!(
+            owner.ready,
+            Stage::Encoded | Stage::Uploading | Stage::Uploaded | Stage::Failed | Stage::Cancelled
+        );
     }
     true
+}
+
+pub(crate) fn duplicate_source_owner<'a>(queue: &'a [Job], source: &PathBuf) -> Option<&'a Job> {
+    let input = duplicate_input_path(source);
+    queue.iter().find(|owner| {
+        let owner_torrent_dir = owner.directory.join("contents").join("torrent");
+        source.starts_with(&owner_torrent_dir) || input.starts_with(&owner_torrent_dir)
+    })
+}
+
+pub(crate) fn jobs_share_input(job: &Job, other: &Job) -> bool {
+    let keys = input_cache_keys(job);
+    input_cache_keys(other)
+        .iter()
+        .any(|key| keys.iter().any(|candidate| candidate == key))
+}
+
+pub(crate) fn jobs_share_source(job: &Job, other: &Job) -> bool {
+    let keys = input_source_keys(job);
+    input_source_keys(other)
+        .iter()
+        .any(|key| keys.iter().any(|candidate| candidate == key))
 }
