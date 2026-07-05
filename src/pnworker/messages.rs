@@ -22,6 +22,7 @@ pub const TORRENT_FAIL: &str = "TORRENT_FAIL";
 pub const TORRENT_DUPLICATE_WAIT: &str = "TORRENT_DUPLICATE_WAIT";
 pub const ENCODE_PROG: &str = "ENCODE_PROG";
 pub const ENCODE_CONCAT_PROG: &str = "ENCODE_CONCAT_PROG";
+pub const ENCODE_START: &str = "ENCODE_START";
 pub const ENCODE_WARNING: &str = "ENCODE_WARNING";
 pub const ENCODE_DONE: &str = "ENCODE_DONE";
 pub const ENCODE_FAIL: &str = "ENCODE_FAIL";
@@ -66,6 +67,7 @@ pub const PRESET_STANDARD_INTRO: &str = "PRESET_STANDARD_INTRO";
 pub const PRESET_STANDARD_NOINTRO: &str = "PRESET_STANDARD_NOINTRO";
 pub const PRESET_DUMMY: &str = "PRESET_DUMMY";
 pub const WORKER_ASSIGN: &str = "WORKER_ASSIGN";
+pub const QUEUE_POSITION: &str = "QUEUE_POSITION";
 
 pub const DEFAULT_LANGS: &[&str] = &["en", "tr", "jp"];
 
@@ -113,10 +115,16 @@ static DEFAULT_ENTRIES: &[(&str, &str, usize)] = &[
         "\n\nDosya encode ediliyor.\nAşama: 1/{}\nİşlenen kare: {}/{}\nSaniye başına işlenen kare: {}\nSaniye başına ortalama veri: {}kbit/s",
         5,
     ),
+    ("ENCODE_START", "\n\nDosya encode ediliyor.", 0),
     (
         "ENCODE_CONCAT_PROG",
         "\n\nDosyaya intro ekleniyor.\nAşama: 2/2\nİşlenen kare: {}/{}\nSaniye başına işlenen kare: {}\nSaniye başına ortalama veri: {}kbit/s",
         4,
+    ),
+    (
+        "QUEUE_POSITION",
+        "\n\nİşlem encode sırasında #{} konumunda.\nTahmini bekleme: {}",
+        2,
     ),
     ("ENCODE_DONE", "\n\nÇıktı sunuculara yükleniyor.", 0),
     ("ENCODE_FAIL", "\n\nDosya encode edilemedi.", 0),

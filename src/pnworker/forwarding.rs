@@ -192,3 +192,55 @@ fn encode_source_keys(job: &Job) -> Vec<String> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pnworker::frontend::Frontend;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    fn encode_job(local_folder: Option<&str>) -> Job {
+        Job {
+            author: 1,
+            channel_id: 1,
+            response_id: 1,
+            requested_at: Duration::from_secs(1),
+            job_type: JobType::Encode,
+            job_id: 1,
+            preset: Preset::Standard(None),
+            torrent: TorrentType::Magnet("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567".to_string()),
+            display_link: None,
+            attachment: b"ass".to_vec(),
+            frontend: Frontend::None,
+            directory: PathBuf::from("DB/work/1"),
+            ready: Stage::Queued,
+            probe_files: None,
+            probe_torrent_path: None,
+            probe_job_id: None,
+            probe_file_index: None,
+            lang: "EN".to_string(),
+            server_id: Some(1),
+            acix: None,
+            gdrive_folder_global: None,
+            gdrive_folder_local: local_folder.map(|s| s.to_string()),
+            worker: "que-main".to_string(),
+            duplicate_source: None,
+            forward_parent: None,
+            encode_warnings: Vec::new(),
+            encode_dispatched: false,
+            encode_frame: None,
+            encode_total: None,
+            encode_fps: None,
+            keep: None,
+            keycode: None,
+        }
+    }
+
+    #[test]
+    fn smartcode_and_anonymous_jobs_do_not_share_forward_key() {
+        let smartcode = encode_forward_keys(&encode_job(Some("pntools/anime")));
+        let anonymous = encode_forward_keys(&encode_job(None));
+        assert_ne!(smartcode, anonymous);
+    }
+}

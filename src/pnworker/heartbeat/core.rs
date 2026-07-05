@@ -263,6 +263,12 @@ impl<M: Send + Clone + 'static> TypedShrine<M> {
             self.reboot(worker).await;
         }
     }
+    pub fn reboot_epoch(&self, worker: &Worker) -> u32 {
+        self.layers
+            .get(worker)
+            .map(|layer| layer.reboot_count)
+            .unwrap_or(0)
+    }
     // Reboot a layer and replay the last message if available.
     async fn reboot(&mut self, worker: &Worker) {
         if let Some(layer) = self.layers.get_mut(worker) {

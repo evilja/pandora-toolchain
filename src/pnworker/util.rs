@@ -1,6 +1,7 @@
 use crate::libpnprotocol::core::{Protocol, TypeC};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -19,6 +20,10 @@ pub enum ToolResult {
     Success,
     Fail,
     Cancel,
+}
+
+pub fn job_cancelled(directory: &Path) -> bool {
+    directory.join("CANCEL").try_exists().unwrap_or(false)
 }
 
 pub struct WorkerNamePool {

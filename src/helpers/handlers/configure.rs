@@ -52,6 +52,7 @@ pub async fn handle_configure(
     let existing_gdrive_folder_id = existing_lines.get(7).copied().unwrap_or("").to_string();
     let existing_wrap_style = existing_lines.get(8).copied().unwrap_or("").to_string();
     let existing_local_gdrive = existing_lines.get(9).copied().unwrap_or("true").to_string();
+    let existing_gdrive_anon_folder_id = existing_lines.get(10).copied().unwrap_or("").to_string();
 
     let wrap_style = match option_str(command, "wrapstyle").map(str::trim) {
         Some("dont_touch") | Some("keep") | Some("-") => String::new(),
@@ -88,13 +89,24 @@ pub async fn handle_configure(
         .filter(|s| !s.is_empty())
         .unwrap_or(&existing_gdrive_folder_id)
         .to_string();
-    let gdrive_parts = [&gdrive_client_id, &gdrive_client_secret, &gdrive_refresh_token, &gdrive_folder_id];
-    if gdrive_parts.iter().any(|s| !s.is_empty()) && gdrive_parts.iter().any(|s| s.is_empty()) {
-        command_error(ctx, command, "Error: Google Drive config requires client id, client secret, refresh token, and folder id.").await;
+    let gdrive_anon_folder_id = option_str(command, "gdrive_anon_folder_id")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&existing_gdrive_anon_folder_id)
+        .to_string();
+    let gdrive_auth_parts = [&gdrive_client_id, &gdrive_client_secret, &gdrive_refresh_token];
+    let any_gdrive = gdrive_auth_parts.iter().any(|s| !s.is_empty())
+        || !gdrive_folder_id.is_empty()
+        || !gdrive_anon_folder_id.is_empty();
+    if any_gdrive
+        && (gdrive_auth_parts.iter().any(|s| s.is_empty())
+            || (gdrive_folder_id.is_empty() && gdrive_anon_folder_id.is_empty()))
+    {
+        command_error(ctx, command, "Error: Google Drive config requires client id, client secret, refresh token, and at least one folder id.").await;
         return;
     }
 
-    let body = format!("{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n", language, forgejo, command.channel_id.get(), new_api_key, gdrive_client_id, gdrive_client_secret, gdrive_refresh_token, gdrive_folder_id, wrap_style, existing_local_gdrive);
+    let body = format!("{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n", language, forgejo, command.channel_id.get(), new_api_key, gdrive_client_id, gdrive_client_secret, gdrive_refresh_token, gdrive_folder_id, wrap_style, existing_local_gdrive, gdrive_anon_folder_id);
     let path = dir.join("meta.pandora");
     if let Err(e) = tokio::fs::write(&path, body).await {
         command.create_response(ctx, CreateInteractionResponse::Message(
@@ -107,12 +119,13 @@ pub async fn handle_configure(
 
     let forgejo_display = if forgejo.is_empty() { "(unset)".to_string() } else { format!("`{}`", forgejo) };
     let api_key_display = if new_api_key.is_empty() { "(unset)".to_string() } else { "(set)".to_string() };
-    let gdrive_display = if gdrive_client_id.is_empty() && gdrive_client_secret.is_empty() && gdrive_refresh_token.is_empty() && gdrive_folder_id.is_empty() { "(unset)".to_string() } else { "(set)".to_string() };
+    let gdrive_display = if gdrive_client_id.is_empty() && gdrive_client_secret.is_empty() && gdrive_refresh_token.is_empty() && gdrive_folder_id.is_empty() && gdrive_anon_folder_id.is_empty() { "(unset)".to_string() } else { "(set)".to_string() };
+    let gdrive_anon_display = if gdrive_anon_folder_id.is_empty() { "(unset)".to_string() } else { "(set)".to_string() };
     let wrap_display = if wrap_style.is_empty() { "dont_touch".to_string() } else { wrap_style.clone() };
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
-            .content(format!("Configured server `{}` — language: {}, forgejo: {}, forgejo api_key: {}, gdrive: {}, wrapstyle: {}, announcement channel: <#{}>",
-                server_id, language, forgejo_display, api_key_display, gdrive_display, wrap_display, command.channel_id.get()))
+            .content(format!("Configured server `{}` — language: {}, forgejo: {}, forgejo api_key: {}, gdrive: {}, gdrive_anon_folder_id: {}, wrapstyle: {}, announcement channel: <#{}>",
+                server_id, language, forgejo_display, api_key_display, gdrive_display, gdrive_anon_display, wrap_display, command.channel_id.get()))
             .ephemeral(true)
     )).await.ok();
 }

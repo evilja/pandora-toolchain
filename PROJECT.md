@@ -49,8 +49,10 @@ Worker-specific patterns live in [WORKER.md](WORKER.md).
   - line 4: per-guild Google Drive client id (optional; falls back to global env when all Drive fields are empty)
   - line 5: per-guild Google Drive client secret
   - line 6: per-guild Google Drive refresh token
-  - line 7: per-guild Google Drive folder id
+  - line 7: per-guild Google Drive folder id for smartcode/default local-drive uploads
   - line 8: ASS WrapStyle normalization (`""`/missing/`dont_touch` means preserve existing WrapStyle; `0`/`1`/`2`/`3` forces that value). `/configure` and `/edit` expose this as `wrapstyle`; default is `dont_touch`.
+  - line 9: local Google Drive enable flag (`true`/missing means enabled; `false`/`0`/`disabled`/`off` disables per-guild Drive and uses global env)
+  - line 10: per-guild Google Drive folder id for anonymous/random encode local-drive uploads (optional; falls back to line 7)
 - **`DB/config/<serverid>/<channelid>/meta.toml`** — per-channel anime attachment (written by `/init` and `/attach`; removed by `/detach`, and **auto-removed when the Discord channel/thread is deleted** — `pndc`'s `channel_delete`/`thread_delete` handlers call `auto_detach_channel`, which deletes the meta like `/detach` and leaves the repo untouched):
   - `mal_id`, `kind` (`Movie` | `MultiEpisode`), `name`, `slug`, `episode_count`, `repo_url`
   - `episode_count_at_git` (count of `pad2(n)` episode folders already in the Forgejo repo at attach time)

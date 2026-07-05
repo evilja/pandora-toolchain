@@ -12,7 +12,7 @@ use crate::pnworker::messages::{
 use crate::pnworker::tools::{PNCURL_BACKUP, PNCURL_BACKUP_FOLDER, PNCURL_UPLOAD, PNCURL_UPLOAD_FOLDER};
 use crate::pnworker::util::PathValue;
 use crate::pnworker::util::string_byte_to_mb;
-use crate::pnworker::util::{ToolResult, WorkerNamePool, run_tool};
+use crate::pnworker::util::{ToolResult, WorkerNamePool, job_cancelled, run_tool};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -81,6 +81,16 @@ async fn run_upload_job(
     }
     match msg {
         WorkerMsg::Upload((directory, out_name, release, job_id, server_id, gdrive_folder_global, gdrive_folder_local)) => {
+            if job_cancelled(&directory) {
+                tx.send((
+                    job_id,
+                    MessagePayload::Static(JOB_CANCELLED),
+                    Some(Stage::Cancelled),
+                ))
+                .await
+                .unwrap();
+                return;
+            }
             let output_path = directory
                 .join("work")
                 .join("output.mp4")
@@ -99,7 +109,8 @@ async fn run_upload_job(
             let mut abyss_done = false;
             let expected_hosts = if release { 5 } else { 1 };
 
-            let (drive_env, local_drive) = drive_env_path(&directory, server_id).await;
+            let is_smartcode = gdrive_folder_local.is_some();
+            let (drive_env, local_drive) = drive_env_path(&directory, server_id, is_smartcode).await;
             let drive_folder = drive_folder_path(
                 local_drive,
                 server_id,
@@ -438,6 +449,16 @@ async fn run_upload_job(
             return;
         }
         WorkerMsg::UploadAll((directory, job_id, server_id)) => {
+            if job_cancelled(&directory) {
+                tx.send((
+                    job_id,
+                    MessagePayload::Static(JOB_CANCELLED),
+                    Some(Stage::Cancelled),
+                ))
+                .await
+                .unwrap();
+                return;
+            }
             let mut files = find_mkv_files(&directory.join("contents").join("torrent")).await;
             files.sort_by(|a, b| a.display().to_string().cmp(&b.display().to_string()));
             if files.is_empty() {
@@ -462,7 +483,7 @@ async fn run_upload_job(
             ))
             .ok();
 
-            let (drive_env, local_drive) = drive_env_path(&directory, server_id).await;
+            let (drive_env, local_drive) = drive_env_path(&directory, server_id, false).await;
             let drive_folder = drive_folder_path(local_drive, server_id, None);
             println!(
                 "[uploadworker] upload_all job={} drive_env={} local_drive={} drive_folder={}",
@@ -477,6 +498,16 @@ async fn run_upload_job(
                 PNCURL_BACKUP_FOLDER
             };
             for (idx, file) in files.iter().enumerate() {
+                if job_cancelled(&directory) {
+                    tx.send((
+                        job_id,
+                        MessagePayload::Static(JOB_CANCELLED),
+                        Some(Stage::Cancelled),
+                    ))
+                    .await
+                    .unwrap();
+                    return;
+                }
                 let label = format!("episode {:02}", idx + 1);
                 let out_name = file
                     .file_name()
@@ -656,7 +687,7 @@ async fn run_upload_job(
     }
 }
 
-async fn drive_env_path(directory: &PathBuf, server_id: Option<u64>) -> (String, bool) {
+async fn drive_env_path(directory: &PathBuf, server_id: Option<u64>, is_smartcode: bool) -> (String, bool) {
     let Some(server_id) = server_id else {
         return (ENV_PATH.to_string(), false);
     };
@@ -668,7 +699,7 @@ async fn drive_env_path(directory: &PathBuf, server_id: Option<u64>) -> (String,
         Ok(s) => s,
         Err(_) => return (ENV_PATH.to_string(), false),
     };
-    let Some((client_id, client_secret, refresh_token, parent_id)) = parse_server_drive_meta(&meta) else {
+    let Some((client_id, client_secret, refresh_token, parent_id)) = parse_server_drive_meta(&meta, is_smartcode) else {
         return (ENV_PATH.to_string(), false);
     };
 
@@ -690,12 +721,33 @@ async fn drive_env_path(directory: &PathBuf, server_id: Option<u64>) -> (String,
     }
 }
 
-fn parse_server_drive_meta(meta: &str) -> Option<(String, String, String, String)> {
+fn resolve_local_drive_root(lines: &[&str], is_smartcode: bool) -> Option<String> {
+    let smartcode_root = lines.get(7).copied().unwrap_or("").trim();
+    let anonymous_root = lines.get(10).copied().unwrap_or("").trim();
+    let selected = if is_smartcode {
+        if smartcode_root.is_empty() {
+            anonymous_root
+        } else {
+            smartcode_root
+        }
+    } else if anonymous_root.is_empty() {
+        smartcode_root
+    } else {
+        anonymous_root
+    };
+    if selected.is_empty() {
+        None
+    } else {
+        Some(selected.to_string())
+    }
+}
+
+fn parse_server_drive_meta(meta: &str, is_smartcode: bool) -> Option<(String, String, String, String)> {
     let lines: Vec<&str> = meta.lines().collect();
     let client_id = lines.get(4).copied().unwrap_or("").trim();
     let client_secret = lines.get(5).copied().unwrap_or("").trim();
     let refresh_token = lines.get(6).copied().unwrap_or("").trim();
-    let parent_id = lines.get(7).copied().unwrap_or("").trim();
+    let parent_id = resolve_local_drive_root(&lines, is_smartcode)?;
     let local_drive = lines.get(9).copied().unwrap_or("true").trim();
     if matches!(local_drive, "false" | "0" | "disabled" | "off") {
         return None;
@@ -703,7 +755,6 @@ fn parse_server_drive_meta(meta: &str) -> Option<(String, String, String, String
     if client_id.is_empty()
         || client_secret.is_empty()
         || refresh_token.is_empty()
-        || parent_id.is_empty()
     {
         return None;
     }
@@ -711,7 +762,7 @@ fn parse_server_drive_meta(meta: &str) -> Option<(String, String, String, String
         client_id.to_string(),
         client_secret.to_string(),
         refresh_token.to_string(),
-        parent_id.to_string(),
+        parent_id,
     ))
 }
 
@@ -821,9 +872,16 @@ mod tests {
         )
     }
 
+    fn meta_with_roots(smartcode_root: &str, anonymous_root: &str) -> String {
+        format!(
+            "EN\nhttps://forgejo.example/org\n123\napi\nclient\nsecret\nrefresh\n{}\n\ntrue\n{}\n",
+            smartcode_root, anonymous_root
+        )
+    }
+
     #[test]
     fn parse_server_drive_meta_uses_local_gdrive_line_not_wrapstyle() {
-        let parsed = parse_server_drive_meta(&meta("0", "true"));
+        let parsed = parse_server_drive_meta(&meta("0", "true"), true);
         assert_eq!(
             parsed,
             Some((
@@ -837,7 +895,35 @@ mod tests {
 
     #[test]
     fn parse_server_drive_meta_respects_disabled_local_gdrive() {
-        assert_eq!(parse_server_drive_meta(&meta("1", "false")), None);
+        assert_eq!(parse_server_drive_meta(&meta("1", "false"), true), None);
+    }
+
+    #[test]
+    fn parse_server_drive_meta_splits_smartcode_and_anonymous_roots() {
+        let smart = parse_server_drive_meta(&meta_with_roots("smart-root", "anon-root"), true);
+        let anon = parse_server_drive_meta(&meta_with_roots("smart-root", "anon-root"), false);
+        assert_eq!(smart.unwrap().3, "smart-root");
+        assert_eq!(anon.unwrap().3, "anon-root");
+    }
+
+    #[test]
+    fn parse_server_drive_meta_falls_back_between_roots() {
+        let smart = parse_server_drive_meta(&meta_with_roots("", "anon-root"), true);
+        let anon = parse_server_drive_meta(&meta_with_roots("smart-root", ""), false);
+        assert_eq!(smart.unwrap().3, "anon-root");
+        assert_eq!(anon.unwrap().3, "smart-root");
+    }
+
+    #[test]
+    fn parse_server_drive_meta_rejects_missing_roots() {
+        assert_eq!(parse_server_drive_meta(&meta_with_roots("", ""), true), None);
+        assert_eq!(parse_server_drive_meta(&meta_with_roots("", ""), false), None);
+    }
+
+    #[test]
+    fn parse_server_drive_meta_old_ten_line_meta_uses_smartcode_root_for_anonymous() {
+        let parsed = parse_server_drive_meta(&meta("0", "true"), false);
+        assert_eq!(parsed.unwrap().3, "parent");
     }
 }
 

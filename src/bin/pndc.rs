@@ -479,14 +479,14 @@ fn help_catalog() -> &'static [HelpCommand] {
         HelpCommand {
             name: "configure",
             summary: "Configure server language, Forgejo, and Google Drive credentials.",
-            usage: "/configure language:<EN|TR|JP> [forgejo] [api_key] [gdrive_client_id] [gdrive_client_secret] [gdrive_refresh_token] [gdrive_folder_id] [wrapstyle]",
+            usage: "/configure language:<EN|TR|JP> [forgejo] [api_key] [gdrive_client_id] [gdrive_client_secret] [gdrive_refresh_token] [gdrive_folder_id] [gdrive_anon_folder_id] [wrapstyle]",
             details: "Writes server metadata. Run this before /init if the server needs a Forgejo org/base or per-guild Google Drive upload credentials configured. wrapstyle controls ASS WrapStyle normalization; default dont_touch leaves existing subtitles unchanged.",
         },
         HelpCommand {
             name: "edit",
             summary: "Edit individual server metadata fields, leaving the rest untouched.",
-            usage: "/edit [language] [forgejo] [api_key] [gdrive_client_id] [gdrive_client_secret] [gdrive_refresh_token] [gdrive_folder_id] [local_gdrive] [wrapstyle] [announcement_channel]",
-            details: "Like /configure but every field is optional — omitted fields keep their current value. Pass `-` to clear a text field. Set local_gdrive:false to keep stored server Drive credentials but upload through global Drive. wrapstyle can be dont_touch or 0-3. Set announcement_channel:true to point announcements at the current channel. Requires the server to already be configured.",
+            usage: "/edit [language] [forgejo] [api_key] [gdrive_client_id] [gdrive_client_secret] [gdrive_refresh_token] [gdrive_folder_id] [gdrive_anon_folder_id] [local_gdrive] [wrapstyle] [announcement_channel]",
+            details: "Like /configure but every field is optional — omitted fields keep their current value. Pass `-` to clear a text field. Set local_gdrive:false to keep stored server Drive credentials but upload through global Drive. gdrive_folder_id is the smartcode/default root; gdrive_anon_folder_id is the random encode root. wrapstyle can be dont_touch or 0-3. Set announcement_channel:true to point announcements at the current channel. Requires the server to already be configured.",
         },
         HelpCommand {
             name: "touchapi",
@@ -1892,6 +1892,10 @@ impl EventHandler for Handler {
                         .required(false)
                 )
                 .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "gdrive_anon_folder_id", "Google Drive random encode root folder id. Omit to keep the existing one.")
+                        .required(false)
+                )
+                .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "wrapstyle", "ASS WrapStyle normalization. Default dont_touch.")
                         .required(false)
                         .add_string_choice("dont_touch", "dont_touch")
@@ -1931,6 +1935,10 @@ impl EventHandler for Handler {
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "gdrive_folder_id", "Google Drive upload folder id. Omit to keep, `-` to unset.")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "gdrive_anon_folder_id", "Google Drive random encode root folder id. Omit to keep, `-` to unset.")
                         .required(false)
                 )
                 .add_option(

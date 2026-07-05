@@ -11,6 +11,7 @@ use crate::pnworker::forwarding::{
     encode_forward_keys, forwarded_worker_for, is_forwardable_encode, mark_forwarded,
     persist_forwarded_wait, queued_encode_parent, sync_forwarded_jobs, sync_forwarded_state,
 };
+use crate::pnworker::estimate::QueueEstimator;
 use crate::pnworker::frontend::Frontend;
 use crate::pnworker::heartbeat::core::{TypedShrine, Worker};
 use crate::pnworker::keep::{
@@ -20,7 +21,8 @@ use crate::pnworker::keep::{
 };
 use crate::pnworker::lifecycle::{cleanup_job, render};
 use crate::pnworker::messages::{
-    ENCODE_WARNING, MessagePayload, QUEUE_TOO_LONG, QUEUED, TORRENT_DUPLICATE_WAIT, WORKER_ASSIGN,
+    ENCODE_CONCAT_PROG, ENCODE_PROG, ENCODE_WARNING, MessagePayload, QUEUE_TOO_LONG,
+    QUEUED, TORRENT_DUPLICATE_WAIT, WORKER_ASSIGN,
 };
 use crate::pnworker::presence::{Presence, presence_from_queue};
 use crate::pnworker::progress::{drive_link_from_payload, persist_side_effects};
@@ -29,6 +31,7 @@ use crate::pnworker::workers::downloadworker::*;
 use crate::pnworker::workers::encodeworker::*;
 use crate::pnworker::workers::probeworker::*;
 use crate::pnworker::workers::uploadworker::*;
+use crate::pnworker::util::job_cancelled;
 use serenity::all::{Context, Message};
 use std::collections::HashMap;
 use std::env;
@@ -68,24 +71,32 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
     shrine.layer(Worker::Encode, pn_encdeworker, 5, 50);
     shrine.layer(Worker::Upload, pn_uloadworker, 5, 50);
     shrine.layer(Worker::Probe, pn_probeworker, 5, 50);
+    let mut queue_estimator = QueueEstimator::new();
+    let mut encode_reboot_epoch = shrine.reboot_epoch(&Worker::Encode);
 
     loop {
         sleep(Duration::from_millis(200)).await;
 
         shrine.drain_heartbeats().await;
+        check_encode_reboot_epoch(&shrine, &mut encode_reboot_epoch, &mut queue);
         cleanup_expired_input_cache().await;
         cleanup_expired_keeps().await;
 
         if do_queue_things(&mut rx, &db, &mut queue, &mut shrine).await {
+            check_encode_reboot_epoch(&shrine, &mut encode_reboot_epoch, &mut queue);
             continue;
         }
         do_probe_timeout_things(&db, &mut queue).await;
         if do_worker_message_things(&db, &mut queue, &mut shrine).await {
+            check_encode_reboot_epoch(&shrine, &mut encode_reboot_epoch, &mut queue);
             continue;
         }
         do_duplicate_waiting_things(&db, &mut queue).await;
         do_queued_download_waiting_things(&db, &mut queue, &mut shrine).await;
+        check_encode_reboot_epoch(&shrine, &mut encode_reboot_epoch, &mut queue);
         do_job_progression_things(&db, &mut queue, &mut shrine).await;
+        check_encode_reboot_epoch(&shrine, &mut encode_reboot_epoch, &mut queue);
+        queue_estimator.tick(&db, &mut queue).await;
     }
 }
 
@@ -117,6 +128,28 @@ async fn do_queue_things(
         }
     }
     false
+}
+
+fn reset_encode_dispatches_after_reboot(queue: &mut [Job]) {
+    for job in queue {
+        if job.ready == Stage::Downloaded
+            || (job.job_type == JobType::Keycode && job.ready == Stage::Queued)
+        {
+            job.encode_dispatched = false;
+        }
+    }
+}
+
+fn check_encode_reboot_epoch(
+    shrine: &TypedShrine<WorkerMsg>,
+    encode_reboot_epoch: &mut u32,
+    queue: &mut [Job],
+) {
+    let current_encode_reboot_epoch = shrine.reboot_epoch(&Worker::Encode);
+    if current_encode_reboot_epoch != *encode_reboot_epoch {
+        reset_encode_dispatches_after_reboot(queue);
+        *encode_reboot_epoch = current_encode_reboot_epoch;
+    }
 }
 
 async fn queue_new_job(
@@ -395,8 +428,7 @@ async fn dispatch_keycode_ready(
     {
         return KeycodeDispatch::Failed;
     }
-    job.ready = Stage::Encoding;
-    db.update_stage(job.job_id, Stage::Encoding).await.ok();
+    job.encode_dispatched = true;
     KeycodeDispatch::Dispatched
 }
 
@@ -685,30 +717,11 @@ async fn handle_half_job(
                 .iter()
                 .position(|i| halfjob.job_id == i.job_id && halfjob.author == i.author)
             {
-                if queue[pos].forward_parent.is_some() {
-                    queue[pos].ready = Stage::Cancelled;
-                    db.update_stage(queue[pos].job_id, Stage::Cancelled)
-                        .await
-                        .ok();
-                    render(
-                        &mut queue[pos],
-                        MessagePayload::Static(crate::pnworker::messages::JOB_CANCELLED),
-                    )
-                    .await;
-                    let directory = queue[pos].directory.clone();
-                    db.archive_job(queue[pos].job_id).await.ok();
-                    cleanup_job(
-                        &directory,
-                        &PathBuf::from("DB")
-                            .join("saved_data")
-                            .join(queue[pos].job_id.to_string()),
-                    )
-                    .await;
-                    queue.remove(pos);
-                } else {
-                    File::create(queue[pos].directory.join("CANCEL"))
-                        .await
-                        .unwrap();
+                File::create(queue[pos].directory.join("CANCEL"))
+                    .await
+                    .unwrap();
+                if cancel_disposition(&queue[pos]) == CancelDisposition::Immediate {
+                    finalize_cancelled_job(db, queue, pos).await;
                 }
             }
         }
@@ -774,6 +787,65 @@ async fn handle_half_job(
         }
         _ => {}
     }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum CancelDisposition {
+    Immediate,
+    CancelFile,
+}
+
+fn cancel_disposition(job: &Job) -> CancelDisposition {
+    if job.forward_parent.is_some() {
+        return CancelDisposition::Immediate;
+    }
+    if job.encode_dispatched {
+        return CancelDisposition::CancelFile;
+    }
+    if job.duplicate_source.is_some() || matches!(job.worker.as_str(), "dwl-pending" | "key-wait") {
+        return CancelDisposition::Immediate;
+    }
+    match job.ready {
+        Stage::Queued | Stage::Downloaded | Stage::Probed | Stage::Encoded => {
+            CancelDisposition::Immediate
+        }
+        Stage::Probing | Stage::Downloading | Stage::Encoding | Stage::Uploading => {
+            CancelDisposition::CancelFile
+        }
+        Stage::Uploaded | Stage::Failed | Stage::Declined | Stage::Cancelled => {
+            CancelDisposition::Immediate
+        }
+    }
+}
+
+async fn finalize_cancelled_job(db: &JobDb, queue: &mut Vec<Job>, pos: usize) {
+    let job_id = queue[pos].job_id;
+    let previous_ready = queue[pos].ready;
+    let payload = MessagePayload::Static(crate::pnworker::messages::JOB_CANCELLED);
+    queue[pos].ready = Stage::Cancelled;
+    db.update_stage(job_id, Stage::Cancelled).await.ok();
+    if past_downloaded(previous_ready) {
+        cache_encode_input(&queue[pos]).await;
+    }
+    if let Some(keep) = &queue[pos].keep {
+        mark_output_failed(&scope(queue[pos].server_id), keep).await.ok();
+    }
+    render(&mut queue[pos], payload.clone()).await;
+    let parent_worker = queue[pos].worker.clone();
+    sync_forwarded_jobs(db, queue, job_id, Some(Stage::Cancelled), &payload, &parent_worker).await;
+    let Some(pos) = queue.iter().position(|job| job.job_id == job_id) else {
+        return;
+    };
+    let directory = queue[pos].directory.clone();
+    let frontend = queue[pos].frontend.clone();
+    db.archive_job(job_id).await.ok();
+    cleanup_job(
+        &directory,
+        &PathBuf::from("DB").join("saved_data").join(job_id.to_string()),
+    )
+    .await;
+    queue.remove(pos);
+    frontend.set_presence(presence_from_queue(queue)).await;
 }
 
 async fn do_probe_timeout_things(db: &JobDb, queue: &mut Vec<Job>) {
@@ -845,6 +917,16 @@ async fn do_worker_message_things(
                 }
                 return true;
             }
+            if *id == ENCODE_PROG {
+                queue[pos].encode_frame = args.get(1).and_then(|s| s.parse().ok());
+                queue[pos].encode_total = args.get(2).and_then(|s| s.parse().ok());
+                queue[pos].encode_fps = args.get(3).and_then(|s| s.parse().ok());
+            }
+            if *id == ENCODE_CONCAT_PROG {
+                queue[pos].encode_frame = args.get(0).and_then(|s| s.parse().ok());
+                queue[pos].encode_total = args.get(1).and_then(|s| s.parse().ok());
+                queue[pos].encode_fps = args.get(2).and_then(|s| s.parse().ok());
+            }
             if *id == TORRENT_DUPLICATE_WAIT {
                 if let Some(path) = args.get(0) {
                     queue[pos].duplicate_source = Some(duplicate_path_to_container(path));
@@ -862,6 +944,7 @@ async fn do_worker_message_things(
         let payload = commdata.1.clone();
         let stage = commdata.2;
         let mut finished_job: Option<(u64, Option<u64>, PathBuf)> = None;
+        let queue_total = queue.len();
 
         {
             let i = &mut queue[pos];
@@ -869,6 +952,16 @@ async fn do_worker_message_things(
                 let previous_ready = i.ready;
                 i.ready = a;
                 db.update_stage(i.job_id, i.ready).await.unwrap();
+                if a == Stage::Encoding {
+                    i.frontend
+                        .set_presence(Presence::Encoding {
+                            idx: pos,
+                            total: queue_total,
+                        })
+                        .await;
+                } else {
+                    i.encode_dispatched = false;
+                }
                 if a == Stage::Encoded || (a == Stage::Cancelled && past_downloaded(previous_ready))
                 {
                     cache_encode_input(i).await;
@@ -1064,7 +1157,11 @@ async fn do_job_progression_things(
     let mut active_encode_sources: HashMap<String, PathBuf> = HashMap::new();
     for j in queue
         .iter()
-        .filter(|j| j.forward_parent.is_none() && j.ready == Stage::Encoding)
+        .filter(|j| {
+            j.forward_parent.is_none()
+                && (j.ready == Stage::Encoding
+                    || (j.ready == Stage::Downloaded && j.encode_dispatched))
+        })
     {
         for key in input_cache_keys(j) {
             active_encode_sources
@@ -1076,13 +1173,15 @@ async fn do_job_progression_things(
     for j in queue.iter().filter(|j| {
         j.forward_parent.is_none()
             && is_forwardable_encode(j)
-            && matches!(
-                j.ready,
-                Stage::Queued
-                    | Stage::Downloading
-                    | Stage::Encoding
-                    | Stage::Encoded
-                    | Stage::Uploading
+            && (matches!(
+                    j.ready,
+                    Stage::Queued
+                        | Stage::Downloading
+                        | Stage::Encoding
+                        | Stage::Encoded
+                        | Stage::Uploading
+                )
+                || (j.ready == Stage::Downloaded && j.encode_dispatched)
             )
     }) {
         for key in encode_forward_keys(j) {
@@ -1100,13 +1199,10 @@ async fn do_job_progression_things(
         if job.ready == Stage::Probed {
             continue;
         }
-        if job.job_type == JobType::Keycode && job.ready == Stage::Queued {
+        if job.job_type == JobType::Keycode && job.ready == Stage::Queued && !job.encode_dispatched {
             match try_dispatch_keycode(db, shrine, job).await {
                 KeycodeDispatch::Waiting => continue,
                 KeycodeDispatch::Dispatched => {
-                    job.frontend
-                        .set_presence(Presence::Encoding { idx, total: qlen })
-                        .await;
                     continue;
                 }
                 KeycodeDispatch::Failed => {
@@ -1184,6 +1280,12 @@ async fn do_job_progression_things(
                     .set_presence(Presence::Uploading { idx, total: qlen })
                     .await;
             } else {
+                if job.encode_dispatched {
+                    continue;
+                }
+                if job_cancelled(&job.directory) {
+                    continue;
+                }
                 if let Some((parent_id, parent_stage, forwarded_worker)) = encode_forward_keys(job)
                     .iter()
                     .find_map(|key| active_encode_parents.get(key).cloned())
@@ -1246,7 +1348,7 @@ async fn do_job_progression_things(
                     dead.push(job.job_id);
                     continue;
                 }
-                job.ready = Stage::Encoding;
+                job.encode_dispatched = true;
                 for key in cache_keys {
                     active_encode_sources
                         .entry(key)
@@ -1255,19 +1357,10 @@ async fn do_job_progression_things(
                 for key in encode_forward_keys(job) {
                     active_encode_parents.entry(key).or_insert((
                         job.job_id,
-                        Stage::Encoding,
+                        Stage::Downloaded,
                         forwarded_worker_for(&job.worker),
                     ));
                 }
-                db.update_stage(job.job_id, Stage::Encoding).await.unwrap();
-                forwarded_state_updates.push((
-                    job.job_id,
-                    Stage::Encoding,
-                    forwarded_worker_for(&job.worker),
-                ));
-                job.frontend
-                    .set_presence(Presence::Encoding { idx, total: qlen })
-                    .await;
             }
         } else if job.ready == Stage::Encoded {
             if job.keep.is_some() {
@@ -1629,6 +1722,10 @@ pub struct Job {
     pub duplicate_source: Option<PathBuf>,
     pub forward_parent: Option<u64>,
     pub encode_warnings: Vec<String>,
+    pub encode_dispatched: bool,
+    pub encode_frame: Option<u64>,
+    pub encode_total: Option<u64>,
+    pub encode_fps: Option<f64>,
     pub keep: Option<KeepRequest>,
     pub keycode: Option<KeycodeRequest>,
 }
@@ -1688,6 +1785,10 @@ impl Job {
             duplicate_source: None,
             forward_parent: None,
             encode_warnings: Vec::new(),
+            encode_dispatched: false,
+            encode_frame: None,
+            encode_total: None,
+            encode_fps: None,
             keep: None,
             keycode: None,
         }
@@ -1741,6 +1842,10 @@ impl Job {
             duplicate_source: None,
             forward_parent: None,
             encode_warnings: Vec::new(),
+            encode_dispatched: false,
+            encode_frame: None,
+            encode_total: None,
+            encode_fps: None,
             keep: None,
             keycode: None,
         }

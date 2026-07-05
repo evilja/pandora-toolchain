@@ -11,7 +11,7 @@ use crate::pnworker::messages::{
 use crate::pnworker::tools::{PNCURL_GSCRAPE, PNCURL_TORRENT, PNP2P_SELECT, PNP2P_TORRENT};
 use crate::pnworker::util::PathValue;
 use crate::pnworker::util::string_byte_to_mb;
-use crate::pnworker::util::{ToolResult, WorkerNamePool, run_tool};
+use crate::pnworker::util::{ToolResult, WorkerNamePool, job_cancelled, run_tool};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use tokio::fs::{create_dir_all, rename};
@@ -74,6 +74,16 @@ async fn run_download_job(
         None,
     ))
     .ok();
+    if job_cancelled(&directory) {
+        tx.send((
+            job_id,
+            MessagePayload::Static(JOB_CANCELLED),
+            Some(Stage::Cancelled),
+        ))
+        .await
+        .unwrap();
+        return;
+    }
 
     let arg_opcode: String;
     match torrent {
@@ -92,6 +102,16 @@ async fn run_download_job(
             }
             let target_path = torrent_dir.join("input.mkv");
 
+            if job_cancelled(&directory) {
+                tx.send((
+                    job_id,
+                    MessagePayload::Static(JOB_CANCELLED),
+                    Some(Stage::Cancelled),
+                ))
+                .await
+                .unwrap();
+                return;
+            }
             let result = run_tool(
                 &pncurl_path,
                 PNCURL_GSCRAPE,
@@ -185,6 +205,16 @@ async fn run_download_job(
         TorrentType::Link(ref link) => {
             let fetch_torrent = directory.join("contents").join("fetch.torrent");
             if !link.is_empty() || !fetch_torrent.exists() {
+                if job_cancelled(&directory) {
+                    tx.send((
+                        job_id,
+                        MessagePayload::Static(JOB_CANCELLED),
+                        Some(Stage::Cancelled),
+                    ))
+                    .await
+                    .unwrap();
+                    return;
+                }
                 let result = run_tool(
                     &pncurl_path,
                     PNCURL_TORRENT,
@@ -251,6 +281,16 @@ async fn run_download_job(
     let mut targeted_file: Option<String> = None;
     let mut duplicate_save_path: Option<String> = None;
 
+    if job_cancelled(&directory) {
+        tx.send((
+            job_id,
+            MessagePayload::Static(JOB_CANCELLED),
+            Some(Stage::Cancelled),
+        ))
+        .await
+        .unwrap();
+        return;
+    }
     let result = match file_index {
         None => {
             run_tool(

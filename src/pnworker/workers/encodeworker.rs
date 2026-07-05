@@ -5,8 +5,8 @@ use tokio::time::sleep;
 use crate::libpnenv::core::get_pandora_env;
 use crate::libpnenv::standard::PNMPEG;
 use crate::libpnprotocol::core::Protocol;
-use crate::pnworker::messages::{ENCODE_CONCAT_PROG, ENCODE_DONE, ENCODE_FAIL, ENCODE_PROG, ENCODE_WARNING, JOB_CANCELLED, MessagePayload};
-use crate::pnworker::util::{ToolResult, run_tool};
+use crate::pnworker::messages::{ENCODE_CONCAT_PROG, ENCODE_DONE, ENCODE_FAIL, ENCODE_PROG, ENCODE_START, ENCODE_WARNING, JOB_CANCELLED, MessagePayload};
+use crate::pnworker::util::{ToolResult, job_cancelled, run_tool};
 use crate::pnworker::tools::{PNMPEG_CONCAT, PNMPEG_ENCODE, PNMPEG_JOIN, PNMPEG_JOIN_ASS};
 use tokio::fs::rename;
 use std::path::PathBuf;
@@ -57,6 +57,11 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 if kind == KeepKind::Backup {
                     params.insert("ASS", PathValue::from(path_to_ffmpeg(directory.join("contents").join("subtitle.ass").as_path())));
                 }
+                if job_cancelled(&directory) {
+                    tx.send((job_id, MessagePayload::Static(JOB_CANCELLED), Some(Stage::Cancelled))).await.unwrap();
+                    continue 'll;
+                }
+                tx.try_send((job_id, MessagePayload::Static(ENCODE_START), Some(Stage::Encoding))).ok();
                 let result = run_tool(
                     &pnmpeg_path,
                     spec,
@@ -93,6 +98,11 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             );
             tokio::fs::create_dir_all(&fontconfig_dir).await.ok();
 
+            if job_cancelled(&directory) {
+                tx.send((job_id, MessagePayload::Static(JOB_CANCELLED), Some(Stage::Cancelled))).await.unwrap();
+                continue 'll;
+            }
+            tx.try_send((job_id, MessagePayload::Static(ENCODE_START), Some(Stage::Encoding))).ok();
             let result = run_tool(
                 &pnmpeg_path,
                 PNMPEG_ENCODE,
@@ -156,6 +166,10 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             }
 
             if let Some(ref candidates) = concat_value {
+                if job_cancelled(&directory) {
+                    tx.send((job_id, MessagePayload::Static(JOB_CANCELLED), Some(Stage::Cancelled))).await.unwrap();
+                    continue 'll;
+                }
                 let result = run_tool(
                     &pnmpeg_path,
                     PNMPEG_CONCAT,

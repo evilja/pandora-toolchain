@@ -5,11 +5,11 @@ use crate::libpnprotocol::core::Protocol;
 use crate::pnworker::core::Stage;
 use crate::pnworker::core::{CommData, WorkerMsg};
 use crate::pnworker::messages::{
-    CTORRENT_DONE, CTORRENT_FAIL, MessagePayload, PROBE_FAIL, PROBE_ROW,
+    CTORRENT_DONE, CTORRENT_FAIL, JOB_CANCELLED, MessagePayload, PROBE_FAIL, PROBE_ROW,
 };
 use crate::pnworker::tools::{PNCURL_TORRENT, PNP2P_PROBE};
 use crate::pnworker::util::PathValue;
-use crate::pnworker::util::{ToolResult, run_tool, string_byte_to_mb};
+use crate::pnworker::util::{ToolResult, job_cancelled, run_tool, string_byte_to_mb};
 use regex::Regex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -32,6 +32,16 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
     let pnp2p_path = env.get(PNP2P).cloned().unwrap_or_default();
     'll: loop {
         if let Ok(WorkerMsg::Probe((directory, torrent, job_id))) = rx.try_recv() {
+            if job_cancelled(&directory) {
+                tx.send((
+                    job_id,
+                    MessagePayload::Static(JOB_CANCELLED),
+                    Some(Stage::Cancelled),
+                ))
+                .await
+                .unwrap();
+                continue 'll;
+            }
             // Phase 1: if Link, fetch .torrent file first (same as downloadworker)
             let arg_opcode: String;
             match torrent {
@@ -46,6 +56,16 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     continue 'll;
                 }
                 TorrentType::Link(ref link) => {
+                    if job_cancelled(&directory) {
+                        tx.send((
+                            job_id,
+                            MessagePayload::Static(JOB_CANCELLED),
+                            Some(Stage::Cancelled),
+                        ))
+                        .await
+                        .unwrap();
+                        continue 'll;
+                    }
                     let result = run_tool(
                         &pncurl_path,
                         PNCURL_TORRENT,
@@ -121,6 +141,16 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             }
 
             let mut probe_rows: Vec<ProbeFile> = vec![];
+            if job_cancelled(&directory) {
+                tx.send((
+                    job_id,
+                    MessagePayload::Static(JOB_CANCELLED),
+                    Some(Stage::Cancelled),
+                ))
+                .await
+                .unwrap();
+                continue 'll;
+            }
             let result = run_tool(
                 &pnp2p_path,
                 PNP2P_PROBE,
