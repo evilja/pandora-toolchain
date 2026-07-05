@@ -303,7 +303,7 @@ async fn run_upload_job(
                                     dood_done = true;
                                 }
                                 "4" => {
-                                    lulu_link = url;
+                                    lulu_link = normalize_lulu_link(&url);
                                     lulu_done = true;
                                 }
                                 "5" => {
@@ -861,6 +861,19 @@ fn upload_progress_text(host: &str, sent: &str, total: &str, extensions: &str) -
     }
 }
 
+fn normalize_lulu_link(link: &str) -> String {
+    let trimmed = link.trim();
+    for prefix in ["https://lulustream.com/", "http://lulustream.com/", "https://luluvdo.com/", "http://luluvdo.com/"] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            let code = rest.strip_prefix("e/").unwrap_or(rest).trim_matches('/');
+            if !code.is_empty() && !code.contains('/') {
+                return format!("https://luluvdo.com/e/{}", code);
+            }
+        }
+    }
+    trimmed.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -924,6 +937,18 @@ mod tests {
     fn parse_server_drive_meta_old_ten_line_meta_uses_smartcode_root_for_anonymous() {
         let parsed = parse_server_drive_meta(&meta("0", "true"), false);
         assert_eq!(parsed.unwrap().3, "parent");
+    }
+
+    #[test]
+    fn normalize_lulu_link_converts_to_embed_url() {
+        assert_eq!(
+            normalize_lulu_link("https://lulustream.com/yzip3nvuot20"),
+            "https://luluvdo.com/e/yzip3nvuot20",
+        );
+        assert_eq!(
+            normalize_lulu_link("https://luluvdo.com/e/yzip3nvuot20"),
+            "https://luluvdo.com/e/yzip3nvuot20",
+        );
     }
 }
 

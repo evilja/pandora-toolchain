@@ -529,7 +529,7 @@ impl Req {
                         .and_then(|j| {
                             j["files"][0]["filecode"]
                                 .as_str()
-                                .map(|s| format!("https://lulustream.com/{s}"))
+                                .map(|s| format!("https://luluvdo.com/e/{s}"))
                         })
                         .unwrap_or_default()
                 },

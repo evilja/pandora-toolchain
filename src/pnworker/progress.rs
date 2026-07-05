@@ -104,11 +104,24 @@ pub(crate) async fn persist_side_effects(
 
 fn upload_links_json(args: &[String], encode_warnings: &[String]) -> serde_json::Value {
     let mut v = serde_json::json!({
-        "drive": args.get(0), "doodstream": args.get(1), "lulustream": args.get(2),
+        "drive": args.get(0), "doodstream": args.get(1), "lulustream": args.get(2).map(|s| normalize_lulu_link(s)),
         "voe": args.get(3), "abyss": args.get(4),
     });
     add_warnings(&mut v, encode_warnings);
     v
+}
+
+fn normalize_lulu_link(link: &str) -> String {
+    let trimmed = link.trim();
+    for prefix in ["https://lulustream.com/", "http://lulustream.com/", "https://luluvdo.com/", "http://luluvdo.com/"] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            let code = rest.strip_prefix("e/").unwrap_or(rest).trim_matches('/');
+            if !code.is_empty() && !code.contains('/') {
+                return format!("https://luluvdo.com/e/{}", code);
+            }
+        }
+    }
+    trimmed.to_string()
 }
 
 fn add_warnings(v: &mut serde_json::Value, encode_warnings: &[String]) {
@@ -205,4 +218,21 @@ fn backupall_percent(rows: &str) -> u64 {
         }
     }
     if n > 0.0 { (sum / n).round() as u64 } else { 0 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_lulu_link_converts_file_codes_to_embed_urls() {
+        assert_eq!(
+            normalize_lulu_link("https://lulustream.com/yzip3nvuot20"),
+            "https://luluvdo.com/e/yzip3nvuot20",
+        );
+        assert_eq!(
+            normalize_lulu_link("https://luluvdo.com/e/yzip3nvuot20"),
+            "https://luluvdo.com/e/yzip3nvuot20",
+        );
+    }
 }
