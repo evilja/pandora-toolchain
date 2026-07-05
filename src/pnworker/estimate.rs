@@ -37,7 +37,7 @@ impl QueueEstimator {
         self.start_probe(queue);
         let waiting: Vec<u64> = queue
             .iter()
-            .filter(|job| estimate_waiting_job(job))
+            .filter(|job| render_queue_estimate_for_job(job))
             .map(|job| job.job_id)
             .collect();
         for job_id in waiting {
@@ -140,6 +140,17 @@ fn estimate_waiting_job(job: &Job) -> bool {
         && !job.encode_dispatched
 }
 
+fn duplicate_cache_waiting_job(job: &Job) -> bool {
+    job.forward_parent.is_none()
+        && matches!(job.job_type, JobType::Encode | JobType::Pancode)
+        && job.ready == Stage::Downloading
+        && job.duplicate_source.is_some()
+}
+
+fn render_queue_estimate_for_job(job: &Job) -> bool {
+    estimate_waiting_job(job) || duplicate_cache_waiting_job(job)
+}
+
 fn active_encode_job(job: &Job) -> bool {
     job.forward_parent.is_none()
         && matches!(job.job_type, JobType::Encode | JobType::Pancode | JobType::Keycode)
@@ -150,7 +161,7 @@ pub(crate) fn queue_position(pos: usize, queue: &[Job]) -> usize {
     1 + queue
         .iter()
         .take(pos)
-        .filter(|job| estimate_waiting_job(job) || active_encode_job(job))
+        .filter(|job| render_queue_estimate_for_job(job) || active_encode_job(job))
         .count()
 }
 
@@ -160,7 +171,7 @@ fn estimate_wait_secs(pos: usize, queue: &[Job], estimator: &QueueEstimator) -> 
     for job in queue
         .iter()
         .take(pos)
-        .filter(|job| estimate_waiting_job(job) || active_encode_job(job))
+        .filter(|job| render_queue_estimate_for_job(job) || active_encode_job(job))
     {
         let frames = estimator.frames_for_job(job).unwrap_or(None);
         let secs = if active_encode_job(job) {
