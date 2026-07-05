@@ -113,6 +113,7 @@ async fn run_upload_job(
             let (drive_env, local_drive) = drive_env_path(&directory, server_id, is_smartcode).await;
             let drive_folder = drive_folder_path(
                 local_drive,
+                is_smartcode,
                 server_id,
                 if local_drive {
                     gdrive_folder_local
@@ -484,7 +485,7 @@ async fn run_upload_job(
             .ok();
 
             let (drive_env, local_drive) = drive_env_path(&directory, server_id, false).await;
-            let drive_folder = drive_folder_path(local_drive, server_id, None);
+            let drive_folder = drive_folder_path(local_drive, false, server_id, None);
             println!(
                 "[uploadworker] upload_all job={} drive_env={} local_drive={} drive_folder={}",
                 job_id,
@@ -766,7 +767,12 @@ fn parse_server_drive_meta(meta: &str, is_smartcode: bool) -> Option<(String, St
     ))
 }
 
-fn drive_folder_path(local_drive: bool, server_id: Option<u64>, folder: Option<String>) -> String {
+fn drive_folder_path(
+    local_drive: bool,
+    is_smartcode: bool,
+    server_id: Option<u64>,
+    folder: Option<String>,
+) -> String {
     let folder = folder
         .unwrap_or_default()
         .trim()
@@ -778,6 +784,9 @@ fn drive_folder_path(local_drive: bool, server_id: Option<u64>, folder: Option<S
             Some(id) => format!("{}/{}", id, folder),
             None => folder,
         };
+    }
+    if is_smartcode {
+        return folder;
     }
     if folder.is_empty() {
         return "pntools".to_string();
@@ -948,6 +957,31 @@ mod tests {
         assert_eq!(
             normalize_lulu_link("https://luluvdo.com/e/yzip3nvuot20"),
             "https://luluvdo.com/e/yzip3nvuot20",
+        );
+    }
+
+    #[test]
+    fn drive_folder_path_puts_smartcode_local_folder_at_root() {
+        assert_eq!(
+            drive_folder_path(true, true, Some(123), Some("Anime Name".to_string())),
+            "Anime Name",
+        );
+    }
+
+    #[test]
+    fn drive_folder_path_keeps_pntools_for_non_smartcode_local_jobs() {
+        assert_eq!(
+            drive_folder_path(true, false, Some(123), Some("backup".to_string())),
+            "pntools/backup",
+        );
+        assert_eq!(drive_folder_path(true, false, Some(123), None), "pntools");
+    }
+
+    #[test]
+    fn drive_folder_path_keeps_global_server_prefix() {
+        assert_eq!(
+            drive_folder_path(false, true, Some(123), Some("Anime Name".to_string())),
+            "123/Anime Name",
         );
     }
 }
