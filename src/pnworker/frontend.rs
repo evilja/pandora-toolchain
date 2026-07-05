@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use serenity::all::{ActivityData, Context, EditMessage, Message, OnlineStatus};
+use tokio::time::{sleep, Duration};
 use crate::pnworker::core::Job;
 use crate::pnworker::messages::{MessagePayload, create_job_embed};
 use crate::pnworker::presence::{change_presence_job, global_context, Presence};
@@ -50,6 +51,19 @@ impl Frontend {
         match self {
             Frontend::Discord { ctx, msg } => {
                 let _ = msg.react(&**ctx, '☠').await;
+            }
+            Frontend::Web => {}
+            Frontend::None => {}
+        }
+    }
+
+    pub async fn ghost_ping(&self, author: u64) {
+        match self {
+            Frontend::Discord { ctx, msg } => {
+                if let Ok(ping) = msg.channel_id.say(&ctx.http, format!("<@{}>", author)).await {
+                    sleep(Duration::from_millis(750)).await;
+                    let _ = ping.delete(&ctx.http).await;
+                }
             }
             Frontend::Web => {}
             Frontend::None => {}

@@ -962,6 +962,9 @@ async fn do_worker_message_things(
                 } else {
                     i.encode_dispatched = false;
                 }
+                if a == Stage::Uploaded && previous_ready != Stage::Uploaded {
+                    i.frontend.ghost_ping(i.author).await;
+                }
                 if a == Stage::Encoded || (a == Stage::Cancelled && past_downloaded(previous_ready))
                 {
                     cache_encode_input(i).await;

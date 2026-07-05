@@ -78,8 +78,12 @@ pub(crate) async fn sync_forwarded_jobs(
         if let Some(pos) = queue.iter().position(|job| job.job_id == id) {
             let worker = forwarded_worker_for(parent_worker);
             if let Some(stage) = stage {
+                let previous_ready = queue[pos].ready;
                 queue[pos].ready = stage;
                 db.update_stage(queue[pos].job_id, stage).await.ok();
+                if stage == Stage::Uploaded && previous_ready != Stage::Uploaded {
+                    queue[pos].frontend.ghost_ping(queue[pos].author).await;
+                }
             }
             queue[pos].worker = worker.clone();
             db.update_worker(queue[pos].job_id, &worker).await.ok();
