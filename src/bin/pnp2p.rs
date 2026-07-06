@@ -1,6 +1,6 @@
-use pandora_toolchain::libpnp2p::core::*;
-use pandora_toolchain::libpnprotocol::core::*;
-use pandora_toolchain::libpnprotocol::core::{Protocol, ToolInfo};
+use pandora_toolchain::lib::p2p::core::*;
+use pandora_toolchain::lib::protocol::core::*;
+use pandora_toolchain::lib::protocol::core::{Protocol, ToolInfo};
 use pandora_toolchain::{pn_data, pn_emit, pn_schema};
 
 use clap::Parser;

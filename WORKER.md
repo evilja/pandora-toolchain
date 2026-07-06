@@ -30,7 +30,7 @@ A second **API** encode job (`Frontend::Web`, `JobType::Encode`) whose `encode_f
 
 ## Adding a new TorrentType variant
 
-If you extend `TorrentType` in `libpnp2p/nyaaise.rs`, you must also update:
+If you extend `TorrentType` in `lib::p2p/nyaaise.rs`, you must also update:
 
 - `impl TorrentType` (`get`, `get_arg`, `display`).
 - `nyaaise()` classifier.

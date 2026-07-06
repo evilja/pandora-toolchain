@@ -1,4 +1,4 @@
-use crate::libpnmpeg::core::FfmpegParams;
+use crate::lib::mpeg::core::FfmpegParams;
 use std::borrow::Cow;
 
 

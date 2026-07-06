@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::libpnenv::core::get_pandora_env;
-use crate::libpnenv::standard::PNASS;
-use crate::libpnforgejo::core::{base64_encode, base64_encode_bytes, Forgejo};
-use crate::libpnmal::core::{fetch_anime, AnimeKind, AnimeMeta};
-use crate::libpnprotocol::core::Protocol;
+use crate::lib::env::core::get_pandora_env;
+use crate::lib::env::standard::PNASS;
+use crate::lib::http::forgejo::core::{base64_encode, base64_encode_bytes, Forgejo};
+use crate::lib::http::mal::core::{fetch_anime, AnimeKind, AnimeMeta};
+use crate::lib::protocol::core::Protocol;
 use crate::pnworker::tools::{PNASS_MERGE, PNASS_MERGE_TL_ONLY, PNASS_SPLIT_SIGNS};
 use crate::pnworker::util::{run_tool, CliParam, PathValue, ToolResult};
 

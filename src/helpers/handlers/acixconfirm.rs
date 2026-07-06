@@ -12,7 +12,7 @@ pub async fn handle_acixconfirm(
         }
     };
 
-    let db = match pandora_toolchain::libpndb::core::JobDb::new().await {
+    let db = match pandora_toolchain::lib::db::core::JobDb::new().await {
         Ok(d) => d,
         Err(e) => {
             command_error(ctx, command, format!("Database error: {}", e)).await;

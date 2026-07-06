@@ -4,28 +4,28 @@ use serenity::{
     builder::{CreateActionRow, CreateCommand, CreateCommandOption, CreateInteractionResponse, CreateInteractionResponseMessage, CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, EditChannel},
     prelude::*,
 };
-use pandora_toolchain::libpnp2p::nyaaise::{nyaaise, TorrentType};
+use pandora_toolchain::lib::p2p::nyaaise::{nyaaise, TorrentType};
 use pandora_toolchain::pnworker::core::{HalfJob, Job, JobClass, JobType, KeepRequest, KeycodeRequest, Preset};
 use pandora_toolchain::pnworker::util::{CliParam, IntrosConfig, PathValue, ToolResult, run_tool};
 use pandora_toolchain::pnworker::tools::PNASS_JOB;
 use pandora_toolchain::pnworker::tools::PNASS_MERGE;
 use pandora_toolchain::pnworker::tools::PNASS_MERGE_TL_ONLY;
 use pandora_toolchain::pnworker::tools::PNASS_SPLIT_SIGNS;
-use pandora_toolchain::libpnenv::{
+use pandora_toolchain::lib::env::{
     core::{add_env, get_pandora_env, get_perm, remove_env, upsert_env},
     standard::{ENV_PATH, ENV_SEP, TOKEN, CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN, PARENTID, DOODSTREAM, LULU, VOESX, ABYSS, ANIMECIX},
 };
-use pandora_toolchain::libpnmal::{fetch_anime, AnimeMeta, AnimeKind};
-use pandora_toolchain::libpnforgejo::{Forgejo, base64_encode, base64_encode_bytes};
-use pandora_toolchain::libpnanisub::{AniSub, DEFAULT_FPS};
+use pandora_toolchain::lib::http::mal::{fetch_anime, AnimeMeta, AnimeKind};
+use pandora_toolchain::lib::http::forgejo::{Forgejo, base64_encode, base64_encode_bytes};
+use pandora_toolchain::lib::http::anisub::{AniSub, DEFAULT_FPS};
 use pandora_toolchain::pnworker::core::pn_worker;
 use pandora_toolchain::pnworker::keep::{
     configured_keyword_pool, normalize_pool_keyword, KEYWORD_POOL_PATH,
 };
-use pandora_toolchain::libpnenv::standard::{PNASS, ANISUB, API_PORT};
+use pandora_toolchain::lib::env::standard::{PNASS, ANISUB, API_PORT};
 use pandora_toolchain::libkagami::core::{SubstationAlpha, find_fonts_with_roots};
-use pandora_toolchain::libpnprotocol::core::Protocol;
-use pandora_toolchain::libpndb::core::JobDb;
+use pandora_toolchain::lib::protocol::core::Protocol;
+use pandora_toolchain::lib::db::core::JobDb;
 use tokio::sync::mpsc::{channel, Sender, Receiver};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -253,6 +253,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("rmpool", 4),
     ("lsauth", 3),
     ("acixconfirm", 4),
+    ("akiraconfirm", 4),
     ("acixtemplate", 4),
     ("touchintro", 4),
     ("changerank", 4),
@@ -547,6 +548,12 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Publish a finished encode to AnimeciX.",
             usage: "/acixconfirm job_id:<id>",
             details: "Confirms the pending AnimeciX publish for an uploaded job and pushes it to AnimeciX (the multishare upload).",
+        },
+        HelpCommand {
+            name: "akiraconfirm",
+            summary: "Publish a finished encode to Akira.",
+            usage: "/akiraconfirm job_id:<id> slug:<akira-slug> episode:<number> name:<episode-title> [folder:<index-folder>]",
+            details: "Creates or updates the Akira episode from the uploaded job links. Drive links are converted to Akira index player URLs instead of publishing raw Google Drive links.",
         },
         HelpCommand {
             name: "acixtemplate",
@@ -868,9 +875,9 @@ async fn migrate_pandora_files() {
 }
 
 async fn migrate_env_format() {
-    use pandora_toolchain::libpnenv::standard::ENV_SEP;
+    use pandora_toolchain::lib::env::standard::ENV_SEP;
 
-    let path = pandora_toolchain::libpnenv::standard::ENV_PATH;
+    let path = pandora_toolchain::lib::env::standard::ENV_PATH;
     let contents = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(_) => return,
@@ -1428,6 +1435,9 @@ impl EventHandler for Handler {
                 }
                 "acixconfirm" => {
                     handle_acixconfirm(&ctx, &command).await;
+                }
+                "akiraconfirm" => {
+                    handle_akiraconfirm(&ctx, &command).await;
                 }
                 "acixtemplate" => {
                     handle_acixtemplate(&ctx, &command).await;
@@ -2120,6 +2130,28 @@ impl EventHandler for Handler {
                     CreateCommandOption::new(CommandOptionType::String, "job_id", "The job id (from the upload message)")
                         .required(true)
                 ),
+            CreateCommand::new("akiraconfirm")
+                .description("[BETA-TESTING] Create/update an Akira episode from uploaded job links")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "job_id", "The job id (from the upload message)")
+                        .required(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "slug", "Akira anime slug")
+                        .required(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "episode", "Akira episode number")
+                        .required(true)
+                        .min_int_value(0)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "name", "Episode title / index file name")
+                        .required(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "folder", "Akira index folder; defaults to slug")
+                ),
             CreateCommand::new("acixtemplate")
                 .description("[BETA-TESTING] Set channel AnimeciX fansub template id")
                 .add_option(
@@ -2237,7 +2269,7 @@ impl EventHandler for Handler {
 async fn main() {
     migrate_pandora_files().await;
     ensure_command_ranks_file();
-    pandora_toolchain::libpnbin::ensure_startup_binaries().await;
+    pandora_toolchain::lib::bin::ensure_startup_binaries().await;
     match install_persisted_pandora_fonts().await {
         Ok(Some(installed)) => {
             let dirs = installed.dirs.iter()
@@ -2256,7 +2288,7 @@ async fn main() {
     if let Some(port) = env.get(API_PORT).and_then(|s| s.trim().parse::<u16>().ok()).filter(|p| *p != 0) {
         let api_tx = tx.clone();
         tokio::spawn(async move {
-            if let Err(e) = pandora_toolchain::libpnapi::serve(api_tx, port).await {
+            if let Err(e) = pandora_toolchain::lib::http::api::serve(api_tx, port).await {
                 eprintln!("[Pandora API] {e}");
             }
         });

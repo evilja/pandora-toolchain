@@ -38,6 +38,13 @@ pub async fn handle_smartcode(
         command.guild_id.map(|g| g.get()),
     );
     job.acix = build_acix_publish(ctx, command).await;
+    job.smartcode_drive_name = Some(
+        pandora_toolchain::pnworker::core::SmartcodeDriveName::new(
+            &result.owner_repo,
+            &result.gdrive_folder_local,
+            result.episode,
+        ),
+    );
     job.gdrive_folder_global = Some(result.gdrive_folder_global);
     job.gdrive_folder_local = Some(result.gdrive_folder_local);
     Some(job)

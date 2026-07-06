@@ -123,7 +123,7 @@ async fn encode_intro_variant(input: &Path, output: &Path, variant: &IntroVarian
     let fps = variant.fps.to_string();
     let sample_rate = variant.sample_rate.to_string();
     let ok = tokio::task::spawn_blocking(move || {
-        use pandora_toolchain::libpnmpeg::core::{FfmpegParams, run_ffmpeg_params};
+        use pandora_toolchain::lib::mpeg::core::{FfmpegParams, run_ffmpeg_params};
         use std::borrow::Cow;
 
         run_ffmpeg_params(vec![

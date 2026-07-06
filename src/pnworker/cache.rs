@@ -4,9 +4,9 @@ use std::time::SystemTime;
 
 use tokio::fs::{create_dir_all, remove_dir_all, write};
 
-use crate::libpndb::core::JobDb;
-use crate::libpnp2p::core::{magnet_info_hash, torrent_info_hash};
-use crate::libpnp2p::nyaaise::TorrentType;
+use crate::lib::db::core::JobDb;
+use crate::lib::p2p::core::{magnet_info_hash, torrent_info_hash};
+use crate::lib::p2p::nyaaise::TorrentType;
 use crate::pnworker::core::{Job, Stage};
 use crate::pnworker::lifecycle::render;
 use crate::pnworker::messages::{MessagePayload, TORRENT_DUPLICATE_WAIT};

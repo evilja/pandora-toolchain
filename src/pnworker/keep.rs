@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tokio::fs::{create_dir_all, read_to_string, remove_dir_all, write};
 
-use crate::libpnmpeg::probe::{ffprobe_framerate, ffprobe_samplerate};
+use crate::lib::mpeg::probe::{ffprobe_framerate, ffprobe_samplerate};
 use crate::pnworker::core::{KeepKind, KeepRequest, Preset};
 
 const KEEP_TTL_SECS: u64 = 5 * 60 * 60;

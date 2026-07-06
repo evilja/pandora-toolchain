@@ -1,6 +1,6 @@
-use crate::libpndb::core::JobDb;
-use crate::libpnp2p::core::cleanup_pandora_qbit;
-use crate::libpnp2p::nyaaise::TorrentType;
+use crate::lib::db::core::JobDb;
+use crate::lib::p2p::core::cleanup_pandora_qbit;
+use crate::lib::p2p::nyaaise::TorrentType;
 use crate::pnworker::cache::{
     cache_encode_input, cleanup_expired_input_cache, cleanup_input_cache_startup,
     duplicate_input_path, duplicate_path_to_container, duplicate_source_owner,
@@ -547,13 +547,13 @@ fn preset_without_intro(preset: &Preset) -> Preset {
 
 fn select_keycode_intro(first_input: Option<&PathBuf>, candidates: &[String]) -> Option<PathBuf> {
     let first = first_input?.to_string_lossy().to_string();
-    let main_fps = crate::libpnmpeg::probe::ffprobe_framerate(&first);
-    let main_sr = crate::libpnmpeg::probe::ffprobe_samplerate(&first);
+    let main_fps = crate::lib::mpeg::probe::ffprobe_framerate(&first);
+    let main_sr = crate::lib::mpeg::probe::ffprobe_samplerate(&first);
     let mut best_match: Option<(usize, &String)> = None;
     let mut highest_fps: Option<(&String, (u32, u32))> = None;
     for candidate in candidates {
-        let cand_fps = crate::libpnmpeg::probe::ffprobe_framerate(candidate);
-        let cand_sr = crate::libpnmpeg::probe::ffprobe_samplerate(candidate);
+        let cand_fps = crate::lib::mpeg::probe::ffprobe_framerate(candidate);
+        let cand_sr = crate::lib::mpeg::probe::ffprobe_samplerate(candidate);
         if let Some(fps) = cand_fps {
             match highest_fps {
                 None => highest_fps = Some((candidate, fps)),
@@ -1246,6 +1246,7 @@ async fn do_job_progression_things(
                         job.server_id,
                         None,
                         None,
+                        None,
                     )),
                     job,
                     db,
@@ -1395,6 +1396,7 @@ async fn do_job_progression_things(
                     job.server_id,
                     job.gdrive_folder_global.clone(),
                     job.gdrive_folder_local.clone(),
+                    job.smartcode_drive_name.clone(),
                 )),
                 job,
                 db,
@@ -1697,6 +1699,50 @@ pub struct AcixPublish {
     pub extra: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct SmartcodeDriveName {
+    pub organisation: String,
+    pub mal_name: String,
+    pub episode: u32,
+}
+
+impl SmartcodeDriveName {
+    pub fn new(owner_repo: &str, mal_name: &str, episode: u32) -> Self {
+        let organisation = owner_repo
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .trim();
+        Self {
+            organisation: upload_name_component(organisation),
+            mal_name: upload_name_component(mal_name),
+            episode,
+        }
+    }
+
+    pub fn filename(&self, resolution: &str) -> String {
+        format!(
+            "[{}] {} - Bölüm {:02} [{}].mp4",
+            fallback_component(&self.organisation, "Pandora"),
+            fallback_component(&self.mal_name, "Anime"),
+            self.episode,
+            resolution,
+        )
+    }
+}
+
+fn upload_name_component(raw: &str) -> String {
+    raw.replace(['/', '\\'], "-").trim().to_string()
+}
+
+fn fallback_component<'a>(value: &'a str, fallback: &'a str) -> &'a str {
+    if value.trim().is_empty() {
+        fallback
+    } else {
+        value
+    }
+}
+
 #[derive(Clone)]
 pub struct Job {
     pub author: u64,
@@ -1721,6 +1767,7 @@ pub struct Job {
     pub acix: Option<AcixPublish>,
     pub gdrive_folder_global: Option<String>,
     pub gdrive_folder_local: Option<String>,
+    pub smartcode_drive_name: Option<SmartcodeDriveName>,
     pub worker: String,
     pub duplicate_source: Option<PathBuf>,
     pub forward_parent: Option<u64>,
@@ -1784,6 +1831,7 @@ impl Job {
             acix: None,
             gdrive_folder_global: None,
             gdrive_folder_local: None,
+            smartcode_drive_name: None,
             worker: "que-main".to_string(),
             duplicate_source: None,
             forward_parent: None,
@@ -1841,6 +1889,7 @@ impl Job {
             acix: None,
             gdrive_folder_global: None,
             gdrive_folder_local: None,
+            smartcode_drive_name: None,
             worker: "que-main".to_string(),
             duplicate_source: None,
             forward_parent: None,

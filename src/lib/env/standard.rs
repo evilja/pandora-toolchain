@@ -23,6 +23,9 @@ pub const ABYSS: &str = "abyss";
 pub const PNASS: &str = "pnass";
 pub const ANISUB: &str = "anisub";
 pub const ANIMECIX: &str = "animecix";
+pub const AKIRA_API: &str = "akira_api";
+pub const AKIRA_TOKEN: &str = "akira_token";
+pub const AKIRA_INDEX: &str = "akira_index";
 
 pub const API_PORT: &str = "api_port";
 pub const API_HOST: &str = "api_host";

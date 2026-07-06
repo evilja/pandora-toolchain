@@ -1,4 +1,4 @@
-use crate::libpnprotocol::core::{Protocol, Schema};
+use crate::lib::protocol::core::{Protocol, Schema};
 use crate::{lib_pn_data, lib_pn_emit, lib_pn_schema};
 use qbit_rs::Qbit;
 use qbit_rs::model::Priority;

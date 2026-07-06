@@ -1,16 +1,16 @@
-use pandora_toolchain::{libpncurl::core::{
+use pandora_toolchain::{lib::http::curl::core::{
         Req,
         RpbData,
         Host,
     },
-    libpncurl::gscrape::GScrape,
+    lib::http::curl::gscrape::GScrape,
 };
 use tokio::time::Instant;
 use std::{path::PathBuf, time::Duration};
 use clap::Parser;
 use tokio::sync::mpsc::{UnboundedSender, UnboundedReceiver, self};
 use pandora_toolchain::{pn_data, pn_emit, pn_schema};
-use pandora_toolchain::libpnprotocol::core::{Protocol, Schema, ToolInfo};
+use pandora_toolchain::lib::protocol::core::{Protocol, Schema, ToolInfo};
 
 
 #[derive(Parser, Debug)]
@@ -26,6 +26,9 @@ struct Args {
 
     #[arg(short, long)]
     opcode: String,
+
+    #[arg(long)]
+    drive_opcode: Option<String>,
 
     #[arg(short, long)]
     env: Option<String>,
@@ -128,8 +131,9 @@ async fn main() {
         let cfile4 = request.cfile.clone(); let cfile5 = request.cfile.clone(); let cfile6 = request.cfile.clone();
 
         let drive_folder = args.drive_folder.clone();
+        let drive_opcode = args.drive_opcode.clone().unwrap_or_else(|| args.opcode.clone());
         tokio::spawn(async move {
-            request.gdupload(a, Some(args.opcode), drive_folder, tx).await;
+            request.gdupload(a, Some(drive_opcode), drive_folder, tx).await;
         });
         if !args.backup {
             tokio::spawn(async move {

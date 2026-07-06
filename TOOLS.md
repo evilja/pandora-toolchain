@@ -4,7 +4,7 @@ CLI tool flags and ASS parsing details.
 
 ## `pncurl` flags
 
-- default: simple GET to `--opcode` path. Client built with `.timeout(Duration::from_secs(600))` — `Req::download` in `libpncurl/core.rs`.
+- default: simple GET to `--opcode` path. Client built with `.timeout(Duration::from_secs(600))` — `Req::download` in `lib::http::curl/core.rs`.
 - `--drive --env env.pandora`: uploads `--link` (local file) to Drive + Doodstream + Lulu + Voe + Abyss in parallel, streaming progress as protocol opcode `0`, results as opcode `1` per host. Upload sends are unlimited/no request deadline (clients only set a 60s connect timeout); progress payload emits the total file size once plus `[done, extension_count]` per host, currently with extension count normally `0`, rendered as e.g. `Doodstream 11/1032 MB`. The first progress payload is emitted immediately; later progress payloads are throttled to roughly 5s from the previous emitted progress.
 - `--drive --backup`: Drive-only upload with the same unlimited upload behavior.
 - `--gscrape`: Google Drive scraper. Parses the file id from the link, GETs the confirm page, extracts the `uuid` from the form, then GETs the final URL with `confirm=t&uuid=...` and streams chunks to `--opcode`. Client timeout 600s.

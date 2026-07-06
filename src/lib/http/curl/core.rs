@@ -1,12 +1,12 @@
 use crate::{
-    libpnenv::{
+    lib::env::{
         core::get_env,
         standard::{
             ABYSS, CLIENT_ID, CLIENT_SECRET, DOODSTREAM, LULU, PARENTID, REFRESH_TOKEN, TOKEN_URL,
             VOESX,
         },
     },
-    libpnlogging::core::LoggingHandle,
+    lib::logging::core::LoggingHandle,
     log,
 };
 use reqwest::{Client, multipart};
@@ -191,7 +191,7 @@ impl Req {
     }
 
     async fn download(&self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let target = match crate::libpnnet::sanitize_fetch_url(&self.target).await {
+        let target = match crate::lib::http::net::sanitize_fetch_url(&self.target).await {
             Ok(u) => u,
             Err(e) => return Err(e.into()),
         };

@@ -1,6 +1,6 @@
 use super::*;
 
-const TOKENS_PATH: &str = pandora_toolchain::libpnenv::standard::API_TOKENS_PATH;
+const TOKENS_PATH: &str = pandora_toolchain::lib::env::standard::API_TOKENS_PATH;
 
 struct TokenEntry {
     token: String,

@@ -1,6 +1,6 @@
 use std::sync::OnceLock;
 use serenity::all::{ActivityData, Context, OnlineStatus};
-use crate::libpnenv::standard::FLAVOR_PATH;
+use crate::lib::env::standard::FLAVOR_PATH;
 use crate::pnworker::core::{Job, Stage};
 
 static DISCORD_CTX: OnceLock<Context> = OnceLock::new();

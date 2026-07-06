@@ -1,4 +1,4 @@
-use crate::libpndb::core::JobDb;
+use crate::lib::db::core::JobDb;
 use crate::pnworker::core::Stage;
 use crate::pnworker::messages::{
     BACKUPALL_PROG, ENCODE_CONCAT_PROG, ENCODE_PROG, MessagePayload, PROBE_ROW, TORRENT_PROG,

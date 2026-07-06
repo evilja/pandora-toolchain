@@ -14,18 +14,18 @@ use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, mpsc::Sender};
 
-use crate::pnworker::core::{HalfJob, Job, JobClass, JobType, KeepRequest, KeycodeRequest, Preset, Stage};
+use crate::pnworker::core::{HalfJob, Job, JobClass, JobType, KeepRequest, KeycodeRequest, Preset, SmartcodeDriveName, Stage};
 use crate::pnworker::acix::confirm_acix;
-use crate::libacix::{AnimeCix, MediaType, MixedUpload};
-use crate::libpndb::core::{JobDb, JobStatus};
-use crate::libpngit::{
+use crate::lib::http::acix::{AnimeCix, MediaType, MixedUpload};
+use crate::lib::db::core::{JobDb, JobStatus};
+use crate::lib::git::{
     attach_repo, destruct_repo, detach_channel, init_repo, list_attachments, set_source,
     smartcode_merge, Credits, RepoOutcome,
 };
-use crate::libpnp2p::nyaaise::nyaaise;
-use crate::libpnp2p::nyaaise::TorrentType;
-use crate::libpnenv::core::get_pandora_env;
-use crate::libpnenv::standard::{
+use crate::lib::p2p::nyaaise::nyaaise;
+use crate::lib::p2p::nyaaise::TorrentType;
+use crate::lib::env::core::get_pandora_env;
+use crate::lib::env::standard::{
     API_AUTHOR_ID, API_HOST, API_RATE_LIMIT, API_RATE_WINDOW_SECS, API_TOKENS_PATH,
 };
 use crate::pnworker::util::IntrosConfig;
@@ -164,9 +164,9 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
-const INDEX_HTML: &str = include_str!("../../web/index.html");
-const GIT_HTML: &str = include_str!("../../web/git.html");
-const DESKTOP_HTML: &str = include_str!("../../web/desktop.html");
+const INDEX_HTML: &str = include_str!("../../../../web/index.html");
+const GIT_HTML: &str = include_str!("../../../../web/git.html");
+const DESKTOP_HTML: &str = include_str!("../../../../web/desktop.html");
 
 async fn desktop() -> axum::response::Html<&'static str> {
     axum::response::Html(DESKTOP_HTML)
@@ -180,7 +180,7 @@ async fn git_console() -> axum::response::Html<&'static str> {
     axum::response::Html(GIT_HTML)
 }
 
-const FAVICON_PNG: &[u8] = include_bytes!("../../web/favicon.png");
+const FAVICON_PNG: &[u8] = include_bytes!("../../../../web/favicon.png");
 
 async fn favicon() -> Response {
     // Allow an operator override at DB/config/global/favicon.<ext>; otherwise serve
@@ -627,7 +627,7 @@ fn github_blob_to_raw(url: &str) -> String {
 }
 
 async fn fetch_subtitle(url: &str) -> Result<Vec<u8>, String> {
-    let url = crate::libpnnet::sanitize_fetch_url(url).await?;
+    let url = crate::lib::http::net::sanitize_fetch_url(url).await?;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(180))
@@ -754,7 +754,7 @@ async fn git_readmebase(Extension(auth): Extension<ApiAuth>) -> Response {
         return Json(json!({ "content": content, "is_guide": false })).into_response();
     }
     let content = tokio::fs::read_to_string("DB/config/global/base.md").await
-        .unwrap_or_else(|_| crate::libpngit::README_BASE_GUIDE.to_string());
+        .unwrap_or_else(|_| crate::lib::git::README_BASE_GUIDE.to_string());
     Json(json!({ "content": content, "is_guide": true })).into_response()
 }
 
@@ -911,6 +911,11 @@ async fn git_smartcode(State(st): State<AppState>, Extension(auth): Extension<Ap
         "EN".to_string(),
         Some(server_id),
     );
+    job.smartcode_drive_name = Some(SmartcodeDriveName::new(
+        &merge.owner_repo,
+        &merge.gdrive_folder_local,
+        req.episode,
+    ));
     job.gdrive_folder_global = Some(merge.gdrive_folder_global.clone());
     job.gdrive_folder_local = Some(merge.gdrive_folder_local.clone());
     if req.keep {

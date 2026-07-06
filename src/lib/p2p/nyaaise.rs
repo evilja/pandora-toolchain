@@ -110,8 +110,8 @@ pub fn nyaaise(str: &str) -> TorrentType {
 
 #[cfg(test)]
 mod tests {
-    use crate::libpnp2p::nyaaise::nyaaise;
-    use crate::libpnp2p::nyaaise::TorrentType;
+    use crate::lib::p2p::nyaaise::nyaaise;
+    use crate::lib::p2p::nyaaise::TorrentType;
 
     #[test]
     fn nyaa_true() {

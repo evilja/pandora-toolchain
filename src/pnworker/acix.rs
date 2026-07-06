@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::libacix::{AnimeCix, MixedUpload};
-use crate::libpndb::core::JobDb;
+use crate::lib::http::acix::{AnimeCix, MixedUpload};
+use crate::lib::db::core::JobDb;
 use crate::pnworker::core::AcixPublish;
 
 #[derive(Clone, Serialize, Deserialize)]

@@ -1,4 +1,4 @@
-use pandora_toolchain::libpnmpeg::{
+use pandora_toolchain::lib::mpeg::{
     core::{
         FFmpeg, FfmpegParams, do_comm_encode_ffmpeg}, preset::{
         CONCAT, CONCAT_LEGACY, CPU_DUMMY, CPU_PSEUDOLOSSLESS, CPU_SANE_DEFAULTS, GPU_SANE_DEFAULTS
@@ -8,8 +8,8 @@ use pandora_toolchain::libpnmpeg::{
 };
 use tokio::{fs::File, io::AsyncWriteExt, time::{Duration, Instant}};
 use pandora_toolchain::{pn_data, pn_emit, pn_schema};
-use pandora_toolchain::libpnmpeg::core::RpbData;
-use pandora_toolchain::libpnprotocol::core::{Protocol, Schema, ToolInfo};
+use pandora_toolchain::lib::mpeg::core::RpbData;
+use pandora_toolchain::lib::protocol::core::{Protocol, Schema, ToolInfo};
 use std::str::FromStr;
 use clap::Parser;
 use std::path::PathBuf;

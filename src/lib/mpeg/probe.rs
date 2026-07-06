@@ -1,6 +1,6 @@
 use std::process::Command;
 use serde::Deserialize;
-use crate::libpnbin::resolve_runtime_binary;
+use crate::lib::bin::resolve_runtime_binary;
 
 #[derive(Debug, Deserialize)]
 struct FfprobeOutput {
@@ -113,4 +113,19 @@ pub fn ffprobe_samplerate(path: &str) -> Option<u32> {
         .output().ok()?;
     let data: FfprobeSamplerate = serde_json::from_slice(&output.stdout).ok()?;
     data.streams.into_iter().next()?.sample_rate.parse::<u32>().ok()
+}
+
+pub fn ffprobe_video_height(path: &str) -> Option<u32> {
+    let output = Command::new(resolve_runtime_binary("ffprobe"))
+        .args([
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=height",
+            "-of", "csv=p=0",
+            path,
+        ])
+        .output().ok()?;
+
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    stdout.trim().parse::<u32>().ok()
 }

@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
-use crate::libpndb::core::JobDb;
-use crate::libpnp2p::core::{magnet_info_hash, torrent_info_hash};
-use crate::libpnp2p::nyaaise::TorrentType;
+use crate::lib::db::core::JobDb;
+use crate::lib::p2p::core::{magnet_info_hash, torrent_info_hash};
+use crate::lib::p2p::nyaaise::TorrentType;
 use crate::pnworker::core::{Job, JobType, Preset, Stage};
 use crate::pnworker::lifecycle::{cleanup_job, render};
 use crate::pnworker::messages::{
@@ -228,6 +228,7 @@ mod tests {
             acix: None,
             gdrive_folder_global: None,
             gdrive_folder_local: local_folder.map(|s| s.to_string()),
+            smartcode_drive_name: None,
             worker: "que-main".to_string(),
             duplicate_source: None,
             forward_parent: None,

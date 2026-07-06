@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use crate::libpnenv::core::{get_pandora_env, upsert_env};
-use crate::libpnenv::standard::{ENV_PATH, PNASS, PNCURL, PNMPEG, PNP2P};
+use crate::lib::env::core::{get_pandora_env, upsert_env};
+use crate::lib::env::standard::{ENV_PATH, PNASS, PNCURL, PNMPEG, PNP2P};
 
 enum ArchiveKind {
     TarXz,

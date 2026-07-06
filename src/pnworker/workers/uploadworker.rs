@@ -1,9 +1,10 @@
-use crate::libpnenv::core::get_pandora_env;
-use crate::libpnenv::standard::{
+use crate::lib::env::core::get_pandora_env;
+use crate::lib::env::standard::{
     CLIENT_ID, CLIENT_SECRET, ENV_PATH, ENV_SEP, PARENTID, PNCURL, REFRESH_TOKEN,
 };
-use crate::libpnprotocol::core::Protocol;
-use crate::pnworker::core::CommData;
+use crate::lib::mpeg::probe::ffprobe_video_height;
+use crate::lib::protocol::core::Protocol;
+use crate::pnworker::core::{CommData, SmartcodeDriveName};
 use crate::pnworker::core::{Stage, WorkerMsg};
 use crate::pnworker::messages::{
     BACKUPALL_PROG, JOB_CANCELLED, MessagePayload, UPLOAD_BACKUP_PROG, UPLOAD_DONE, UPLOAD_FAIL,
@@ -19,7 +20,16 @@ use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::time::sleep;
 
-pub type UploadData = (PathBuf, String, bool, u64, Option<u64>, Option<String>, Option<String>);
+pub type UploadData = (
+    PathBuf,
+    String,
+    bool,
+    u64,
+    Option<u64>,
+    Option<String>,
+    Option<String>,
+    Option<SmartcodeDriveName>,
+);
 pub type UploadAllData = (PathBuf, u64, Option<u64>);
 
 pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, pulse: Sender<()>) {
@@ -67,7 +77,7 @@ async fn run_upload_job(
 ) {
     let mut proto = Protocol::new(vec![1]);
     let assign_job_id = match &msg {
-        WorkerMsg::Upload((_, _, _, job_id, _, _, _)) => Some(*job_id),
+        WorkerMsg::Upload((_, _, _, job_id, _, _, _, _)) => Some(*job_id),
         WorkerMsg::UploadAll((_, job_id, _)) => Some(*job_id),
         _ => None,
     };
@@ -80,7 +90,16 @@ async fn run_upload_job(
         .ok();
     }
     match msg {
-        WorkerMsg::Upload((directory, out_name, release, job_id, server_id, gdrive_folder_global, gdrive_folder_local)) => {
+        WorkerMsg::Upload((
+            directory,
+            out_name,
+            release,
+            job_id,
+            server_id,
+            gdrive_folder_global,
+            gdrive_folder_local,
+            smartcode_drive_name,
+        )) => {
             if job_cancelled(&directory) {
                 tx.send((
                     job_id,
@@ -110,17 +129,21 @@ async fn run_upload_job(
             let expected_hosts = if release { 5 } else { 1 };
 
             let is_smartcode = gdrive_folder_local.is_some();
-            let (drive_env, local_drive) = drive_env_path(&directory, server_id, is_smartcode).await;
+            let drive_env = drive_env_path(&directory, server_id, is_smartcode).await;
             let drive_folder = drive_folder_path(
-                local_drive,
+                drive_env.local_drive,
                 is_smartcode,
                 server_id,
-                if local_drive {
+                if drive_env.local_drive {
                     gdrive_folder_local
                 } else {
                     gdrive_folder_global
                 },
             );
+            let drive_out_name = smartcode_drive_name
+                .filter(|_| drive_env.local_drive && drive_env.smartcode_root_set)
+                .map(|name| name.filename(&resolution_label(&output_path)))
+                .unwrap_or_else(|| out_name.clone());
             let logfile = directory
                 .join("log")
                 .join(format!("PNcurl_Upload{}.log", job_id))
@@ -129,8 +152,8 @@ async fn run_upload_job(
             println!(
                 "[uploadworker] job={} drive_env={} local_drive={} drive_folder={} logfile={}",
                 job_id,
-                drive_env,
-                local_drive,
+                drive_env.path,
+                drive_env.local_drive,
                 if drive_folder.is_empty() { "(none)" } else { drive_folder.as_str() },
                 logfile,
             );
@@ -151,7 +174,8 @@ async fn run_upload_job(
                 &HashMap::from([
                     ("LINK", PathValue::from(output_path.clone())),
                     ("OPCODE", PathValue::from(out_name.clone())),
-                    ("ENV", PathValue::from(drive_env)),
+                    ("DRIVEOPCODE", PathValue::from(drive_out_name)),
+                    ("ENV", PathValue::from(drive_env.path)),
                     ("DRIVEFOLDER", PathValue::from(drive_folder)),
                     ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),
                     ("LOGFILE", PathValue::from(logfile)),
@@ -484,13 +508,13 @@ async fn run_upload_job(
             ))
             .ok();
 
-            let (drive_env, local_drive) = drive_env_path(&directory, server_id, false).await;
-            let drive_folder = drive_folder_path(local_drive, false, server_id, None);
+            let drive_env = drive_env_path(&directory, server_id, false).await;
+            let drive_folder = drive_folder_path(drive_env.local_drive, false, server_id, None);
             println!(
                 "[uploadworker] upload_all job={} drive_env={} local_drive={} drive_folder={}",
                 job_id,
-                drive_env,
-                local_drive,
+                drive_env.path,
+                drive_env.local_drive,
                 if drive_folder.is_empty() { "(none)" } else { drive_folder.as_str() },
             );
             let spec = if drive_folder.is_empty() {
@@ -534,8 +558,9 @@ async fn run_upload_job(
                     spec,
                     &HashMap::from([
                         ("LINK", PathValue::from(file.display().to_string())),
-                        ("OPCODE", PathValue::from(out_name)),
-                        ("ENV", PathValue::from(drive_env.clone())),
+                        ("OPCODE", PathValue::from(out_name.clone())),
+                        ("DRIVEOPCODE", PathValue::from(out_name)),
+                        ("ENV", PathValue::from(drive_env.path.clone())),
                         ("DRIVEFOLDER", PathValue::from(drive_folder.clone())),
                         ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),
                         ("LOGFILE", PathValue::from(logfile)),
@@ -688,9 +713,15 @@ async fn run_upload_job(
     }
 }
 
-async fn drive_env_path(directory: &PathBuf, server_id: Option<u64>, is_smartcode: bool) -> (String, bool) {
+struct DriveEnv {
+    path: String,
+    local_drive: bool,
+    smartcode_root_set: bool,
+}
+
+async fn drive_env_path(directory: &PathBuf, server_id: Option<u64>, is_smartcode: bool) -> DriveEnv {
     let Some(server_id) = server_id else {
-        return (ENV_PATH.to_string(), false);
+        return global_drive_env();
     };
     let meta_path = PathBuf::from("DB")
         .join("config")
@@ -698,10 +729,11 @@ async fn drive_env_path(directory: &PathBuf, server_id: Option<u64>, is_smartcod
         .join("meta.pandora");
     let meta = match tokio::fs::read_to_string(meta_path).await {
         Ok(s) => s,
-        Err(_) => return (ENV_PATH.to_string(), false),
+        Err(_) => return global_drive_env(),
     };
+    let smartcode_root_set = smartcode_root_configured(&meta);
     let Some((client_id, client_secret, refresh_token, parent_id)) = parse_server_drive_meta(&meta, is_smartcode) else {
-        return (ENV_PATH.to_string(), false);
+        return global_drive_env();
     };
 
     let mut env = get_pandora_env();
@@ -716,10 +748,36 @@ async fn drive_env_path(directory: &PathBuf, server_id: Option<u64>, is_smartcod
         out.push_str(&format!("{}{}{}\n", key, ENV_SEP, value));
     }
     if tokio::fs::write(&path, out).await.is_ok() {
-        (path.display().to_string(), true)
+        DriveEnv {
+            path: path.display().to_string(),
+            local_drive: true,
+            smartcode_root_set,
+        }
     } else {
-        (ENV_PATH.to_string(), false)
+        global_drive_env()
     }
+}
+
+fn global_drive_env() -> DriveEnv {
+    DriveEnv {
+        path: ENV_PATH.to_string(),
+        local_drive: false,
+        smartcode_root_set: false,
+    }
+}
+
+fn smartcode_root_configured(meta: &str) -> bool {
+    meta.lines()
+        .nth(7)
+        .map(str::trim)
+        .map(|s| !s.is_empty())
+        .unwrap_or(false)
+}
+
+fn resolution_label(path: &str) -> String {
+    ffprobe_video_height(path)
+        .map(|height| format!("{}p", height))
+        .unwrap_or_else(|| "1080p".to_string())
 }
 
 fn resolve_local_drive_root(lines: &[&str], is_smartcode: bool) -> Option<String> {
@@ -940,6 +998,21 @@ mod tests {
     fn parse_server_drive_meta_rejects_missing_roots() {
         assert_eq!(parse_server_drive_meta(&meta_with_roots("", ""), true), None);
         assert_eq!(parse_server_drive_meta(&meta_with_roots("", ""), false), None);
+    }
+
+    #[test]
+    fn smartcode_root_configured_requires_line_seven() {
+        assert!(smartcode_root_configured(&meta_with_roots("smart-root", "anon-root")));
+        assert!(!smartcode_root_configured(&meta_with_roots("", "anon-root")));
+    }
+
+    #[test]
+    fn smartcode_drive_name_formats_release_filename() {
+        let name = SmartcodeDriveName::new("AkiraSubs/frieren", "Sousou no Frieren", 1);
+        assert_eq!(
+            name.filename("1080p"),
+            "[AkiraSubs] Sousou no Frieren - Bölüm 01 [1080p].mp4",
+        );
     }
 
     #[test]

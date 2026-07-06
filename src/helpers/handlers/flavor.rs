@@ -1,5 +1,5 @@
 use super::*;
-use pandora_toolchain::libpnenv::standard::FLAVOR_PATH;
+use pandora_toolchain::lib::env::standard::FLAVOR_PATH;
 use pandora_toolchain::pnworker::presence::idle_flavors;
 use tokio::io::AsyncWriteExt;
 

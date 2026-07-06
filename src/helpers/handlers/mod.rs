@@ -20,6 +20,7 @@ mod edit;
 mod addapi;
 mod gentoken;
 mod acixconfirm;
+mod akiraconfirm;
 mod acixtemplate;
 mod font;
 mod fontcheck;
@@ -55,6 +56,7 @@ pub use self::edit::handle_edit;
 pub use self::addapi::handle_addapi;
 pub use self::gentoken::handle_gentoken;
 pub use self::acixconfirm::handle_acixconfirm;
+pub use self::akiraconfirm::handle_akiraconfirm;
 pub use self::acixtemplate::handle_acixtemplate;
 pub use self::font::{handle_font, install_persisted_pandora_fonts};
 pub use self::fontcheck::handle_fontcheck;
@@ -73,6 +75,7 @@ pub use self::addintro::handle_addintro;
 struct SmartMergeResult {
     link: String,
     merged_bytes: Vec<u8>,
+    episode: u32,
     owner_repo: String,
     release_path: String,
     source_path: String,
@@ -383,6 +386,7 @@ async fn smartcode_merge_upload(
     Some(SmartMergeResult {
         link,
         merged_bytes,
+        episode,
         gdrive_folder_global: smartcode_global_drive_folder(&owner_repo, &safe_name),
         gdrive_folder_local: smartcode_local_drive_folder(&safe_name),
         owner_repo,

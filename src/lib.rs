@@ -1,20 +1,7 @@
-pub mod libpncurl;
-pub mod libpnenv;
-pub mod libpnmpeg;
-pub mod libpnp2p;
+#[path = "lib/mod.rs"]
+pub mod lib;
 pub mod pnworker;
-pub mod libpnprotocol;
-pub mod libpndb;
 pub mod libkagami;
-pub mod libpnlogging;
-pub mod libpnmal;
-pub mod libpnforgejo;
-pub mod libpngit;
-pub mod libpnanisub;
-pub mod libacix;
-pub mod libpnbin;
-pub mod libpnapi;
-pub mod libpnnet;
 
 #[macro_export]
 macro_rules! pn_schema {
@@ -34,13 +21,13 @@ macro_rules! pn_schema {
 macro_rules! pn_data {
 
     ([ $( $inner:tt ),* $(,)? ]) => {
-        pandora_toolchain::libpnprotocol::core::TypeC::Multi(vec![
+        pandora_toolchain::lib::protocol::core::TypeC::Multi(vec![
             $( pn_data!($inner) ),*
         ])
     };
 
     ($val:expr) => {
-        pandora_toolchain::libpnprotocol::core::TypeC::Single(pandora_toolchain::libpnprotocol::core::Data { value: $val.to_string() })
+        pandora_toolchain::lib::protocol::core::TypeC::Single(pandora_toolchain::lib::protocol::core::Data { value: $val.to_string() })
     };
 }
 
@@ -77,13 +64,13 @@ macro_rules! lib_pn_schema {
 macro_rules! lib_pn_data {
 
     ([ $( $inner:tt ),* $(,)? ]) => {
-        crate::libpnprotocol::core::TypeC::Multi(vec![
+        crate::lib::protocol::core::TypeC::Multi(vec![
             $( lib_pn_data!($inner) ),*
         ])
     };
 
     ($val:expr) => {
-        crate::libpnprotocol::core::TypeC::Single(crate::libpnprotocol::core::Data { value: $val.to_string() })
+        crate::lib::protocol::core::TypeC::Single(crate::lib::protocol::core::Data { value: $val.to_string() })
     };
 }
 

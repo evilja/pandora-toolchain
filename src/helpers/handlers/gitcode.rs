@@ -9,7 +9,7 @@ pub async fn handle_gitcode(
     let subtitle_url = required_trimmed_option(ctx, command, "subtitle_url", "subtitle_url").await?;
 
     let normalized = github_blob_to_raw(&subtitle_url);
-    let normalized = match pandora_toolchain::libpnnet::sanitize_fetch_url(&normalized).await {
+    let normalized = match pandora_toolchain::lib::http::net::sanitize_fetch_url(&normalized).await {
         Ok(u) => u,
         Err(e) => {
             command.create_response(ctx, CreateInteractionResponse::Message(

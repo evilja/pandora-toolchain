@@ -1,4 +1,4 @@
-use pandora_toolchain::{libpnprotocol::{core::{Protocol, Schema}}, pn_emit, pn_data, pn_schema};
+use pandora_toolchain::{lib::protocol::{core::{Protocol, Schema}}, pn_emit, pn_data, pn_schema};
 
 fn main(){
     let mut proto = Protocol::new(vec![1]);

@@ -1,0 +1,290 @@
+use super::*;
+use pandora_toolchain::lib::env::core::get_pandora_env;
+use pandora_toolchain::lib::env::standard::{AKIRA_API, AKIRA_INDEX, AKIRA_TOKEN};
+use pandora_toolchain::lib::http::hyperkira::{
+    AkiraClient, EpisodeCreate, EpisodeLinkWrite, EpisodeUpdate,
+};
+
+pub async fn handle_akiraconfirm(ctx: &Context, command: &serenity::all::CommandInteraction) {
+    let job_id = match option_str(command, "job_id").and_then(|s| s.trim().parse::<u64>().ok()) {
+        Some(id) => id,
+        None => {
+            command_error(ctx, command, "Error: `job_id` must be a numeric job id.").await;
+            return;
+        }
+    };
+    let slug = match required_trimmed_option(ctx, command, "slug", "Akira anime slug").await {
+        Some(s) => s,
+        None => return,
+    };
+    let episode = match option_i64(command, "episode") {
+        Some(n) if n >= 0 => n as f64,
+        _ => {
+            command_error(ctx, command, "Error: `episode` must be zero or greater.").await;
+            return;
+        }
+    };
+    let name = match required_trimmed_option(ctx, command, "name", "Episode name").await {
+        Some(s) => s,
+        None => return,
+    };
+    let folder = option_trimmed(command, "folder").unwrap_or_else(|| slug.clone());
+
+    if command
+        .create_response(
+            ctx,
+            CreateInteractionResponse::Defer(
+                CreateInteractionResponseMessage::new().ephemeral(true),
+            ),
+        )
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    let env = get_pandora_env();
+    let akira_api = match env
+        .get(AKIRA_API)
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        Some(v) => v.to_string(),
+        None => {
+            akiraconfirm_response(
+                ctx,
+                command,
+                format!("Error: `{}` is not configured.", AKIRA_API),
+            )
+            .await;
+            return;
+        }
+    };
+    let akira_token = match env
+        .get(AKIRA_TOKEN)
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        Some(v) => v.to_string(),
+        None => {
+            akiraconfirm_response(
+                ctx,
+                command,
+                format!("Error: `{}` is not configured.", AKIRA_TOKEN),
+            )
+            .await;
+            return;
+        }
+    };
+    let index_base = env
+        .get(AKIRA_INDEX)
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("https://index.akirasubs.com")
+        .to_string();
+
+    let db = match pandora_toolchain::lib::db::core::JobDb::new().await {
+        Ok(d) => d,
+        Err(e) => {
+            akiraconfirm_response(ctx, command, format!("Database error: {}", e)).await;
+            return;
+        }
+    };
+    let row = match db.get_job(job_id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            akiraconfirm_response(ctx, command, "Error: job not found.").await;
+            return;
+        }
+        Err(e) => {
+            akiraconfirm_response(ctx, command, format!("Database error: {}", e)).await;
+            return;
+        }
+    };
+    if row.stage != 6 {
+        akiraconfirm_response(ctx, command, "Error: job is not uploaded yet.").await;
+        return;
+    }
+    let links_json = match row.uploaded_links {
+        Some(v) => v,
+        None => {
+            akiraconfirm_response(ctx, command, "Error: job has no uploaded links.").await;
+            return;
+        }
+    };
+    let uploaded: serde_json::Value = match serde_json::from_str(&links_json) {
+        Ok(v) => v,
+        Err(e) => {
+            akiraconfirm_response(
+                ctx,
+                command,
+                format!("Error: uploaded links JSON is invalid: {}", e),
+            )
+            .await;
+            return;
+        }
+    };
+    let links = match akira_episode_links(&uploaded, &index_base, &folder, &name) {
+        Ok(v) => v,
+        Err(e) => {
+            akiraconfirm_response(ctx, command, e).await;
+            return;
+        }
+    };
+    let player_embed_url = links.first().map(|link| link.url.clone());
+    let goindex_url = links
+        .iter()
+        .find(|link| link.kind == "goindex_player")
+        .map(|link| link.url.clone());
+
+    let client = match AkiraClient::with_bearer(akira_api, akira_token) {
+        Ok(c) => c,
+        Err(e) => {
+            akiraconfirm_response(ctx, command, format!("Akira client error: {}", e)).await;
+            return;
+        }
+    };
+    let create = EpisodeCreate {
+        episode_number: episode,
+        title: Some(name.clone()),
+        player_embed_url: player_embed_url.clone(),
+        goindex_url: goindex_url.clone(),
+        comments_enabled: true,
+        released_at: None,
+        links: links.clone(),
+        staff_credits: Vec::new(),
+        source: "discord_bot".to_string(),
+        skip_webhook: false,
+    };
+    if let Err(e) = client.create_episode(&slug, &create).await {
+        akiraconfirm_response(ctx, command, format!("Akira episode create failed: {}", e)).await;
+        return;
+    }
+    let update = EpisodeUpdate {
+        title: Some(name.clone()),
+        player_embed_url,
+        goindex_url,
+        comments_enabled: None,
+        released_at: None,
+    };
+    if let Err(e) = client.update_episode(&slug, episode, &update).await {
+        akiraconfirm_response(ctx, command, format!("Akira episode update failed: {}", e)).await;
+        return;
+    }
+    if let Err(e) = client.replace_episode_links(&slug, episode, &links).await {
+        akiraconfirm_response(ctx, command, format!("Akira episode links failed: {}", e)).await;
+        return;
+    }
+
+    akiraconfirm_response(
+        ctx,
+        command,
+        format!(
+            "Published job `{}` to Akira `{}` episode `{}`.",
+            job_id, slug, episode
+        ),
+    )
+    .await;
+}
+
+fn akira_episode_links(
+    uploaded: &serde_json::Value,
+    index_base: &str,
+    folder: &str,
+    name: &str,
+) -> Result<Vec<EpisodeLinkWrite>, String> {
+    let mut out = Vec::new();
+    if let Some(url) = link_value(uploaded, "doodstream") {
+        out.push(link("doodstream", "Doodstream", url, out.len()));
+    }
+    if let Some(url) = link_value(uploaded, "lulustream") {
+        out.push(link("lulustream", "Lulustream", url, out.len()));
+    }
+    if let Some(url) = link_value(uploaded, "voe") {
+        out.push(link("voe", "Voe", url, out.len()));
+    }
+    if let Some(url) = link_value(uploaded, "abyss") {
+        out.push(link("abyss", "Abyss", url, out.len()));
+    }
+    if let Some(drive) = link_value(uploaded, "drive") {
+        let id = drive_file_id(&drive)
+            .ok_or_else(|| "Error: could not parse Drive file id from job link.".to_string())?;
+        let url = akira_index_url(index_base, folder, name, &id);
+        out.push(link("goindex_player", "Drive", url, out.len()));
+    }
+    if out.is_empty() {
+        return Err("Error: job has no usable uploaded links.".to_string());
+    }
+    Ok(out)
+}
+
+fn link(kind: &str, label: &str, url: String, sort_order: usize) -> EpisodeLinkWrite {
+    EpisodeLinkWrite {
+        kind: kind.to_string(),
+        label: label.to_string(),
+        url,
+        sort_order: sort_order as i64,
+    }
+}
+
+fn link_value(uploaded: &serde_json::Value, key: &str) -> Option<String> {
+    uploaded
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
+fn drive_file_id(url: &str) -> Option<String> {
+    let re = regex::Regex::new(r"(?:/d/|[?&]id=)([A-Za-z0-9_-]+)").unwrap();
+    re.captures(url)
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str().to_string())
+}
+
+fn akira_index_url(base: &str, folder: &str, name: &str, id: &str) -> String {
+    let base = base.trim_end_matches('/');
+    let folder = folder
+        .split('/')
+        .filter(|part| !part.trim().is_empty())
+        .map(path_escape)
+        .collect::<Vec<_>>()
+        .join("/");
+    let filename = if name.rsplit('/').next().unwrap_or(name).contains('.') {
+        name.to_string()
+    } else {
+        format!("{}.mkv", name)
+    };
+    format!(
+        "{}/izle/{}/{}--{}?embed=1",
+        base,
+        folder,
+        path_escape(&filename),
+        path_escape(id)
+    )
+}
+
+fn path_escape(raw: &str) -> String {
+    let mut out = String::new();
+    for b in raw.as_bytes() {
+        let c = *b as char;
+        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') {
+            out.push(c);
+        } else {
+            out.push_str(&format!("%{:02X}", b));
+        }
+    }
+    out
+}
+
+async fn akiraconfirm_response(
+    ctx: &Context,
+    command: &serenity::all::CommandInteraction,
+    content: impl Into<String>,
+) {
+    command
+        .edit_response(ctx, EditInteractionResponse::new().content(content.into()))
+        .await
+        .ok();
+}

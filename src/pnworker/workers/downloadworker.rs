@@ -1,7 +1,7 @@
-use crate::libpnenv::core::get_pandora_env;
-use crate::libpnenv::standard::{PNCURL, PNP2P};
-use crate::libpnp2p::nyaaise::TorrentType;
-use crate::libpnprotocol::core::Protocol;
+use crate::lib::env::core::get_pandora_env;
+use crate::lib::env::standard::{PNCURL, PNP2P};
+use crate::lib::p2p::nyaaise::TorrentType;
+use crate::lib::protocol::core::Protocol;
 use crate::pnworker::core::Stage;
 use crate::pnworker::core::{CommData, WorkerMsg};
 use crate::pnworker::messages::{

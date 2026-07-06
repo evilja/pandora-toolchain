@@ -2,9 +2,9 @@ use std::path::Path;
 use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::sleep;
-use crate::libpnenv::core::get_pandora_env;
-use crate::libpnenv::standard::PNMPEG;
-use crate::libpnprotocol::core::Protocol;
+use crate::lib::env::core::get_pandora_env;
+use crate::lib::env::standard::PNMPEG;
+use crate::lib::protocol::core::Protocol;
 use crate::pnworker::messages::{ENCODE_CONCAT_PROG, ENCODE_DONE, ENCODE_FAIL, ENCODE_PROG, ENCODE_START, ENCODE_WARNING, JOB_CANCELLED, MessagePayload};
 use crate::pnworker::util::{ToolResult, job_cancelled, run_tool};
 use crate::pnworker::tools::{PNMPEG_CONCAT, PNMPEG_ENCODE, PNMPEG_JOIN, PNMPEG_JOIN_ASS};
@@ -244,7 +244,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
 }
 
 fn keycode_progress(
-    data: &crate::libpnprotocol::core::TypeC,
+    data: &crate::lib::protocol::core::TypeC,
     job_id: u64,
     tx: &Sender<CommData>,
 ) -> Option<ToolResult> {

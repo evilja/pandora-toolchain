@@ -1,8 +1,8 @@
-# libpndb Documentation
+# db Documentation
 
 ## Overview
 
-`libpndb` is a PostgreSQL database library for the Pandora Toolchain that provides persistent storage for encoding jobs. It stores all job information as a permanent log, allowing you to track job history, monitor active jobs, and analyze past operations.
+`db` is a database library for the Pandora Toolchain that provides persistent storage for encoding jobs. It stores all job information as a permanent log, allowing you to track job history, monitor active jobs, and analyze past operations.
 
 ## Features
 
@@ -22,13 +22,14 @@ tokio-postgres = "0.7"
 
 Add to `src/lib.rs`:
 ```rust
-pub mod libpndb;
+#[path = "lib/mod.rs"]
+pub mod lib;
 ```
 
 ## Quick Start
 
 ```rust
-use pandora_toolchain::libpndb::core::JobDb;
+use pandora_toolchain::lib::db::core::JobDb;
 
 // Connect to database
 let db = JobDb::new("host=localhost user=postgres password=secret dbname=pandora").await?;
@@ -558,4 +559,4 @@ SELECT ready, COUNT(*) FROM jobs WHERE NOT archived GROUP BY ready;
 
 ## Summary
 
-`libpndb` provides a simple, safe way to persist Pandora Toolchain jobs in PostgreSQL. Jobs are never deleted, creating a permanent audit log. The API is designed to integrate seamlessly with the existing `pnworker` architecture while adding persistence, crash recovery, and historical analysis capabilities.
+`db` provides a simple, safe way to persist Pandora Toolchain jobs. Jobs are never deleted, creating a permanent audit log. The API is designed to integrate seamlessly with the existing `pnworker` architecture while adding persistence, crash recovery, and historical analysis capabilities.

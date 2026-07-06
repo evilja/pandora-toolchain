@@ -5,8 +5,8 @@ use serde_json::Value;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-use crate::libpnenv::core::get_pandora_env;
-use crate::libpnenv::standard::ANIMECIX;
+use crate::lib::env::core::get_pandora_env;
+use crate::lib::env::standard::ANIMECIX;
 
 const ACIX_BASE: &str = "https://animecix.tv";
 const BOOTSTRAP_PATH: &str = "/secure/translators";

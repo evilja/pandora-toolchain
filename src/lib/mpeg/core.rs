@@ -1,8 +1,8 @@
 use std::str::FromStr;
 use std::string::String;
 use std::borrow::Cow;
-use crate::libpnbin::resolve_runtime_binary;
-use crate::libpnlogging::core::LoggingHandle;
+use crate::lib::bin::resolve_runtime_binary;
+use crate::lib::logging::core::LoggingHandle;
 use crate::log;
 use std::process::{Command, Stdio};
 use std::path::PathBuf;

@@ -2,7 +2,7 @@ use clap::Parser;
 use pandora_toolchain::libkagami::core::{ScriptInfo, SubstationAlpha};
 use pandora_toolchain::libkagami::complex::overrides::ASSOverride;
 use pandora_toolchain::libkagami::tags::{ASSLine, ASSText};
-use pandora_toolchain::libpnprotocol::core::{Protocol, Schema, ToolInfo};
+use pandora_toolchain::lib::protocol::core::{Protocol, Schema, ToolInfo};
 use pandora_toolchain::{pn_data, pn_emit, pn_schema};
 use std::path::PathBuf;
 

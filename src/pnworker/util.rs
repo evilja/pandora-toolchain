@@ -1,4 +1,4 @@
-use crate::libpnprotocol::core::{Protocol, TypeC};
+use crate::lib::protocol::core::{Protocol, TypeC};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
