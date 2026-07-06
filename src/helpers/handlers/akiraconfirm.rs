@@ -252,8 +252,12 @@ fn link_value(uploaded: &serde_json::Value, key: &str) -> Option<String> {
         .get(key)
         .and_then(|v| v.as_str())
         .map(str::trim)
-        .filter(|s| !s.is_empty())
+        .filter(|s| is_http_url(s))
         .map(|s| s.to_string())
+}
+
+fn is_http_url(value: &str) -> bool {
+    value.starts_with("http://") || value.starts_with("https://")
 }
 
 fn drive_file_id(url: &str) -> Option<String> {
@@ -307,4 +311,44 @@ async fn akiraconfirm_response(
         .edit_response(ctx, EditInteractionResponse::new().content(content.into()))
         .await
         .ok();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn akira_episode_links_skips_upload_progress_placeholders() {
+        let uploaded = serde_json::json!({
+            "drive": "https://drive.google.com/file/d/abc123/view?usp=sharing",
+            "doodstream": "https://doodstream.com/d/dood",
+            "lulustream": "Lulustream Başarısız",
+            "voe": "Voe Bekleniyor",
+            "abyss": "Abyss 534/946 MB"
+        });
+
+        let links = akira_episode_links(&uploaded, "https://index.example.test", "show", "Episode 01")
+            .expect("links");
+        let urls = links.iter().map(|link| link.url.as_str()).collect::<Vec<_>>();
+
+        assert_eq!(links.len(), 2);
+        assert!(urls.contains(&"https://doodstream.com/d/dood"));
+        assert!(urls.iter().any(|url| url.starts_with("https://index.example.test/izle/show/Episode%2001.mkv--abc123")));
+        assert!(!urls.iter().any(|url| url.contains("Abyss 534/946 MB")));
+    }
+
+    #[test]
+    fn akira_episode_links_errors_when_no_real_urls_exist() {
+        let uploaded = serde_json::json!({
+            "drive": "Google 12/100 MB",
+            "doodstream": "Doodstream Başarısız",
+            "abyss": "Abyss 534/946 MB"
+        });
+
+        assert_eq!(
+            akira_episode_links(&uploaded, "https://index.example.test", "show", "Episode 01")
+                .unwrap_err(),
+            "Error: job has no usable uploaded links."
+        );
+    }
 }

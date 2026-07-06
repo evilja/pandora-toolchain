@@ -729,9 +729,16 @@ impl Req {
         let stream = ReaderStream::new(reader);
         let body = reqwest::Body::wrap_stream(stream);
 
+        let upload_mime = if upload_name.to_ascii_lowercase().ends_with(".zip") {
+            "application/zip"
+        } else {
+            "video/mp4"
+        };
+        drive_log(&mut handle, format!("upload MIME type: {upload_mime}")).await;
+
         let part = multipart::Part::stream(body)
             .file_name(upload_name.clone())
-            .mime_str("video/mp4")
+            .mime_str(upload_mime)
             .unwrap();
 
         let metadata_part = multipart::Part::text(metadata.to_string())

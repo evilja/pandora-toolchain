@@ -72,6 +72,11 @@ pub use self::providers::handle_providers;
 pub use self::translation::{handle_addtranslation, handle_addtranslationall, handle_gettranslation, handle_gettranslationall};
 pub use self::addintro::handle_addintro;
 
+use pandora_toolchain::lib::env::standard::{
+    CLIENT_ID, CLIENT_SECRET, ENV_PATH, ENV_SEP, PARENTID, REFRESH_TOKEN,
+};
+use pandora_toolchain::lib::http::curl::core::{Host, Req, RpbData};
+
 struct SmartMergeResult {
     link: String,
     merged_bytes: Vec<u8>,
@@ -411,6 +416,28 @@ fn smartcode_local_drive_folder(safe_name: &str) -> String {
 
 fn drive_folder_component(s: &str) -> String {
     s.replace('/', "-").trim().to_string()
+}
+
+struct ReleaseFontsDriveUpload {
+    link: String,
+    local_drive: bool,
+    drive_folder: String,
+}
+
+impl ReleaseFontsDriveUpload {
+    fn folder_label(&self) -> String {
+        if self.local_drive {
+            self.drive_folder.clone()
+        } else {
+            "default".to_string()
+        }
+    }
+}
+
+struct ReleaseDriveTarget {
+    env_path: String,
+    drive_folder: String,
+    local_drive: bool,
 }
 
 async fn run_attach_or_init(
@@ -786,7 +813,7 @@ async fn zip_files(paths: &[PathBuf]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-async fn upsert_fonts_zip(fg: &Forgejo, owner_repo: &str, server_id: u64, folder: &str, font_names: &[String]) -> Result<Option<String>, String> {
+async fn build_fonts_zip(owner_repo: &str, server_id: u64, font_names: &[String]) -> Result<Option<Vec<u8>>, String> {
     let roots = vec![
         PathBuf::from("DB").join("fontconfig").join(server_id.to_string()),
         PathBuf::from("DB").join("fontconfig").join("global"),
@@ -807,12 +834,117 @@ async fn upsert_fonts_zip(fg: &Forgejo, owner_repo: &str, server_id: u64, folder
     if font_files.is_empty() {
         return Ok(None);
     }
-    let zip = zip_files(&font_files).await?;
-    let b64 = base64_encode_bytes(&zip);
-    let path = format!("{}/fonts.zip", folder);
-    fg.upsert_file(owner_repo, &path, &b64, "Update fonts").await?;
-    remove_gitkeep_for_path(fg, owner_repo, &path).await;
-    Ok(Some(path))
+    Ok(Some(zip_files(&font_files).await?))
+}
+
+async fn upload_release_fonts_to_drive(
+    server_id: u64,
+    safe_name: &str,
+    zip_path: &Path,
+    zip_name: &str,
+    work_dir: &Path,
+) -> Result<ReleaseFontsDriveUpload, String> {
+    let target = release_fonts_drive_target(server_id, safe_name, work_dir).await;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let req = Req {
+        target: zip_path.display().to_string(),
+        log: Some(work_dir.join("release_fonts_gdrive.log")),
+        cfile: None,
+    };
+    let drive_folder = if target.drive_folder.is_empty() {
+        None
+    } else {
+        Some(target.drive_folder.clone())
+    };
+    let ok = req.gdupload(target.env_path.clone(), Some(zip_name.to_string()), drive_folder, tx).await;
+
+    let mut link: Option<String> = None;
+    while let Some(event) = rx.recv().await {
+        match event {
+            RpbData::Done(url, Host::Drive) => link = Some(url),
+            RpbData::Fail(Host::Drive) => return Err("Google Drive returned an upload failure".to_string()),
+            RpbData::Cancel(Host::Drive) => return Err("Google Drive upload was cancelled".to_string()),
+            _ => {}
+        }
+    }
+
+    match (ok, link) {
+        (_, Some(link)) => Ok(ReleaseFontsDriveUpload {
+            link,
+            local_drive: target.local_drive,
+            drive_folder: target.drive_folder,
+        }),
+        (false, None) => Err("Google Drive upload failed before returning a file link".to_string()),
+        (true, None) => Err("Google Drive upload completed without returning a file link".to_string()),
+    }
+}
+
+async fn release_fonts_drive_target(server_id: u64, safe_name: &str, work_dir: &Path) -> ReleaseDriveTarget {
+    match local_release_drive_target(server_id, safe_name, work_dir).await {
+        Some(target) => target,
+        None => ReleaseDriveTarget {
+            env_path: ENV_PATH.to_string(),
+            drive_folder: String::new(),
+            local_drive: false,
+        },
+    }
+}
+
+async fn local_release_drive_target(server_id: u64, safe_name: &str, work_dir: &Path) -> Option<ReleaseDriveTarget> {
+    let meta_path = PathBuf::from("DB")
+        .join("config")
+        .join(server_id.to_string())
+        .join("meta.pandora");
+    let meta = tokio::fs::read_to_string(meta_path).await.ok()?;
+    let (client_id, client_secret, refresh_token, parent_id) = parse_release_drive_meta(&meta)?;
+
+    let mut env = get_pandora_env();
+    env.insert(CLIENT_ID.to_string(), client_id);
+    env.insert(CLIENT_SECRET.to_string(), client_secret);
+    env.insert(REFRESH_TOKEN.to_string(), refresh_token);
+    env.insert(PARENTID.to_string(), parent_id);
+
+    let path = work_dir.join("release_fonts_gdrive_env.pandora");
+    let mut out = String::new();
+    for (key, value) in env {
+        out.push_str(&format!("{}{}{}\n", key, ENV_SEP, value));
+    }
+    tokio::fs::write(&path, out).await.ok()?;
+    Some(ReleaseDriveTarget {
+        env_path: path.display().to_string(),
+        drive_folder: format!("{}/fonts", drive_folder_component(safe_name)),
+        local_drive: true,
+    })
+}
+
+fn parse_release_drive_meta(meta: &str) -> Option<(String, String, String, String)> {
+    let lines: Vec<&str> = meta.lines().collect();
+    let client_id = lines.get(4).copied().unwrap_or("").trim();
+    let client_secret = lines.get(5).copied().unwrap_or("").trim();
+    let refresh_token = lines.get(6).copied().unwrap_or("").trim();
+    let smartcode_root = lines.get(7).copied().unwrap_or("").trim();
+    let anonymous_root = lines.get(10).copied().unwrap_or("").trim();
+    let local_drive = lines.get(9).copied().unwrap_or("true").trim();
+    if matches!(local_drive, "false" | "0" | "disabled" | "off") {
+        return None;
+    }
+    if client_id.is_empty() || client_secret.is_empty() || refresh_token.is_empty() {
+        return None;
+    }
+    let parent_id = if smartcode_root.is_empty() {
+        anonymous_root
+    } else {
+        smartcode_root
+    };
+    if parent_id.is_empty() {
+        return None;
+    }
+    Some((
+        client_id.to_string(),
+        client_secret.to_string(),
+        refresh_token.to_string(),
+        parent_id.to_string(),
+    ))
 }
 
 async fn extract_zip_to_dir(bytes: &[u8], dest: &Path) -> Result<usize, String> {

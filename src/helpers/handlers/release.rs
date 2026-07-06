@@ -67,24 +67,51 @@ pub async fn handle_release(ctx: &Context, command: &serenity::all::CommandInter
 
     let release_sub = SubstationAlpha::load(local_ass, true).await;
     let font_names = release_sub.font_names();
-    let fonts_path = match upsert_fonts_zip(&fg, &owner_repo, server_id, &folder, &font_names).await {
+    let fonts_zip = match build_fonts_zip(&owner_repo, server_id, &font_names).await {
         Ok(p) => p,
         Err(e) => {
             let _ = response_msg.edit(ctx, EditMessage::new()
-                .content(format!("fonts.zip upload failed for `{}`: {}", folder, e))).await;
+                .content(format!("fonts.zip build failed for `{}`: {}", folder, e))).await;
             let _ = tokio::fs::remove_dir_all(&work_dir).await;
             return;
         }
     };
-    let _ = tokio::fs::remove_dir_all(&work_dir).await;
+    let fonts_field = match fonts_zip {
+        Some(zip) => {
+            let zip_name = format!("Fonts - {} - E{:02}.zip", safe_name, episode);
+            let zip_path = work_dir.join(&zip_name);
+            if let Err(e) = tokio::fs::write(&zip_path, &zip).await {
+                let _ = response_msg.edit(ctx, EditMessage::new()
+                    .content(format!("Failed to write fonts zip: {}", e))).await;
+                let _ = tokio::fs::remove_dir_all(&work_dir).await;
+                return;
+            }
+            match upload_release_fonts_to_drive(server_id, &safe_name, &zip_path, &zip_name, &work_dir).await {
+                Ok(upload) => format!(
+                    "{}\nFolder: `{}`\nFile: `{}`",
+                    upload.link,
+                    upload.folder_label(),
+                    zip_name,
+                ),
+                Err(e) => {
+                    let _ = response_msg.edit(ctx, EditMessage::new()
+                        .content(format!("fonts.zip Drive upload failed for `{}`: {}", folder, e))).await;
+                    let _ = tokio::fs::remove_dir_all(&work_dir).await;
+                    return;
+                }
+            }
+        }
+        None => "No matching local fonts found".to_string(),
+    };
 
     let anisub_field = anisub_release_upload(&meta, &owner_repo, &safe_name, episode, &release_bytes).await;
+    let _ = tokio::fs::remove_dir_all(&work_dir).await;
 
     let embed = CreateEmbed::new()
         .title("Release fonts uploaded")
         .field("Repo", format!("`{}`", owner_repo), true)
         .field("Release", format!("`{}`", release_path), true)
-        .field("Fonts", fonts_path.unwrap_or_else(|| "No matching local fonts found".to_string()), true)
+        .field("Fonts", fonts_field, false)
         .field("Requested", format!("`{}`", font_names.len()), true)
         .field("AniSub", anisub_field, false);
     let _ = response_msg.edit(ctx, EditMessage::new().content("").embed(embed)).await;

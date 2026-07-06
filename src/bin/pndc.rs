@@ -13,7 +13,7 @@ use pandora_toolchain::pnworker::tools::PNASS_MERGE_TL_ONLY;
 use pandora_toolchain::pnworker::tools::PNASS_SPLIT_SIGNS;
 use pandora_toolchain::lib::env::{
     core::{add_env, get_pandora_env, get_perm, remove_env, upsert_env},
-    standard::{ENV_PATH, ENV_SEP, TOKEN, CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN, PARENTID, DOODSTREAM, LULU, VOESX, ABYSS, ANIMECIX},
+    standard::{ENV_SEP, TOKEN, DOODSTREAM, LULU, VOESX, ABYSS, ANIMECIX},
 };
 use pandora_toolchain::lib::http::mal::{fetch_anime, AnimeMeta, AnimeKind};
 use pandora_toolchain::lib::http::forgejo::{Forgejo, base64_encode, base64_encode_bytes};
@@ -445,7 +445,7 @@ fn help_catalog() -> &'static [HelpCommand] {
             name: "release",
             summary: "Upload release fonts for an attached episode.",
             usage: "/release episode:<n>",
-            details: "Requires an attached anime repo and an existing release ASS. Reads the release ASS font list and uploads only fonts.zip for that episode folder.",
+            details: "Requires an attached anime repo and an existing release ASS. Reads the release ASS font list and uploads a font zip to Google Drive: local Drive uses the attached anime folder under fonts/, global Drive uses the default folder.",
         },
         HelpCommand {
             name: "source",
@@ -1806,7 +1806,7 @@ impl EventHandler for Handler {
                         .required(false)
                 ),
             CreateCommand::new("release")
-                .description("Upload fonts.zip for an existing episode release ASS")
+                .description("Upload release fonts to Google Drive for an existing episode release ASS")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (1-based)")
                         .required(true)
