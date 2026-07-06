@@ -13,10 +13,6 @@ pub async fn handle_akiraconfirm(ctx: &Context, command: &serenity::all::Command
             return;
         }
     };
-    let slug = match required_trimmed_option(ctx, command, "slug", "Akira anime slug").await {
-        Some(s) => s,
-        None => return,
-    };
     let episode = match option_i64(command, "episode") {
         Some(n) if n >= 0 => n as f64,
         _ => {
@@ -27,6 +23,30 @@ pub async fn handle_akiraconfirm(ctx: &Context, command: &serenity::all::Command
     let name = match required_trimmed_option(ctx, command, "name", "Episode name").await {
         Some(s) => s,
         None => return,
+    };
+    let slug = match option_trimmed(command, "slug") {
+        Some(s) => s,
+        None => {
+            let server_id = match command.guild_id {
+                Some(id) => id.get(),
+                None => {
+                    command_error(ctx, command, "Error: `slug` is required outside a server.").await;
+                    return;
+                }
+            };
+            match read_channel_meta(server_id, command.channel_id.get()).slug {
+                Some(s) if !s.trim().is_empty() => s,
+                _ => {
+                    command_error(
+                        ctx,
+                        command,
+                        "Error: this channel has no attached anime slug. Provide `slug` or run `/attach`/`/init` first.",
+                    )
+                    .await;
+                    return;
+                }
+            }
+        }
     };
     let folder = option_trimmed(command, "folder").unwrap_or_else(|| slug.clone());
 

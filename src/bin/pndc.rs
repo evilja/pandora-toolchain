@@ -552,8 +552,8 @@ fn help_catalog() -> &'static [HelpCommand] {
         HelpCommand {
             name: "akiraconfirm",
             summary: "Publish a finished encode to Akira.",
-            usage: "/akiraconfirm job_id:<id> slug:<akira-slug> episode:<number> name:<episode-title> [folder:<index-folder>]",
-            details: "Creates or updates the Akira episode from the uploaded job links. Drive links are converted to Akira index player URLs instead of publishing raw Google Drive links.",
+            usage: "/akiraconfirm job_id:<id> episode:<number> name:<episode-title> [slug:<akira-slug>] [folder:<index-folder>]",
+            details: "Creates or updates the Akira episode from the uploaded job links. Defaults slug to the channel's attached anime slug; Drive links are converted to Akira index player URLs instead of publishing raw Google Drive links.",
         },
         HelpCommand {
             name: "acixtemplate",
@@ -2137,10 +2137,6 @@ impl EventHandler for Handler {
                         .required(true)
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "slug", "Akira anime slug")
-                        .required(true)
-                )
-                .add_option(
                     CreateCommandOption::new(CommandOptionType::Integer, "episode", "Akira episode number")
                         .required(true)
                         .min_int_value(0)
@@ -2148,6 +2144,9 @@ impl EventHandler for Handler {
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "name", "Episode title / index file name")
                         .required(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "slug", "Akira anime slug; defaults to this channel's attached slug")
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "folder", "Akira index folder; defaults to slug")
