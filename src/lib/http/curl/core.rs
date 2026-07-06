@@ -385,7 +385,7 @@ impl Req {
                         .and_then(|j| {
                             j["file"]["file_code"]
                                 .as_str()
-                                .map(|s| format!("https://voe.sx/{s}"))
+                                .map(|s| format!("https://voe.sx/e/{s}"))
                         })
                         .unwrap_or_default()
                 },
@@ -560,7 +560,7 @@ impl Req {
                     .and_then(|j| {
                         j["result"][0]["filecode"]
                             .as_str()
-                            .map(|s| format!("https://doodstream.com/d/{s}"))
+                            .map(|s| format!("https://doodstream.com/e/{s}"))
                     })
                     .unwrap_or_default()
             },

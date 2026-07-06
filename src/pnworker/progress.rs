@@ -104,8 +104,11 @@ pub(crate) async fn persist_side_effects(
 
 fn upload_links_json(args: &[String], encode_warnings: &[String]) -> serde_json::Value {
     let mut v = serde_json::json!({
-        "drive": args.get(0), "doodstream": args.get(1), "lulustream": args.get(2).map(|s| normalize_lulu_link(s)),
-        "voe": args.get(3), "abyss": args.get(4),
+        "drive": args.get(0),
+        "doodstream": args.get(1).map(|s| normalize_doodstream_link(s)),
+        "lulustream": args.get(2).map(|s| normalize_lulu_link(s)),
+        "voe": args.get(3).map(|s| normalize_voe_link(s)),
+        "abyss": args.get(4),
     });
     add_warnings(&mut v, encode_warnings);
     v
@@ -118,6 +121,36 @@ fn normalize_lulu_link(link: &str) -> String {
             let code = rest.strip_prefix("e/").unwrap_or(rest).trim_matches('/');
             if !code.is_empty() && !code.contains('/') {
                 return format!("https://luluvdo.com/e/{}", code);
+            }
+        }
+    }
+    trimmed.to_string()
+}
+
+fn normalize_doodstream_link(link: &str) -> String {
+    let trimmed = link.trim();
+    for prefix in ["https://doodstream.com/", "http://doodstream.com/"] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            let code = rest
+                .strip_prefix("e/")
+                .or_else(|| rest.strip_prefix("d/"))
+                .unwrap_or(rest)
+                .trim_matches('/');
+            if !code.is_empty() && !code.contains('/') {
+                return format!("https://doodstream.com/e/{}", code);
+            }
+        }
+    }
+    trimmed.to_string()
+}
+
+fn normalize_voe_link(link: &str) -> String {
+    let trimmed = link.trim();
+    for prefix in ["https://voe.sx/", "http://voe.sx/"] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            let code = rest.strip_prefix("e/").unwrap_or(rest).trim_matches('/');
+            if !code.is_empty() && !code.contains('/') {
+                return format!("https://voe.sx/e/{}", code);
             }
         }
     }
@@ -233,6 +266,30 @@ mod tests {
         assert_eq!(
             normalize_lulu_link("https://luluvdo.com/e/yzip3nvuot20"),
             "https://luluvdo.com/e/yzip3nvuot20",
+        );
+    }
+
+    #[test]
+    fn normalize_doodstream_link_converts_file_codes_to_embed_urls() {
+        assert_eq!(
+            normalize_doodstream_link("https://doodstream.com/d/abc123"),
+            "https://doodstream.com/e/abc123",
+        );
+        assert_eq!(
+            normalize_doodstream_link("https://doodstream.com/e/abc123"),
+            "https://doodstream.com/e/abc123",
+        );
+    }
+
+    #[test]
+    fn normalize_voe_link_converts_file_codes_to_embed_urls() {
+        assert_eq!(
+            normalize_voe_link("https://voe.sx/abc123"),
+            "https://voe.sx/e/abc123",
+        );
+        assert_eq!(
+            normalize_voe_link("https://voe.sx/e/abc123"),
+            "https://voe.sx/e/abc123",
         );
     }
 }

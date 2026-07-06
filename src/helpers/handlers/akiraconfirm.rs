@@ -321,7 +321,7 @@ mod tests {
     fn akira_episode_links_skips_upload_progress_placeholders() {
         let uploaded = serde_json::json!({
             "drive": "https://drive.google.com/file/d/abc123/view?usp=sharing",
-            "doodstream": "https://doodstream.com/d/dood",
+            "doodstream": "https://doodstream.com/e/dood",
             "lulustream": "Lulustream Başarısız",
             "voe": "Voe Bekleniyor",
             "abyss": "Abyss 534/946 MB"
@@ -332,7 +332,7 @@ mod tests {
         let urls = links.iter().map(|link| link.url.as_str()).collect::<Vec<_>>();
 
         assert_eq!(links.len(), 2);
-        assert!(urls.contains(&"https://doodstream.com/d/dood"));
+        assert!(urls.contains(&"https://doodstream.com/e/dood"));
         assert!(urls.iter().any(|url| url.starts_with("https://index.example.test/izle/show/Episode%2001.mkv--abc123")));
         assert!(!urls.iter().any(|url| url.contains("Abyss 534/946 MB")));
     }

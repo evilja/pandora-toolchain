@@ -324,7 +324,7 @@ async fn run_upload_job(
                                     gd_done = true;
                                 }
                                 "2" => {
-                                    dood_link = url;
+                                    dood_link = normalize_doodstream_link(&url);
                                     dood_done = true;
                                 }
                                 "4" => {
@@ -332,7 +332,7 @@ async fn run_upload_job(
                                     lulu_done = true;
                                 }
                                 "5" => {
-                                    voesx_link = url;
+                                    voesx_link = normalize_voe_link(&url);
                                     voesx_done = true;
                                 }
                                 "6" => {
@@ -941,6 +941,36 @@ fn normalize_lulu_link(link: &str) -> String {
     trimmed.to_string()
 }
 
+fn normalize_doodstream_link(link: &str) -> String {
+    let trimmed = link.trim();
+    for prefix in ["https://doodstream.com/", "http://doodstream.com/"] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            let code = rest
+                .strip_prefix("e/")
+                .or_else(|| rest.strip_prefix("d/"))
+                .unwrap_or(rest)
+                .trim_matches('/');
+            if !code.is_empty() && !code.contains('/') {
+                return format!("https://doodstream.com/e/{}", code);
+            }
+        }
+    }
+    trimmed.to_string()
+}
+
+fn normalize_voe_link(link: &str) -> String {
+    let trimmed = link.trim();
+    for prefix in ["https://voe.sx/", "http://voe.sx/"] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            let code = rest.strip_prefix("e/").unwrap_or(rest).trim_matches('/');
+            if !code.is_empty() && !code.contains('/') {
+                return format!("https://voe.sx/e/{}", code);
+            }
+        }
+    }
+    trimmed.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1030,6 +1060,30 @@ mod tests {
         assert_eq!(
             normalize_lulu_link("https://luluvdo.com/e/yzip3nvuot20"),
             "https://luluvdo.com/e/yzip3nvuot20",
+        );
+    }
+
+    #[test]
+    fn normalize_doodstream_link_converts_to_embed_url() {
+        assert_eq!(
+            normalize_doodstream_link("https://doodstream.com/d/abc123"),
+            "https://doodstream.com/e/abc123",
+        );
+        assert_eq!(
+            normalize_doodstream_link("https://doodstream.com/e/abc123"),
+            "https://doodstream.com/e/abc123",
+        );
+    }
+
+    #[test]
+    fn normalize_voe_link_converts_to_embed_url() {
+        assert_eq!(
+            normalize_voe_link("https://voe.sx/abc123"),
+            "https://voe.sx/e/abc123",
+        );
+        assert_eq!(
+            normalize_voe_link("https://voe.sx/e/abc123"),
+            "https://voe.sx/e/abc123",
         );
     }
 

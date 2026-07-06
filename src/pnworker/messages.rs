@@ -13,6 +13,7 @@ pub const PROBE_TIMEOUT: &str = "PROBE_TIMEOUT";
 pub const GITSYNC_PROGRESS: &str = "GITSYNC_PROGRESS";
 pub const GITSYNC_SUCCESS: &str = "GITSYNC_SUCCESS";
 pub const GITSYNC_FAIL: &str = "GITSYNC_FAIL";
+pub const GITQUERY_BLOCKED: &str = "GITQUERY_BLOCKED";
 pub const CTORRENT_DONE: &str = "CTORRENT_DONE";
 pub const CTORRENT_FAIL: &str = "CTORRENT_FAIL";
 pub const TORRENT_PROG: &str = "TORRENT_PROG";
@@ -93,6 +94,11 @@ static DEFAULT_ENTRIES: &[(&str, &str, usize)] = &[
     (
         "GITSYNC_FAIL",
         "Git güncellemesi başarısız oldu.\nBot yine de yeniden başlatılıyor.",
+        0,
+    ),
+    (
+        "GITQUERY_BLOCKED",
+        "Git query mevcut encode işlemlerinin bitmesini bekliyor. Git sync tamamlanana kadar yeni encode işleri kapalı.",
         0,
     ),
     (

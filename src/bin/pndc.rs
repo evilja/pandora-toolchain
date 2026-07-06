@@ -242,6 +242,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("!ban", 2),
     ("!some", 2),
     ("gitsync", 3),
+    ("gitquery", 3),
     ("gentoken", 3),
     ("lstoken", 3),
     ("rmtoken", 3),
@@ -476,6 +477,12 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Fast-forward the bot repo and restart workers.",
             usage: "/gitsync",
             details: "Runs the configured git sync workflow, archives active work, stops the shrine, and exits for restart.",
+        },
+        HelpCommand {
+            name: "gitquery",
+            summary: "Sync git after current encodes finish.",
+            usage: "/gitquery",
+            details: "Disables new encode jobs immediately, waits for current encode jobs to finish, then runs the same git sync workflow as /gitsync.",
         },
         HelpCommand {
             name: "configure",
@@ -1587,6 +1594,19 @@ impl EventHandler for Handler {
                         response_msg,
                     ))).await.ok();
                 }
+                "gitquery" => {
+                    let response_msg = match working_response(&ctx, &command, "Git query hazırlanıyor.").await {
+                        Some(m) => m,
+                        None => return,
+                    };
+                    self.tx.send(JobClass::HalfJob(HalfJob::new_gitquery(
+                        command.user.id.get(),
+                        command.channel_id.get(),
+                        response_msg.id.get(),
+                        ctx.clone(),
+                        response_msg,
+                    ))).await.ok();
+                }
                 _ => {}
             }
         } else if let Interaction::Component(component) = interaction {
@@ -1688,6 +1708,8 @@ impl EventHandler for Handler {
                 .add_option(keyword_option.clone()),
             CreateCommand::new("gitsync")
                 .description("Sync with the git repo"),
+            CreateCommand::new("gitquery")
+                .description("Disable new encodes, then sync git after current encodes finish"),
             CreateCommand::new("backup")
                 .description("Download torrent and upload MKV to GDrive without release")
                 .add_option(

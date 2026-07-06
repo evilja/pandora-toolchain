@@ -21,7 +21,7 @@ use crate::pnworker::keep::{
 };
 use crate::pnworker::lifecycle::{cleanup_job, render};
 use crate::pnworker::messages::{
-    ENCODE_CONCAT_PROG, ENCODE_PROG, ENCODE_WARNING, MessagePayload, QUEUE_TOO_LONG,
+    ENCODE_CONCAT_PROG, ENCODE_PROG, ENCODE_WARNING, GITQUERY_BLOCKED, MessagePayload, QUEUE_TOO_LONG,
     QUEUED, TORRENT_DUPLICATE_WAIT, WORKER_ASSIGN,
 };
 use crate::pnworker::presence::{Presence, presence_from_queue};
@@ -73,6 +73,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
     shrine.layer(Worker::Probe, pn_probeworker, 5, 50);
     let mut queue_estimator = QueueEstimator::new();
     let mut encode_reboot_epoch = shrine.reboot_epoch(&Worker::Encode);
+    let mut gitquery: Option<HalfJob> = None;
 
     loop {
         sleep(Duration::from_millis(200)).await;
@@ -82,7 +83,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
         cleanup_expired_input_cache().await;
         cleanup_expired_keeps().await;
 
-        if do_queue_things(&mut rx, &db, &mut queue, &mut shrine).await {
+        if do_queue_things(&mut rx, &db, &mut queue, &mut shrine, &mut gitquery).await {
             check_encode_reboot_epoch(&shrine, &mut encode_reboot_epoch, &mut queue);
             continue;
         }
@@ -95,6 +96,13 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
         do_queued_download_waiting_things(&db, &mut queue, &mut shrine).await;
         check_encode_reboot_epoch(&shrine, &mut encode_reboot_epoch, &mut queue);
         do_job_progression_things(&db, &mut queue, &mut shrine).await;
+        if let Some(halfjob) = gitquery.take() {
+            if encode_jobs_active(&queue) {
+                gitquery = Some(halfjob);
+            } else {
+                run_gitsync(halfjob.frontend, &mut shrine).await;
+            }
+        }
         check_encode_reboot_epoch(&shrine, &mut encode_reboot_epoch, &mut queue);
         queue_estimator.tick(&db, &mut queue).await;
     }
@@ -105,12 +113,17 @@ async fn do_queue_things(
     db: &JobDb,
     queue: &mut Vec<Job>,
     shrine: &mut TypedShrine<WorkerMsg>,
+    gitquery: &mut Option<HalfJob>,
 ) -> bool {
     let Ok(jobclass) = rx.try_recv() else {
         return false;
     };
     match jobclass {
         JobClass::Job(mut job) => {
+            if gitquery.is_some() && is_encode_job_type(job.job_type) {
+                decline_gitquery_blocked_encode(&mut job).await;
+                return true;
+            }
             if queue.len() > 4 {
                 job.ready = Stage::Declined;
                 render(&mut job, MessagePayload::Static(QUEUE_TOO_LONG)).await;
@@ -124,10 +137,28 @@ async fn do_queue_things(
             queue.push(job);
         }
         JobClass::HalfJob(halfjob) => {
-            handle_half_job(db, queue, shrine, halfjob).await;
+            handle_half_job(db, queue, shrine, halfjob, gitquery).await;
         }
     }
     false
+}
+
+fn is_encode_job_type(job_type: JobType) -> bool {
+    matches!(job_type, JobType::Encode | JobType::Pancode | JobType::Keycode)
+}
+
+fn encode_jobs_active(queue: &[Job]) -> bool {
+    queue.iter().any(|job| is_encode_job_type(job.job_type))
+}
+
+async fn decline_gitquery_blocked_encode(job: &mut Job) {
+    job.ready = Stage::Declined;
+    job.worker = "gitquery".to_string();
+    render(
+        job,
+        MessagePayload::Static(GITQUERY_BLOCKED),
+    )
+    .await;
 }
 
 fn reset_encode_dispatches_after_reboot(queue: &mut [Job]) {
@@ -710,6 +741,7 @@ async fn handle_half_job(
     queue: &mut Vec<Job>,
     shrine: &mut TypedShrine<WorkerMsg>,
     halfjob: HalfJob,
+    gitquery: &mut Option<HalfJob>,
 ) {
     match halfjob.job_type {
         JobType::Cancel => {
@@ -743,50 +775,68 @@ async fn handle_half_job(
             frontend.set_text(&embed_text).await;
         }
         JobType::GitSync => {
-            let mut frontend = halfjob.frontend;
-            frontend.notify_recompiling();
-            shrine.kill().await;
-            let repo_path = env::var("PANDORA_GITSYNC_REPO").unwrap_or_else(|_| {
-                std::env::current_dir()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .to_owned()
-            });
-            println!("{}", repo_path);
-            let mut rebuild_requested = false;
-            match git_pull(&repo_path) {
-                Ok(_) => {
-                    if let Ok(request_path) = env::var("PANDORA_GITSYNC_REQUEST") {
-                        let request_path = PathBuf::from(request_path);
-                        if let Some(parent) = request_path.parent() {
-                            let _ = create_dir_all(parent).await;
-                        }
-                        rebuild_requested = write(request_path, b"rebuild\n").await.is_ok();
-                    }
-                    frontend
-                        .set_text("Kaynak kodlar git ile güncellendi.\nBot yeniden başlatılıyor.")
-                        .await
-                }
-                Err(e) => {
-                    println!("{}", e);
-                    frontend
-                        .set_text(
-                            "Git güncellemesi başarısız oldu.\nBot yine de yeniden başlatılıyor.",
-                        )
-                        .await
-                }
-            }
-            let _ = remove_dir_all(PathBuf::from("DB").join("work")).await;
-            if rebuild_requested {
-                tokio::time::sleep(Duration::from_secs(3600)).await;
+            run_gitsync(halfjob.frontend, shrine).await;
+        }
+        JobType::GitQuery => {
+            let mut frontend = halfjob.frontend.clone();
+            if gitquery.is_some() {
+                frontend
+                    .set_text("A git query is already waiting for encode jobs to finish.")
+                    .await;
+            } else if encode_jobs_active(queue) {
+                frontend
+                    .set_text("Git query armed. New encode jobs are disabled; git sync will run after current encode jobs finish.")
+                    .await;
+                *gitquery = Some(halfjob);
             } else {
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                run_gitsync(halfjob.frontend, shrine).await;
             }
-            std::process::exit(0);
         }
         _ => {}
     }
+}
+
+async fn run_gitsync(mut frontend: Frontend, shrine: &mut TypedShrine<WorkerMsg>) {
+    frontend.notify_recompiling();
+    shrine.kill().await;
+    let repo_path = env::var("PANDORA_GITSYNC_REPO").unwrap_or_else(|_| {
+        std::env::current_dir()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned()
+    });
+    println!("{}", repo_path);
+    let mut rebuild_requested = false;
+    match git_pull(&repo_path) {
+        Ok(_) => {
+            if let Ok(request_path) = env::var("PANDORA_GITSYNC_REQUEST") {
+                let request_path = PathBuf::from(request_path);
+                if let Some(parent) = request_path.parent() {
+                    let _ = create_dir_all(parent).await;
+                }
+                rebuild_requested = write(request_path, b"rebuild\n").await.is_ok();
+            }
+            frontend
+                .set_text("Kaynak kodlar git ile güncellendi.\nBot yeniden başlatılıyor.")
+                .await
+        }
+        Err(e) => {
+            println!("{}", e);
+            frontend
+                .set_text(
+                    "Git güncellemesi başarısız oldu.\nBot yine de yeniden başlatılıyor.",
+                )
+                .await
+        }
+    }
+    let _ = remove_dir_all(PathBuf::from("DB").join("work")).await;
+    if rebuild_requested {
+        tokio::time::sleep(Duration::from_secs(3600)).await;
+    } else {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    std::process::exit(0);
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -1590,6 +1640,7 @@ pub enum JobType {
     Backup = 008,
     BackupAll = 009,
     Keycode = 010,
+    GitQuery = 011,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -1669,6 +1720,24 @@ impl HalfJob {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or(Duration::from_secs(0)),
             job_type: JobType::GitSync,
+            frontend: Frontend::discord(context, msg),
+        }
+    }
+    pub fn new_gitquery(
+        author: u64,
+        channel_id: u64,
+        job_id: u64,
+        context: Context,
+        msg: Message,
+    ) -> Self {
+        Self {
+            author,
+            channel_id,
+            job_id,
+            requested_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or(Duration::from_secs(0)),
+            job_type: JobType::GitQuery,
             frontend: Frontend::discord(context, msg),
         }
     }
