@@ -869,14 +869,19 @@ async fn create_workers_embed(queue: &[Job]) -> CreateEmbed {
             upload.push(job.worker.clone());
         }
     }
-    let grid = workers_grid(queue, &download, &upload);
     let mut embed = CreateEmbed::new()
         .title("Pandora workers")
-        .description(format!(
-            "{} active queue item(s)\n```text\n{}\n```",
-            queue.len(),
-            grid
-        ));
+        .description(format!("{} active queue item(s)", queue.len()));
+    for slot in ordered_worker_slots(&download, &upload) {
+        match slot {
+            Some(slot) => {
+                embed = embed.field(slot.clone(), worker_slot_text(queue, &slot), true);
+            }
+            None => {
+                embed = embed.field("\u{200b}", "\u{200b}", true);
+            }
+        }
+    }
     let waiting = queue
         .iter()
         .filter(|job| worker_waiting(&job.worker))
@@ -888,7 +893,7 @@ async fn create_workers_embed(queue: &[Job]) -> CreateEmbed {
     embed
 }
 
-fn workers_grid(queue: &[Job], download: &[String], upload: &[String]) -> String {
+fn ordered_worker_slots(download: &[String], upload: &[String]) -> Vec<Option<String>> {
     let download_offsets = worker_offsets(download.len());
     let upload_offsets = worker_offsets(upload.len());
     let max_offset = download_offsets
@@ -900,28 +905,21 @@ fn workers_grid(queue: &[Job], download: &[String], upload: &[String]) -> String
         .max(2);
     let height = (max_offset as usize * 2) + 1;
     let center = max_offset;
-    let mut rows = vec![vec![String::new(); 4]; height];
+    let mut rows = vec![vec![None::<String>; 4]; height];
 
     for (worker, offset) in download.iter().zip(download_offsets) {
-        rows[(center + offset) as usize][1] = worker_cell_text(queue, worker);
+        rows[(center + offset) as usize][1] = Some(worker.clone());
     }
     for (worker, offset) in upload.iter().zip(upload_offsets) {
-        rows[(center + offset) as usize][3] = worker_cell_text(queue, worker);
+        rows[(center + offset) as usize][3] = Some(worker.clone());
     }
-    rows[center as usize][0] = worker_cell_text(queue, "prb-main");
-    rows[center as usize][2] = worker_cell_text(queue, "enc-main");
+    rows[center as usize][0] = Some("prb-main".to_string());
+    rows[center as usize][2] = Some("enc-main".to_string());
 
     rows.into_iter()
-        .map(|row| {
-            row.into_iter()
-                .map(|cell| fit_worker_cell(&cell))
-                .collect::<Vec<_>>()
-                .join(" ")
-                .trim_end()
-                .to_string()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .filter(|row| row.iter().any(Option::is_some))
+        .flatten()
+        .collect()
 }
 
 fn worker_offsets(count: usize) -> Vec<i32> {
@@ -944,28 +942,20 @@ fn worker_waiting(worker: &str) -> bool {
     ) || worker.starts_with("key-")
 }
 
-fn worker_cell_text(queue: &[Job], worker: &str) -> String {
+fn worker_slot_text(queue: &[Job], worker: &str) -> String {
     queue
         .iter()
         .find(|job| job.worker == worker && worker_active_stage(job.ready))
-        .map(|job| format!("{}:{}", worker, job_organisation(job)))
-        .unwrap_or_else(|| worker.to_string())
-}
-
-fn fit_worker_cell(cell: &str) -> String {
-    const WIDTH: usize = 24;
-    let clean = cell.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut out = if clean.chars().count() > WIDTH {
-        let mut s = clean.chars().take(WIDTH.saturating_sub(1)).collect::<String>();
-        s.push('~');
-        s
-    } else {
-        clean
-    };
-    while out.chars().count() < WIDTH {
-        out.push(' ');
-    }
-    out
+        .map(|job| {
+            format!(
+                "{}\n#{} {} ({})",
+                job_organisation(job),
+                job.job_id,
+                job_type_label(job.job_type),
+                stage_label(job.ready)
+            )
+        })
+        .unwrap_or_else(|| "idle".to_string())
 }
 
 fn job_organisation(job: &Job) -> String {
