@@ -14,11 +14,12 @@ use crate::pnworker::tools::{
 use crate::pnworker::util::PathValue;
 use crate::pnworker::util::string_byte_to_mb;
 use crate::pnworker::util::{ToolResult, WorkerNamePool, job_cancelled, run_tool};
+use crate::pnworker::worker_slots::download_worker_slots;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use tokio::fs::{create_dir_all, rename};
 use tokio::sync::mpsc::{Receiver, Sender, channel};
-use tokio::time::{Duration, sleep};
+use tokio::time::{Duration, Instant, sleep};
 
 pub type DownloadData = (PathBuf, TorrentType, u64, Option<u64>, bool);
 
@@ -26,11 +27,16 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
     let env = get_pandora_env();
     let pncurl_path = env.get(PNCURL).cloned().unwrap_or_default();
     let pnp2p_path = env.get(PNP2P).cloned().unwrap_or_default();
-    let mut pool = WorkerNamePool::new(&["kawari", "fuan", "odo", "shitai"]);
-    let (done_tx, mut done_rx) = channel::<String>(4);
+    let mut pool = WorkerNamePool::new(download_worker_slots().await);
+    let mut next_slot_refresh = Instant::now() + Duration::from_secs(1);
+    let (done_tx, mut done_rx) = channel::<String>(32);
     let mut pending: VecDeque<DownloadData> = VecDeque::new();
 
     loop {
+        if Instant::now() >= next_slot_refresh {
+            pool.set_names(download_worker_slots().await);
+            next_slot_refresh = Instant::now() + Duration::from_secs(1);
+        }
         while let Ok(name) = done_rx.try_recv() {
             pool.release(&name);
         }

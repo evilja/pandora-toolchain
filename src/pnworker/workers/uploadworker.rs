@@ -14,11 +14,12 @@ use crate::pnworker::tools::{PNCURL_BACKUP, PNCURL_BACKUP_FOLDER, PNCURL_UPLOAD,
 use crate::pnworker::util::PathValue;
 use crate::pnworker::util::string_byte_to_mb;
 use crate::pnworker::util::{ToolResult, WorkerNamePool, job_cancelled, run_tool};
+use crate::pnworker::worker_slots::upload_worker_slots;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender, channel};
-use tokio::time::sleep;
+use tokio::time::{Instant, sleep};
 
 pub type UploadData = (
     PathBuf,
@@ -34,11 +35,16 @@ pub type UploadAllData = (PathBuf, u64, Option<u64>);
 
 pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, pulse: Sender<()>) {
     let pncurl_path = get_pandora_env().get(PNCURL).cloned().unwrap_or_default();
-    let mut pool = WorkerNamePool::new(&["tsuki", "sora", "tenki", "suisei"]);
-    let (done_tx, mut done_rx) = channel::<String>(4);
+    let mut pool = WorkerNamePool::new(upload_worker_slots().await);
+    let mut next_slot_refresh = Instant::now() + Duration::from_secs(1);
+    let (done_tx, mut done_rx) = channel::<String>(32);
     let mut pending: VecDeque<WorkerMsg> = VecDeque::new();
 
     loop {
+        if Instant::now() >= next_slot_refresh {
+            pool.set_names(upload_worker_slots().await);
+            next_slot_refresh = Instant::now() + Duration::from_secs(1);
+        }
         while let Ok(name) = done_rx.try_recv() {
             pool.release(&name);
         }

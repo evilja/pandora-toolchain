@@ -30,6 +30,7 @@ The level hierarchy is `witch > upper > admin > fansubber > authorize` (rank 4/3
 - `/destruct` — **upper-tier**; deletes the channel's Forgejo repo (`delete_repo`) **and** removes the attachment. Irreversible. In-handler, no worker.
 - `/hearts` — admin; reports each shrine layer's `alive` / `last_beat_secs` / `reboot_count`.
 - `/workers` — admin; shows a Discord embed with each download, encode, probe, and upload worker slot and its active job, plus queued/cache-forward waiting work.
+- `/touchworker <type> <name>` / `/lsworker` / `/rmworker <type> <name>` — witch; add/list/remove configurable download or upload worker slots. Running download/upload workers refresh this config automatically; removed active slots finish their current job first.
 - `/gitsync` — admin; `git fetch` + fast-forward, kills the shrine, archives `DB/work`, `std::process::exit(0)` to restart.
 - `/gitquery` — admin; disables new encode jobs, waits for current encode jobs to finish, then runs the same sync/restart path as `/gitsync`.
 - `/configure <language> [forgejo] [wrapstyle]` — admin; writes `DB/config/<guild_id>/meta.pandora` and records the channel the command was issued in as the announcement channel. `language` is `EN` / `TR` / `JP` (string choice). `forgejo` is optional — leave empty to unset. `wrapstyle` controls ASS WrapStyle normalization (`dont_touch` default, or `0`/`1`/`2`/`3`). `/edit` can update the same field without rewriting the rest of the config.

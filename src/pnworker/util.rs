@@ -27,23 +27,27 @@ pub fn job_cancelled(directory: &Path) -> bool {
 }
 
 pub struct WorkerNamePool {
-    names: Vec<&'static str>,
+    names: Vec<String>,
     used: HashSet<String>,
 }
 
 impl WorkerNamePool {
-    pub fn new(names: &[&'static str]) -> Self {
+    pub fn new(names: Vec<String>) -> Self {
         Self {
-            names: names.to_vec(),
+            names,
             used: HashSet::new(),
         }
     }
 
+    pub fn set_names(&mut self, names: Vec<String>) {
+        self.names = names;
+    }
+
     pub fn acquire(&mut self) -> Option<String> {
-        let available: Vec<&'static str> = self
+        let available: Vec<&str> = self
             .names
             .iter()
-            .copied()
+            .map(|name| name.as_str())
             .filter(|name| !self.used.contains(*name))
             .collect();
         if available.is_empty() {

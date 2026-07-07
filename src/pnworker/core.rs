@@ -31,6 +31,7 @@ use crate::pnworker::workers::downloadworker::*;
 use crate::pnworker::workers::encodeworker::*;
 use crate::pnworker::workers::probeworker::*;
 use crate::pnworker::workers::uploadworker::*;
+use crate::pnworker::worker_slots::{download_worker_slots, upload_worker_slots};
 use crate::pnworker::util::job_cancelled;
 use serenity::all::{Context, CreateEmbed, Message};
 use std::collections::HashMap;
@@ -776,7 +777,7 @@ async fn handle_half_job(
         }
         JobType::Workers => {
             let mut frontend = halfjob.frontend;
-            frontend.set_embed(create_workers_embed(queue)).await;
+            frontend.set_embed(create_workers_embed(queue).await).await;
         }
         JobType::GitSync => {
             run_gitsync(halfjob.frontend, shrine).await;
@@ -849,23 +850,26 @@ enum CancelDisposition {
     CancelFile,
 }
 
-fn create_workers_embed(queue: &[Job]) -> CreateEmbed {
+async fn create_workers_embed(queue: &[Job]) -> CreateEmbed {
     let mut embed = CreateEmbed::new()
         .title("Pandora workers")
         .description(format!("{} active queue item(s)", queue.len()));
-    for slot in [
-        "dwl-kawari",
-        "dwl-fuan",
-        "dwl-odo",
-        "dwl-shitai",
-        "enc-main",
-        "prb-main",
-        "upl-tsuki",
-        "upl-sora",
-        "upl-tenki",
-        "upl-suisei",
-    ] {
-        embed = embed.field(slot, worker_slot_text(queue, slot), true);
+    let mut slots = Vec::new();
+    for name in download_worker_slots().await {
+        slots.push(format!("dwl-{}", name));
+    }
+    slots.push("enc-main".to_string());
+    slots.push("prb-main".to_string());
+    for name in upload_worker_slots().await {
+        slots.push(format!("upl-{}", name));
+    }
+    for job in queue.iter().filter(|job| worker_active_stage(job.ready)) {
+        if worker_slot_name(&job.worker) && !slots.iter().any(|slot| slot == &job.worker) {
+            slots.push(job.worker.clone());
+        }
+    }
+    for slot in slots {
+        embed = embed.field(slot.clone(), worker_slot_text(queue, &slot), true);
     }
     let waiting = queue
         .iter()
@@ -876,6 +880,10 @@ fn create_workers_embed(queue: &[Job]) -> CreateEmbed {
         embed = embed.field("waiting", waiting.join("\n"), false);
     }
     embed
+}
+
+fn worker_slot_name(worker: &str) -> bool {
+    worker == "enc-main" || worker == "prb-main" || worker.starts_with("dwl-") || worker.starts_with("upl-")
 }
 
 fn worker_waiting(worker: &str) -> bool {

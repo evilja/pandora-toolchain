@@ -22,6 +22,9 @@ use pandora_toolchain::pnworker::core::pn_worker;
 use pandora_toolchain::pnworker::keep::{
     configured_keyword_pool, normalize_pool_keyword, KEYWORD_POOL_PATH,
 };
+use pandora_toolchain::pnworker::worker_slots::{
+    add_worker_slot, load_worker_slots, normalize_name, remove_worker_slot, WorkerSlotKind,
+};
 use pandora_toolchain::lib::env::standard::{PNASS, ANISUB, API_PORT};
 use pandora_toolchain::libkagami::core::{SubstationAlpha, find_fonts_with_roots};
 use pandora_toolchain::lib::protocol::core::Protocol;
@@ -187,6 +190,131 @@ async fn handle_rmpool(ctx: &Context, command: &serenity::all::CommandInteractio
         .ok();
 }
 
+async fn worker_slot_kind_from_command(
+    ctx: &Context,
+    command: &serenity::all::CommandInteraction,
+) -> Option<WorkerSlotKind> {
+    let raw = match option_trimmed(command, "type") {
+        Some(raw) => raw,
+        None => {
+            command_error(ctx, command, "Error: `type` is required.").await;
+            return None;
+        }
+    };
+    match WorkerSlotKind::parse(&raw) {
+        Some(kind) => Some(kind),
+        None => {
+            command_error(ctx, command, "Error: `type` must be `download` or `upload`.").await;
+            None
+        }
+    }
+}
+
+async fn handle_lsworker(ctx: &Context, command: &serenity::all::CommandInteraction) {
+    let cfg = load_worker_slots().await;
+    let mut lines = Vec::new();
+    for kind in [WorkerSlotKind::Download, WorkerSlotKind::Upload] {
+        lines.push(format!("**{}**", kind.label()));
+        for (idx, name) in cfg.slots(kind).iter().enumerate() {
+            lines.push(format!(
+                "`{}` `{}` (`{}-{}` / `pn-{}-{}`)",
+                idx + 1,
+                name,
+                kind.worker_prefix(),
+                name,
+                kind.label(),
+                name
+            ));
+        }
+    }
+    command
+        .create_response(
+            ctx,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(lines.join("\n"))
+                    .ephemeral(true),
+            ),
+        )
+        .await
+        .ok();
+}
+
+async fn handle_touchworker(ctx: &Context, command: &serenity::all::CommandInteraction) {
+    let Some(kind) = worker_slot_kind_from_command(ctx, command).await else {
+        return;
+    };
+    let name = match option_trimmed(command, "name") {
+        Some(raw) => match normalize_name(&raw) {
+            Ok(name) => name,
+            Err(e) => {
+                command_error(ctx, command, format!("Error: {}", e)).await;
+                return;
+            }
+        },
+        None => {
+            command_error(ctx, command, "Error: `name` is required.").await;
+            return;
+        }
+    };
+    match add_worker_slot(kind, &name).await {
+        Ok(count) => {
+            command
+                .create_response(
+                    ctx,
+                    CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content(format!(
+                                "Added {} worker `{}`. {} slot(s) configured.",
+                                kind.label(),
+                                name,
+                                count
+                            ))
+                            .ephemeral(true),
+                    ),
+                )
+                .await
+                .ok();
+        }
+        Err(e) => command_error(ctx, command, format!("Error: {}", e)).await,
+    }
+}
+
+async fn handle_rmworker(ctx: &Context, command: &serenity::all::CommandInteraction) {
+    let Some(kind) = worker_slot_kind_from_command(ctx, command).await else {
+        return;
+    };
+    let name = match option_trimmed(command, "name") {
+        Some(raw) => match normalize_name(&raw) {
+            Ok(name) => name,
+            Err(e) => {
+                command_error(ctx, command, format!("Error: {}", e)).await;
+                return;
+            }
+        },
+        None => {
+            command_error(ctx, command, "Error: `name` is required.").await;
+            return;
+        }
+    };
+    match remove_worker_slot(kind, &name).await {
+        Ok(()) => {
+            command
+                .create_response(
+                    ctx,
+                    CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content(format!("Removed {} worker `{}`.", kind.label(), name))
+                            .ephemeral(true),
+                    ),
+                )
+                .await
+                .ok();
+        }
+        Err(e) => command_error(ctx, command, format!("Error: {}", e)).await,
+    }
+}
+
 fn write_keyword_pool(pool: &[String]) -> Result<(), String> {
     if let Some(parent) = Path::new(KEYWORD_POOL_PATH).parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -253,6 +381,9 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("touchpool", 4),
     ("lspool", 4),
     ("rmpool", 4),
+    ("touchworker", 4),
+    ("lsworker", 4),
+    ("rmworker", 4),
     ("lsauth", 3),
     ("acixconfirm", 4),
     ("akiraconfirm", 4),
@@ -424,6 +555,24 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Remove a keep keyword pool entry.",
             usage: "/rmpool keyword:<keyword>",
             details: "Removes one keyword from the configurable keep keyword pool. Rank 4 only.",
+        },
+        HelpCommand {
+            name: "lsworker",
+            summary: "List configured download/upload worker slots.",
+            usage: "/lsworker",
+            details: "Shows the worker slot names used by the download and upload worker pools. Rank 4 only.",
+        },
+        HelpCommand {
+            name: "touchworker",
+            summary: "Add a download or upload worker slot.",
+            usage: "/touchworker type:<download|upload> name:<slot>",
+            details: "Adds a validated slot name to the configured worker pool. Running workers refresh this config automatically. Rank 4 only.",
+        },
+        HelpCommand {
+            name: "rmworker",
+            summary: "Remove a download or upload worker slot.",
+            usage: "/rmworker type:<download|upload> name:<slot>",
+            details: "Removes a configured slot. At least one slot must remain for each worker type. Active removed slots finish their current job before disappearing. Rank 4 only.",
         },
         HelpCommand {
             name: "gitcode",
@@ -1441,6 +1590,15 @@ impl EventHandler for Handler {
                 "rmpool" => {
                     handle_rmpool(&ctx, &command).await;
                 }
+                "lsworker" => {
+                    handle_lsworker(&ctx, &command).await;
+                }
+                "touchworker" => {
+                    handle_touchworker(&ctx, &command).await;
+                }
+                "rmworker" => {
+                    handle_rmworker(&ctx, &command).await;
+                }
                 "lsauth" => {
                     handle_lsauth(&ctx, &command).await;
                 }
@@ -2143,6 +2301,32 @@ impl EventHandler for Handler {
                 .description("Remove a keep keyword pool entry")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "keyword", "Keyword to remove")
+                        .required(true)
+                ),
+            CreateCommand::new("lsworker")
+                .description("List configured download/upload worker slots"),
+            CreateCommand::new("touchworker")
+                .description("Add a download or upload worker slot")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "type", "Worker type")
+                        .required(true)
+                        .add_string_choice("Download", "download")
+                        .add_string_choice("Upload", "upload")
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "name", "Worker slot name")
+                        .required(true)
+                ),
+            CreateCommand::new("rmworker")
+                .description("Remove a download or upload worker slot")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "type", "Worker type")
+                        .required(true)
+                        .add_string_choice("Download", "download")
+                        .add_string_choice("Upload", "upload")
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "name", "Worker slot name")
                         .required(true)
                 ),
             CreateCommand::new("lsauth")
