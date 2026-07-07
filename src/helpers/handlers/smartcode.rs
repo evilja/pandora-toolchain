@@ -9,12 +9,7 @@ pub async fn handle_smartcode(
     let mut response_msg = working_response(ctx, command, "Working…").await?;
     let result = smartcode_merge_upload(ctx, command, &mut response_msg, "/smartcode", "smartcode").await?;
 
-    let queued_content = if result.warnings.is_empty() {
-        "...".to_string()
-    } else {
-        format!("...\n{}", format_warnings_field(&result.warnings))
-    };
-    let _ = response_msg.edit(ctx, EditMessage::new().content(queued_content)).await;
+    let _ = response_msg.edit(ctx, EditMessage::new().content("...")).await;
 
     response_msg.react(ctx, '❌').await.ok();
 

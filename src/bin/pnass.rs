@@ -135,6 +135,10 @@ async fn main() {
         } else {
             run_count = 0;
         }
+        for warning in leftover_hash_warnings(i + 1, &lines) {
+            println!("{}", pn_emit!(protocol = proto, negkey = &neg,
+                schema = [leaf, leaf], data = ["4", warning]).unwrap());
+        }
     }
     if run_count > 1 {
         let more = format!("{} more similar warnings", run_count - 1);
@@ -172,6 +176,13 @@ fn visible_lines(line: &ASSLine) -> Vec<String> {
     }
     lines.push(current);
     lines
+}
+
+fn leftover_hash_warnings(event_number: usize, lines: &[String]) -> Vec<String> {
+    lines.iter()
+        .filter(|line| line.contains('#'))
+        .map(|line| format!("{}: leftover # character: {}", event_number, line))
+        .collect()
 }
 
 fn push_visible_raw(text: &str, lines: &mut Vec<String>, current: &mut String, drawing_mode: &mut u8) {
@@ -781,5 +792,22 @@ mod tests {
         assert!(err.contains("incompatible PlayRes ratios"));
         assert_eq!(primary.script_info.playresx, 1440);
         assert_eq!(secondary.script_info.playresx, 1920);
+    }
+
+    #[test]
+    fn leftover_hash_warnings_report_visible_text_hashes() {
+        let line = ASSLine {
+            current_overrides: Vec::new(),
+            data: vec![
+                ASSText::Override(ASSOverride::ColorI(0x00FFFFFF)),
+                ASSText::RawText("visible # marker\\Nclean".to_string()),
+            ],
+        };
+        let lines = visible_lines(&line);
+
+        assert_eq!(
+            leftover_hash_warnings(7, &lines),
+            vec!["7: leftover # character: visible # marker".to_string()]
+        );
     }
 }

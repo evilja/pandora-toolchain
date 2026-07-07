@@ -949,7 +949,7 @@ fn worker_slot_text(queue: &[Job], worker: &str) -> String {
         .find(|job| job.worker == worker && worker_active_stage(job.ready))
         .map(|job| {
             format!(
-                "{}",
+                "{}\n#{} {} ({})",
                 job_organisation(job),
                 job.job_id,
                 job_type_label(job.job_type),
