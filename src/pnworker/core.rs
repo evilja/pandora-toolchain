@@ -851,26 +851,32 @@ enum CancelDisposition {
 }
 
 async fn create_workers_embed(queue: &[Job]) -> CreateEmbed {
-    let mut embed = CreateEmbed::new()
-        .title("Pandora workers")
-        .description(format!("{} active queue item(s)", queue.len()));
-    let mut slots = Vec::new();
-    for name in download_worker_slots().await {
-        slots.push(format!("dwl-{}", name));
-    }
-    slots.push("enc-main".to_string());
-    slots.push("prb-main".to_string());
-    for name in upload_worker_slots().await {
-        slots.push(format!("upl-{}", name));
-    }
+    let mut download = download_worker_slots()
+        .await
+        .into_iter()
+        .map(|name| format!("dwl-{}", name))
+        .collect::<Vec<_>>();
+    let mut upload = upload_worker_slots()
+        .await
+        .into_iter()
+        .map(|name| format!("upl-{}", name))
+        .collect::<Vec<_>>();
     for job in queue.iter().filter(|job| worker_active_stage(job.ready)) {
-        if worker_slot_name(&job.worker) && !slots.iter().any(|slot| slot == &job.worker) {
-            slots.push(job.worker.clone());
+        if job.worker.starts_with("dwl-") && !download.iter().any(|slot| slot == &job.worker) {
+            download.push(job.worker.clone());
+        }
+        if job.worker.starts_with("upl-") && !upload.iter().any(|slot| slot == &job.worker) {
+            upload.push(job.worker.clone());
         }
     }
-    for slot in slots {
-        embed = embed.field(slot.clone(), worker_slot_text(queue, &slot), true);
-    }
+    let grid = workers_grid(queue, &download, &upload);
+    let mut embed = CreateEmbed::new()
+        .title("Pandora workers")
+        .description(format!(
+            "{} active queue item(s)\n```text\n{}\n```",
+            queue.len(),
+            grid
+        ));
     let waiting = queue
         .iter()
         .filter(|job| worker_waiting(&job.worker))
@@ -882,8 +888,53 @@ async fn create_workers_embed(queue: &[Job]) -> CreateEmbed {
     embed
 }
 
-fn worker_slot_name(worker: &str) -> bool {
-    worker == "enc-main" || worker == "prb-main" || worker.starts_with("dwl-") || worker.starts_with("upl-")
+fn workers_grid(queue: &[Job], download: &[String], upload: &[String]) -> String {
+    let download_offsets = worker_offsets(download.len());
+    let upload_offsets = worker_offsets(upload.len());
+    let max_offset = download_offsets
+        .iter()
+        .chain(upload_offsets.iter())
+        .map(|offset| offset.abs())
+        .max()
+        .unwrap_or(2)
+        .max(2);
+    let height = (max_offset as usize * 2) + 1;
+    let center = max_offset;
+    let mut rows = vec![vec![String::new(); 4]; height];
+
+    for (worker, offset) in download.iter().zip(download_offsets) {
+        rows[(center + offset) as usize][1] = worker_cell_text(queue, worker);
+    }
+    for (worker, offset) in upload.iter().zip(upload_offsets) {
+        rows[(center + offset) as usize][3] = worker_cell_text(queue, worker);
+    }
+    rows[center as usize][0] = worker_cell_text(queue, "prb-main");
+    rows[center as usize][2] = worker_cell_text(queue, "enc-main");
+
+    rows.into_iter()
+        .map(|row| {
+            row.into_iter()
+                .map(|cell| fit_worker_cell(&cell))
+                .collect::<Vec<_>>()
+                .join(" ")
+                .trim_end()
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn worker_offsets(count: usize) -> Vec<i32> {
+    if count == 0 {
+        return Vec::new();
+    }
+    if count % 2 == 0 {
+        let start = -((count as i32) - 1);
+        (0..count).map(|idx| start + (idx as i32 * 2)).collect()
+    } else {
+        let half = count as i32 / 2;
+        (0..count).map(|idx| (idx as i32 - half) * 2).collect()
+    }
 }
 
 fn worker_waiting(worker: &str) -> bool {
@@ -893,12 +944,80 @@ fn worker_waiting(worker: &str) -> bool {
     ) || worker.starts_with("key-")
 }
 
-fn worker_slot_text(queue: &[Job], worker: &str) -> String {
+fn worker_cell_text(queue: &[Job], worker: &str) -> String {
     queue
         .iter()
         .find(|job| job.worker == worker && worker_active_stage(job.ready))
-        .map(worker_job_line)
-        .unwrap_or_else(|| "idle".to_string())
+        .map(|job| format!("{}:{}", worker, job_organisation(job)))
+        .unwrap_or_else(|| worker.to_string())
+}
+
+fn fit_worker_cell(cell: &str) -> String {
+    const WIDTH: usize = 24;
+    let clean = cell.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut out = if clean.chars().count() > WIDTH {
+        let mut s = clean.chars().take(WIDTH.saturating_sub(1)).collect::<String>();
+        s.push('~');
+        s
+    } else {
+        clean
+    };
+    while out.chars().count() < WIDTH {
+        out.push(' ');
+    }
+    out
+}
+
+fn job_organisation(job: &Job) -> String {
+    if let Some(name) = job
+        .smartcode_drive_name
+        .as_ref()
+        .map(|name| name.organisation.trim())
+        .filter(|name| !name.is_empty())
+    {
+        return name.to_string();
+    }
+    if let Some(org) = job
+        .server_id
+        .and_then(|server_id| organisation_from_channel_meta(server_id, job.channel_id))
+    {
+        return org;
+    }
+    "anonymous".to_string()
+}
+
+fn organisation_from_channel_meta(server_id: u64, channel_id: u64) -> Option<String> {
+    let path = PathBuf::from("DB")
+        .join("config")
+        .join(server_id.to_string())
+        .join(channel_id.to_string())
+        .join("meta.toml");
+    let raw = std::fs::read_to_string(path).ok()?;
+    let val = toml::from_str::<toml::Value>(&raw).ok()?;
+    let repo_url = val.get("repo_url")?.as_str()?.trim();
+    organisation_from_repo_url(repo_url)
+}
+
+fn organisation_from_repo_url(repo_url: &str) -> Option<String> {
+    let repo_url = repo_url.trim();
+    if repo_url.is_empty() {
+        return None;
+    }
+    if let Ok(url) = reqwest::Url::parse(repo_url) {
+        return url
+            .path_segments()
+            .and_then(|mut segments| segments.next())
+            .map(str::trim)
+            .filter(|org| !org.is_empty())
+            .map(|org| org.to_string());
+    }
+    repo_url
+        .trim_end_matches('/')
+        .rsplit_once('/')
+        .and_then(|(left, _)| left.rsplit('/').next())
+        .map(str::trim)
+        .filter(|org| !org.is_empty())
+        .map(|org| org.to_string())
 }
 
 fn worker_active_stage(stage: Stage) -> bool {
@@ -910,9 +1029,10 @@ fn worker_active_stage(stage: Stage) -> bool {
 
 fn worker_job_line(job: &Job) -> String {
     format!(
-        "#{} {} ({})",
+        "#{} {} {} ({})",
         job.job_id,
         job_type_label(job.job_type),
+        job_organisation(job),
         stage_label(job.ready)
     )
 }
