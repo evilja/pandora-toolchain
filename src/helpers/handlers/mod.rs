@@ -861,7 +861,7 @@ async fn upload_release_fonts_to_drive(
     let mut link: Option<String> = None;
     while let Some(event) = rx.recv().await {
         match event {
-            RpbData::Done(url, Host::Drive) => link = Some(url),
+            RpbData::Done(url, Host::Drive, _) => link = Some(url),
             RpbData::Fail(Host::Drive) => return Err("Google Drive returned an upload failure".to_string()),
             RpbData::Cancel(Host::Drive) => return Err("Google Drive upload was cancelled".to_string()),
             _ => {}

@@ -251,27 +251,28 @@ async fn main() {
                         ).unwrap()
                     );
                 }
-                RpbData::Done(url, Host::Drive) => {
+                RpbData::Done(url, Host::Drive, folder_id) => {
                     gd_result = Some(Ok(url.clone()));
+                    let folder_id = folder_id.unwrap_or_default();
                     println!("{}", pn_emit!(protocol = proto, negkey = &neg,
-                        schema = [leaf, leaf, leaf], data = ["1", "1", url]).unwrap());
+                        schema = [leaf, leaf, leaf, leaf], data = ["1", "1", url, folder_id]).unwrap());
                 }
-                RpbData::Done(url, Host::Doodstream) => {
+                RpbData::Done(url, Host::Doodstream, _) => {
                     dood_result = Some(Ok(url.clone()));
                     println!("{}", pn_emit!(protocol = proto, negkey = &neg,
                         schema = [leaf, leaf, leaf], data = ["1", "2", url]).unwrap());
                 }
-                RpbData::Done(url, Host::Lulu) => {
+                RpbData::Done(url, Host::Lulu, _) => {
                     lulu_result = Some(Ok(url.clone()));
                     println!("{}", pn_emit!(protocol = proto, negkey = &neg,
                         schema = [leaf, leaf, leaf], data = ["1", "4", url]).unwrap());
                 }
-                RpbData::Done(url, Host::VoeSx) => {
+                RpbData::Done(url, Host::VoeSx, _) => {
                     voesx_result = Some(Ok(url.clone()));
                     println!("{}", pn_emit!(protocol = proto, negkey = &neg,
                         schema = [leaf, leaf, leaf], data = ["1", "5", url]).unwrap());
                 }
-                RpbData::Done(url, Host::Abyss) => {
+                RpbData::Done(url, Host::Abyss, _) => {
                     abyss_result = Some(Ok(url.clone()));
                     println!("{}", pn_emit!(protocol = proto, negkey = &neg,
                         schema = [leaf, leaf, leaf], data = ["1", "6", url]).unwrap());

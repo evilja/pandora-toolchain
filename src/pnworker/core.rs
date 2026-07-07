@@ -22,11 +22,12 @@ use crate::pnworker::keep::{
 use crate::pnworker::lifecycle::{cleanup_job, render};
 use crate::pnworker::messages::{
     ENCODE_CONCAT_PROG, ENCODE_PROG, ENCODE_WARNING, GITQUERY_BLOCKED, MessagePayload, QUEUE_TOO_LONG,
-    QUEUED, TORRENT_DUPLICATE_WAIT, WORKER_ASSIGN,
+    QUEUED, TORRENT_DUPLICATE_WAIT, UPLOAD_DONE, UPLOAD_PROG, WORKER_ASSIGN,
 };
 use crate::pnworker::presence::{Presence, presence_from_queue};
 use crate::pnworker::progress::{drive_link_from_payload, persist_side_effects};
 use crate::pnworker::pull::git_pull;
+use crate::pnworker::smartcode_drive::{replace_smartcode_upload, SmartcodeDriveUpload};
 use crate::pnworker::workers::downloadworker::*;
 use crate::pnworker::workers::encodeworker::*;
 use crate::pnworker::workers::probeworker::*;
@@ -1061,6 +1062,43 @@ fn stage_label(stage: Stage) -> &'static str {
     }
 }
 
+async fn persist_smartcode_drive_upload(job: &Job, payload: &MessagePayload, stage: Option<Stage>) {
+    if stage != Some(Stage::Uploaded) || job.smartcode_drive_name.is_none() {
+        return;
+    }
+    let Some(server_id) = job.server_id else {
+        return;
+    };
+    let MessagePayload::Progress(id, args) = payload else {
+        return;
+    };
+    if *id != UPLOAD_PROG && *id != UPLOAD_DONE {
+        return;
+    }
+    let Some(name) = job.smartcode_drive_name.as_ref() else {
+        return;
+    };
+    let Some(file_id) = args.get(5).map(|s| s.trim()).filter(|s| !s.is_empty()) else {
+        return;
+    };
+    let Some(folder_id) = args.get(6).map(|s| s.trim()).filter(|s| !s.is_empty()) else {
+        return;
+    };
+    let url = args.get(0).cloned().unwrap_or_default();
+    let upload = SmartcodeDriveUpload {
+        job_id: job.job_id,
+        file_id: file_id.to_string(),
+        folder_id: folder_id.to_string(),
+        url,
+    };
+    if let Err(e) = replace_smartcode_upload(server_id, job.channel_id, name.episode, upload).await {
+        eprintln!(
+            "[smartcode-drive] failed to replace Drive upload for server={} channel={} episode={}: {}",
+            server_id, job.channel_id, name.episode, e
+        );
+    }
+}
+
 fn cancel_disposition(job: &Job) -> CancelDisposition {
     if job.forward_parent.is_some() {
         return CancelDisposition::Immediate;
@@ -1258,6 +1296,7 @@ async fn do_worker_message_things(
                 }
             }
             persist_side_effects(db, i.job_id, &payload, stage, &i.encode_warnings).await;
+            persist_smartcode_drive_upload(i, &payload, stage).await;
             render(i, payload.clone()).await;
 
             let finished = matches!(i.ready, Stage::Uploaded | Stage::Failed | Stage::Cancelled);
@@ -1509,6 +1548,7 @@ async fn do_job_progression_things(
                         ),
                         false,
                         job.job_id,
+                        job.channel_id,
                         job.server_id,
                         None,
                         None,
@@ -1659,6 +1699,7 @@ async fn do_job_progression_things(
                         }
                     },
                     job.job_id,
+                    job.channel_id,
                     job.server_id,
                     job.gdrive_folder_global.clone(),
                     job.gdrive_folder_local.clone(),

@@ -4,6 +4,7 @@ pub mod messages;
 pub mod util;
 pub mod tools;
 pub mod worker_slots;
+pub mod smartcode_drive;
 pub mod workers;
 pub mod heartbeat;
 pub mod pull;

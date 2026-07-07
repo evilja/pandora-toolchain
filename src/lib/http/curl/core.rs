@@ -169,7 +169,7 @@ pub enum Host {
 }
 pub enum RpbData {
     Progress(u64, u64, u64, Host),
-    Done(String, Host),
+    Done(String, Host, Option<String>),
     Fail(Host),
     Cancel(Host),
 }
@@ -426,7 +426,7 @@ impl Req {
         };
 
         println!("[upload] link: {link}");
-        tx.send(RpbData::Done(link, host)).ok();
+        tx.send(RpbData::Done(link, host, None)).ok();
         true
     }
 
@@ -569,7 +569,7 @@ impl Req {
             tx.send(RpbData::Fail(Host::Abyss)).ok();
             return false;
         }
-        tx.send(RpbData::Done(link, Host::Abyss)).ok();
+        tx.send(RpbData::Done(link, Host::Abyss, None)).ok();
         true
     }
 
@@ -901,7 +901,7 @@ impl Req {
             a.write("[drive] flushing logfile\n").await;
             a.flush().await;
         }
-        tx.send(RpbData::Done(link.clone(), Host::Drive)).ok();
+        tx.send(RpbData::Done(link.clone(), Host::Drive, Some(parent_id))).ok();
         true
     }
 }

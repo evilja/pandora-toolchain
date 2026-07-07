@@ -47,16 +47,17 @@ pub(crate) async fn persist_side_effects(
         });
         db.update_progress(job_id, &v.to_string()).await.ok();
     } else if *id == UPLOAD_PROG {
+        let display_args = upload_display_args(args);
         if stage == Some(Stage::Uploaded) {
             let v = upload_links_json(args, encode_warnings);
             db.update_links(job_id, &v.to_string()).await.ok();
-            let p = serde_json::json!({ "type": "upload", "percent": 100, "hosts": args });
+            let p = serde_json::json!({ "type": "upload", "percent": 100, "hosts": display_args });
             db.update_progress(job_id, &p.to_string()).await.ok();
         } else {
             let v = serde_json::json!({
                 "type": "upload",
-                "percent": upload_percent(args),
-                "hosts": args,
+                "percent": upload_percent(display_args),
+                "hosts": display_args,
             });
             db.update_progress(job_id, &v.to_string()).await.ok();
         }
@@ -65,9 +66,10 @@ pub(crate) async fn persist_side_effects(
         let v = serde_json::json!({ "type": "probe", "files": files, "file_options": parse_probe_options(&files) });
         db.update_progress(job_id, &v.to_string()).await.ok();
     } else if *id == UPLOAD_DONE {
+        let display_args = upload_display_args(args);
         let v = upload_links_json(args, encode_warnings);
         db.update_links(job_id, &v.to_string()).await.ok();
-        let p = serde_json::json!({ "type": "upload", "percent": 100, "hosts": args });
+        let p = serde_json::json!({ "type": "upload", "percent": 100, "hosts": display_args });
         db.update_progress(job_id, &p.to_string()).await.ok();
     } else if *id == UPLOAD_BACKUP_PROG {
         if stage == Some(Stage::Uploaded) {
@@ -103,15 +105,29 @@ pub(crate) async fn persist_side_effects(
 }
 
 fn upload_links_json(args: &[String], encode_warnings: &[String]) -> serde_json::Value {
+    let display_args = upload_display_args(args);
     let mut v = serde_json::json!({
-        "drive": args.get(0),
-        "doodstream": args.get(1).map(|s| normalize_doodstream_link(s)),
-        "lulustream": args.get(2).map(|s| normalize_lulu_link(s)),
-        "voe": args.get(3).map(|s| normalize_voe_link(s)),
-        "abyss": args.get(4),
+        "drive": display_args.get(0),
+        "doodstream": display_args.get(1).map(|s| normalize_doodstream_link(s)),
+        "lulustream": display_args.get(2).map(|s| normalize_lulu_link(s)),
+        "voe": display_args.get(3).map(|s| normalize_voe_link(s)),
+        "abyss": display_args.get(4),
     });
+    if let Some(obj) = v.as_object_mut() {
+        if let Some(file_id) = args.get(5).map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            obj.insert("drive_file_id".to_string(), serde_json::json!(file_id));
+        }
+        if let Some(folder_id) = args.get(6).map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            obj.insert("drive_folder_id".to_string(), serde_json::json!(folder_id));
+        }
+    }
     add_warnings(&mut v, encode_warnings);
     v
+}
+
+fn upload_display_args(args: &[String]) -> &[String] {
+    let len = args.len().min(5);
+    &args[..len]
 }
 
 fn normalize_lulu_link(link: &str) -> String {
@@ -291,5 +307,24 @@ mod tests {
             normalize_voe_link("https://voe.sx/e/abc123"),
             "https://voe.sx/e/abc123",
         );
+    }
+
+    #[test]
+    fn upload_links_json_keeps_drive_ids_but_display_args_hide_them() {
+        let args = vec![
+            "https://drive.google.com/file/d/file123/view?usp=sharing".to_string(),
+            "https://doodstream.com/e/dood".to_string(),
+            "https://luluvdo.com/e/lulu".to_string(),
+            "https://voe.sx/e/voe".to_string(),
+            "https://abyss.to/a".to_string(),
+            "file123".to_string(),
+            "folder456".to_string(),
+        ];
+
+        let links = upload_links_json(&args, &[]);
+
+        assert_eq!(upload_display_args(&args).len(), 5);
+        assert_eq!(links["drive_file_id"], "file123");
+        assert_eq!(links["drive_folder_id"], "folder456");
     }
 }

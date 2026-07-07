@@ -26,6 +26,7 @@ pub type UploadData = (
     String,
     bool,
     u64,
+    u64,
     Option<u64>,
     Option<String>,
     Option<String>,
@@ -84,7 +85,7 @@ async fn run_upload_job(
     let mut proto = Protocol::new(vec![1]);
     let worker_key = format!("pn-upload-{}", worker_name);
     let assign_job_id = match &msg {
-        WorkerMsg::Upload((_, _, _, job_id, _, _, _, _)) => Some(*job_id),
+        WorkerMsg::Upload((_, _, _, job_id, _, _, _, _, _)) => Some(*job_id),
         WorkerMsg::UploadAll((_, job_id, _)) => Some(*job_id),
         _ => None,
     };
@@ -102,6 +103,7 @@ async fn run_upload_job(
             out_name,
             release,
             job_id,
+            _channel_id,
             server_id,
             gdrive_folder_global,
             gdrive_folder_local,
@@ -125,6 +127,8 @@ async fn run_upload_job(
             let mut completed = 0u8;
             let mut gd_link = "Google Bekleniyor".to_string();
             let mut gd_done = false;
+            let mut gd_file_id: Option<String> = None;
+            let mut gd_folder_id: Option<String> = None;
             let mut dood_link = "Doodstream Bekleniyor".to_string();
             let mut dood_done = false;
             let mut lulu_link = "Lulustream Bekleniyor".to_string();
@@ -147,8 +151,11 @@ async fn run_upload_job(
                     gdrive_folder_global
                 },
             );
+            let named_drive_upload = smartcode_drive_name.is_some()
+                && drive_env.local_drive
+                && drive_env.smartcode_root_set;
             let drive_out_name = smartcode_drive_name
-                .filter(|_| drive_env.local_drive && drive_env.smartcode_root_set)
+                .filter(|_| named_drive_upload)
                 .map(|name| name.filename(&resolution_label(&output_path)))
                 .unwrap_or_else(|| out_name.clone());
             let logfile = directory
@@ -315,6 +322,7 @@ async fn run_upload_job(
                                 &voesx_link,
                                 &abyss_link,
                                 None,
+                                None,
                             ))
                             .ok();
                         }
@@ -328,6 +336,13 @@ async fn run_upload_job(
                                 .to_string();
                             match host_id {
                                 "1" => {
+                                    gd_file_id = drive_file_id(&url);
+                                    gd_folder_id = data
+                                        .get(3)
+                                        .and_then(|v| v.as_str())
+                                        .map(str::trim)
+                                        .filter(|s| !s.is_empty())
+                                        .map(|s| s.to_string());
                                     gd_link = url;
                                     gd_done = true;
                                 }
@@ -363,6 +378,7 @@ async fn run_upload_job(
                                 &lulu_link,
                                 &voesx_link,
                                 &abyss_link,
+                                drive_upload_meta(named_drive_upload, gd_file_id.as_deref(), gd_folder_id.as_deref()),
                                 stage,
                             ))
                             .ok();
@@ -410,6 +426,7 @@ async fn run_upload_job(
                                 &lulu_link,
                                 &voesx_link,
                                 &abyss_link,
+                                drive_upload_meta(named_drive_upload, gd_file_id.as_deref(), gd_folder_id.as_deref()),
                                 stage,
                             ))
                             .ok();
@@ -438,6 +455,7 @@ async fn run_upload_job(
                             &lulu_link,
                             &voesx_link,
                             &abyss_link,
+                            drive_upload_meta(named_drive_upload, gd_file_id.as_deref(), gd_folder_id.as_deref()),
                             Some(Stage::Uploaded),
                         ))
                         .await
@@ -463,6 +481,7 @@ async fn run_upload_job(
                             &lulu_link,
                             &voesx_link,
                             &abyss_link,
+                            drive_upload_meta(named_drive_upload, gd_file_id.as_deref(), gd_folder_id.as_deref()),
                             Some(Stage::Cancelled),
                         ))
                         .await
@@ -1131,21 +1150,24 @@ fn upload_payload(
     lulu_link: &str,
     voesx_link: &str,
     abyss_link: &str,
+    drive_meta: Option<(String, String)>,
     stage: Option<Stage>,
 ) -> CommData {
     if release {
+        let mut args = vec![
+            gd_link.to_string(),
+            dood_link.to_string(),
+            lulu_link.to_string(),
+            voesx_link.to_string(),
+            abyss_link.to_string(),
+        ];
+        if let Some((file_id, folder_id)) = drive_meta {
+            args.push(file_id);
+            args.push(folder_id);
+        }
         (
             job_id,
-            MessagePayload::Progress(
-                message_id,
-                vec![
-                    gd_link.to_string(),
-                    dood_link.to_string(),
-                    lulu_link.to_string(),
-                    voesx_link.to_string(),
-                    abyss_link.to_string(),
-                ],
-            ),
+            MessagePayload::Progress(message_id, args),
             stage,
         )
     } else {
@@ -1155,4 +1177,40 @@ fn upload_payload(
             stage,
         )
     }
+}
+
+fn drive_upload_meta(
+    named_drive_upload: bool,
+    file_id: Option<&str>,
+    folder_id: Option<&str>,
+) -> Option<(String, String)> {
+    if !named_drive_upload {
+        return None;
+    }
+    Some((
+        file_id?.trim().to_string(),
+        folder_id?.trim().to_string(),
+    ))
+}
+
+fn drive_file_id(url: &str) -> Option<String> {
+    let marker = "/file/d/";
+    if let Some(rest) = url.split_once(marker).map(|(_, rest)| rest) {
+        return rest
+            .split('/')
+            .next()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+    }
+    let query = url.split_once('?').map(|(_, q)| q).unwrap_or(url);
+    for part in query.split('&') {
+        if let Some(id) = part.strip_prefix("id=") {
+            let id = id.trim();
+            if !id.is_empty() {
+                return Some(id.to_string());
+            }
+        }
+    }
+    None
 }

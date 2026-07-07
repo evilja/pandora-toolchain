@@ -2,7 +2,7 @@ use super::*;
 use pandora_toolchain::lib::env::core::get_pandora_env;
 use pandora_toolchain::lib::env::standard::{AKIRA_API, AKIRA_INDEX, AKIRA_TOKEN};
 use pandora_toolchain::lib::http::hyperkira::{
-    AkiraClient, EpisodeCreate, EpisodeLinkWrite, EpisodeUpdate,
+    AkiraClient, EpisodeCreate, EpisodeLinkWrite, EpisodeListQuery, EpisodeUpdate,
 };
 
 pub async fn handle_akiraconfirm(ctx: &Context, command: &serenity::all::CommandInteraction) {
@@ -164,32 +164,42 @@ pub async fn handle_akiraconfirm(ctx: &Context, command: &serenity::all::Command
             return;
         }
     };
-    let create = EpisodeCreate {
-        episode_number: episode,
-        title: Some(name.clone()),
-        player_embed_url: player_embed_url.clone(),
-        goindex_url: goindex_url.clone(),
-        comments_enabled: true,
-        released_at: None,
-        links: links.clone(),
-        staff_credits: Vec::new(),
-        source: "discord_bot".to_string(),
-        skip_webhook: false,
+    let episode_exists = match akira_episode_exists(&client, &slug, episode).await {
+        Ok(exists) => exists,
+        Err(e) => {
+            akiraconfirm_response(ctx, command, format!("Akira episode lookup failed: {}", e)).await;
+            return;
+        }
     };
-    if let Err(e) = client.create_episode(&slug, &create).await {
-        akiraconfirm_response(ctx, command, format!("Akira episode create failed: {}", e)).await;
-        return;
-    }
-    let update = EpisodeUpdate {
-        title: Some(name.clone()),
-        player_embed_url,
-        goindex_url,
-        comments_enabled: None,
-        released_at: None,
-    };
-    if let Err(e) = client.update_episode(&slug, episode, &update).await {
-        akiraconfirm_response(ctx, command, format!("Akira episode update failed: {}", e)).await;
-        return;
+    if episode_exists {
+        let update = EpisodeUpdate {
+            title: None,
+            player_embed_url: player_embed_url.clone(),
+            goindex_url: goindex_url.clone(),
+            comments_enabled: None,
+            released_at: None,
+        };
+        if let Err(e) = client.update_episode(&slug, episode, &update).await {
+            akiraconfirm_response(ctx, command, format!("Akira episode update failed: {}", e)).await;
+            return;
+        }
+    } else {
+        let create = EpisodeCreate {
+            episode_number: episode,
+            title: Some(name.clone()),
+            player_embed_url: player_embed_url.clone(),
+            goindex_url: goindex_url.clone(),
+            comments_enabled: true,
+            released_at: None,
+            links: links.clone(),
+            staff_credits: Vec::new(),
+            source: "discord_bot".to_string(),
+            skip_webhook: false,
+        };
+        if let Err(e) = client.create_episode(&slug, &create).await {
+            akiraconfirm_response(ctx, command, format!("Akira episode create failed: {}", e)).await;
+            return;
+        }
     }
     if let Err(e) = client.replace_episode_links(&slug, episode, &links).await {
         akiraconfirm_response(ctx, command, format!("Akira episode links failed: {}", e)).await;
@@ -200,11 +210,45 @@ pub async fn handle_akiraconfirm(ctx: &Context, command: &serenity::all::Command
         ctx,
         command,
         format!(
-            "Published job `{}` to Akira `{}` episode `{}`.",
-            job_id, slug, episode
+            "{} job `{}` to Akira `{}` episode `{}`.",
+            if episode_exists { "Updated" } else { "Published" },
+            job_id,
+            slug,
+            episode
         ),
     )
     .await;
+}
+
+async fn akira_episode_exists(
+    client: &AkiraClient,
+    slug: &str,
+    episode: f64,
+) -> pandora_toolchain::lib::http::hyperkira::AkiraResult<bool> {
+    let mut page = 1i64;
+    loop {
+        let res = client
+            .anime_episodes(
+                slug,
+                &EpisodeListQuery {
+                    page: Some(page),
+                    page_size: Some(100),
+                    order: None,
+                },
+            )
+            .await?;
+        if res.items.iter().any(|ep| same_episode(ep.episode_number, episode)) {
+            return Ok(true);
+        }
+        if page >= res.pages || res.items.is_empty() {
+            return Ok(false);
+        }
+        page += 1;
+    }
+}
+
+fn same_episode(a: f64, b: f64) -> bool {
+    (a - b).abs() < 0.000_001
 }
 
 fn akira_episode_links(

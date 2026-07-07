@@ -285,9 +285,9 @@ pub fn format_payload(payload: &MessagePayload, lang: &str) -> String {
         MessagePayload::Static(id) => get_message(id, lang),
         MessagePayload::Progress(id, args) => {
             if let Some(expected) = get_arg_count(id, lang) {
-                if expected != args.len() {
+                if args.len() < expected {
                     eprintln!(
-                        "[messages] arg count mismatch for {}: expected {}, got {}",
+                        "[messages] arg count mismatch for {}: expected at least {}, got {}",
                         id,
                         expected,
                         args.len()
