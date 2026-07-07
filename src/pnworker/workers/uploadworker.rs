@@ -76,6 +76,7 @@ async fn run_upload_job(
     worker_name: String,
 ) {
     let mut proto = Protocol::new(vec![1]);
+    let worker_key = format!("pn-upload-{}", worker_name);
     let assign_job_id = match &msg {
         WorkerMsg::Upload((_, _, _, job_id, _, _, _, _)) => Some(*job_id),
         WorkerMsg::UploadAll((_, job_id, _)) => Some(*job_id),
@@ -177,6 +178,7 @@ async fn run_upload_job(
                     ("DRIVEOPCODE", PathValue::from(drive_out_name)),
                     ("ENV", PathValue::from(drive_env.path)),
                     ("DRIVEFOLDER", PathValue::from(drive_folder)),
+                    ("NEGKEY", PathValue::from(worker_key.clone())),
                     ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),
                     ("LOGFILE", PathValue::from(logfile)),
                 ]),
@@ -562,6 +564,7 @@ async fn run_upload_job(
                         ("DRIVEOPCODE", PathValue::from(out_name)),
                         ("ENV", PathValue::from(drive_env.path.clone())),
                         ("DRIVEFOLDER", PathValue::from(drive_folder.clone())),
+                        ("NEGKEY", PathValue::from(worker_key.clone())),
                         ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),
                         ("LOGFILE", PathValue::from(logfile)),
                     ]),

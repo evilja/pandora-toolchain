@@ -9,7 +9,7 @@ Guidance for coding agents working in this repository.
 - `src/lib/http/curl/` — HTTP layer: `core::Req` for downloads + multi-host uploads (Drive, Doodstream, Lulu, Voe, Abyss); `gscrape::GScrape` for Google Drive scraping.
 - `src/lib/env/` — env file loader (`get_env`, `add_env`, `get_perm`, `upsert_env`) + key constants in `standard.rs` (`CLIENT_ID`, `TOKEN`, `PNCURL`, `PNP2P`, etc.).
 - `src/lib/logging/` — `LoggingHandle` async logger + `log!` macro (takes `Option<LoggingHandle>`).
-- `src/lib/p2p/` — torrent layer; `nyaaise::TorrentType` (`Link` / `Magnet` / `GDrive`) and `nyaaise()` URL classifier. `core::cleanup_pandora_qbit()` removes every qBittorrent torrent tagged `pandora-job-*` at worker startup.
+- `src/lib/p2p/` — torrent layer; `nyaaise::TorrentType` (`Link` / `Magnet` / `GDrive` / `Direct`) and `nyaaise()` URL classifier. `core::cleanup_pandora_qbit()` removes every qBittorrent torrent tagged `pandora-job-*` at worker startup.
 - `src/lib/bin.rs` — startup/runtime binary bootstrap. `ensure_startup_binaries()` runs from `pndc` startup after config migration, validates tool paths, auto-fills sibling tool binaries into `env.pandora`, and installs portable `ffmpeg`/`ffprobe` into `DB/bin` when missing. `resolve_runtime_binary()` lets tools prefer `DB/bin/<name>` over PATH.
 - `src/lib/mpeg/` — ffmpeg wrapper/progress parsing and ffprobe helpers; all `ffmpeg` / `ffprobe` process launches go through `lib::bin::resolve_runtime_binary`.
 - `src/lib/protocol/` — line-oriented stdout protocol (negotiation + tree-structured data); how tools talk to workers.

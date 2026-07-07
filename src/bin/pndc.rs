@@ -229,6 +229,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("!ts", 1),
     ("destruct", 2),
     ("hearts", 2),
+    ("workers", 2),
     ("configure", 2),
     ("edit", 2),
     ("readmebase", 2),
@@ -471,6 +472,12 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Show worker health.",
             usage: "/hearts",
             details: "Reports shrine worker liveness, heartbeat age, and reboot counts.",
+        },
+        HelpCommand {
+            name: "workers",
+            summary: "Show worker slots and active jobs.",
+            usage: "/workers",
+            details: "Reports the current download, encode, probe, and upload worker slots from the live orchestrator queue.",
         },
         HelpCommand {
             name: "gitsync",
@@ -1480,6 +1487,19 @@ impl EventHandler for Handler {
                         response_msg,
                     ))).await.ok();
                 }
+                "workers" => {
+                    let response_msg = match working_response(&ctx, &command, "...").await {
+                        Some(m) => m,
+                        None => return,
+                    };
+                    self.tx.send(JobClass::HalfJob(HalfJob::new_workers(
+                        command.user.id.get(),
+                        command.channel_id.get(),
+                        response_msg.id.get(),
+                        ctx.clone(),
+                        response_msg,
+                    ))).await.ok();
+                }
                 "attach" => {
                     handle_attach(&ctx, &command).await;
                 }
@@ -1675,6 +1695,8 @@ impl EventHandler for Handler {
                 .add_option(keyword_option.clone()),
             CreateCommand::new("hearts")
                 .description("Check the health of all worker threads"),
+            CreateCommand::new("workers")
+                .description("Show active worker slots and assigned jobs"),
             CreateCommand::new("probe")
                 .description("Download and ffprobe a torrent. Then can be used to encode with its own subtitle.")
                 .add_option(

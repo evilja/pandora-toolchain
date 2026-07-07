@@ -8,7 +8,9 @@ use crate::pnworker::messages::{
     CTORRENT_DONE, CTORRENT_FAIL, JOB_CANCELLED, MessagePayload, TORRENT_DONE,
     TORRENT_DUPLICATE_WAIT, TORRENT_FAIL, TORRENT_PROG, TORRENT_PROG_SELECT, WORKER_ASSIGN,
 };
-use crate::pnworker::tools::{PNCURL_GSCRAPE, PNCURL_TORRENT, PNP2P_SELECT, PNP2P_TORRENT};
+use crate::pnworker::tools::{
+    PNCURL_DIRECT, PNCURL_GSCRAPE, PNCURL_TORRENT, PNP2P_SELECT, PNP2P_TORRENT,
+};
 use crate::pnworker::util::PathValue;
 use crate::pnworker::util::string_byte_to_mb;
 use crate::pnworker::util::{ToolResult, WorkerNamePool, job_cancelled, run_tool};
@@ -68,6 +70,7 @@ async fn run_download_job(
 ) {
     let (directory, torrent, job_id, file_index, preserve_all) = data;
     let mut proto = Protocol::new(vec![1]);
+    let worker_key = format!("pn-download-{}", worker_name);
     tx.try_send((
         job_id,
         MessagePayload::Progress(WORKER_ASSIGN, vec![format!("dwl-{}", worker_name)]),
@@ -118,12 +121,129 @@ async fn run_download_job(
                 &HashMap::from([
                     ("LINK", PathValue::from(link.clone())),
                     ("OPCODE", PathValue::from(target_path.display().to_string())),
+                    ("NEGKEY", PathValue::from(worker_key.clone())),
                     (
                         "LOGFILE",
                         PathValue::from(
                             directory
                                 .join("log")
                                 .join(format!("PNcurlGS{}.log", job_id))
+                                .display()
+                                .to_string(),
+                        ),
+                    ),
+                    (
+                        "CANCELFILE",
+                        PathValue::from(directory.join("CANCEL").display().to_string()),
+                    ),
+                ]),
+                job_id,
+                &mut proto,
+                |data| {
+                    let out: u16 = match data.get(0).and_then(|v| v.parse()) {
+                        Some(v) => v,
+                        None => return None,
+                    };
+                    match out {
+                        0 => {
+                            let payload = data.get(1).and_then(|v| v.as_multi())?;
+                            let percent = payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
+                            let progmb = payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
+                            let totlmb = payload.get(2).and_then(|v| v.as_str()).unwrap_or("0");
+                            tx.try_send((
+                                job_id,
+                                MessagePayload::Progress(
+                                    TORRENT_PROG,
+                                    vec![
+                                        percent.to_string(),
+                                        string_byte_to_mb(progmb).to_string(),
+                                        string_byte_to_mb(totlmb).to_string(),
+                                    ],
+                                ),
+                                None,
+                            ))
+                            .ok();
+                        }
+                        1 => return Some(ToolResult::Success),
+                        2 => return Some(ToolResult::Fail),
+                        3 => return Some(ToolResult::Cancel),
+                        _ => {}
+                    }
+                    None
+                },
+            )
+            .await;
+
+            match result {
+                ToolResult::Success => {
+                    tx.send((
+                        job_id,
+                        MessagePayload::Static(TORRENT_DONE),
+                        Some(Stage::Downloaded),
+                    ))
+                    .await
+                    .unwrap();
+                }
+                ToolResult::Fail => {
+                    tx.send((
+                        job_id,
+                        MessagePayload::Static(TORRENT_FAIL),
+                        Some(Stage::Failed),
+                    ))
+                    .await
+                    .unwrap();
+                }
+                ToolResult::Cancel => {
+                    tx.send((
+                        job_id,
+                        MessagePayload::Static(JOB_CANCELLED),
+                        Some(Stage::Cancelled),
+                    ))
+                    .await
+                    .unwrap();
+                }
+            }
+            println!("[Pandora Downloader] End of Session");
+            return;
+        }
+        TorrentType::Direct(ref link) => {
+            let torrent_dir = directory.join("contents").join("torrent");
+            if let Err(e) = create_dir_all(&torrent_dir).await {
+                eprintln!("[Pandora Downloader] Failed to create torrent dir: {e}");
+                tx.send((
+                    job_id,
+                    MessagePayload::Static(TORRENT_FAIL),
+                    Some(Stage::Failed),
+                ))
+                .await
+                .unwrap();
+                return;
+            }
+            let target_path = torrent_dir.join("input.mkv");
+
+            if job_cancelled(&directory) {
+                tx.send((
+                    job_id,
+                    MessagePayload::Static(JOB_CANCELLED),
+                    Some(Stage::Cancelled),
+                ))
+                .await
+                .unwrap();
+                return;
+            }
+            let result = run_tool(
+                &pncurl_path,
+                PNCURL_DIRECT,
+                &HashMap::from([
+                    ("LINK", PathValue::from(link.clone())),
+                    ("OPCODE", PathValue::from(target_path.display().to_string())),
+                    ("NEGKEY", PathValue::from(worker_key.clone())),
+                    (
+                        "LOGFILE",
+                        PathValue::from(
+                            directory
+                                .join("log")
+                                .join(format!("PNcurlD{}.log", job_id))
                                 .display()
                                 .to_string(),
                         ),
@@ -224,6 +344,7 @@ async fn run_download_job(
                             "OPCODE",
                             PathValue::from(fetch_torrent.display().to_string()),
                         ),
+                        ("NEGKEY", PathValue::from(worker_key.clone())),
                         (
                             "LOGFILE",
                             PathValue::from(
@@ -302,6 +423,7 @@ async fn run_download_job(
                         "TORRENTTYPE",
                         PathValue::from(format!("--{}", torrent.get_arg())),
                     ),
+                    ("NEGKEY", PathValue::from(worker_key.clone())),
                     ("SAVE", PathValue::from(torrent_dir.display().to_string())),
                     (
                         "CANCELFILE",
@@ -360,6 +482,7 @@ async fn run_download_job(
                         "TORRENTTYPE",
                         PathValue::from(format!("--{}", torrent.get_arg())),
                     ),
+                    ("NEGKEY", PathValue::from(worker_key.clone())),
                     ("SAVE", PathValue::from(torrent_dir.display().to_string())),
                     ("INDEX", PathValue::from(idx.to_string())),
                     (

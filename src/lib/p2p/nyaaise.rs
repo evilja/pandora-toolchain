@@ -10,6 +10,7 @@ pub enum TorrentType {
     Magnet(String),
     Link(String),
     GDrive(String),
+    Direct(String),
 }
 impl TorrentType {
     pub fn get(&self) -> String {
@@ -17,12 +18,14 @@ impl TorrentType {
             TorrentType::Link(a) => a.clone(),
             TorrentType::Magnet(a) => a.clone(),
             TorrentType::GDrive(a) => a.clone(),
+            TorrentType::Direct(a) => a.clone(),
         }
     }
     pub fn get_arg(&self) -> String {
         match self {
             TorrentType::Magnet(_) => "magnet".to_string(),
             TorrentType::GDrive(_) => "gdrive".to_string(),
+            TorrentType::Direct(_) => "direct".to_string(),
             _ => "nomagnet".to_string()
         }
     }
@@ -30,6 +33,7 @@ impl TorrentType {
         match self {
             TorrentType::Link(a) => a.clone(),
             TorrentType::GDrive(a) => a.clone(),
+            TorrentType::Direct(a) => a.clone(),
             TorrentType::Magnet(_) => String::from("Magnet linki gösterilmiyor.")
         }
     }
@@ -86,6 +90,22 @@ const PATTERNS: [Pattern; 8] = [
     Pattern { startswith: Some("https://nyaa.land/view/"), endswith: None, method: Method::Eliminate },
 ];
 
+fn is_direct_video_url(input: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(input) else {
+        return false;
+    };
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return false;
+    }
+    let Some(segment) = url.path_segments().and_then(|mut s| s.next_back()) else {
+        return false;
+    };
+    let lower = segment.to_ascii_lowercase();
+    ["mkv", "mp4", "m4v", "mov", "avi", "webm", "ts", "m2ts"]
+        .iter()
+        .any(|ext| lower.ends_with(&format!(".{}", ext)))
+}
+
 pub fn nyaaise(str: &str) -> TorrentType {
 
     if str.starts_with("https://nyaa") {
@@ -104,6 +124,8 @@ pub fn nyaaise(str: &str) -> TorrentType {
         || str.starts_with("https://drive.usercontent.google.com/")
     {
         return TorrentType::GDrive(str.to_string())
+    } else if is_direct_video_url(str) {
+        return TorrentType::Direct(str.to_string())
     }
     TorrentType::Link(str.to_string())
 }
@@ -128,6 +150,9 @@ mod tests {
             TorrentType::GDrive(_) => {
                 panic!("GDrive not expected")
             }
+            TorrentType::Direct(_) => {
+                panic!("Direct not expected")
+            }
         }
     }
     #[test]
@@ -144,6 +169,9 @@ mod tests {
             }
             TorrentType::GDrive(_) => {
                 panic!("GDrive not expected")
+            }
+            TorrentType::Direct(_) => {
+                panic!("Direct not expected")
             }
         }
     }
@@ -162,6 +190,9 @@ mod tests {
             TorrentType::GDrive(_) => {
                 panic!("GDrive not expected")
             }
+            TorrentType::Direct(_) => {
+                panic!("Direct not expected")
+            }
         }
     }
     #[test]
@@ -179,6 +210,9 @@ mod tests {
             TorrentType::GDrive(_) => {
                 panic!("GDrive not expected")
             }
+            TorrentType::Direct(_) => {
+                panic!("Direct not expected")
+            }
         }
     }
     #[test]
@@ -195,6 +229,23 @@ mod tests {
             }
             TorrentType::GDrive(_) => {
                 panic!("GDrive not expected")
+            }
+            TorrentType::Direct(_) => {
+                panic!("Direct not expected")
+            }
+        }
+    }
+
+    #[test]
+    fn direct_video() {
+        let link = "https://pub9.animeout.com/series/00RAPIDBOT/Snack%20Basue/[AnimeOut]%20Snack%20Basue%20-%2008%201080pp%20[4EE8E501][1080pp][SubsPlease][RapidBot].mkv";
+        let ab = nyaaise(link);
+        match ab {
+            TorrentType::Direct(a) => {
+                assert_eq!(link, a);
+            }
+            _ => {
+                panic!("Direct not detected")
             }
         }
     }

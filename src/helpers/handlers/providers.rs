@@ -62,6 +62,7 @@ pub async fn handle_providers(ctx: &Context, command: &serenity::all::CommandInt
                     active_line("Any .torrent link"),
                     active_line("Any magnet"),
                     active_line("Google Drive links"),
+                    active_line("Direct video file links"),
                 ].join("\n"), false)
                 .field("Encode", active_line("CPU encode provided by Pandora"), false)
                 .field("Upload", upload_lines, false)

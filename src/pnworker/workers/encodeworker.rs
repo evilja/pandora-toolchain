@@ -51,6 +51,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     ("OUTPUT", PathValue::from(path_to_ffmpeg(directory.join("work").join("output.mp4").as_path()))),
                     ("CANDIDATES", PathValue::from(rest)),
                     ("MODE", PathValue::from(mode.to_string())),
+                    ("NEGKEY", PathValue::from("pn-encode-main".to_string())),
                     ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),
                     ("LOGFILE", PathValue::from(directory.join("log").join(format!("PNmpeg_Keycode{}.log", job_id)).display().to_string())),
                 ]);
@@ -112,6 +113,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     ("ASS",        PathValue::from(path_to_ffmpeg(directory.join("contents").join("subtitle.ass").as_path()))),
                     ("FONTCONFIG", PathValue::from(path_to_ffmpeg(fontconfig_dir.as_path()))),
                     ("PRESET",     PathValue::from(format!("--{}", insert))),
+                    ("NEGKEY",     PathValue::from("pn-encode-main".to_string())),
                     ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),
                     ("LOGFILE",    PathValue::from(directory.join("log").join(format!("PNmpeg_Encode{}.log", job_id)).display().to_string())),
                 ]),
@@ -177,6 +179,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                         ("INPUT",      PathValue::from(path_to_ffmpeg(directory.join("work").join("output_noconcat.mp4").as_path()))),
                         ("OUTPUT",     PathValue::from(path_to_ffmpeg(directory.join("work").join("output.mp4").as_path()))),
                         ("CANDIDATES", PathValue::from(candidates.clone())),
+                        ("NEGKEY",     PathValue::from("pn-encode-main".to_string())),
                         ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),
                         ("LOGFILE",    PathValue::from(directory.join("log").join(format!("PNmpeg_Concat{}.log", job_id)).display().to_string())),
                     ]),

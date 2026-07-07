@@ -16,11 +16,11 @@ The level hierarchy is `witch > upper > admin > fansubber > authorize` (rank 4/3
 
 ## Discord commands
 
-- `/encode <torrent> <subtitle attachment> [preset] [concat]` — encode with an attached ASS file. Accepts torrent URLs, magnet links, and Google Drive links.
+- `/encode <torrent> <subtitle attachment> [preset] [concat]` — encode with an attached ASS file. Accepts torrent URLs, magnet links, Google Drive links, and direct video file links.
 - `/providers` — public command that shows built-in download/encode support and currently attached provider APIs: upload providers from env/global+server Drive config (Google Drive, Doodstream, LuluStream, Voe, Abyss), distribution providers (AnimeciX, AniSub), and persistence providers inferred from the server Forgejo/GitHub org config. Implemented in `src/helpers/handlers/providers.rs` and available to everyone like `/help`.
-- `/probe <torrent>` — download + ffprobe a torrent, list the files inside as a numbered table, then idle at `Probed` for 180s so a follow-up `/pancode` can pick a file. GDrive is rejected.
+- `/probe <torrent>` — download + ffprobe a torrent, list the files inside as a numbered table, then idle at `Probed` for 180s so a follow-up `/pancode` can pick a file. GDrive and direct video links are rejected.
 - `/pancode <job_id> <index> <subtitle attachment> [preset] [concat]` — re-encode using a previously probed torrent's `fetch.torrent` (the probe job's `contents/fetch.torrent` is copied into the new job's dir). When this finishes, the parent probe job is archived.
-- `/backup <torrent>` — download + Drive-only re-upload (no streaming hosts). GDrive is supported (treated as a download from a non-torrent source).
+- `/backup <torrent>` — download + Drive-only re-upload (no streaming hosts). GDrive and direct video links are supported (treated as downloads from non-torrent sources).
 - `/gitcode <torrent> <subtitle_url> [preset] [concat]` — like `/encode` but the subtitle is fetched from a URL. `https://github.com/<u>/<r>/blob/<b>/<path>` is auto-rewritten to `https://raw.githubusercontent.com/<u>/<r>/<b>/<path>`; other URLs pass through. 60s HTTP timeout.
 - `/smartcode <episode> [link] [preset] [concat]` — merge the channel's attached TL (required) and TS (optional) subtitles for an episode via `pnass --merge`, upload the merged result to the channel's repo as `Release - <name> - E<NN>.ass`, upsert `SOURCE.md`, then queue a regular `/encode` job against the merged file. `link` is optional: if absent, the source link is read from `{pad2(episode)}/SOURCE.md` (parser skips blank/`;`-prefixed lines and strips a leading `#`); the existing `SOURCE.md` is left untouched in that case. See [`/smartcode`](#smartcode) for the merge details.
 - `/source <episode> <link>` — write `{pad2(episode)}/SOURCE.md` (content `# <link>\n`) to the channel's attached Forgejo repo. Requires the channel to be attached and `episode` in `1..=episode_count`. Commit message: `"Set source link"`. No worker, no encoder — pure in-handler Forgejo upsert.
@@ -29,6 +29,7 @@ The level hierarchy is `witch > upper > admin > fansubber > authorize` (rank 4/3
 - `/detach` — **upper-tier**; removes the channel's `meta.toml` attachment; the Forgejo repo is left untouched. In-handler, no worker. (Also happens automatically when the channel/thread is deleted — see the `meta.toml` note in [PROJECT.md](PROJECT.md).)
 - `/destruct` — **upper-tier**; deletes the channel's Forgejo repo (`delete_repo`) **and** removes the attachment. Irreversible. In-handler, no worker.
 - `/hearts` — admin; reports each shrine layer's `alive` / `last_beat_secs` / `reboot_count`.
+- `/workers` — admin; shows a Discord embed with each download, encode, probe, and upload worker slot and its active job, plus queued/cache-forward waiting work.
 - `/gitsync` — admin; `git fetch` + fast-forward, kills the shrine, archives `DB/work`, `std::process::exit(0)` to restart.
 - `/gitquery` — admin; disables new encode jobs, waits for current encode jobs to finish, then runs the same sync/restart path as `/gitsync`.
 - `/configure <language> [forgejo] [wrapstyle]` — admin; writes `DB/config/<guild_id>/meta.pandora` and records the channel the command was issued in as the announcement channel. `language` is `EN` / `TR` / `JP` (string choice). `forgejo` is optional — leave empty to unset. `wrapstyle` controls ASS WrapStyle normalization (`dont_touch` default, or `0`/`1`/`2`/`3`). `/edit` can update the same field without rewriting the rest of the config.

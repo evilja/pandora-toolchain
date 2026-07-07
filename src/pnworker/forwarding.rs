@@ -181,6 +181,7 @@ fn preset_forward_key(preset: &Preset) -> serde_json::Value {
 fn encode_source_keys(job: &Job) -> Vec<String> {
     match &job.torrent {
         TorrentType::GDrive(link) => vec![format!("gdrive:{}", link)],
+        TorrentType::Direct(link) => vec![format!("direct:{}", link)],
         TorrentType::Magnet(magnet) => magnet_info_hash(magnet)
             .map(|hash| vec![format!("torrent:{}", hash)])
             .unwrap_or_else(|| vec![format!("magnet:{:x}", md5::compute(magnet.as_bytes()))]),

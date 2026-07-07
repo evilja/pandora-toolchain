@@ -24,6 +24,7 @@ pub(crate) fn input_source_keys(job: &Job) -> Vec<String> {
     let mut keys = Vec::new();
     match &job.torrent {
         TorrentType::GDrive(link) => keys.push(format!("gdrive:{}", link)),
+        TorrentType::Direct(link) => keys.push(format!("direct:{}", link)),
         TorrentType::Magnet(magnet) => {
             if let Some(hash) = magnet_info_hash(magnet) {
                 keys.push(format!("torrent:{}", hash));

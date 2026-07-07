@@ -2,6 +2,7 @@ use pandora_toolchain::{lib::http::curl::core::{
         Req,
         RpbData,
         Host,
+        DownloadStatus,
     },
     lib::http::curl::gscrape::GScrape,
 };
@@ -100,9 +101,14 @@ async fn main() {
             ).unwrap()
         )
     } else if !args.drive {
-        let ok = request.send(args.opcode).await;
-        let code = if ok { "1" } else { "2" };
-        let msg = if ok { "DONE" } else { "FAIL" };
+        let status = request
+            .send_with_progress(args.opcode, Some(&proto), Some(&neg))
+            .await;
+        let (code, msg, exit_failed) = match status {
+            DownloadStatus::Success => ("1", "DONE", false),
+            DownloadStatus::Fail => ("2", "FAIL", true),
+            DownloadStatus::Cancel => ("3", "CANCELLED", false),
+        };
         println!("{}",
             pn_emit!(
                 protocol = proto,
@@ -111,7 +117,7 @@ async fn main() {
                 data   = [code, msg]
             ).unwrap()
         );
-        if !ok {
+        if exit_failed {
             std::process::exit(1);
         }
     } else if let Some(a) = args.env {

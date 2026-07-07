@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use serenity::all::{ActivityData, Context, EditMessage, Message, OnlineStatus};
+use serenity::all::{ActivityData, Context, CreateEmbed, EditMessage, Message, OnlineStatus};
 use tokio::time::{sleep, Duration};
 use crate::pnworker::core::Job;
 use crate::pnworker::messages::{MessagePayload, create_job_embed};
@@ -31,6 +31,16 @@ impl Frontend {
         match self {
             Frontend::Discord { ctx, msg } => {
                 let _ = msg.edit(&**ctx, EditMessage::new().content(text.to_string())).await;
+            }
+            Frontend::Web => {}
+            Frontend::None => {}
+        }
+    }
+
+    pub async fn set_embed(&mut self, embed: CreateEmbed) {
+        match self {
+            Frontend::Discord { ctx, msg } => {
+                let _ = msg.edit(&**ctx, EditMessage::new().content("").embed(embed)).await;
             }
             Frontend::Web => {}
             Frontend::None => {}

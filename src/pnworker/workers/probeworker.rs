@@ -45,7 +45,7 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             // Phase 1: if Link, fetch .torrent file first (same as downloadworker)
             let arg_opcode: String;
             match torrent {
-                TorrentType::GDrive(_) => {
+                TorrentType::GDrive(_) | TorrentType::Direct(_) => {
                     tx.send((
                         job_id,
                         MessagePayload::Static(PROBE_FAIL),
@@ -91,6 +91,7 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                                         .to_string(),
                                 ),
                             ),
+                            ("NEGKEY", PathValue::from("pn-probe-main".to_string())),
                         ]),
                         job_id,
                         &mut proto,
@@ -160,6 +161,7 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                         "TORRENTTYPE",
                         PathValue::from(format!("--{}", torrent.get_arg())),
                     ),
+                    ("NEGKEY", PathValue::from("pn-probe-main".to_string())),
                 ]),
                 job_id,
                 &mut proto,

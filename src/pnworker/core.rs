@@ -32,7 +32,7 @@ use crate::pnworker::workers::encodeworker::*;
 use crate::pnworker::workers::probeworker::*;
 use crate::pnworker::workers::uploadworker::*;
 use crate::pnworker::util::job_cancelled;
-use serenity::all::{Context, Message};
+use serenity::all::{Context, CreateEmbed, Message};
 use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
@@ -774,6 +774,10 @@ async fn handle_half_job(
             }
             frontend.set_text(&embed_text).await;
         }
+        JobType::Workers => {
+            let mut frontend = halfjob.frontend;
+            frontend.set_embed(create_workers_embed(queue)).await;
+        }
         JobType::GitSync => {
             run_gitsync(halfjob.frontend, shrine).await;
         }
@@ -843,6 +847,100 @@ async fn run_gitsync(mut frontend: Frontend, shrine: &mut TypedShrine<WorkerMsg>
 enum CancelDisposition {
     Immediate,
     CancelFile,
+}
+
+fn create_workers_embed(queue: &[Job]) -> CreateEmbed {
+    let mut embed = CreateEmbed::new()
+        .title("Pandora workers")
+        .description(format!("{} active queue item(s)", queue.len()));
+    for slot in [
+        "dwl-kawari",
+        "dwl-fuan",
+        "dwl-odo",
+        "dwl-shitai",
+        "enc-main",
+        "prb-main",
+        "upl-tsuki",
+        "upl-sora",
+        "upl-tenki",
+        "upl-suisei",
+    ] {
+        embed = embed.field(slot, worker_slot_text(queue, slot), true);
+    }
+    let waiting = queue
+        .iter()
+        .filter(|job| worker_waiting(&job.worker))
+        .map(worker_job_line)
+        .collect::<Vec<_>>();
+    if !waiting.is_empty() {
+        embed = embed.field("waiting", waiting.join("\n"), false);
+    }
+    embed
+}
+
+fn worker_waiting(worker: &str) -> bool {
+    matches!(
+        worker,
+        "dwl-pending" | "dwl-cache" | "upl-pending" | "enc-forward" | "dwl-forward" | "upl-forward"
+    ) || worker.starts_with("key-")
+}
+
+fn worker_slot_text(queue: &[Job], worker: &str) -> String {
+    queue
+        .iter()
+        .find(|job| job.worker == worker && worker_active_stage(job.ready))
+        .map(worker_job_line)
+        .unwrap_or_else(|| "idle".to_string())
+}
+
+fn worker_active_stage(stage: Stage) -> bool {
+    matches!(
+        stage,
+        Stage::Probing | Stage::Downloading | Stage::Encoding | Stage::Uploading
+    )
+}
+
+fn worker_job_line(job: &Job) -> String {
+    format!(
+        "#{} {} ({})",
+        job.job_id,
+        job_type_label(job.job_type),
+        stage_label(job.ready)
+    )
+}
+
+fn job_type_label(job_type: JobType) -> &'static str {
+    match job_type {
+        JobType::Encode => "encode",
+        JobType::Cancel => "cancel",
+        JobType::Hearts => "hearts",
+        JobType::Workers => "workers",
+        JobType::GitSync => "gitsync",
+        JobType::Probe => "probe",
+        JobType::Pancode => "pancode",
+        JobType::Scrape => "scrape",
+        JobType::Backup => "backup",
+        JobType::BackupAll => "backupall",
+        JobType::Keycode => "keycode",
+        JobType::GitQuery => "gitquery",
+    }
+}
+
+fn stage_label(stage: Stage) -> &'static str {
+    match stage {
+        Stage::Queued => "queued",
+        Stage::Probing => "probing",
+        Stage::Probed => "probed",
+        Stage::Downloading => "downloading",
+        Stage::Downloaded => "downloaded",
+        Stage::Encoding => "encoding",
+        Stage::Encoded => "encoded",
+        Stage::Uploading => "uploading",
+        Stage::Uploaded => "uploaded",
+        Stage::Failed => "failed",
+        Stage::Declined => "declined",
+        Stage::Cancelled => "cancelled",
+    }
 }
 
 fn cancel_disposition(job: &Job) -> CancelDisposition {
@@ -1633,6 +1731,7 @@ pub enum JobType {
     Encode = 001,
     Cancel = 002,
     Hearts = 003,
+    Workers = 012,
     GitSync = 004,
     Probe = 005,
     Pancode = 006,
@@ -1702,6 +1801,24 @@ impl HalfJob {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or(Duration::from_secs(0)),
             job_type: JobType::Hearts,
+            frontend: Frontend::discord(context, msg),
+        }
+    }
+    pub fn new_workers(
+        author: u64,
+        channel_id: u64,
+        job_id: u64,
+        context: Context,
+        msg: Message,
+    ) -> Self {
+        Self {
+            author,
+            channel_id,
+            job_id,
+            requested_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or(Duration::from_secs(0)),
+            job_type: JobType::Workers,
             frontend: Frontend::discord(context, msg),
         }
     }

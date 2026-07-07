@@ -7,19 +7,21 @@ use crate::{
         },
     },
     lib::logging::core::LoggingHandle,
+    lib::protocol::core::{Protocol, Schema},
+    lib_pn_data, lib_pn_emit, lib_pn_schema,
     log,
 };
 use reqwest::{Client, multipart};
 use serde::Deserialize;
-use std::fs::File;
-use std::io::{Error, ErrorKind, Write};
-use std::path::Path;
+use std::io::{Error, ErrorKind};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::{collections::HashMap, path::PathBuf, time::Duration};
-use tokio::io::{AsyncRead, ReadBuf};
+use tokio::fs::File;
+use tokio::io::{AsyncRead, AsyncWriteExt, ReadBuf};
 use tokio::sync::mpsc::UnboundedSender;
+use tokio::time::Instant;
 use tokio_util::io::ReaderStream;
 
 const DRIVE_FOLDER_MIME: &str = "application/vnd.google-apps.folder";
@@ -172,6 +174,12 @@ pub enum RpbData {
     Cancel(Host),
 }
 
+pub enum DownloadStatus {
+    Success,
+    Fail,
+    Cancel,
+}
+
 pub struct Req {
     pub target: String,
     pub log: Option<PathBuf>,
@@ -184,13 +192,30 @@ fn is_cancelled(cfile: &Option<PathBuf>) -> bool {
 
 impl Req {
     pub async fn send(&self, path: String) -> bool {
-        match self.download(&path).await {
-            Ok(_) => true,
-            Err(_) => false,
+        matches!(
+            self.send_with_progress(path, None, None).await,
+            DownloadStatus::Success
+        )
+    }
+
+    pub async fn send_with_progress(
+        &self,
+        path: String,
+        proto: Option<&Protocol>,
+        neg: Option<&str>,
+    ) -> DownloadStatus {
+        match self.download(&path, proto, neg).await {
+            Ok(status) => status,
+            Err(_) => DownloadStatus::Fail,
         }
     }
 
-    async fn download(&self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    async fn download(
+        &self,
+        path: &str,
+        proto: Option<&Protocol>,
+        neg: Option<&str>,
+    ) -> Result<DownloadStatus, Box<dyn std::error::Error>> {
         let target = match crate::lib::http::net::sanitize_fetch_url(&self.target).await {
             Ok(u) => u,
             Err(e) => return Err(e.into()),
@@ -211,18 +236,11 @@ impl Req {
         }
         log!(handle, "Request succeeded\n");
 
-        let bytes = match response.bytes().await {
-            Ok(b) => {
-                log!(handle, "Byte conversion succeeded\n");
-                b
-            }
-            Err(a) => {
-                log!(handle, &format!("Byte conversion failed: {a}\n"));
-                return Err(a.into());
-            }
-        };
-
-        let mut file = match File::create(Path::new(path)) {
+        let total = response.content_length().unwrap_or(0);
+        let mut downloaded = 0u64;
+        let mut last_emit: Option<Instant> = None;
+        let mut response = response;
+        let mut file = match File::create(path).await {
             Ok(f) => {
                 log!(handle, &format!("File created: {path}\n"));
                 f
@@ -232,11 +250,57 @@ impl Req {
                 return Err(a.into());
             }
         };
-        file.write_all(&bytes).unwrap();
+        while let Some(chunk) = response.chunk().await? {
+            if is_cancelled(&self.cfile) {
+                if let (Some(proto), Some(neg)) = (proto, neg) {
+                    println!(
+                        "{}",
+                        lib_pn_emit!(
+                            protocol = proto,
+                            negkey = neg,
+                            schema = [leaf, leaf],
+                            data = ["3", "CANCELFILE"]
+                        )
+                        .unwrap()
+                    );
+                }
+                if let Some(mut a) = handle {
+                    a.flush().await;
+                }
+                return Ok(DownloadStatus::Cancel);
+            }
+            file.write_all(&chunk).await?;
+            downloaded += chunk.len() as u64;
+            let should_emit = match last_emit {
+                Some(t) => t.elapsed() >= Duration::from_secs(5),
+                None => true,
+            };
+            if should_emit {
+                if let (Some(proto), Some(neg)) = (proto, neg) {
+                    let percent = if total == 0 {
+                        0
+                    } else {
+                        ((downloaded as f64 / total as f64) * 100.0).ceil() as u64
+                    };
+                    println!(
+                        "{}",
+                        lib_pn_emit!(
+                            protocol = proto,
+                            negkey = neg,
+                            schema = [leaf, [leaf, leaf, leaf]],
+                            data = ["0", [percent, downloaded, total]]
+                        )
+                        .unwrap()
+                    );
+                }
+                last_emit = Some(Instant::now());
+            }
+        }
+        file.flush().await?;
         if let Some(mut a) = handle {
             a.flush().await;
         }
-        Ok(())
+        Ok(DownloadStatus::Success)
     }
 
     async fn filehost_upload(
