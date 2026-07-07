@@ -498,6 +498,30 @@ impl AkiraClient {
         self.post("/admin/animes", payload).await
     }
 
+    pub async fn resolve_anime(&self, query: &AnimeResolveQuery) -> AkiraResult<AnimeResolveRead> {
+        self.get_query("/admin/animes/resolve", query).await
+    }
+
+    pub async fn resolve_anime_by_mal_id(&self, mal_id: i64) -> AkiraResult<AnimeResolveRead> {
+        self.resolve_anime(&AnimeResolveQuery {
+            mal_id: Some(mal_id),
+            anilist_id: None,
+        })
+        .await
+    }
+
+    pub async fn resolve_anime_by_anilist_id(&self, anilist_id: i64) -> AkiraResult<AnimeResolveRead> {
+        self.resolve_anime(&AnimeResolveQuery {
+            mal_id: None,
+            anilist_id: Some(anilist_id),
+        })
+        .await
+    }
+
+    pub async fn import_anime(&self, payload: &AnimeImportRequest) -> AkiraResult<AnimeDetail> {
+        self.post("/admin/animes/import", payload).await
+    }
+
     pub async fn update_anime(
         &self,
         slug: &str,
@@ -530,17 +554,6 @@ impl AkiraClient {
     ) -> AkiraResult<AnimeDetail> {
         self.put(&format!("/admin/animes/{}/platform-links", slug), payload)
             .await
-    }
-
-    pub async fn fetch_mal_for_anime(&self, slug: &str, mal_id: i64) -> AkiraResult<AnimeDetail> {
-        self.send(
-            self.request(Method::POST, &format!("/admin/animes/{}/fetch-mal", slug))
-                .query(&IdQuery {
-                    id: None,
-                    mal_id: Some(mal_id),
-                }),
-        )
-        .await
     }
 
     pub async fn create_episode(
@@ -674,10 +687,7 @@ impl AkiraClient {
                 Method::POST,
                 &format!("/admin/animes/{}/fetch-anilist", slug),
             )
-            .query(&IdQuery {
-                id: Some(id),
-                mal_id: None,
-            }),
+            .query(&IdQuery { id: Some(id) }),
         )
         .await
     }

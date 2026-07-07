@@ -287,6 +287,8 @@ pub struct AnimeDetail {
     pub drive_index_url: Option<String>,
     pub platform_slug: Option<String>,
     pub animecix_id: Option<String>,
+    pub mal_id: Option<i64>,
+    pub anilist_id: Option<i64>,
     pub disabled_platforms: Vec<String>,
     pub external_links: Vec<AnimeExternalLinkRead>,
     pub default_staff: Vec<EpisodeStaffCreditRead>,
@@ -457,6 +459,10 @@ pub struct AnimeCreate {
     pub platform_slug: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub animecix_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mal_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anilist_id: Option<i64>,
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
@@ -520,11 +526,48 @@ pub struct AnimeUpdate {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub animecix_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub mal_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anilist_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub disabled_platforms: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub featured_order: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnimeImportRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anilist_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mal_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title_tr: Option<String>,
+    #[serde(default)]
+    pub current_episode: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drive_index_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub animecix_id: Option<String>,
+    #[serde(default = "default_true")]
+    pub comments_enabled: bool,
+    #[serde(default)]
+    pub skip_webhook: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnimeResolveRead {
+    pub anilist_id: Option<i64>,
+    pub mal_id: Option<i64>,
+    pub title: String,
+    pub slug: String,
+    pub platform_slug: Option<String>,
+    pub exists: bool,
+    pub existing_slug: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

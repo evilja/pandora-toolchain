@@ -24,31 +24,14 @@ pub async fn handle_akiraconfirm(ctx: &Context, command: &serenity::all::Command
         Some(s) => s,
         None => return,
     };
-    let slug = match option_trimmed(command, "slug") {
-        Some(s) => s,
-        None => {
-            let server_id = match command.guild_id {
-                Some(id) => id.get(),
-                None => {
-                    command_error(ctx, command, "Error: `slug` is required outside a server.").await;
-                    return;
-                }
-            };
-            match read_channel_meta(server_id, command.channel_id.get()).slug {
-                Some(s) if !s.trim().is_empty() => s,
-                _ => {
-                    command_error(
-                        ctx,
-                        command,
-                        "Error: this channel has no attached anime slug. Provide `slug` or run `/attach`/`/init` first.",
-                    )
-                    .await;
-                    return;
-                }
-            }
-        }
-    };
-    let folder = option_trimmed(command, "folder").unwrap_or_else(|| slug.clone());
+    let explicit_slug = option_trimmed(command, "slug");
+    let channel_meta = command
+        .guild_id
+        .map(|server_id| read_channel_meta(server_id.get(), command.channel_id.get()));
+    if explicit_slug.is_none() && channel_meta.is_none() {
+        command_error(ctx, command, "Error: `slug` is required outside a server.").await;
+        return;
+    }
 
     if command
         .create_response(
@@ -144,6 +127,35 @@ pub async fn handle_akiraconfirm(ctx: &Context, command: &serenity::all::Command
             return;
         }
     };
+    let client = match AkiraClient::with_bearer(akira_api, akira_token) {
+        Ok(c) => c,
+        Err(e) => {
+            akiraconfirm_response(ctx, command, format!("Akira client error: {}", e)).await;
+            return;
+        }
+    };
+    let fallback_slug = explicit_slug.or_else(|| {
+        channel_meta
+            .as_ref()
+            .and_then(|meta| meta.slug.as_ref())
+            .map(|slug| slug.trim())
+            .filter(|slug| !slug.is_empty())
+            .map(|slug| slug.to_string())
+    });
+    let slug = match resolve_official_akira_slug(
+        &client,
+        channel_meta.as_ref().and_then(|meta| meta.mal_id),
+        fallback_slug,
+    )
+    .await
+    {
+        Ok(slug) => slug,
+        Err(e) => {
+            akiraconfirm_response(ctx, command, e).await;
+            return;
+        }
+    };
+    let folder = option_trimmed(command, "folder").unwrap_or_else(|| slug.clone());
     let links = match akira_episode_links(&uploaded, &index_base, &folder, &name) {
         Ok(v) => v,
         Err(e) => {
@@ -156,14 +168,6 @@ pub async fn handle_akiraconfirm(ctx: &Context, command: &serenity::all::Command
         .iter()
         .find(|link| link.kind == "goindex_player")
         .map(|link| link.url.clone());
-
-    let client = match AkiraClient::with_bearer(akira_api, akira_token) {
-        Ok(c) => c,
-        Err(e) => {
-            akiraconfirm_response(ctx, command, format!("Akira client error: {}", e)).await;
-            return;
-        }
-    };
     let episode_exists = match akira_episode_exists(&client, &slug, episode).await {
         Ok(exists) => exists,
         Err(e) => {
@@ -218,6 +222,23 @@ pub async fn handle_akiraconfirm(ctx: &Context, command: &serenity::all::Command
         ),
     )
     .await;
+}
+
+async fn resolve_official_akira_slug(
+    client: &AkiraClient,
+    mal_id: Option<u64>,
+    fallback_slug: Option<String>,
+) -> Result<String, String> {
+    if let Some(mal_id) = mal_id {
+        return client
+            .resolve_anime_by_mal_id(mal_id as i64)
+            .await
+            .map(|resolved| resolved.slug)
+            .map_err(|e| format!("Akira slug resolve failed: {}", e));
+    }
+    fallback_slug.ok_or_else(|| {
+        "Error: this channel has no MAL id or attached anime slug. Provide `slug` or run `/attach`/`/init` first.".to_string()
+    })
 }
 
 async fn akira_episode_exists(

@@ -69,8 +69,14 @@ pub(crate) struct StatusQuery<'a> {
 pub(crate) struct IdQuery {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct AnimeResolveQuery {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) mal_id: Option<i64>,
+    pub mal_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anilist_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
