@@ -312,7 +312,12 @@ fn substitute(template: &str, args: &[String]) -> String {
 
 pub fn create_job_embed(job: &Job, payload: &MessagePayload) -> CreateEmbed {
     let lang = &job.lang;
-    let status_message = format_payload(payload, lang);
+    let mut status_message = format_payload(payload, lang);
+    if let Some(eta) = active_encode_eta_text(payload) {
+        if !status_message.to_ascii_lowercase().contains("eta") {
+            status_message.push_str(&format!("\nETA: {}", eta));
+        }
+    }
     let preset_text = job
         .keep
         .as_ref()
@@ -382,6 +387,34 @@ pub fn create_job_embed(job: &Job, payload: &MessagePayload) -> CreateEmbed {
     embed
         .field(get_message(FIELD_PROGRESS, lang), status_message, false)
         .timestamp(serenity::model::Timestamp::now())
+}
+
+fn active_encode_eta_text(payload: &MessagePayload) -> Option<String> {
+    let MessagePayload::Progress(id, args) = payload else {
+        return None;
+    };
+    let (frame, total, fps) = if *id == ENCODE_PROG {
+        (args.get(1)?, args.get(2)?, args.get(3)?)
+    } else if *id == ENCODE_CONCAT_PROG {
+        (args.get(0)?, args.get(1)?, args.get(2)?)
+    } else {
+        return None;
+    };
+    let frame = frame.parse::<u64>().ok()?;
+    let total = total.parse::<u64>().ok()?;
+    let fps = fps.parse::<f64>().ok()?;
+    if fps <= 0.0 || total <= frame {
+        return None;
+    }
+    Some(format_eta(((total - frame) as f64 / fps).ceil() as u64))
+}
+
+fn format_eta(secs: u64) -> String {
+    let mins = secs.saturating_add(59) / 60;
+    if mins < 60 {
+        return format!("{}m", mins);
+    }
+    format!("{}h {:02}m", mins / 60, mins % 60)
 }
 
 fn warnings_field(warnings: &[String]) -> String {

@@ -1320,6 +1320,7 @@
     if (p.type === "encode") {
       var meta = pct(p.percent) + "% · frame " + esc(p.frame) + "/" + esc(p.total) + " · " + esc(p.fps) + " fps";
       if (p.kbps) meta += " · " + esc(p.kbps) + " kbit/s";
+      if (p.eta_secs != null) meta += " · ETA " + esc(formatQueueEta(p.eta_secs));
       return progMeta(meta);
     }
     if (p.type === "download") {

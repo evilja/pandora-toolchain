@@ -96,7 +96,7 @@ impl QueueEstimator {
         }
         for job in queue
             .iter()
-            .filter(|job| estimate_waiting_job(job) || active_encode_job(job))
+            .filter(|job| waiting_encode_job(job) || active_encode_job(job))
         {
             if self.frames_for_job(job).is_some() {
                 continue;
@@ -133,11 +133,10 @@ impl QueueEstimator {
     }
 }
 
-fn estimate_waiting_job(job: &Job) -> bool {
+fn waiting_encode_job(job: &Job) -> bool {
     job.forward_parent.is_none()
         && matches!(job.job_type, JobType::Encode | JobType::Pancode)
         && job.ready == Stage::Downloaded
-        && !job.encode_dispatched
 }
 
 fn duplicate_cache_waiting_job(job: &Job) -> bool {
@@ -148,13 +147,13 @@ fn duplicate_cache_waiting_job(job: &Job) -> bool {
 }
 
 fn render_queue_estimate_for_job(job: &Job) -> bool {
-    estimate_waiting_job(job) || duplicate_cache_waiting_job(job)
+    waiting_encode_job(job) || duplicate_cache_waiting_job(job)
 }
 
 fn active_encode_job(job: &Job) -> bool {
     job.forward_parent.is_none()
         && matches!(job.job_type, JobType::Encode | JobType::Pancode | JobType::Keycode)
-        && (job.ready == Stage::Encoding || job.encode_dispatched)
+        && job.ready == Stage::Encoding
 }
 
 pub(crate) fn queue_position(pos: usize, queue: &[Job]) -> usize {
@@ -220,6 +219,24 @@ pub(crate) fn format_eta(secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lib::p2p::nyaaise::TorrentType;
+
+    fn encode_job(id: u64, ready: Stage, dispatched: bool) -> Job {
+        let mut job = Job::new_api(
+            0,
+            0,
+            JobType::Encode,
+            Preset::Standard(None),
+            TorrentType::Link("https://example.invalid/input.torrent".to_string()),
+            Vec::new(),
+            "EN".to_string(),
+            None,
+        );
+        job.job_id = id;
+        job.ready = ready;
+        job.encode_dispatched = dispatched;
+        job
+    }
 
     #[test]
     fn remaining_secs_active_handles_normal_and_invalid_values() {
@@ -242,5 +259,19 @@ mod tests {
         assert_eq!(format_eta(0), "0m");
         assert_eq!(format_eta(1), "1m");
         assert_eq!(format_eta(65 * 60), "1h 05m");
+    }
+
+    #[test]
+    fn downloaded_dispatched_job_still_gets_queue_eta() {
+        let mut active = encode_job(1, Stage::Encoding, true);
+        active.encode_frame = Some(100);
+        active.encode_total = Some(220);
+        active.encode_fps = Some(24.0);
+        let waiting = encode_job(2, Stage::Downloaded, true);
+        let queue = vec![active, waiting];
+
+        assert!(render_queue_estimate_for_job(&queue[1]));
+        assert_eq!(queue_position(1, &queue), 2);
+        assert_eq!(estimate_wait_secs(1, &queue, &QueueEstimator::new()), Some(5));
     }
 }

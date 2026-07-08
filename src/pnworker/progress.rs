@@ -1,5 +1,6 @@
 use crate::lib::db::core::JobDb;
 use crate::pnworker::core::Stage;
+use crate::pnworker::estimate::remaining_secs_active;
 use crate::pnworker::messages::{
     BACKUPALL_PROG, ENCODE_CONCAT_PROG, ENCODE_PROG, MessagePayload, PROBE_ROW, TORRENT_PROG,
     TORRENT_PROG_SELECT, UPLOAD_BACKUP_PROG, UPLOAD_DONE, UPLOAD_PROG,
@@ -18,18 +19,22 @@ pub(crate) async fn persist_side_effects(
     if *id == ENCODE_PROG {
         let frame = args.get(1).cloned().unwrap_or_default();
         let total = args.get(2).cloned().unwrap_or_default();
+        let fps = args.get(3).cloned().unwrap_or_default();
         let v = serde_json::json!({
             "type": "encode", "frame": frame, "total": total,
-            "fps": args.get(3), "kbps": args.get(4),
+            "fps": fps, "kbps": args.get(4),
             "percent": encode_percent(&frame, &total),
+            "eta_secs": encode_eta_secs(&frame, &total, &fps),
         });
         db.update_progress(job_id, &v.to_string()).await.ok();
     } else if *id == ENCODE_CONCAT_PROG {
         let frame = args.get(0).cloned().unwrap_or_default();
         let total = args.get(1).cloned().unwrap_or_default();
+        let fps = args.get(2).cloned().unwrap_or_default();
         let v = serde_json::json!({
             "type": "encode", "frame": frame, "total": total,
-            "fps": args.get(2), "percent": encode_percent(&frame, &total),
+            "fps": fps, "percent": encode_percent(&frame, &total),
+            "eta_secs": encode_eta_secs(&frame, &total, &fps),
         });
         db.update_progress(job_id, &v.to_string()).await.ok();
     } else if *id == TORRENT_PROG {
@@ -212,6 +217,14 @@ fn encode_percent(frame: &str, total: &str) -> u64 {
         return 0;
     }
     ((f / t) * 100.0).clamp(0.0, 100.0) as u64
+}
+
+fn encode_eta_secs(frame: &str, total: &str, fps: &str) -> Option<u64> {
+    remaining_secs_active(
+        frame.parse().ok(),
+        total.parse().ok(),
+        fps.parse().ok(),
+    )
 }
 
 fn upload_percent(hosts: &[String]) -> u64 {
