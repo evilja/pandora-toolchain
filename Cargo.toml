@@ -1,6 +1,6 @@
 [package]
 name = "pandora-toolchain"
-version = "3.0.15-kawari"
+version = "3.1.9-substitute"
 edition = "2024"
 
 [dependencies]
