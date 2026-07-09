@@ -16,20 +16,22 @@ The level hierarchy is `witch > upper > admin > fansubber > authorize` (rank 4/3
 
 ## Discord commands
 
+- `/help [section]` — public, ephemeral command guide. Bare `/help` shows section overview; `section` choices are `encode`, `repo`, `workers`, `admin`, `publish`, `fonts`, and `misc`. Section and command menus are filtered to commands the caller can run.
 - `/encode <torrent> <subtitle attachment> [preset] [concat]` — encode with an attached ASS file. Accepts torrent URLs, magnet links, Google Drive links, and direct video file links.
 - `/providers` — public command that shows built-in download/encode support and currently attached provider APIs: upload providers from env/global+server Drive config (Google Drive, Doodstream, LuluStream, Voe, Abyss), distribution providers (AnimeciX, AniSub), and persistence providers inferred from the server Forgejo/GitHub org config. Implemented in `src/helpers/handlers/providers.rs` and available to everyone like `/help`.
 - `/probe <torrent>` — download + ffprobe a torrent, list the files inside as a numbered table, then idle at `Probed` for 180s so a follow-up `/pancode` can pick a file. GDrive and direct video links are rejected.
 - `/pancode <job_id> <index> <subtitle attachment> [preset] [concat]` — re-encode using a previously probed torrent's `fetch.torrent` (the probe job's `contents/fetch.torrent` is copied into the new job's dir). When this finishes, the parent probe job is archived.
 - `/backup <torrent>` — download + Drive-only re-upload (no streaming hosts). GDrive and direct video links are supported (treated as downloads from non-torrent sources).
 - `/gitcode <torrent> <subtitle_url> [preset] [concat]` — like `/encode` but the subtitle is fetched from a URL. `https://github.com/<u>/<r>/blob/<b>/<path>` is auto-rewritten to `https://raw.githubusercontent.com/<u>/<r>/<b>/<path>`; other URLs pass through. 60s HTTP timeout.
-- `/smartcode <episode> [link] [preset] [concat]` — merge the channel's attached TL (required) and TS (optional) subtitles for an episode via `pnass --merge`, upload the merged result to the channel's repo as `Release - <name> - E<NN>.ass`, upsert `SOURCE.md`, then queue a regular `/encode` job against the merged file. `link` is optional: if absent, the source link is read from `{pad2(episode)}/SOURCE.md` (parser skips blank/`;`-prefixed lines and strips a leading `#`); the existing `SOURCE.md` is left untouched in that case. See [`/smartcode`](#smartcode) for the merge details.
+- `/smartcode run <episode> [link] [preset] [concat]` — merge the channel's attached TL (required) and TS (optional) subtitles for an episode via `pnass --merge`, upload the merged result to the channel's repo as `Release - <name> - E<NN>.ass`, upsert `SOURCE.md`, then queue a regular `/encode` job against the merged file. `link` is optional: if absent, the source link is read from `{pad2(episode)}/SOURCE.md` (parser skips blank/`;`-prefixed lines and strips a leading `#`); the existing `SOURCE.md` is left untouched in that case. See [`/smartcode`](#smartcode) for the merge details.
+- `/smartcode exp <episode> [link]` — runs the same smartcode merge/upload step, then renders 1-3 TS preview screenshots from `\fn` typeset lines instead of encoding.
 - `/source <episode> <link>` — write `{pad2(episode)}/SOURCE.md` (content `# <link>\n`) to the channel's attached Forgejo repo. Requires the channel to be attached and `episode` in `1..=episode_count`. Commit message: `"Set source link"`. No worker, no encoder — pure in-handler Forgejo upsert.
 - `/attach <mal> <repo> [season]` — fetch MAL metadata via JIKAN, then bootstrap an existing Forgejo repo: create per-episode folders (`pad2` for 1..=episode_count, accepting `1`/`01`/`001` as equivalent on existence check), each with an empty `.gitkeep`; create `README.md` at root only if absent (and only if `DB/config/<serverid>/base.md` is present). Requires both `mal` and `repo`. `season` is the 1-based sequel number stored in the channel meta (defaults to 1). Repos are public.
 - `/init <mal> [season]` — same bootstrap, but creates a new public repo at `<forgejo_org>/<slug>` via the Forgejo API first. `season` works the same as `/attach`. Channel reattach to a different MAL id is refused; same MAL id is idempotent.
 - `/detach` — **upper-tier**; removes the channel's `meta.toml` attachment; the Forgejo repo is left untouched. In-handler, no worker. (Also happens automatically when the channel/thread is deleted — see the `meta.toml` note in [PROJECT.md](PROJECT.md).)
 - `/destruct` — **upper-tier**; deletes the channel's Forgejo repo (`delete_repo`) **and** removes the attachment. Irreversible. In-handler, no worker.
 - `/hearts` — admin; reports each shrine layer's `alive` / `last_beat_secs` / `reboot_count`.
-- `/workers` — admin; shows a Discord embed with each download, encode, probe, and upload worker slot and its active job, plus queued/cache-forward waiting work.
+- `/workers` — admin; shows a Discord embed diagram with download, core (`prb-main`/`enc-main`), and upload columns, plus active-job details and queued/cache-forward waiting work.
 - `/touchworker <type> <name>` / `/lsworker` / `/rmworker <type> <name>` — witch; add/list/remove configurable download or upload worker slots. Running download/upload workers refresh this config automatically; removed active slots finish their current job first.
 - `/gitsync` — admin; `git fetch` + fast-forward, kills the shrine, archives `DB/work`, `std::process::exit(0)` to restart.
 - `/gitquery` — admin; disables new encode jobs, waits for current encode jobs to finish, then runs the same sync/restart path as `/gitsync`.
@@ -39,6 +41,7 @@ The level hierarchy is `witch > upper > admin > fansubber > authorize` (rank 4/3
 - `/gettranslationall <language>` — admin; replies ephemerally with the full selected language TOML as an attachment.
 - `/touchtranslationall <language> <file>` — admin; replaces the selected language TOML from an uploaded `.toml` attachment after UTF-8 and TOML parse validation. Empty TOML maps are rejected.
 - `/job <type> <episode> <subtitle> [commit]` — submit a single-episode job against the channel's attached anime; handled in-handler by `pndc`, no worker. See [`/job`](#job) below.
+- `/cfont [font]` — set or show this server's `/smartcode exp` preview watermark font. The default requested face is `Gandhi Sans Bold`; install it with `/font` if that exact font is desired. If the configured/default font cannot be resolved, preview rendering falls back to the embedded Liberation Mono font.
 - `/gentoken [label] [local]` — **upper-tier**; mints a 64-hex-char API bearer token (cross-platform CSPRNG via `getrandom`, so it works on the Windows VDS), appends it to `api.pandora` (with an optional `; <label> (added <ts>)` comment line above it), and replies ephemerally with the token shown once. With `local: true` the line is written as `<token>|local|<guild_id>`, binding the token to the issuing server (uses its Drive creds for uploads and **unlocks the git console / git endpoints**). Handled in-handler (`src/helpers/handlers/gentoken.rs`), no worker. See [API.md](API.md).
 - `/acixconfirm <job_id>` — **rank 4 (Witch tier)**; confirms a finished uploaded job and publishes the multishare links to AnimeciX.
 - `/akiraconfirm <job_id> <episode> <name> [slug] [folder]` — **rank 4 (Witch tier)**; creates the Akira episode if missing, or updates only the existing episode's link fields if it already exists, then replaces its episode links with the job's uploaded links. If the channel has a MAL id, the Akira resolver supplies the current official slug; otherwise `slug` falls back to the command option or attached channel slug. The Drive upload is published as an Akira index player URL under `folder` (defaults to the resolved slug), using `name` as the index filename.
@@ -95,9 +98,12 @@ Flow:
 
 ## `/smartcode`
 
-Slash command `episode` (1-based int, required) + `link` (string, optional) + `preset` (string, optional) + `concat` (string, optional). Merges the channel's attached TL and TS subtitles, uploads the result, and queues a regular `JobType::Encode` against the merged file. The channel **must** already be attached (`read_channel_meta` non-empty) and the episode must be in `1..=episode_count`.
+Slash command with two subcommands:
 
-The flow lives in `src/helpers/handlers/smartcode.rs::handle_smartcode` and shared merge helpers in `src/helpers/handlers/mod.rs` — no new `JobType` or worker is introduced; the encoder pipeline (`Download → Encode → Upload`) takes over once the merged ASS bytes are produced.
+- `/smartcode run episode:<n> [link] [preset] [concat]` merges the channel's attached TL and TS subtitles, uploads the result, and queues a regular `JobType::Encode` against the merged file.
+- `/smartcode exp episode:<n> [link]` runs the same merge/upload flow, then queues `JobType::Preview` to render 1-3 screenshot previews from TS `Dialogue` events containing `\fn` font override tags.
+
+The channel **must** already be attached (`read_channel_meta` non-empty) and the episode must be in `1..=episode_count`.
 
 Flow:
 
@@ -111,9 +117,12 @@ Flow:
 6. Resolve the source-link origin:
    - If `link` was supplied as an argument → write `SOURCE.md` with `# {link}\n` (commit `"Smartcode source"`).
    - If `link` was read from `SOURCE.md` itself → skip the rewrite (the file already contains it).
-7. Build a `JobType::Encode` from the merged bytes + the resolved source link, the same way `/encode` would, and submit it to the worker queue via `self.tx.send(JobClass::Job(job))`. Named local smartcode Drive uploads store the returned file ID and Drive folder ID under the channel config; when a later named smartcode upload for the same episode completes, the previous stored Drive file is deleted and the state is replaced with the new IDs.
+7. For `run`, build a `JobType::Encode` from the merged bytes + the resolved source link, the same way `/encode` would, and submit it to the worker queue via `self.tx.send(JobClass::Job(job))`. Named local smartcode Drive uploads store the returned file ID and Drive folder ID under the channel config; when a later named smartcode upload for the same episode completes, the previous stored Drive file is deleted and the state is replaced with the new IDs.
+8. For `exp`, require a TS file (including one generated by sign-splitting), select up to three `\fn` lines whose midpoints are at least 10 seconds apart, download the source through the normal worker download/cache path, and render screenshots in the probe worker. The top-left overlay is the frame timestamp plus active TS line count; the bottom-right watermark is `pandora tools`.
 
-The merge summary is printed to the bot's stdout (e.g. `smartcode merge: <TL> + <TS> -> <output> for episode <N>, source_origin=argument|SOURCE.md`); the per-stage progress is reflected via the normal Discord presence updates of the queued `JobType::Encode`.
+Preview watermark font is configured per server with `/cfont [font]`, stored at `DB/config/<server_id>/preview.toml` as `watermark_font`. The default requested font is `Gandhi Sans Bold`; the bot does not ship it, so install it with `/font` if needed. Rendering falls back to the embedded Liberation Mono font when no configured/default font resolves.
+
+The merge summary is printed to the bot's stdout (e.g. `smartcode merge: <TL> + <TS> -> <output> for episode <N>, source_origin=argument|SOURCE.md`); the per-stage progress is reflected via the normal Discord presence updates of the queued worker job.
 
 ### pnass `--merge` semantics
 

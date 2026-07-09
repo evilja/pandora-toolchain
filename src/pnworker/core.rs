@@ -3,7 +3,8 @@ use crate::lib::p2p::core::cleanup_pandora_qbit;
 use crate::lib::p2p::nyaaise::TorrentType;
 use crate::pnworker::cache::{
     cache_encode_input, cleanup_expired_input_cache, cleanup_input_cache_startup,
-    duplicate_input_path, duplicate_path_to_container, duplicate_source_owner,
+    duplicate_input_path, duplicate_path_to_container, duplicate_source_orphaned,
+    duplicate_source_owner,
     duplicate_source_ready, input_cache_keys, jobs_share_input, jobs_share_source, past_downloaded,
     use_cache_or_wait, use_cached_input,
 };
@@ -21,8 +22,9 @@ use crate::pnworker::keep::{
 };
 use crate::pnworker::lifecycle::{cleanup_job, render};
 use crate::pnworker::messages::{
-    ENCODE_CONCAT_PROG, ENCODE_PROG, ENCODE_WARNING, GITQUERY_BLOCKED, MessagePayload, QUEUE_TOO_LONG,
-    QUEUED, TORRENT_DUPLICATE_WAIT, UPLOAD_DONE, UPLOAD_PROG, WORKER_ASSIGN,
+    ENCODE_CONCAT_PROG, ENCODE_PROG, ENCODE_WARNING, GITQUERY_BLOCKED, JOB_SETUP_FAIL,
+    MessagePayload, QUEUE_TOO_LONG, QUEUED, TORRENT_DUPLICATE_WAIT, UPLOAD_DONE, UPLOAD_PROG,
+    WORKER_ASSIGN,
 };
 use crate::pnworker::presence::{Presence, presence_from_queue};
 use crate::pnworker::progress::{drive_link_from_payload, persist_side_effects};
@@ -32,6 +34,9 @@ use crate::pnworker::workers::downloadworker::*;
 use crate::pnworker::workers::encodeworker::*;
 use crate::pnworker::workers::probeworker::*;
 use crate::pnworker::workers::uploadworker::*;
+use crate::pnworker::workers_view::{
+    build_workers_model, render_detail_lines, render_workers_columns, worker_waiting, WorkerJobView,
+};
 use crate::pnworker::worker_slots::{download_worker_slots, upload_worker_slots};
 use crate::pnworker::util::job_cancelled;
 use serenity::all::{Context, CreateEmbed, Message};
@@ -50,6 +55,7 @@ pub type CommData = (u64, MessagePayload, Option<Stage>);
 pub enum WorkerMsg {
     Download(DownloadData),
     Probe(ProbeData),
+    Preview(PreviewData),
     Encode(EncodeData),
     Keycode(KeycodeData),
     Upload(UploadData),
@@ -134,7 +140,11 @@ async fn do_queue_things(
             if queue_new_job(db, queue, shrine, &mut job).await {
                 return true;
             }
-            db.insert_job(&job).await.unwrap();
+            if let Err(e) = db.insert_job(&job).await {
+                eprintln!("[Pandora] job {} insert failed: {}", job.job_id, e);
+                decline_job_setup(&mut job, "internal error").await;
+                return true;
+            }
             persist_keep_reserved(db, &job).await;
             queue.push(job);
         }
@@ -161,6 +171,19 @@ async fn decline_gitquery_blocked_encode(job: &mut Job) {
         MessagePayload::Static(GITQUERY_BLOCKED),
     )
     .await;
+}
+
+async fn decline_job_setup(job: &mut Job, reason: &str) {
+    job.ready = Stage::Declined;
+    if let Some(keep) = &job.keep {
+        mark_output_failed(&scope(job.server_id), keep).await.ok();
+    }
+    render(
+        job,
+        MessagePayload::Progress(JOB_SETUP_FAIL, vec![reason.to_string()]),
+    )
+    .await;
+    let _ = remove_dir_all(&job.directory).await;
 }
 
 fn reset_encode_dispatches_after_reboot(queue: &mut [Job]) {
@@ -198,11 +221,12 @@ async fn queue_new_job(
         JobType::Backup => queue_backup_job(db, queue, shrine, job).await,
         JobType::BackupAll => queue_backup_all_job(db, queue, shrine, job).await,
         JobType::Keycode => queue_keycode_job(db, queue, shrine, job).await,
+        JobType::Preview => queue_preview_job(db, queue, shrine, job).await,
         _ => false,
     }
 }
 
-async fn prepare_queued_job(job: &mut Job, worker: &str, write_subtitle: bool) {
+async fn prepare_queued_job(job: &mut Job, worker: &str, write_subtitle: bool) -> bool {
     job.worker = worker.to_string();
     if let Some((parent, keyword)) = keep_keywords(job) {
         render(
@@ -214,16 +238,29 @@ async fn prepare_queued_job(job: &mut Job, worker: &str, write_subtitle: bool) {
         render(job, MessagePayload::Static(QUEUED)).await;
     }
     for i in STRUCT {
-        create_dir_all(job.directory.join(i)).await.unwrap();
+        if let Err(e) = create_dir_all(job.directory.join(i)).await {
+            eprintln!(
+                "[Pandora] job {} work directory setup failed: {}",
+                job.job_id, e
+            );
+            return false;
+        }
     }
     if write_subtitle {
-        write(
+        if let Err(e) = write(
             job.directory.join("contents").join("subtitle.ass"),
             &job.attachment,
         )
         .await
-        .unwrap();
+        {
+            eprintln!(
+                "[Pandora] job {} subtitle setup failed: {}",
+                job.job_id, e
+            );
+            return false;
+        }
     }
+    true
 }
 
 async fn queue_encode_job(
@@ -243,7 +280,10 @@ async fn queue_encode_job(
         .await;
         return true;
     }
-    prepare_queued_job(job, "dwl-pending", true).await;
+    if !prepare_queued_job(job, "dwl-pending", true).await {
+        decline_job_setup(job, "could not prepare the work directory").await;
+        return true;
+    }
     if let Some((parent_id, parent_stage, forwarded_worker)) = queued_encode_parent(job, queue) {
         mark_forwarded(job, parent_id, parent_stage, &forwarded_worker);
         render(
@@ -251,7 +291,12 @@ async fn queue_encode_job(
             MessagePayload::Progress(TORRENT_DUPLICATE_WAIT, vec![parent_id.to_string()]),
         )
         .await;
-        db.insert_job(job).await.unwrap();
+        if let Err(e) = db.insert_job(job).await {
+            eprintln!(
+                "[Pandora] forwarded job {} insert failed: {}",
+                job.job_id, e
+            );
+        }
         persist_forwarded_wait(db, job).await;
         queue.push(job.clone());
         return true;
@@ -265,7 +310,10 @@ async fn queue_probe_job(
     shrine: &mut TypedShrine<WorkerMsg>,
     job: &mut Job,
 ) -> bool {
-    prepare_queued_job(job, "prb-main", false).await;
+    if !prepare_queued_job(job, "prb-main", false).await {
+        decline_job_setup(job, "could not prepare the work directory").await;
+        return true;
+    }
     if !dispatch_or_kill(
         shrine,
         &Worker::Probe,
@@ -294,11 +342,15 @@ async fn queue_pancode_job(
     shrine: &mut TypedShrine<WorkerMsg>,
     job: &mut Job,
 ) -> bool {
+    let Some(probe_id) = job.probe_job_id else {
+        decline_job_setup(job, "probe job id missing").await;
+        return true;
+    };
     let probe_dir = env::current_dir()
-        .unwrap()
+        .unwrap_or_else(|_| PathBuf::from("."))
         .join("DB")
         .join("work")
-        .join(job.probe_job_id.unwrap().to_string());
+        .join(probe_id.to_string());
     if !prepare_keep_job(job, KeepKind::Encode).await {
         render(
             job,
@@ -310,14 +362,18 @@ async fn queue_pancode_job(
         .await;
         return true;
     }
-    prepare_queued_job(job, "dwl-pending", true).await;
+    if !prepare_queued_job(job, "dwl-pending", true).await {
+        decline_job_setup(job, "could not prepare the work directory").await;
+        return true;
+    }
 
     let torrent_src = probe_dir.join("contents").join("fetch.torrent");
     let torrent_dst = job.directory.join("contents").join("fetch.torrent");
-    if tokio::fs::copy(&torrent_src, &torrent_dst).await.is_err() {
-        if job.torrent.get().trim().is_empty() {
-            return true;
-        }
+    if tokio::fs::copy(&torrent_src, &torrent_dst).await.is_err()
+        && job.torrent.get().trim().is_empty()
+    {
+        decline_job_setup(job, "probe torrent data is no longer available").await;
+        return true;
     }
 
     queue_download_job(db, queue, shrine, job, job.probe_file_index, false).await
@@ -331,7 +387,7 @@ async fn queue_backup_job(
 ) -> bool {
     let probe_dir = job.probe_job_id.map(|id| {
         env::current_dir()
-            .unwrap()
+            .unwrap_or_else(|_| PathBuf::from("."))
             .join("DB")
             .join("work")
             .join(id.to_string())
@@ -347,11 +403,15 @@ async fn queue_backup_job(
         .await;
         return true;
     }
-    prepare_queued_job(job, "dwl-pending", false).await;
+    if !prepare_queued_job(job, "dwl-pending", false).await {
+        decline_job_setup(job, "could not prepare the work directory").await;
+        return true;
+    }
     if let Some(probe_dir) = probe_dir {
         let torrent_src = probe_dir.join("contents").join("fetch.torrent");
         let torrent_dst = job.directory.join("contents").join("fetch.torrent");
         if tokio::fs::copy(&torrent_src, &torrent_dst).await.is_err() {
+            decline_job_setup(job, "probe torrent data is no longer available").await;
             return true;
         }
     }
@@ -364,7 +424,10 @@ async fn queue_keycode_job(
     _shrine: &mut TypedShrine<WorkerMsg>,
     job: &mut Job,
 ) -> bool {
-    prepare_queued_job(job, "enc-main", !job.attachment.is_empty()).await;
+    if !prepare_queued_job(job, "enc-main", !job.attachment.is_empty()).await {
+        decline_job_setup(job, "could not prepare the work directory").await;
+        return true;
+    }
     let Some(request) = job.keycode.clone() else {
         render(
             job,
@@ -620,7 +683,10 @@ async fn queue_backup_all_job(
     shrine: &mut TypedShrine<WorkerMsg>,
     job: &mut Job,
 ) -> bool {
-    prepare_queued_job(job, "dwl-pending", false).await;
+    if !prepare_queued_job(job, "dwl-pending", false).await {
+        decline_job_setup(job, "could not prepare the work directory").await;
+        return true;
+    }
     if !dispatch_or_kill(
         shrine,
         &Worker::Download,
@@ -649,6 +715,19 @@ async fn queue_backup_all_job(
             .await;
     }
     false
+}
+
+async fn queue_preview_job(
+    db: &JobDb,
+    queue: &[Job],
+    shrine: &mut TypedShrine<WorkerMsg>,
+    job: &mut Job,
+) -> bool {
+    if !prepare_queued_job(job, "dwl-pending", true).await {
+        decline_job_setup(job, "could not prepare the work directory").await;
+        return true;
+    }
+    queue_download_job(db, queue, shrine, job, None, false).await
 }
 
 async fn queue_download_job(
@@ -751,10 +830,21 @@ async fn handle_half_job(
                 .iter()
                 .position(|i| halfjob.job_id == i.job_id && halfjob.author == i.author)
             {
-                File::create(queue[pos].directory.join("CANCEL"))
-                    .await
-                    .unwrap();
-                if cancel_disposition(&queue[pos]) == CancelDisposition::Immediate {
+                let disposition = cancel_disposition(&queue[pos]);
+                if let Err(e) = File::create(queue[pos].directory.join("CANCEL")).await {
+                    if disposition == CancelDisposition::CancelFile {
+                        eprintln!(
+                            "[Pandora] cancel marker could not be written; job {} will finish its current stage: {}",
+                            queue[pos].job_id, e
+                        );
+                    } else {
+                        eprintln!(
+                            "[Pandora] cancel marker could not be written for job {}: {}",
+                            queue[pos].job_id, e
+                        );
+                    }
+                }
+                if disposition == CancelDisposition::Immediate {
                     finalize_cancelled_job(db, queue, pos).await;
                 }
             }
@@ -852,111 +942,35 @@ enum CancelDisposition {
 }
 
 async fn create_workers_embed(queue: &[Job]) -> CreateEmbed {
-    let mut download = download_worker_slots()
-        .await
-        .into_iter()
-        .map(|name| format!("dwl-{}", name))
+    let download = download_worker_slots().await;
+    let upload = upload_worker_slots().await;
+    let views = queue
+        .iter()
+        .map(|job| WorkerJobView {
+            worker: job.worker.clone(),
+            active: worker_active_stage(job.ready),
+            waiting: worker_waiting(&job.worker),
+            job_id: job.job_id,
+            organisation: job_organisation(job),
+            type_label: job_type_label(job.job_type),
+            stage_label: stage_label(job.ready),
+        })
         .collect::<Vec<_>>();
-    let mut upload = upload_worker_slots()
-        .await
-        .into_iter()
-        .map(|name| format!("upl-{}", name))
-        .collect::<Vec<_>>();
-    for job in queue.iter().filter(|job| worker_active_stage(job.ready)) {
-        if job.worker.starts_with("dwl-") && !download.iter().any(|slot| slot == &job.worker) {
-            download.push(job.worker.clone());
-        }
-        if job.worker.starts_with("upl-") && !upload.iter().any(|slot| slot == &job.worker) {
-            upload.push(job.worker.clone());
-        }
-    }
+    let model = build_workers_model(&views, download, upload);
+    let (download_column, core_column, upload_column) = render_workers_columns(&model);
     let mut embed = CreateEmbed::new()
         .title("Pandora workers")
-        .description(format!("{} active queue item(s)", queue.len()));
-    for slot in ordered_worker_slots(&download, &upload) {
-        match slot {
-            Some(slot) => {
-                embed = embed.field(slot.clone(), worker_slot_text(queue, &slot), true);
-            }
-            None => {
-                embed = embed.field("\u{200b}", "\u{200b}", true);
-            }
-        }
+        .description(format!("{} active queue item(s)", model.queue_len))
+        .field("download", download_column, true)
+        .field("core", core_column, true)
+        .field("upload", upload_column, true);
+    if !model.active.is_empty() {
+        embed = embed.field("active", render_detail_lines(&model.active), false);
     }
-    let waiting = queue
-        .iter()
-        .filter(|job| worker_waiting(&job.worker))
-        .map(worker_job_line)
-        .collect::<Vec<_>>();
-    if !waiting.is_empty() {
-        embed = embed.field("waiting", waiting.join("\n"), false);
+    if !model.waiting.is_empty() {
+        embed = embed.field("waiting", render_detail_lines(&model.waiting), false);
     }
     embed
-}
-
-fn ordered_worker_slots(download: &[String], upload: &[String]) -> Vec<Option<String>> {
-    let download_offsets = worker_offsets(download.len());
-    let upload_offsets = worker_offsets(upload.len());
-    let max_offset = download_offsets
-        .iter()
-        .chain(upload_offsets.iter())
-        .map(|offset| offset.abs())
-        .max()
-        .unwrap_or(2)
-        .max(2);
-    let height = (max_offset as usize * 2) + 1;
-    let center = max_offset;
-    let mut rows = vec![vec![None::<String>; 4]; height];
-
-    for (worker, offset) in download.iter().zip(download_offsets) {
-        rows[(center + offset) as usize][1] = Some(worker.clone());
-    }
-    for (worker, offset) in upload.iter().zip(upload_offsets) {
-        rows[(center + offset) as usize][3] = Some(worker.clone());
-    }
-    rows[center as usize][0] = Some("prb-main".to_string());
-    rows[center as usize][2] = Some("enc-main".to_string());
-
-    rows.into_iter()
-        .filter(|row| row.iter().any(Option::is_some))
-        .flatten()
-        .collect()
-}
-
-fn worker_offsets(count: usize) -> Vec<i32> {
-    if count == 0 {
-        return Vec::new();
-    }
-    if count % 2 == 0 {
-        let start = -((count as i32) - 1);
-        (0..count).map(|idx| start + (idx as i32 * 2)).collect()
-    } else {
-        let half = count as i32 / 2;
-        (0..count).map(|idx| (idx as i32 - half) * 2).collect()
-    }
-}
-
-fn worker_waiting(worker: &str) -> bool {
-    matches!(
-        worker,
-        "dwl-pending" | "dwl-cache" | "upl-pending" | "enc-forward" | "dwl-forward" | "upl-forward"
-    ) || worker.starts_with("key-")
-}
-
-fn worker_slot_text(queue: &[Job], worker: &str) -> String {
-    queue
-        .iter()
-        .find(|job| job.worker == worker && worker_active_stage(job.ready))
-        .map(|job| {
-            format!(
-                "{}\n#{} {} ({})",
-                job_organisation(job),
-                job.job_id,
-                job_type_label(job.job_type),
-                stage_label(job.ready)
-            )
-        })
-        .unwrap_or_else(|| "idle".to_string())
 }
 
 fn job_organisation(job: &Job) -> String {
@@ -1018,16 +1032,6 @@ fn worker_active_stage(stage: Stage) -> bool {
     )
 }
 
-fn worker_job_line(job: &Job) -> String {
-    format!(
-        "#{} {} {} ({})",
-        job.job_id,
-        job_type_label(job.job_type),
-        job_organisation(job),
-        stage_label(job.ready)
-    )
-}
-
 fn job_type_label(job_type: JobType) -> &'static str {
     match job_type {
         JobType::Encode => "encode",
@@ -1042,6 +1046,7 @@ fn job_type_label(job_type: JobType) -> &'static str {
         JobType::BackupAll => "backupall",
         JobType::Keycode => "keycode",
         JobType::GitQuery => "gitquery",
+        JobType::Preview => "preview",
     }
 }
 
@@ -1174,7 +1179,7 @@ async fn do_probe_timeout_things(db: &JobDb, queue: &mut Vec<Job>) {
                 &PathBuf::from("DB").join("saved_data").join(id.to_string()),
             )
             .await;
-            db.archive_job(id).await.unwrap();
+            db.archive_job(id).await.ok();
             queue.remove(pos);
             frontend.set_presence(presence_from_queue(queue)).await;
         }
@@ -1255,7 +1260,7 @@ async fn do_worker_message_things(
             if let Some(a) = stage {
                 let previous_ready = i.ready;
                 i.ready = a;
-                db.update_stage(i.job_id, i.ready).await.unwrap();
+                db.update_stage(i.job_id, i.ready).await.ok();
                 if a == Stage::Encoding {
                     i.frontend
                         .set_presence(Presence::Encoding {
@@ -1297,6 +1302,7 @@ async fn do_worker_message_things(
             }
             persist_side_effects(db, i.job_id, &payload, stage, &i.encode_warnings).await;
             persist_smartcode_drive_upload(i, &payload, stage).await;
+            // PREVIEW_DONE attaches files from the work dir here; cleanup below must remain after render.
             render(i, payload.clone()).await;
 
             let finished = matches!(i.ready, Stage::Uploaded | Stage::Failed | Stage::Cancelled);
@@ -1324,11 +1330,12 @@ async fn do_worker_message_things(
                             .join(probe_id.to_string()),
                     )
                     .await;
-                    db.archive_job(probe_id).await.unwrap();
+                    db.archive_job(probe_id).await.ok();
                     queue.remove(probe_pos);
                 }
             }
-            db.archive_job(job_id).await.unwrap();
+            db.archive_job(job_id).await.ok();
+            // PREVIEW_DONE attachments are uploaded during render above before this removes the work dir.
             cleanup_job(
                 &directory,
                 &PathBuf::from("DB")
@@ -1343,6 +1350,14 @@ async fn do_worker_message_things(
         fe.set_presence(presence_from_queue(queue)).await;
     }
     false
+}
+
+async fn requeue_duplicate_waiter(db: &JobDb, job: &mut Job) {
+    job.duplicate_source = None;
+    job.ready = Stage::Queued;
+    job.worker = "dwl-pending".to_string();
+    db.update_stage(job.job_id, Stage::Queued).await.ok();
+    db.update_worker(job.job_id, &job.worker).await.ok();
 }
 
 async fn do_duplicate_waiting_things(db: &JobDb, queue: &mut Vec<Job>) {
@@ -1360,7 +1375,7 @@ async fn do_duplicate_waiting_things(db: &JobDb, queue: &mut Vec<Job>) {
             if use_cached_input(&mut queue[pos]).await {
                 db.update_stage(queue[pos].job_id, Stage::Downloaded)
                     .await
-                    .unwrap();
+                    .ok();
                 render(
                     &mut queue[pos],
                     MessagePayload::Static(crate::pnworker::messages::TORRENT_DONE),
@@ -1376,30 +1391,38 @@ async fn do_duplicate_waiting_things(db: &JobDb, queue: &mut Vec<Job>) {
                     if owner.ready == Stage::Downloading {
                         continue;
                     }
-                    queue[pos].duplicate_source = None;
-                    queue[pos].ready = Stage::Queued;
-                    queue[pos].worker = "dwl-pending".to_string();
-                    db.update_stage(queue[pos].job_id, Stage::Queued).await.ok();
-                    db.update_worker(queue[pos].job_id, &queue[pos].worker)
-                        .await
-                        .ok();
+                    requeue_duplicate_waiter(db, &mut queue[pos]).await;
                     continue;
                 }
             }
             if !duplicate_source_ready(queue, &source_dir) {
+                if duplicate_source_orphaned(queue, &source_dir) {
+                    eprintln!(
+                        "[Pandora] duplicate source for {} vanished; requeueing for download",
+                        id
+                    );
+                    // Duplicate waiters are only created for encode/pancode/backup downloads.
+                    requeue_duplicate_waiter(db, &mut queue[pos]).await;
+                }
                 continue;
             }
             let source = duplicate_input_path(&source_dir);
             let target_dir = queue[pos].directory.join("contents").join("torrent");
             let target = target_dir.join("input.mkv");
-            create_dir_all(&target_dir).await.unwrap();
+            if let Err(e) = create_dir_all(&target_dir).await {
+                eprintln!(
+                    "[Pandora] duplicate cache target setup failed for {}: {}",
+                    id, e
+                );
+                continue;
+            }
             match tokio::fs::copy(&source, &target).await {
                 Ok(_) => {
                     queue[pos].duplicate_source = None;
                     queue[pos].ready = Stage::Downloaded;
                     db.update_stage(queue[pos].job_id, Stage::Downloaded)
                         .await
-                        .unwrap();
+                        .ok();
                     let v =
                         serde_json::json!({ "type": "download", "percent": 100, "cached": true });
                     db.update_progress(queue[pos].job_id, &v.to_string())
@@ -1432,7 +1455,7 @@ async fn do_queued_download_waiting_things(
                 && j.worker == "dwl-pending"
                 && matches!(
                     j.job_type,
-                    JobType::Encode | JobType::Pancode | JobType::Backup
+                    JobType::Encode | JobType::Pancode | JobType::Backup | JobType::Preview
                 )
         })
         .map(|j| j.job_id)
@@ -1467,6 +1490,7 @@ async fn do_job_progression_things(
         .iter()
         .filter(|j| {
             j.forward_parent.is_none()
+                && j.job_type != JobType::Preview
                 && (j.ready == Stage::Encoding
                     || (j.ready == Stage::Downloaded && j.encode_dispatched))
         })
@@ -1521,7 +1545,48 @@ async fn do_job_progression_things(
         }
 
         if job.ready == Stage::Downloaded {
-            if job.job_type == JobType::Backup {
+            if job.job_type == JobType::Preview {
+                let Some(preview) = job.preview.clone() else {
+                    job.ready = Stage::Failed;
+                    db.update_stage(job.job_id, Stage::Failed).await.ok();
+                    render(
+                        job,
+                        MessagePayload::Progress(
+                            crate::pnworker::messages::PREVIEW_FAIL,
+                            vec!["missing preview request".to_string()],
+                        ),
+                    )
+                    .await;
+                    dead.push(job.job_id);
+                    continue;
+                };
+                job.worker = "prv-main".to_string();
+                db.update_worker(job.job_id, &job.worker).await.ok();
+                if !dispatch_or_kill(
+                    shrine,
+                    &Worker::Probe,
+                    WorkerMsg::Preview((
+                        job.directory.clone(),
+                        preview.shots,
+                        preview.watermark_font,
+                        job.job_id,
+                        job.server_id,
+                    )),
+                    job,
+                    db,
+                    false,
+                )
+                .await
+                {
+                    dead.push(job.job_id);
+                    continue;
+                }
+                job.ready = Stage::Encoding;
+                db.update_stage(job.job_id, Stage::Encoding).await.ok();
+                job.frontend
+                    .set_presence(Presence::Encoding { idx, total: qlen })
+                    .await;
+            } else if job.job_type == JobType::Backup {
                 if job.keep.is_some() {
                     if finish_keep_job(db, job, KeepKind::Backup).await {
                         dead.push(job.job_id);
@@ -1564,7 +1629,7 @@ async fn do_job_progression_things(
                     continue;
                 }
                 job.ready = Stage::Uploading;
-                db.update_stage(job.job_id, Stage::Uploading).await.unwrap();
+                db.update_stage(job.job_id, Stage::Uploading).await.ok();
                 job.frontend
                     .set_presence(Presence::Uploading { idx, total: qlen })
                     .await;
@@ -1585,7 +1650,7 @@ async fn do_job_progression_things(
                     continue;
                 }
                 job.ready = Stage::Uploading;
-                db.update_stage(job.job_id, Stage::Uploading).await.unwrap();
+                db.update_stage(job.job_id, Stage::Uploading).await.ok();
                 job.frontend
                     .set_presence(Presence::Uploading { idx, total: qlen })
                     .await;
@@ -1625,7 +1690,7 @@ async fn do_job_progression_things(
                     let v = serde_json::json!({ "type": "download", "waiting": "cache" });
                     db.update_stage(job.job_id, Stage::Downloading)
                         .await
-                        .unwrap();
+                        .ok();
                     db.update_progress(job.job_id, &v.to_string()).await.ok();
                     db.update_worker(job.job_id, &job.worker).await.ok();
                     render(
@@ -1715,7 +1780,7 @@ async fn do_job_progression_things(
                 continue;
             }
             job.ready = Stage::Uploading;
-            db.update_stage(job.job_id, Stage::Uploading).await.unwrap();
+            db.update_stage(job.job_id, Stage::Uploading).await.ok();
             forwarded_state_updates.push((
                 job.job_id,
                 Stage::Uploading,
@@ -1884,6 +1949,12 @@ pub struct KeycodeRequest {
     pub concat_candidates: Option<Vec<String>>,
 }
 
+#[derive(Clone, Debug)]
+pub struct PreviewRequest {
+    pub shots: Vec<(u64, String)>,
+    pub watermark_font: Option<PathBuf>,
+}
+
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(u16)]
 pub enum JobType {
@@ -1899,6 +1970,7 @@ pub enum JobType {
     BackupAll = 009,
     Keycode = 010,
     GitQuery = 011,
+    Preview = 013,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -2123,6 +2195,7 @@ pub struct Job {
     pub encode_fps: Option<f64>,
     pub keep: Option<KeepRequest>,
     pub keycode: Option<KeycodeRequest>,
+    pub preview: Option<PreviewRequest>,
 }
 
 impl PartialEq for Job {
@@ -2187,6 +2260,7 @@ impl Job {
             encode_fps: None,
             keep: None,
             keycode: None,
+            preview: None,
         }
     }
 
@@ -2245,6 +2319,7 @@ impl Job {
             encode_fps: None,
             keep: None,
             keycode: None,
+            preview: None,
         }
     }
 }

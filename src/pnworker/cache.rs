@@ -141,7 +141,13 @@ pub(crate) async fn use_cached_input(job: &mut Job) -> bool {
     };
     let target_dir = job.directory.join("contents").join("torrent");
     let target = target_dir.join("input.mkv");
-    create_dir_all(&target_dir).await.unwrap();
+    if let Err(e) = create_dir_all(&target_dir).await {
+        eprintln!(
+            "[Pandora] input cache target setup failed for {}: {}",
+            job.job_id, e
+        );
+        return false;
+    }
     match tokio::fs::copy(&source, &target).await {
         Ok(_) => {
             touch_input_cache(&key).await;
@@ -249,6 +255,10 @@ pub(crate) fn duplicate_source_ready(queue: &[Job], source: &PathBuf) -> bool {
     true
 }
 
+pub(crate) fn duplicate_source_orphaned(queue: &[Job], source: &PathBuf) -> bool {
+    duplicate_source_owner(queue, source).is_none() && !duplicate_input_path(source).exists()
+}
+
 pub(crate) fn duplicate_source_owner<'a>(queue: &'a [Job], source: &PathBuf) -> Option<&'a Job> {
     let input = duplicate_input_path(source);
     queue.iter().find(|owner| {
@@ -269,4 +279,88 @@ pub(crate) fn jobs_share_source(job: &Job, other: &Job) -> bool {
     input_source_keys(other)
         .iter()
         .any(|key| keys.iter().any(|candidate| candidate == key))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lib::p2p::nyaaise::TorrentType;
+    use crate::pnworker::core::{JobType, Preset};
+    use crate::pnworker::frontend::Frontend;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    fn encode_job(id: u64, directory: PathBuf) -> Job {
+        Job {
+            author: 1,
+            channel_id: 1,
+            response_id: 1,
+            requested_at: Duration::from_secs(1),
+            job_type: JobType::Encode,
+            job_id: id,
+            preset: Preset::Standard(None),
+            torrent: TorrentType::Magnet(
+                "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567".to_string(),
+            ),
+            display_link: None,
+            attachment: b"ass".to_vec(),
+            frontend: Frontend::None,
+            directory,
+            ready: Stage::Downloading,
+            probe_files: None,
+            probe_torrent_path: None,
+            probe_job_id: None,
+            probe_file_index: None,
+            lang: "EN".to_string(),
+            server_id: Some(1),
+            acix: None,
+            gdrive_folder_global: None,
+            gdrive_folder_local: None,
+            smartcode_drive_name: None,
+            worker: "dwl-main".to_string(),
+            duplicate_source: None,
+            forward_parent: None,
+            encode_warnings: Vec::new(),
+            encode_dispatched: false,
+            encode_frame: None,
+            encode_total: None,
+            encode_fps: None,
+            keep: None,
+            keycode: None,
+            preview: None,
+        }
+    }
+
+    fn scratch_dir() -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "pandora_cache_test_{}_{}",
+            std::process::id(),
+            nanos
+        ))
+    }
+
+    #[test]
+    fn duplicate_source_orphaned_requires_missing_owner_and_input() {
+        let root = scratch_dir();
+        let owner_dir = root.join("owner");
+        let owner = encode_job(1, owner_dir.clone());
+        let source = owner_dir.join("contents").join("torrent");
+        std::fs::create_dir_all(&source).expect("create owner source dir");
+
+        assert!(!duplicate_source_orphaned(&[owner.clone()], &source));
+        std::fs::write(source.join("input.mkv"), b"video").expect("write owner input");
+        assert!(!duplicate_source_orphaned(&[owner], &source));
+
+        let orphan_source = root.join("orphan-source");
+        std::fs::create_dir_all(&orphan_source).expect("create orphan source dir");
+        std::fs::write(orphan_source.join("input.mkv"), b"video").expect("write orphan input");
+        assert!(!duplicate_source_orphaned(&[], &orphan_source));
+        std::fs::remove_file(orphan_source.join("input.mkv")).expect("remove orphan input");
+        assert!(duplicate_source_orphaned(&[], &orphan_source));
+
+        std::fs::remove_dir_all(root).ok();
+    }
 }

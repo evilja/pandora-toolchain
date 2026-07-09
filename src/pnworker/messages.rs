@@ -8,6 +8,7 @@ const PKGVER: &'static str = env!("CARGO_PKG_VERSION");
 
 pub const QUEUE_TOO_LONG: &str = "QUEUE_TOO_LONG";
 pub const QUEUED: &str = "QUEUED";
+pub const JOB_SETUP_FAIL: &str = "JOB_SETUP_FAIL";
 pub const JOB_CANCELLED: &str = "JOB_CANCELLED";
 pub const PROBE_TIMEOUT: &str = "PROBE_TIMEOUT";
 pub const GITSYNC_PROGRESS: &str = "GITSYNC_PROGRESS";
@@ -40,6 +41,8 @@ pub const KEYCODE_FAIL: &str = "KEYCODE_FAIL";
 pub const PROBE_DONE: &str = "PROBE_DONE";
 pub const PROBE_FAIL: &str = "PROBE_FAIL";
 pub const PROBE_ROW: &str = "PROBE_ROW";
+pub const PREVIEW_DONE: &str = "PREVIEW_DONE";
+pub const PREVIEW_FAIL: &str = "PREVIEW_FAIL";
 pub const EMBED_TITLE: &str = "EMBED_TITLE";
 pub const FIELD_JOBID: &str = "FIELD_JOBID";
 pub const FIELD_AUTHOR: &str = "FIELD_AUTHOR";
@@ -79,6 +82,7 @@ static DEFAULT_ENTRIES: &[(&str, &str, usize)] = &[
         0,
     ),
     ("QUEUED", "\n\nİsteğiniz alındı.", 0),
+    ("JOB_SETUP_FAIL", "\n\nİşlem hazırlanamadı: {}", 1),
     ("JOB_CANCELLED", "\nİşlem iptal edildi.", 0),
     (
         "PROBE_TIMEOUT",
@@ -163,6 +167,8 @@ static DEFAULT_ENTRIES: &[(&str, &str, usize)] = &[
     ("PROBE_DONE", "\n\nBatch torrent incelendi.", 0),
     ("PROBE_FAIL", "\n\nBatch torrent incelenemedi.", 0),
     ("PROBE_ROW", "\n\nDosya numaraları:\n{}", 1),
+    ("PREVIEW_DONE", "\n\nÖnizleme hazır: {} kare.", 1),
+    ("PREVIEW_FAIL", "\n\nÖnizleme oluşturulamadı: {}", 1),
     ("EMBED_TITLE", "Encode İşlemi ({})", 1),
     ("FIELD_JOBID", "İşlem Numarası", 0),
     ("FIELD_AUTHOR", "İşlem Sahibi", 0),

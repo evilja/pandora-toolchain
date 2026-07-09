@@ -435,6 +435,7 @@ pub fn job_type_label(job_type: i64) -> &'static str {
         9 => "BackupAll",
         10 => "Keycode",
         11 => "GitQuery",
+        13 => "Preview",
         _ => "Unknown",
     }
 }

@@ -118,6 +118,17 @@ impl Event {
             self.text.stringify(),
         )
     }
+
+    pub fn raw_text(&self) -> String {
+        self.text
+            .data
+            .iter()
+            .filter_map(|item| match item {
+                ASSText::RawText(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
 }
 
 
@@ -533,7 +544,7 @@ pub fn find_fonts_with_roots(names: &[String], extra_roots: &[PathBuf]) -> Vec<P
     }
     font_files.extend(system_font_files());
     for path in font_files {
-        if font_normalized_names(&path).iter().any(|n| wanted.contains(n)) {
+        if cached_normalized_font_names(&path).iter().any(|n| wanted.contains(n)) {
             found.insert(path);
         }
     }
@@ -542,21 +553,23 @@ pub fn find_fonts_with_roots(names: &[String], extra_roots: &[PathBuf]) -> Vec<P
     out
 }
 
-// Returns the normalized font names for a file, cached by file mtime so repeated
-// lookups don't re-read (and re-parse) every font file on disk. Reading a font's
-// `name` table requires the whole file (offsets can point anywhere), so the read
-// itself is unavoidable on a miss — but unchanged fonts are served from cache.
-fn font_normalized_names(path: &Path) -> Vec<String> {
+// Returns the normalized font names for a file, cached by mtime and length so
+// repeated lookups don't re-read and re-parse every font file on disk. The cache
+// is process-local and intentionally has no eviction; entries are only a few
+// strings per font file and changed files miss through metadata validation.
+pub fn cached_normalized_font_names(path: &Path) -> Vec<String> {
     static CACHE: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<PathBuf, (std::time::SystemTime, Vec<String>)>>,
+        std::sync::Mutex<std::collections::HashMap<PathBuf, ((std::time::SystemTime, u64), Vec<String>)>>,
     > = std::sync::OnceLock::new();
     let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
-    let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    let key = std::fs::metadata(path)
+        .and_then(|m| m.modified().map(|mtime| (mtime, m.len())))
+        .ok();
 
-    if let Some(mtime) = mtime {
-        if let Some((cached_mtime, names)) = cache.lock().unwrap().get(path) {
-            if *cached_mtime == mtime {
+    if let Some(key) = key {
+        if let Some((cached_key, names)) = cache.lock().unwrap().get(path) {
+            if *cached_key == key {
                 return names.clone();
             }
         }
@@ -564,7 +577,7 @@ fn font_normalized_names(path: &Path) -> Vec<String> {
         cache
             .lock()
             .unwrap()
-            .insert(path.to_path_buf(), (mtime, names.clone()));
+            .insert(path.to_path_buf(), (key, names.clone()));
         names
     } else {
         read_normalized_font_names(path)
@@ -778,6 +791,8 @@ fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::{File, FileTimes};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     fn test_sub(text: &str) -> SubstationAlpha {
         SubstationAlpha {
@@ -832,6 +847,97 @@ mod tests {
                 text: text.parse().unwrap(),
             }],
         }
+    }
+
+    fn temp_font_path(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "pandora_libkagami_{}_{}_{}.ttf",
+            std::process::id(),
+            nanos,
+            name
+        ))
+    }
+
+    fn push_u16(out: &mut Vec<u8>, value: u16) {
+        out.extend(value.to_be_bytes());
+    }
+
+    fn push_u32(out: &mut Vec<u8>, value: u32) {
+        out.extend(value.to_be_bytes());
+    }
+
+    fn utf16be(value: &str) -> Vec<u8> {
+        let mut out = Vec::new();
+        for unit in value.encode_utf16() {
+            out.extend(unit.to_be_bytes());
+        }
+        out
+    }
+
+    fn synthetic_font(names: &[&str]) -> Vec<u8> {
+        let mut strings = Vec::new();
+        let mut records = Vec::new();
+        for (idx, name) in names.iter().enumerate() {
+            let encoded = utf16be(name);
+            let name_id = match idx % 4 {
+                0 => 1,
+                1 => 4,
+                2 => 6,
+                _ => 16,
+            };
+            push_u16(&mut records, 3);
+            push_u16(&mut records, 1);
+            push_u16(&mut records, 0x409);
+            push_u16(&mut records, name_id);
+            push_u16(&mut records, encoded.len() as u16);
+            push_u16(&mut records, strings.len() as u16);
+            strings.extend(encoded);
+        }
+
+        let mut name_table = Vec::new();
+        push_u16(&mut name_table, 0);
+        push_u16(&mut name_table, names.len() as u16);
+        push_u16(&mut name_table, (6 + records.len()) as u16);
+        name_table.extend(records);
+        name_table.extend(strings);
+
+        let mut font = Vec::new();
+        push_u32(&mut font, 0x0001_0000);
+        push_u16(&mut font, 1);
+        push_u16(&mut font, 0);
+        push_u16(&mut font, 0);
+        push_u16(&mut font, 0);
+        font.extend(b"name");
+        push_u32(&mut font, 0);
+        push_u32(&mut font, 28);
+        push_u32(&mut font, name_table.len() as u32);
+        font.extend(name_table);
+        font
+    }
+
+    fn synthetic_ttc(fonts: &[Vec<u8>]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend(b"ttcf");
+        push_u32(&mut out, 0x0001_0000);
+        push_u32(&mut out, fonts.len() as u32);
+        let mut offset = 12 + (fonts.len() * 4);
+        for font in fonts {
+            push_u32(&mut out, offset as u32);
+            offset += font.len();
+        }
+        for font in fonts {
+            out.extend(font);
+        }
+        out
+    }
+
+    fn set_modified(path: &Path, time: SystemTime) {
+        let file = File::open(path).unwrap();
+        file.set_times(FileTimes::new().set_modified(time)).unwrap();
     }
 
     #[test]
@@ -901,5 +1007,74 @@ mod tests {
         scroll.scale(1280, 960).unwrap();
 
         assert_eq!(scroll.events[0].effect, "Scroll up;20;200;20;40");
+    }
+
+    #[test]
+    fn cached_normalized_font_names_normalizes_names() {
+        let path = temp_font_path("normalize");
+        std::fs::write(&path, synthetic_font(&["Gumbo DEMO", "Vesta-Bold"])).unwrap();
+
+        let names = cached_normalized_font_names(&path);
+
+        assert!(names.contains(&"gumbodemo".to_string()));
+        assert!(names.contains(&"vestabold".to_string()));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn cached_normalized_font_names_reads_ttc_collections() {
+        let path = temp_font_path("collection");
+        let data = synthetic_ttc(&[
+            synthetic_font(&["First Font"]),
+            synthetic_font(&["Second Font"]),
+        ]);
+        std::fs::write(&path, data).unwrap();
+
+        let names = cached_normalized_font_names(&path);
+
+        assert!(names.contains(&"firstfont".to_string()));
+        assert!(names.contains(&"secondfont".to_string()));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn cached_normalized_font_names_reuses_same_mtime_and_len() {
+        let path = temp_font_path("same-key");
+        let mtime = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        std::fs::write(&path, synthetic_font(&["CacheA"])).unwrap();
+        set_modified(&path, mtime);
+
+        assert_eq!(cached_normalized_font_names(&path), vec!["cachea".to_string()]);
+        std::fs::write(&path, synthetic_font(&["CacheB"])).unwrap();
+        set_modified(&path, mtime);
+
+        assert_eq!(cached_normalized_font_names(&path), vec!["cachea".to_string()]);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn cached_normalized_font_names_invalidates_same_mtime_changed_len() {
+        let path = temp_font_path("changed-len");
+        let mtime = UNIX_EPOCH + Duration::from_secs(1_700_000_010);
+        std::fs::write(&path, synthetic_font(&["Short"])).unwrap();
+        set_modified(&path, mtime);
+
+        assert_eq!(cached_normalized_font_names(&path), vec!["short".to_string()]);
+        std::fs::write(&path, synthetic_font(&["Longer Font Name"])).unwrap();
+        set_modified(&path, mtime);
+
+        assert_eq!(cached_normalized_font_names(&path), vec!["longerfontname".to_string()]);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn cached_normalized_font_names_handles_deleted_files() {
+        let path = temp_font_path("deleted");
+        std::fs::write(&path, synthetic_font(&["Temporary"])).unwrap();
+        assert_eq!(cached_normalized_font_names(&path), vec!["temporary".to_string()]);
+
+        std::fs::remove_file(&path).unwrap();
+
+        assert!(cached_normalized_font_names(&path).is_empty());
     }
 }

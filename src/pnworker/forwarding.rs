@@ -240,6 +240,7 @@ mod tests {
             encode_fps: None,
             keep: None,
             keycode: None,
+            preview: None,
         }
     }
 
