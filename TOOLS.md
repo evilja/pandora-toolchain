@@ -9,6 +9,14 @@ CLI tool flags and ASS parsing details.
 - `--drive --backup`: Drive-only upload with the same unlimited upload behavior.
 - `--gscrape`: Google Drive scraper. Parses the file id from the link, GETs the confirm page, extracts the `uuid` from the form, then GETs the final URL with `confirm=t&uuid=...` and streams chunks to `--opcode`. Client timeout 600s.
 
+## `ffmpeg` preview screenshots
+
+`/smartcode exp` uses `lib::mpeg::preview::ffmpeg_screenshot` through the probe worker after the normal download/cache path finishes. For each selected TS line midpoint it runs one bounded ffmpeg frame extraction with subtitles burned in:
+
+`ffmpeg -y -ss <seconds> -copyts -i <input> -vf subtitles=f=<subtitle.ass>:fontsdir=<work/fonts> -frames:v 1 -update 1 <out.png>`
+
+The worker stages fonts referenced by the merged ASS from `DB/fontconfig/<server_id>` and `DB/fontconfig/global` into one `work/fonts` directory for libass. The overlay/watermark is drawn afterward with `src/lib/image/`. `/cfont` stores the requested watermark font in `DB/config/<server_id>/preview.toml`; the default requested face is `Gandhi Sans Bold`, which must be installed with `/font` if the operator wants that exact font. If no configured/default face resolves, rendering uses the embedded Liberation Mono fallback.
+
 ## `pnass` flags
 
 Always emits a pnprotocol negotiation line on stdout (`PNprotocol:PNdc@0.1.1@1:PNass@0.1.1@1:PNass` by default; `--negkey` / `--negotiator` / `--negver` override the three pieces). Emits line-length warnings as protocol opcode `4` (one per warning event, with grouping for consecutive events — see [pnass line-length check](#pnass-line-length-check)).
@@ -39,6 +47,8 @@ Consumed by pnass-driven flows such as `/merge` / `/smartcode`; `/job` no longer
 ## libkagami override-block parsing
 
 ASSLine parser (`from_str_store` / `FromStr::from_str` in `src/libkagami/tags/mod.rs`) follows Aegisub's override-block rules. Used by `pnass` when `adv_parsing=true` is passed to `SubstationAlpha::load`.
+
+Font name reads use `libkagami::core::cached_normalized_font_names`: an in-memory, process-lifetime cache keyed by path metadata `(mtime, len)`. It stores normalized font names and is shared by release font lookup and `/fontcheck`; directory enumeration itself is intentionally uncached.
 
 - `\{` is always a literal `{` — never starts an override block.
 - `\}` is literal `{`/`}` outside a block; inside a block, closes it.

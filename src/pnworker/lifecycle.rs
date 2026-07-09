@@ -13,7 +13,7 @@ pub(crate) async fn render(job: &mut Job, payload: MessagePayload) {
 }
 
 pub(crate) async fn cleanup_job(source: &PathBuf, dest: &PathBuf) {
-    create_dir_all(dest).await.unwrap();
+    create_dir_all(dest).await.ok();
     let _ = rename(
         source.join("contents").join("subtitle.ass"),
         dest.join("subtitle.ass"),

@@ -1,7 +1,7 @@
 use pandora_toolchain::pnworker::core::Preset;
 use pandora_toolchain::pnworker::util::IntrosConfig;
 use serenity::{
-    all::{Context, Message},
+    all::{CommandDataOption, CommandDataOptionValue, Context, Message},
     builder::{CreateInteractionResponse, CreateInteractionResponseMessage},
 };
 
@@ -15,8 +15,23 @@ pub(super) fn read_credit_option(command: &serenity::all::CommandInteraction, na
         .to_string()
 }
 
+pub(super) fn subcommand_options(
+    command: &serenity::all::CommandInteraction,
+) -> Option<(&str, &[CommandDataOption])> {
+    command.data.options.first().and_then(|opt| match &opt.value {
+        CommandDataOptionValue::SubCommand(options) => Some((opt.name.as_str(), options.as_slice())),
+        _ => None,
+    })
+}
+
+fn command_options(command: &serenity::all::CommandInteraction) -> &[CommandDataOption] {
+    subcommand_options(command)
+        .map(|(_, options)| options)
+        .unwrap_or(&command.data.options)
+}
+
 pub(super) fn option_str<'a>(command: &'a serenity::all::CommandInteraction, name: &str) -> Option<&'a str> {
-    command.data.options.iter()
+    command_options(command).iter()
         .find(|opt| opt.name == name)
         .and_then(|opt| opt.value.as_str())
 }
@@ -29,13 +44,13 @@ pub(super) fn option_trimmed(command: &serenity::all::CommandInteraction, name: 
 }
 
 pub(super) fn option_i64(command: &serenity::all::CommandInteraction, name: &str) -> Option<i64> {
-    command.data.options.iter()
+    command_options(command).iter()
         .find(|opt| opt.name == name)
         .and_then(|opt| opt.value.as_i64())
 }
 
 pub(super) fn option_bool(command: &serenity::all::CommandInteraction, name: &str) -> Option<bool> {
-    command.data.options.iter()
+    command_options(command).iter()
         .find(|opt| opt.name == name)
         .and_then(|opt| opt.value.as_bool())
 }
@@ -44,7 +59,7 @@ pub(super) fn option_attachment<'a>(
     command: &'a serenity::all::CommandInteraction,
     name: &str,
 ) -> Option<&'a serenity::all::Attachment> {
-    command.data.options.iter()
+    command_options(command).iter()
         .find(|opt| opt.name == name)
         .and_then(|opt| opt.value.as_attachment_id())
         .and_then(|id| command.data.resolved.attachments.get(&id))

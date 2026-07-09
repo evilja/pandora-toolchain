@@ -1,12 +1,17 @@
 use crate::lib::env::core::get_pandora_env;
 use crate::lib::env::standard::{PNCURL, PNP2P};
+use crate::lib::image::Font;
+use crate::lib::mpeg::preview::ffmpeg_screenshot;
 use crate::lib::p2p::nyaaise::TorrentType;
 use crate::lib::protocol::core::Protocol;
+use crate::libkagami::core::{find_fonts_with_roots, SubstationAlpha};
 use crate::pnworker::core::Stage;
 use crate::pnworker::core::{CommData, WorkerMsg};
 use crate::pnworker::messages::{
-    CTORRENT_DONE, CTORRENT_FAIL, JOB_CANCELLED, MessagePayload, PROBE_FAIL, PROBE_ROW,
+    CTORRENT_DONE, CTORRENT_FAIL, JOB_CANCELLED, MessagePayload, PREVIEW_DONE, PREVIEW_FAIL,
+    PROBE_FAIL, PROBE_ROW,
 };
+use crate::pnworker::preview::compose_preview;
 use crate::pnworker::tools::{PNCURL_TORRENT, PNP2P_PROBE};
 use crate::pnworker::util::PathValue;
 use crate::pnworker::util::{ToolResult, job_cancelled, run_tool, string_byte_to_mb};
@@ -18,6 +23,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::{Duration, sleep};
 
 pub type ProbeData = (PathBuf, TorrentType, u64);
+pub type PreviewData = (PathBuf, Vec<(u64, String)>, Option<PathBuf>, u64, Option<u64>);
 
 struct ProbeFile {
     idx: String,
@@ -31,7 +37,22 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
     let pncurl_path = env.get(PNCURL).cloned().unwrap_or_default();
     let pnp2p_path = env.get(PNP2P).cloned().unwrap_or_default();
     'll: loop {
-        if let Ok(WorkerMsg::Probe((directory, torrent, job_id))) = rx.try_recv() {
+        if let Ok(msg) = rx.try_recv() {
+            let WorkerMsg::Probe((directory, torrent, job_id)) = msg else {
+                if let WorkerMsg::Preview((directory, shots, watermark_font, job_id, server_id)) = msg {
+                    run_preview_job(
+                        directory,
+                        shots,
+                        watermark_font,
+                        job_id,
+                        server_id,
+                        &tx,
+                        &pulse,
+                    )
+                    .await;
+                }
+                continue 'll;
+            };
             if job_cancelled(&directory) {
                 tx.send((
                     job_id,
@@ -239,6 +260,147 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
         sleep(Duration::from_secs(5)).await;
         pulse.try_send(()).ok();
     }
+}
+
+async fn run_preview_job(
+    directory: PathBuf,
+    shots: Vec<(u64, String)>,
+    watermark_font: Option<PathBuf>,
+    job_id: u64,
+    server_id: Option<u64>,
+    tx: &Sender<CommData>,
+    pulse: &Sender<()>,
+) {
+    if job_cancelled(&directory) {
+        tx.send((
+            job_id,
+            MessagePayload::Static(JOB_CANCELLED),
+            Some(Stage::Cancelled),
+        ))
+        .await
+        .ok();
+        return;
+    }
+
+    let subtitle = directory.join("contents").join("subtitle.ass");
+    let input = directory
+        .join("contents")
+        .join("torrent")
+        .join("input.mkv");
+    let work_dir = directory.join("work");
+    let fonts_dir = stage_preview_fonts(&directory, server_id).await;
+    let watermark = load_preview_font(watermark_font.as_deref());
+    let label_font = load_preview_font(watermark_font.as_deref());
+    let mut rendered: Vec<(String, PathBuf)> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+
+    for (idx, (centiseconds, label)) in shots.into_iter().enumerate() {
+        if job_cancelled(&directory) {
+            tx.send((
+                job_id,
+                MessagePayload::Static(JOB_CANCELLED),
+                Some(Stage::Cancelled),
+            ))
+            .await
+            .ok();
+            return;
+        }
+        pulse.try_send(()).ok();
+        let raw = work_dir.join(format!("preview_raw_{}.png", idx + 1));
+        let out = work_dir.join(format!("preview_{}.png", idx + 1));
+        if let Err(e) =
+            ffmpeg_screenshot(&input, &subtitle, &fonts_dir, centiseconds, &raw).await
+        {
+            errors.push(format!("{}: {}", label, e));
+            continue;
+        }
+
+        match tokio::fs::read(&raw).await {
+            Ok(bytes) => match compose_preview(&bytes, &label, &watermark, &label_font) {
+                Ok(composed) => {
+                    if let Err(e) = tokio::fs::write(&out, composed).await {
+                        errors.push(format!("{}: {}", label, e));
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[Pandora Preview] compose failed for {} on job {}: {}",
+                        label, job_id, e
+                    );
+                    if let Err(e) = tokio::fs::copy(&raw, &out).await {
+                        errors.push(format!("{}: {}", label, e));
+                        continue;
+                    }
+                }
+            },
+            Err(e) => {
+                errors.push(format!("{}: {}", label, e));
+                continue;
+            }
+        }
+        rendered.push((label, out));
+    }
+
+    if rendered.is_empty() {
+        let reason = if errors.is_empty() {
+            "no preview frames were rendered".to_string()
+        } else {
+            errors.join("; ")
+        };
+        tx.send((
+            job_id,
+            MessagePayload::Progress(PREVIEW_FAIL, vec![reason]),
+            Some(Stage::Failed),
+        ))
+        .await
+        .ok();
+        return;
+    }
+
+    let mut args = vec![rendered.len().to_string()];
+    for (label, path) in rendered {
+        args.push(label);
+        args.push(path.display().to_string());
+    }
+    tx.send((
+        job_id,
+        MessagePayload::Progress(PREVIEW_DONE, args),
+        Some(Stage::Uploaded),
+    ))
+    .await
+    .ok();
+}
+
+async fn stage_preview_fonts(directory: &Path, server_id: Option<u64>) -> PathBuf {
+    let subtitle = directory.join("contents").join("subtitle.ass");
+    let fonts_dir = directory.join("work").join("fonts");
+    tokio::fs::create_dir_all(&fonts_dir).await.ok();
+    let sub = SubstationAlpha::load(subtitle, true).await;
+    let names = sub.font_names();
+    if names.is_empty() {
+        return fonts_dir;
+    }
+    let mut roots = Vec::new();
+    if let Some(server_id) = server_id {
+        roots.push(PathBuf::from("DB").join("fontconfig").join(server_id.to_string()));
+    }
+    roots.push(PathBuf::from("DB").join("fontconfig").join("global"));
+    let font_files = tokio::task::spawn_blocking(move || find_fonts_with_roots(&names, &roots))
+        .await
+        .unwrap_or_default();
+    for path in font_files {
+        let Some(name) = path.file_name() else {
+            continue;
+        };
+        let _ = tokio::fs::copy(&path, fonts_dir.join(name)).await;
+    }
+    fonts_dir
+}
+
+fn load_preview_font(path: Option<&Path>) -> Font {
+    path.and_then(|path| Font::from_path(path).ok())
+        .unwrap_or_else(Font::fallback)
 }
 
 fn format_probe_rows(rows: &[ProbeFile]) -> Vec<String> {

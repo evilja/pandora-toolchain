@@ -1,5 +1,5 @@
 use super::*;
-use pandora_toolchain::libkagami::core::{collect_font_files, font_file_names, normalize_font_name};
+use pandora_toolchain::libkagami::core::{cached_normalized_font_names, collect_font_files};
 use std::collections::BTreeSet;
 
 pub async fn handle_fontcheck(
@@ -19,8 +19,16 @@ pub async fn handle_fontcheck(
     let global_dir = PathBuf::from("DB").join("fontconfig").join("global");
     let server_dir = PathBuf::from("DB").join("fontconfig").join(server_id.to_string());
 
-    let global = count_fonts(&global_dir);
-    let server = count_fonts(&server_dir);
+    let counts = tokio::task::spawn_blocking(move || {
+        (count_fonts(&global_dir), count_fonts(&server_dir))
+    }).await;
+    let (global, server) = match counts {
+        Ok(counts) => counts,
+        Err(e) => {
+            let _ = response_msg.edit(ctx, EditMessage::new().content(format!("Font check failed: {}", e))).await;
+            return;
+        }
+    };
 
     let mut all_names: BTreeSet<String> = BTreeSet::new();
     all_names.extend(global.names.iter().cloned());
@@ -48,10 +56,8 @@ fn count_fonts(dir: &Path) -> FontCount {
     collect_font_files(dir, &mut files);
     let mut names: BTreeSet<String> = BTreeSet::new();
     for path in &files {
-        if let Ok(file_names) = font_file_names(path) {
-            for name in file_names {
-                names.insert(normalize_font_name(&name));
-            }
+        for name in cached_normalized_font_names(path) {
+            names.insert(name);
         }
     }
     FontCount { files: files.len(), names }

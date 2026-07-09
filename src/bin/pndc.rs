@@ -354,6 +354,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("init", 1),
     ("detach", 1),
     ("font", 1),
+    ("cfont", 1),
     ("!ts", 1),
     ("destruct", 2),
     ("hearts", 2),
@@ -482,327 +483,405 @@ fn is_authorized(part: &str, id: u64) -> bool {
 }
 
 struct HelpCommand {
+    section: &'static str,
     name: &'static str,
     summary: &'static str,
     usage: &'static str,
     details: &'static str,
 }
 
+#[derive(Clone, Copy)]
+struct HelpSection {
+    slug: &'static str,
+    title: &'static str,
+    blurb: &'static str,
+}
+
+const HELP_SECTIONS: &[HelpSection] = &[
+    HelpSection { slug: "encode", title: "Encode", blurb: "Encoding, probing, backup, and source selection commands." },
+    HelpSection { slug: "repo", title: "Repo", blurb: "Attached anime repositories, episode files, and releases." },
+    HelpSection { slug: "workers", title: "Workers", blurb: "Worker status, worker slots, and restart/sync commands." },
+    HelpSection { slug: "admin", title: "Admin", blurb: "Server config, tokens, translations, auth, and ranks." },
+    HelpSection { slug: "publish", title: "Publish", blurb: "AnimeciX and Akira publish confirmation commands." },
+    HelpSection { slug: "fonts", title: "Fonts", blurb: "Font installation and font availability checks." },
+    HelpSection { slug: "misc", title: "Misc", blurb: "Provider, flavor, pool, intro, and general help commands." },
+];
+
 fn help_catalog() -> &'static [HelpCommand] {
     &[
         HelpCommand {
+            section: "misc",
             name: "help",
             summary: "Show command help.",
-            usage: "/help",
-            details: "Opens this private command guide. Pick a command from the menu to see its required inputs and workflow notes.",
+            usage: "/help [section]",
+            details: "Opens this private command guide. Pick a section, then a command, to see required inputs and workflow notes.",
         },
         HelpCommand {
+            section: "misc",
             name: "providers",
             summary: "Show attached provider APIs.",
             usage: "/providers",
             details: "Shows built-in download and encode support plus the currently configured upload, distribution, and persistence providers for this server.",
         },
         HelpCommand {
+            section: "encode",
             name: "encode",
             summary: "Encode a torrent or Google Drive source with an ASS subtitle.",
             usage: "/encode torrent:<link> subtitle:<ass> [preset] [concat]",
             details: "Accepts torrent URLs, magnet links, and Google Drive links. The attached subtitle must be ASS. Optional presets control encoder mode; concat selects an intro group.",
         },
         HelpCommand {
+            section: "encode",
             name: "probe",
             summary: "Inspect a torrent and list selectable files.",
             usage: "/probe torrent:<link>",
             details: "Downloads and probes a torrent or magnet link, then returns file indexes. Use the resulting job id and index with /pancode or /backup. Google Drive links are not supported here.",
         },
         HelpCommand {
+            section: "encode",
             name: "pancode",
             summary: "Encode one file from a previous /probe job.",
             usage: "/pancode job_id:<probe_job> index:<file_index> subtitle:<ass> [preset] [concat]",
             details: "Uses the torrent data saved by /probe and encodes the selected file with the provided ASS subtitle.",
         },
         HelpCommand {
+            section: "encode",
             name: "backup",
             summary: "Upload a downloaded source to Drive without release encoding.",
             usage: "/backup torrent:<link> or /backup job_id:<probe_job> index:<file_index>",
             details: "Can download a direct torrent/magnet/Google Drive source, or reuse a probed torrent file when job_id and index are supplied.",
         },
         HelpCommand {
+            section: "encode",
             name: "backupall",
             summary: "Upload every MKV from a torrent to Drive.",
             usage: "/backupall torrent:<link>",
             details: "Downloads the torrent or magnet link and backs up all MKV outputs instead of selecting a single file.",
         },
         HelpCommand {
+            section: "encode",
             name: "keycode",
             summary: "[EXPERIMENTAL] Join kept keyword outputs.",
             usage: "/keycode keywords:<a,b,c> [concat] [subtitle]",
             details: "Joins kept encode keywords by concat. Backup keywords require a subtitle and are re-encoded over the joined timeline.",
         },
         HelpCommand {
+            section: "misc",
             name: "lspool",
             summary: "List keep keyword pool entries.",
             usage: "/lspool [page]",
             details: "Shows the keyword pool used when keep jobs need a new keyword. Rank 4 only.",
         },
         HelpCommand {
+            section: "misc",
             name: "touchpool",
             summary: "Add a keep keyword pool entry.",
             usage: "/touchpool keyword:<keyword>",
             details: "Adds one keyword to the configurable keep keyword pool. Rank 4 only.",
         },
         HelpCommand {
+            section: "misc",
             name: "rmpool",
             summary: "Remove a keep keyword pool entry.",
             usage: "/rmpool keyword:<keyword>",
             details: "Removes one keyword from the configurable keep keyword pool. Rank 4 only.",
         },
         HelpCommand {
+            section: "workers",
             name: "lsworker",
             summary: "List configured download/upload worker slots.",
             usage: "/lsworker",
             details: "Shows the worker slot names used by the download and upload worker pools. Rank 4 only.",
         },
         HelpCommand {
+            section: "workers",
             name: "touchworker",
             summary: "Add a download or upload worker slot.",
             usage: "/touchworker type:<download|upload> name:<slot>",
             details: "Adds a validated slot name to the configured worker pool. Running workers refresh this config automatically. Rank 4 only.",
         },
         HelpCommand {
+            section: "workers",
             name: "rmworker",
             summary: "Remove a download or upload worker slot.",
             usage: "/rmworker type:<download|upload> name:<slot>",
             details: "Removes a configured slot. At least one slot must remain for each worker type. Active removed slots finish their current job before disappearing. Rank 4 only.",
         },
         HelpCommand {
+            section: "encode",
             name: "gitcode",
             summary: "Encode with a subtitle fetched from a URL.",
             usage: "/gitcode torrent:<link> subtitle_url:<url> [preset] [concat]",
             details: "Fetches the ASS file from a URL. GitHub blob links are rewritten to raw GitHub links automatically.",
         },
         HelpCommand {
+            section: "repo",
             name: "smartcode",
-            summary: "Merge attached repo subtitles and encode an episode.",
-            usage: "/smartcode episode:<n> [link] [preset] [concat]",
-            details: "Requires this channel to be attached to an anime repo. Reads TL and TS files for the episode, merges them, then encodes using the source link or SOURCE.md.",
+            summary: "Merge attached repo subtitles, then encode or preview an episode.",
+            usage: "/smartcode run episode:<n> [link] [preset] [concat] or /smartcode exp episode:<n> [link]",
+            details: "Requires this channel to be attached to an anime repo. `run` reads TL/TS files, uploads the release ASS, then encodes using the source link or SOURCE.md. `exp` performs the same merge/upload step, then renders up to three `\\fn` typeset preview screenshots instead of encoding.",
         },
         HelpCommand {
+            section: "repo",
             name: "merge",
             summary: "Merge TL and TS subtitles for an attached episode.",
             usage: "/merge episode:<n> [link]",
             details: "Requires an attached anime repo. Produces and uploads the release ASS for the episode without starting an encode.",
         },
         HelpCommand {
+            section: "repo",
             name: "release",
             summary: "Upload release fonts for an attached episode.",
             usage: "/release episode:<n>",
             details: "Requires an attached anime repo and an existing release ASS. Reads the release ASS font list and uploads a font zip to Google Drive: local Drive uses the attached anime folder under fonts/, global Drive uses the default folder.",
         },
         HelpCommand {
+            section: "repo",
             name: "source",
             summary: "Write SOURCE.md for an attached episode folder.",
             usage: "/source episode:<n> link:<source_link>",
             details: "Stores the episode source link in the attached Forgejo repo. Source links can be torrent URLs, magnet links, or Google Drive links.",
         },
         HelpCommand {
+            section: "repo",
             name: "job",
             summary: "Upload one episode work file to the attached repo.",
             usage: "/job type:<TL|TLC|TS> episode:<n> subtitle:<ass_or_zip> [commit]",
             details: "Requires a channel attachment. Normalizes the uploaded ASS or root-level ASS zip, then uploads it under the selected job type.",
         },
         HelpCommand {
+            section: "repo",
             name: "get",
             summary: "Get a download link for an episode work file.",
             usage: "/get type:<Translation|Typeset> episode:<n>",
             details: "Returns a repo download link for the requested attached episode file.",
         },
         HelpCommand {
+            section: "workers",
             name: "hearts",
             summary: "Show worker health.",
             usage: "/hearts",
             details: "Reports shrine worker liveness, heartbeat age, and reboot counts.",
         },
         HelpCommand {
+            section: "workers",
             name: "workers",
             summary: "Show worker slots and active jobs.",
             usage: "/workers",
             details: "Reports the current download, encode, probe, and upload worker slots from the live orchestrator queue.",
         },
         HelpCommand {
+            section: "workers",
             name: "gitsync",
             summary: "Fast-forward the bot repo and restart workers.",
             usage: "/gitsync",
             details: "Runs the configured git sync workflow, archives active work, stops the shrine, and exits for restart.",
         },
         HelpCommand {
+            section: "workers",
             name: "gitquery",
             summary: "Sync git after current encodes finish.",
             usage: "/gitquery",
             details: "Disables new encode jobs immediately, waits for current encode jobs to finish, then runs the same git sync workflow as /gitsync.",
         },
         HelpCommand {
+            section: "admin",
             name: "configure",
             summary: "Configure server language, Forgejo, and Google Drive credentials.",
             usage: "/configure language:<EN|TR|JP> [forgejo] [api_key] [gdrive_client_id] [gdrive_client_secret] [gdrive_refresh_token] [gdrive_folder_id] [gdrive_anon_folder_id] [wrapstyle]",
             details: "Writes server metadata. Run this before /init if the server needs a Forgejo org/base or per-guild Google Drive upload credentials configured. wrapstyle controls ASS WrapStyle normalization; default dont_touch leaves existing subtitles unchanged.",
         },
         HelpCommand {
+            section: "admin",
             name: "edit",
             summary: "Edit individual server metadata fields, leaving the rest untouched.",
             usage: "/edit [language] [forgejo] [api_key] [gdrive_client_id] [gdrive_client_secret] [gdrive_refresh_token] [gdrive_folder_id] [gdrive_anon_folder_id] [local_gdrive] [wrapstyle] [announcement_channel]",
             details: "Like /configure but every field is optional — omitted fields keep their current value. Pass `-` to clear a text field. Set local_gdrive:false to keep stored server Drive credentials but upload through global Drive. gdrive_folder_id is the smartcode/default root; gdrive_anon_folder_id is the random encode root. wrapstyle can be dont_touch or 0-3. Set announcement_channel:true to point announcements at the current channel. Requires the server to already be configured.",
         },
         HelpCommand {
+            section: "admin",
             name: "touchapi",
             summary: "Write or update a toolchain environment token.",
             usage: "/touchapi key_name:<name> token:<value>",
             details: "Updates the global pntools environment file with the provided token value.",
         },
         HelpCommand {
+            section: "admin",
             name: "gettranslation",
             summary: "Read a Pandora localization entry.",
             usage: "/gettranslation language:<en|tr|jp> key:<MESSAGE_KEY>",
             details: "Shows the current text and argument count for one localization key. Language files live at DB/config/en.toml, tr.toml, and jp.toml.",
         },
         HelpCommand {
+            section: "admin",
             name: "touchtranslation",
             summary: "Add or update a Pandora localization entry.",
             usage: "/touchtranslation language:<en|tr|jp> key:<MESSAGE_KEY> text:<translation> [args]",
             details: "Updates one translation. Existing keys keep args unless provided; new keys infer args from `{}`.",
         },
         HelpCommand {
+            section: "admin",
             name: "gettranslationall",
             summary: "Download a full Pandora localization TOML.",
             usage: "/gettranslationall language:<en|tr|jp>",
             details: "Uploads the selected language file as a TOML attachment.",
         },
         HelpCommand {
+            section: "admin",
             name: "touchtranslationall",
             summary: "Replace a full Pandora localization TOML.",
             usage: "/touchtranslationall language:<en|tr|jp> file:<toml>",
             details: "Validates and replaces the selected language file from a TOML attachment.",
         },
         HelpCommand {
+            section: "admin",
             name: "gentoken",
             summary: "Generate a new API bearer token.",
             usage: "/gentoken [label:<note>] [local:<true|false>]",
             details: "Mints a random bearer token for the HTTP API and appends it to the token file. With local enabled, jobs submitted with the token use this server's Google Drive credentials when available, falling back to global credentials. The token is shown once, privately. Upper only.",
         },
         HelpCommand {
+            section: "misc",
             name: "touchflavor",
             summary: "Add an idle presence flavor.",
             usage: "/touchflavor text:<presence text>",
             details: "Adds a custom text that can be shown while the queue is empty instead of the default `No jobs in queue.`. Upper only.",
         },
         HelpCommand {
+            section: "misc",
             name: "lsflavor",
             summary: "List idle presence flavors.",
             usage: "/lsflavor [page]",
             details: "Lists stored idle presence texts with their removal indexes.",
         },
         HelpCommand {
+            section: "misc",
             name: "rmflavor",
             summary: "Remove an idle presence flavor.",
             usage: "/rmflavor index:<number>",
             details: "Removes one idle presence text by the index shown in `/lsflavor`.",
         },
         HelpCommand {
+            section: "publish",
             name: "acixconfirm",
             summary: "Publish a finished encode to AnimeciX.",
             usage: "/acixconfirm job_id:<id>",
             details: "Confirms the pending AnimeciX publish for an uploaded job and pushes it to AnimeciX (the multishare upload).",
         },
         HelpCommand {
+            section: "publish",
             name: "akiraconfirm",
             summary: "Publish a finished encode to Akira.",
             usage: "/akiraconfirm job_id:<id> episode:<number> name:<episode-title> [slug:<akira-slug>] [folder:<index-folder>]",
             details: "Creates or updates the Akira episode from the uploaded job links. When the channel has a MAL id, Akira's official resolve endpoint supplies the current slug; otherwise slug falls back to the command option or attached channel slug. Drive links are converted to Akira index player URLs instead of publishing raw Google Drive links.",
         },
         HelpCommand {
+            section: "publish",
             name: "acixtemplate",
             summary: "Set this channel's AnimeciX fansub id.",
             usage: "/acixtemplate template:<id>",
             details: "Stores the AnimeciX fansub template id (e.g. AkiraSubs=50, SomeSubs=218) on this channel so smartcode publishes are attributed correctly.",
         },
         HelpCommand {
+            section: "fonts",
             name: "font",
             summary: "Install a font zip for this server.",
             usage: "/font [file:<zip>] [link:<zip_url>]",
             details: "Accepts either an attached zip or an HTTP(S) zip link, extracts fonts to this server's fontconfig directory, and installs them into the Linux font folder when running on Linux.",
         },
         HelpCommand {
+            section: "fonts",
+            name: "cfont",
+            summary: "Set the preview watermark font.",
+            usage: "/cfont [font:<family>]",
+            details: "Sets or shows the server's `/smartcode exp` watermark font. The default requested font is Gandhi Sans Bold; install it with `/font` if you want that exact face. Rendering falls back to an embedded Liberation Mono font when no configured/default font is available.",
+        },
+        HelpCommand {
+            section: "fonts",
             name: "fontcheck",
             summary: "Count usable unique fonts in the DB fontconfig directories.",
             usage: "/fontcheck",
             details: "Scans DB/fontconfig/global and DB/fontconfig/<server_id>, counts font files and extracts unique usable font names from their name tables.",
         },
         HelpCommand {
+            section: "repo",
             name: "readmebase",
             summary: "Set the server README template.",
             usage: "/readmebase file:<base.md>",
             details: "Stores base.md for repo bootstrapping. /init and /attach can use it when creating or updating README.md.",
         },
         HelpCommand {
+            section: "misc",
             name: "touchintro",
             summary: "Encode and register an intro group.",
             usage: "/touchintro name:<group> video:<attachment>",
             details: "Encodes the uploaded video into 44100/23.976, 44100/24, 48000/23.976, and 48000/24 libx264 MP4 variants, stores them under DB/concat/<serverid>, and upserts the group in intros.toml.",
         },
         HelpCommand {
+            section: "admin",
             name: "auth",
             summary: "Authorize a user for a permission level.",
             usage: "/auth user_id:<discord_id> [level]",
             details: "Adds a user id to an allowlist. If level is omitted, authorize.pandora is used.",
         },
         HelpCommand {
+            section: "admin",
             name: "rm",
             summary: "Remove a user from a permission level.",
             usage: "/rm user_id:<discord_id> level:<allowlist>",
             details: "Removes a user id from the chosen allowlist.",
         },
         HelpCommand {
+            section: "repo",
             name: "attach",
             summary: "Attach this channel to an existing Forgejo anime repo.",
             usage: "/attach mal:<mal_url> repo:<forgejo_repo> [season] [tl] [tlc] [ts] [qc]",
             details: "Fetches MAL metadata, writes channel metadata, and bootstraps episode folders plus repo helper files.",
         },
         HelpCommand {
+            section: "repo",
             name: "init",
             summary: "Create and attach a new Forgejo repo for an anime.",
             usage: "/init mal:<mal_url> [season] [tl] [tlc] [ts] [qc]",
             details: "Uses the configured Forgejo org, creates a public repo from MAL metadata, bootstraps folders, and attaches this channel.",
         },
         HelpCommand {
+            section: "repo",
             name: "destruct",
             summary: "Delete the attached Forgejo repo and detach this channel.",
             usage: "/destruct",
             details: "Deletes the repo configured for this channel and removes the channel attachment.",
         },
         HelpCommand {
+            section: "repo",
             name: "detach",
             summary: "Detach this channel without deleting the repo.",
             usage: "/detach",
             details: "Removes this channel's anime attachment metadata. The Forgejo repo is left untouched.",
         },
         HelpCommand {
+            section: "admin",
             name: "lstoken",
             summary: "List API bearer tokens.",
             usage: "/lstoken [page]",
             details: "Lists stored API tokens by first and last characters, label, and local binding state.",
         },
         HelpCommand {
+            section: "admin",
             name: "rmtoken",
             summary: "Remove API bearer tokens by label or token mask.",
             usage: "/rmtoken [label:<label>] [token:<abc...xyz>]",
             details: "Removes every token whose stored label exactly matches the supplied label, or one token whose displayed mask matches token.",
         },
         HelpCommand {
+            section: "admin",
             name: "lsauth",
             summary: "List authorized users in one rank.",
             usage: "/lsauth level:<rank>",
             details: "Lists users from the selected permission file as Discord mentions.",
         },
         HelpCommand {
+            section: "admin",
             name: "changerank",
             summary: "Edit a command's required rank.",
             usage: "/changerank command:<name> rank:<0-4>",
@@ -813,12 +892,34 @@ fn help_catalog() -> &'static [HelpCommand] {
 
 fn user_help_commands(user_id: u64) -> Vec<&'static HelpCommand> {
     help_catalog().iter()
-        .filter(|cmd| public_command(cmd.name) || has_level_at_least(user_id, min_rank_for_command(cmd.name)))
+        .filter(|cmd| user_can_see_command(user_id, cmd))
         .collect()
 }
 
 fn help_command(name: &str) -> Option<&'static HelpCommand> {
     help_catalog().iter().find(|cmd| cmd.name == name)
+}
+
+fn help_section(slug: &str) -> Option<&'static HelpSection> {
+    HELP_SECTIONS.iter().find(|section| section.slug == slug)
+}
+
+fn user_can_see_command(user_id: u64, cmd: &HelpCommand) -> bool {
+    public_command(cmd.name) || has_level_at_least(user_id, min_rank_for_command(cmd.name))
+}
+
+fn user_section_commands(user_id: u64, slug: &str) -> Vec<&'static HelpCommand> {
+    user_help_commands(user_id)
+        .into_iter()
+        .filter(|cmd| cmd.section == slug)
+        .collect()
+}
+
+fn visible_sections(user_id: u64) -> Vec<&'static HelpSection> {
+    HELP_SECTIONS
+        .iter()
+        .filter(|section| !user_section_commands(user_id, section.slug).is_empty())
+        .collect()
 }
 
 fn help_rank_label(rank: u8) -> &'static str {
@@ -832,8 +933,40 @@ fn help_rank_label(rank: u8) -> &'static str {
     }
 }
 
-fn help_components(user_id: u64, selected: Option<&str>) -> Vec<CreateActionRow> {
-    let commands = user_help_commands(user_id);
+fn help_message_components(user_id: u64, selected_section: Option<&str>, selected_cmd: Option<&str>) -> Vec<CreateActionRow> {
+    let mut rows = vec![help_section_select(user_id, selected_section)];
+    if let Some(section) = selected_section {
+        rows.extend(help_command_select(user_id, section, selected_cmd));
+    }
+    rows
+}
+
+fn help_section_select(user_id: u64, selected_section: Option<&str>) -> CreateActionRow {
+    let options = visible_sections(user_id)
+        .into_iter()
+        .map(|section| {
+            let option = CreateSelectMenuOption::new(section.title, section.slug)
+                .description(section.blurb);
+            if Some(section.slug) == selected_section {
+                option.default_selection(true)
+            } else {
+                option
+            }
+        })
+        .collect();
+    CreateActionRow::SelectMenu(
+        CreateSelectMenu::new(
+            format!("pnhelp:sec:{}", user_id),
+            CreateSelectMenuKind::String { options },
+        )
+            .placeholder("Choose a help section")
+            .min_values(1)
+            .max_values(1)
+    )
+}
+
+fn help_command_select(user_id: u64, section: &str, selected_cmd: Option<&str>) -> Vec<CreateActionRow> {
+    let commands = user_section_commands(user_id, section);
     let total_chunks = (commands.len() + 24) / 25;
     commands.chunks(25).enumerate()
         .map(|(idx, chunk)| {
@@ -841,7 +974,7 @@ fn help_components(user_id: u64, selected: Option<&str>) -> Vec<CreateActionRow>
                 .map(|cmd| {
                     let option = CreateSelectMenuOption::new(format!("/{}", cmd.name), cmd.name)
                         .description(cmd.summary);
-                    if Some(cmd.name) == selected {
+                    if Some(cmd.name) == selected_cmd {
                         option.default_selection(true)
                     } else {
                         option
@@ -855,7 +988,7 @@ fn help_components(user_id: u64, selected: Option<&str>) -> Vec<CreateActionRow>
             };
             CreateActionRow::SelectMenu(
                 CreateSelectMenu::new(
-                    format!("pnhelp:{}:{}", user_id, idx),
+                    format!("pnhelp:cmd:{}:{}:{}", user_id, section, idx),
                     CreateSelectMenuKind::String { options },
                 )
                     .placeholder(placeholder)
@@ -867,15 +1000,34 @@ fn help_components(user_id: u64, selected: Option<&str>) -> Vec<CreateActionRow>
 }
 
 fn help_overview_embed(user_id: u64) -> CreateEmbed {
-    let commands = user_help_commands(user_id);
-    let command_list = commands.iter()
-        .map(|cmd| format!("`/{}`", cmd.name))
-        .collect::<Vec<_>>()
-        .join(" ");
-    CreateEmbed::new()
+    let mut embed = CreateEmbed::new()
         .title("Pandora command help")
-        .description("Select a command below to see usage, required inputs, and workflow notes.")
-        .field("Available commands", command_list, false)
+        .description("Select a section below to see usage, required inputs, and workflow notes.");
+    for section in visible_sections(user_id) {
+        let command_list = user_section_commands(user_id, section.slug)
+            .iter()
+            .map(|cmd| format!("`/{}`", cmd.name))
+            .collect::<Vec<_>>()
+            .join(" ");
+        embed = embed.field(section.title, command_list, false);
+    }
+    embed
+}
+
+fn help_section_embed(user_id: u64, slug: &str) -> CreateEmbed {
+    let section = help_section(slug);
+    let title = section.map(|section| section.title).unwrap_or("Unknown");
+    let blurb = section.map(|section| section.blurb).unwrap_or("Unknown help section.");
+    let commands = user_section_commands(user_id, slug);
+    let command_list = commands
+        .iter()
+        .map(|cmd| format!("`/{}` - {}", cmd.name, cmd.summary))
+        .collect::<Vec<_>>()
+        .join("\n");
+    CreateEmbed::new()
+        .title(format!("Pandora help - {}", title))
+        .description(blurb)
+        .field("Commands", command_list, false)
 }
 
 fn help_detail_embed(cmd: &HelpCommand) -> CreateEmbed {
@@ -889,19 +1041,77 @@ fn help_detail_embed(cmd: &HelpCommand) -> CreateEmbed {
 }
 
 async fn handle_help_command(ctx: &Context, command: &serenity::all::CommandInteraction) {
+    let user_id = command.user.id.get();
+    let response = match option_str(command, "section").map(str::trim).filter(|s| !s.is_empty()) {
+        Some(section) if help_section(section).is_none() => {
+            CreateInteractionResponseMessage::new()
+                .content("Unknown help section.")
+                .ephemeral(true)
+        }
+        Some(section) if user_section_commands(user_id, section).is_empty() => {
+            CreateInteractionResponseMessage::new()
+                .content("You do not have access to commands in that section.")
+                .ephemeral(true)
+        }
+        Some(section) => {
+            CreateInteractionResponseMessage::new()
+                .embed(help_section_embed(user_id, section))
+                .components(help_message_components(user_id, Some(section), None))
+                .ephemeral(true)
+        }
+        None => {
+            CreateInteractionResponseMessage::new()
+                .embed(help_overview_embed(user_id))
+                .components(help_message_components(user_id, None, None))
+                .ephemeral(true)
+        }
+    };
     command.create_response(ctx, CreateInteractionResponse::Message(
-        CreateInteractionResponseMessage::new()
-            .embed(help_overview_embed(command.user.id.get()))
-            .components(help_components(command.user.id.get(), None))
-            .ephemeral(true)
+        response
     )).await.ok();
 }
 
+#[derive(Debug, PartialEq)]
+enum HelpComponentId<'a> {
+    Section { owner_id: u64 },
+    Command { owner_id: u64, section: &'a str },
+}
+
+fn parse_help_component_id(id: &str) -> Option<HelpComponentId<'_>> {
+    let mut parts = id.split(':');
+    if parts.next()? != "pnhelp" {
+        return None;
+    }
+    match parts.next()? {
+        "sec" => {
+            let owner_id = parts.next()?.parse::<u64>().ok()?;
+            if parts.next().is_some() {
+                return None;
+            }
+            Some(HelpComponentId::Section { owner_id })
+        }
+        "cmd" => {
+            let owner_id = parts.next()?.parse::<u64>().ok()?;
+            let section = parts.next()?;
+            parts.next()?;
+            if parts.next().is_some() {
+                return None;
+            }
+            Some(HelpComponentId::Command { owner_id, section })
+        }
+        _ => None,
+    }
+}
+
 async fn handle_help_component(ctx: &Context, component: &ComponentInteraction) {
-    let Some(owner) = component.data.custom_id.strip_prefix("pnhelp:") else {
+    let Some(component_id) = parse_help_component_id(&component.data.custom_id) else {
+        component.create_response(ctx, CreateInteractionResponse::Acknowledge).await.ok();
         return;
     };
-    let owner_id = owner.split(':').next().unwrap_or(owner).parse::<u64>().unwrap_or(0);
+    let owner_id = match component_id {
+        HelpComponentId::Section { owner_id } => owner_id,
+        HelpComponentId::Command { owner_id, .. } => owner_id,
+    };
     if owner_id != component.user.id.get() {
         component.create_response(ctx, CreateInteractionResponse::Message(
             CreateInteractionResponseMessage::new()
@@ -919,24 +1129,90 @@ async fn handle_help_component(ctx: &Context, component: &ComponentInteraction) 
         component.create_response(ctx, CreateInteractionResponse::Acknowledge).await.ok();
         return;
     };
-    let Some(cmd) = help_command(name) else {
-        component.create_response(ctx, CreateInteractionResponse::Acknowledge).await.ok();
-        return;
-    };
-    if !public_command(cmd.name) && !has_level_at_least(component.user.id.get(), min_rank_for_command(cmd.name)) {
-        component.create_response(ctx, CreateInteractionResponse::Message(
-            CreateInteractionResponseMessage::new()
-                .content("You do not have access to that command.")
-                .ephemeral(true)
-        )).await.ok();
-        return;
+
+    match component_id {
+        HelpComponentId::Section { .. } => {
+            let section = name;
+            if help_section(section).is_none() {
+                component.create_response(ctx, CreateInteractionResponse::Acknowledge).await.ok();
+                return;
+            }
+            if user_section_commands(component.user.id.get(), section).is_empty() {
+                component.create_response(ctx, CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content("You do not have access to commands in that section.")
+                        .ephemeral(true)
+                )).await.ok();
+                return;
+            }
+            component.create_response(ctx, CreateInteractionResponse::UpdateMessage(
+                CreateInteractionResponseMessage::new()
+                    .embed(help_section_embed(component.user.id.get(), section))
+                    .components(help_message_components(component.user.id.get(), Some(section), None))
+            )).await.ok();
+        }
+        HelpComponentId::Command { section, .. } => {
+            let Some(cmd) = help_command(name) else {
+                component.create_response(ctx, CreateInteractionResponse::Acknowledge).await.ok();
+                return;
+            };
+            if cmd.section != section {
+                component.create_response(ctx, CreateInteractionResponse::Acknowledge).await.ok();
+                return;
+            }
+            if !user_can_see_command(component.user.id.get(), cmd) {
+                component.create_response(ctx, CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content("You do not have access to that command.")
+                        .ephemeral(true)
+                )).await.ok();
+                return;
+            }
+
+            component.create_response(ctx, CreateInteractionResponse::UpdateMessage(
+                CreateInteractionResponseMessage::new()
+                    .embed(help_detail_embed(cmd))
+                    .components(help_message_components(component.user.id.get(), Some(section), Some(cmd.name)))
+            )).await.ok();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn help_catalog_sections_are_valid_and_exhaustive() {
+        let section_slugs = HELP_SECTIONS
+            .iter()
+            .map(|section| section.slug)
+            .collect::<HashSet<_>>();
+        let mut seen_names = HashSet::new();
+        let mut seen_sections = HashSet::new();
+        for cmd in help_catalog() {
+            assert!(section_slugs.contains(cmd.section), "unknown section {}", cmd.section);
+            assert!(seen_names.insert(cmd.name), "duplicate help command {}", cmd.name);
+            seen_sections.insert(cmd.section);
+        }
+        for section in HELP_SECTIONS {
+            assert!(seen_sections.contains(section.slug), "empty section {}", section.slug);
+        }
     }
 
-    component.create_response(ctx, CreateInteractionResponse::UpdateMessage(
-        CreateInteractionResponseMessage::new()
-            .embed(help_detail_embed(cmd))
-            .components(help_components(component.user.id.get(), Some(cmd.name)))
-    )).await.ok();
+    #[test]
+    fn parses_help_component_ids() {
+        assert_eq!(
+            parse_help_component_id("pnhelp:sec:42"),
+            Some(HelpComponentId::Section { owner_id: 42 })
+        );
+        assert_eq!(
+            parse_help_component_id("pnhelp:cmd:42:encode:0"),
+            Some(HelpComponentId::Command { owner_id: 42, section: "encode" })
+        );
+        assert_eq!(parse_help_component_id("pnhelp:42:0"), None);
+        assert_eq!(parse_help_component_id("pnhelp:cmd:42:encode:0:extra"), None);
+    }
 }
 
 fn server_wrap_style(server_id: u64) -> String {
@@ -1617,6 +1893,9 @@ impl EventHandler for Handler {
                 "font" => {
                     handle_font(&ctx, &command).await;
                 }
+                "cfont" => {
+                    handle_cfont(&ctx, &command).await;
+                }
                 "fontcheck" => {
                     handle_fontcheck(&ctx, &command).await;
                 }
@@ -1671,13 +1950,25 @@ impl EventHandler for Handler {
                     handle_detach(&ctx, &command).await;
                 }
                 "smartcode" => {
-                    let keep = match keep_request_from_options(&ctx, &command).await {
-                        Some(keep) => keep,
-                        None => return,
-                    };
-                    if let Some(mut job) = handle_smartcode(&ctx, &command, &self.intros).await {
-                        job.keep = keep;
-                        self.tx.send(JobClass::Job(job)).await.unwrap();
+                    match subcommand_options(&command).map(|(name, _)| name).unwrap_or("run") {
+                        "run" => {
+                            let keep = match keep_request_from_options(&ctx, &command).await {
+                                Some(keep) => keep,
+                                None => return,
+                            };
+                            if let Some(mut job) = handle_smartcode(&ctx, &command, &self.intros).await {
+                                job.keep = keep;
+                                self.tx.send(JobClass::Job(job)).await.unwrap();
+                            }
+                        }
+                        "exp" => {
+                            if let Some(job) = handle_smartcode_exp(&ctx, &command).await {
+                                self.tx.send(JobClass::Job(job)).await.unwrap();
+                            }
+                        }
+                        other => {
+                            command_error(&ctx, &command, format!("Unknown smartcode subcommand `{}`.", other)).await;
+                        }
                     }
                 }
                 "merge" => {
@@ -1824,10 +2115,20 @@ impl EventHandler for Handler {
             "keyword",
             "Existing keep keyword; omit for New keyword"
         ).required(false);
+        let mut help_section_option = CreateCommandOption::new(
+            CommandOptionType::String,
+            "section",
+            "Help section"
+        ).required(false);
+        for section in HELP_SECTIONS {
+            help_section_option = help_section_option.add_string_choice(section.title, section.slug);
+        }
+        let help_command = CreateCommand::new("help")
+            .description("Open an interactive command guide")
+            .add_option(help_section_option);
 
         let commands = vec![
-            CreateCommand::new("help")
-                .description("Open an interactive command guide"),
+            help_command,
             CreateCommand::new("providers")
                 .description("Show attached provider APIs"),
             CreateCommand::new("encode")
@@ -1975,27 +2276,42 @@ impl EventHandler for Handler {
             CreateCommand::new("detach")
                 .description("Detach this channel from its attached anime (the Forgejo repo is left untouched)"),
             CreateCommand::new("smartcode")
-                .description("Merge the channel's attached TL and TS subtitles for an episode and encode a torrent")
+                .description("Merge attached TL/TS subtitles, then encode or preview an episode")
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (1-based)")
-                        .required(true)
-                        .min_int_value(1)
+                    CreateCommandOption::new(CommandOptionType::SubCommand, "run", "Merge subtitles and encode the episode")
+                        .add_sub_option(
+                            CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (1-based)")
+                                .required(true)
+                                .min_int_value(1)
+                        )
+                        .add_sub_option(
+                            CreateCommandOption::new(CommandOptionType::String, "link", "Source link. Falls back to SOURCE.md if omitted.")
+                                .required(false)
+                        )
+                        .add_sub_option(
+                            CreateCommandOption::new(CommandOptionType::String, "preset", "Encoding preset")
+                                .required(false)
+                                .add_string_choice("Pseudo Lossless", "pseudolossless")
+                                .add_string_choice("Standard x264", "standard")
+                                .add_string_choice("GPU", "gpu")
+                                .add_string_choice("DEV", "dummy")
+                        )
+                        .add_sub_option(concat_option.clone())
+                        .add_sub_option(keep_option.clone())
+                        .add_sub_option(keyword_option.clone())
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "link", "Source link. Falls back to SOURCE.md if omitted.")
-                        .required(false)
-                )
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "preset", "Encoding preset")
-                        .required(false)
-                        .add_string_choice("Pseudo Lossless", "pseudolossless")
-                        .add_string_choice("Standard x264", "standard")
-                        .add_string_choice("GPU", "gpu")
-                        .add_string_choice("DEV", "dummy")
-                )
-                .add_option(concat_option.clone())
-                .add_option(keep_option.clone())
-                .add_option(keyword_option.clone()),
+                    CreateCommandOption::new(CommandOptionType::SubCommand, "exp", "Render 1-3 typeset preview screenshots")
+                        .add_sub_option(
+                            CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (1-based)")
+                                .required(true)
+                                .min_int_value(1)
+                        )
+                        .add_sub_option(
+                            CreateCommandOption::new(CommandOptionType::String, "link", "Source link. Falls back to SOURCE.md if omitted.")
+                                .required(false)
+                        )
+                ),
             CreateCommand::new("merge")
                 .description("Merge the channel's attached TL and TS subtitles for an episode and upload the release ASS")
                 .add_option(
@@ -2393,6 +2709,12 @@ impl EventHandler for Handler {
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "link", "HTTP(S) link to a .zip archive of fonts")
+                        .required(false)
+                ),
+            CreateCommand::new("cfont")
+                .description("Set or show the smartcode preview watermark font")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "font", "Font family name for preview watermark text")
                         .required(false)
                 ),
             CreateCommand::new("fontcheck")

@@ -3,6 +3,7 @@ use crate::libkagami::complex::helpers::parse_ass_int_prefix;
 #[derive(Debug, Clone, Copy)]
 pub struct AssColour(u32);
 
+#[derive(Clone, Copy)]
 pub struct AssTime {
     pub hours: u8,
     pub minutes: u8,
@@ -48,6 +49,30 @@ impl std::str::FromStr for AssTime {
             seconds:      sec_cs[0].parse().map_err(|_| ())?,
             centiseconds: sec_cs[1].parse().map_err(|_| ())?,
         })
+    }
+}
+
+impl AssTime {
+    pub fn total_centiseconds(&self) -> u64 {
+        self.hours as u64 * 360_000
+            + self.minutes as u64 * 6_000
+            + self.seconds as u64 * 100
+            + self.centiseconds as u64
+    }
+
+    pub fn from_centiseconds(cs: u64) -> AssTime {
+        let hours = (cs / 360_000).min(u8::MAX as u64);
+        let rem = cs.saturating_sub(hours * 360_000);
+        let minutes = (rem / 6_000).min(59);
+        let rem = rem.saturating_sub(minutes * 6_000);
+        let seconds = (rem / 100).min(59);
+        let centiseconds = rem.saturating_sub(seconds * 100).min(99);
+        AssTime {
+            hours: hours as u8,
+            minutes: minutes as u8,
+            seconds: seconds as u8,
+            centiseconds: centiseconds as u8,
+        }
     }
 }
 

@@ -4,6 +4,7 @@ mod message;
 mod probe;
 mod backup;
 mod smartcode;
+mod cfont;
 mod merge;
 mod release;
 mod source;
@@ -39,7 +40,8 @@ mod addintro;
 pub use self::message::handle_message;
 pub use self::probe::handle_probe;
 pub use self::backup::handle_backup;
-pub use self::smartcode::handle_smartcode;
+pub use self::smartcode::{handle_smartcode, handle_smartcode_exp};
+pub use self::cfont::{handle_cfont, resolve_preview_watermark_font_path};
 pub use self::merge::handle_merge;
 pub use self::release::handle_release;
 pub use self::source::handle_source;
@@ -80,6 +82,7 @@ use pandora_toolchain::lib::http::curl::core::{Host, Req, RpbData};
 struct SmartMergeResult {
     link: String,
     merged_bytes: Vec<u8>,
+    ts_bytes: Option<Vec<u8>>,
     episode: u32,
     owner_repo: String,
     release_path: String,
@@ -391,6 +394,7 @@ async fn smartcode_merge_upload(
     Some(SmartMergeResult {
         link,
         merged_bytes,
+        ts_bytes: ts_bytes_opt,
         episode,
         gdrive_folder_global: smartcode_global_drive_folder(&owner_repo, &safe_name),
         gdrive_folder_local: smartcode_local_drive_folder(&safe_name),

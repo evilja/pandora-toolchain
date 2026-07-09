@@ -6,6 +6,8 @@ pub mod tools;
 pub mod worker_slots;
 pub mod smartcode_drive;
 pub mod workers;
+pub mod workers_view;
+pub mod preview;
 pub mod heartbeat;
 pub mod pull;
 pub mod presence;
