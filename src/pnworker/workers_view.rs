@@ -12,7 +12,7 @@ pub struct WorkerJobView {
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkerCell {
     pub name: String,
-    pub job_id: Option<u64>,
+    pub active: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -141,13 +141,12 @@ pub(crate) fn worker_offsets(count: usize) -> Vec<i32> {
 }
 
 fn cell_for_worker(views: &[WorkerJobView], worker: &str) -> WorkerCell {
-    let job_id = views
+    let active = views
         .iter()
-        .find(|view| view.worker == worker && view.active)
-        .map(|view| view.job_id);
+        .any(|view| view.worker == worker && view.active);
     WorkerCell {
         name: worker.to_string(),
-        job_id,
+        active,
     }
 }
 
@@ -182,15 +181,15 @@ fn active_lines(
 
 fn active_line(view: &WorkerJobView) -> String {
     format!(
-        "#{} {} - {} ({}) - {}",
-        view.job_id, view.type_label, view.organisation, view.stage_label, view.worker
+        "{} {} {} {}",
+        view.organisation, view.stage_label, view.type_label, view.worker
     )
 }
 
 fn job_line(view: &WorkerJobView) -> String {
     format!(
-        "#{} {} {} ({})",
-        view.job_id, view.type_label, view.organisation, view.stage_label
+        "{} {} {}",
+        view.organisation, view.stage_label, view.type_label
     )
 }
 
@@ -198,10 +197,8 @@ fn render_column(cells: &[Option<WorkerCell>]) -> String {
     let lines = cells
         .iter()
         .map(|cell| match cell {
-            Some(cell) => match cell.job_id {
-                Some(job_id) => format!("🟢 {} `#{}`", cell.name, job_id),
-                None => format!("⚪ {}", cell.name),
-            },
+            Some(cell) if cell.active => format!("🟢 {}", cell.name),
+            Some(cell) => format!("⚪ {}", cell.name),
             None => "\u{200b}".to_string(),
         })
         .collect();
@@ -298,8 +295,8 @@ mod tests {
         assert_eq!(
             model.active,
             vec![
-                "#10 encode - Org (encoding) - dwl-a",
-                "#20 encode - Org (encoding) - enc-main"
+                "Org encoding encode dwl-a",
+                "Org encoding encode enc-main"
             ]
         );
     }
@@ -322,20 +319,20 @@ mod tests {
 
         assert!(model.download.iter().any(|cell| {
             cell.as_ref()
-                .map(|cell| cell.name.as_str() == "dwl-extra" && cell.job_id == Some(10))
+                .map(|cell| cell.name.as_str() == "dwl-extra" && cell.active)
                 .unwrap_or(false)
         }));
         assert!(model.core.iter().any(|cell| {
             cell.as_ref()
-                .map(|cell| cell.name.as_str() == "prb-extra" && cell.job_id == Some(13))
+                .map(|cell| cell.name.as_str() == "prb-extra" && cell.active)
                 .unwrap_or(false)
         }));
         assert_eq!(
             model.waiting,
             vec![
-                "#11 encode Org (queued)",
-                "#14 encode Org (queued)",
-                "#12 encode Org (queued)"
+                "Org queued encode",
+                "Org queued encode",
+                "Org queued encode"
             ]
         );
     }
@@ -346,19 +343,19 @@ mod tests {
             download: vec![
                 Some(WorkerCell {
                     name: "dwl-a".to_string(),
-                    job_id: Some(7),
+                    active: true,
                 }),
                 None,
                 Some(WorkerCell {
                     name: "dwl-b".to_string(),
-                    job_id: None,
+                    active: false,
                 }),
             ],
             core: vec![
                 None,
                 Some(WorkerCell {
                     name: "prb-hoshi".to_string(),
-                    job_id: None,
+                    active: false,
                 }),
                 None,
             ],
@@ -367,7 +364,7 @@ mod tests {
                 None,
                 Some(WorkerCell {
                     name: "upl-u".to_string(),
-                    job_id: Some(8),
+                    active: true,
                 }),
             ],
             active: Vec::new(),
@@ -377,9 +374,9 @@ mod tests {
 
         let (download, core, upload) = render_workers_columns(&model);
 
-        assert_eq!(download, "🟢 dwl-a `#7`\n\u{200b}\n⚪ dwl-b");
+        assert_eq!(download, "🟢 dwl-a\n\u{200b}\n⚪ dwl-b");
         assert_eq!(core, "\u{200b}\n⚪ prb-hoshi\n\u{200b}");
-        assert_eq!(upload, "\u{200b}\n\u{200b}\n🟢 upl-u `#8`");
+        assert_eq!(upload, "\u{200b}\n\u{200b}\n🟢 upl-u");
     }
 
     #[test]
@@ -396,15 +393,15 @@ mod tests {
             .core
             .iter()
             .filter_map(|cell| cell.as_ref())
-            .map(|cell| (cell.name.as_str(), cell.job_id))
+            .map(|cell| (cell.name.as_str(), cell.active))
             .collect::<Vec<_>>();
         assert_eq!(
             core,
             vec![
-                ("prb-a", None),
-                ("prb-b", Some(21)),
-                ("prb-c", None),
-                ("enc-main", None),
+                ("prb-a", false),
+                ("prb-b", true),
+                ("prb-c", false),
+                ("enc-main", false),
             ]
         );
         assert_eq!(model.download.len(), 5);

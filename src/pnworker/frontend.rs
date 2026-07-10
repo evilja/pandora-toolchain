@@ -129,6 +129,27 @@ async fn preview_done_edit(job: &Job, payload: &MessagePayload) -> Option<EditMe
     if *id != PREVIEW_DONE {
         return None;
     }
+    if args.len() == 2 {
+        let path = &args[1];
+        return match CreateAttachment::path(path).await {
+            Ok(mut attachment) => {
+                attachment.filename = "preview.png".to_string();
+                Some(
+                    EditMessage::new()
+                        .content("")
+                        .embed(create_job_embed(job, payload).image("attachment://preview.png"))
+                        .new_attachment(attachment),
+                )
+            }
+            Err(e) => {
+                eprintln!(
+                    "[Pandora Preview] failed to attach merged preview from `{}`: {}",
+                    path, e
+                );
+                None
+            }
+        };
+    }
     let mut edit = EditMessage::new()
         .content("")
         .embed(create_job_embed(job, payload));

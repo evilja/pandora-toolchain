@@ -51,13 +51,19 @@ pub async fn handle_smartcode(
     Some(job)
 }
 
-pub async fn handle_smartcode_exp(
+pub async fn handle_smartcode_preview(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,
 ) -> Option<Job> {
     let mut response_msg = working_response(ctx, command, "Working…").await?;
     let result =
-        smartcode_merge_upload(ctx, command, &mut response_msg, "/smartcode exp", "smartcode-exp")
+        smartcode_merge_upload(
+            ctx,
+            command,
+            &mut response_msg,
+            "/smartcode preview",
+            "smartcode-preview",
+        )
             .await?;
 
     let tl = match load_preview_ass(response_msg.id.get(), "tl", &result.tl_bytes).await {

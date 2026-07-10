@@ -645,11 +645,11 @@ pub fn find_fonts_with_roots(names: &[String], extra_roots: &[PathBuf]) -> Vec<P
     out
 }
 
-// Returns the normalized font names for a file, cached by mtime and length so
+// Returns the raw font names for a file, cached by mtime and length so
 // repeated lookups don't re-read and re-parse every font file on disk. The cache
 // is process-local and intentionally has no eviction; entries are only a few
 // strings per font file and changed files miss through metadata validation.
-pub fn cached_normalized_font_names(path: &Path) -> Vec<String> {
+pub fn cached_font_names(path: &Path) -> Vec<String> {
     static CACHE: std::sync::OnceLock<
         std::sync::Mutex<std::collections::HashMap<PathBuf, ((std::time::SystemTime, u64), Vec<String>)>>,
     > = std::sync::OnceLock::new();
@@ -665,26 +665,23 @@ pub fn cached_normalized_font_names(path: &Path) -> Vec<String> {
                 return names.clone();
             }
         }
-        let names = read_normalized_font_names(path);
+        let names = font_file_names(path).unwrap_or_default();
         cache
             .lock()
             .unwrap()
             .insert(path.to_path_buf(), (key, names.clone()));
         names
     } else {
-        read_normalized_font_names(path)
+        font_file_names(path).unwrap_or_default()
     }
 }
 
-fn read_normalized_font_names(path: &Path) -> Vec<String> {
-    font_file_names(path)
-        .map(|ns| {
-            ns.iter()
-                .map(|n| normalize_font_name(n))
-                .filter(|n| !n.is_empty())
-                .collect()
-        })
-        .unwrap_or_default()
+pub fn cached_normalized_font_names(path: &Path) -> Vec<String> {
+    cached_font_names(path)
+        .iter()
+        .map(|n| normalize_font_name(n))
+        .filter(|n| !n.is_empty())
+        .collect()
 }
 
 fn collect_line_fonts(line: &ASSLine, out: &mut BTreeSet<String>) {
@@ -1279,5 +1276,18 @@ Stamp: 0:00:10.00,0:00:12.00,durable note
         std::fs::remove_file(&path).unwrap();
 
         assert!(cached_normalized_font_names(&path).is_empty());
+    }
+
+    #[test]
+    fn cached_font_names_returns_raw_names_for_display() {
+        let path = temp_font_path("raw-names");
+        std::fs::write(&path, synthetic_font(&["Gandhi Sans Bold"])).unwrap();
+
+        assert_eq!(cached_font_names(&path), vec!["Gandhi Sans Bold".to_string()]);
+        assert_eq!(
+            cached_normalized_font_names(&path),
+            vec!["gandhisansbold".to_string()]
+        );
+        let _ = std::fs::remove_file(path);
     }
 }

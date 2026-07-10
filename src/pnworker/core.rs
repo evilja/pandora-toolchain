@@ -1275,7 +1275,9 @@ async fn do_worker_message_things(
                 if a == Stage::Uploaded && previous_ready != Stage::Uploaded {
                     i.frontend.ghost_ping(i.author).await;
                 }
-                if a == Stage::Encoded || (a == Stage::Cancelled && past_downloaded(previous_ready))
+                if a == Stage::Encoded
+                    || (a == Stage::Downloaded && i.job_type == JobType::Preview)
+                    || (a == Stage::Cancelled && past_downloaded(previous_ready))
                 {
                     cache_encode_input(i).await;
                 }
