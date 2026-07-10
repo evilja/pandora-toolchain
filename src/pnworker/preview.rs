@@ -4,7 +4,7 @@ use crate::libkagami::core::{Event, Stamp, SubstationAlpha};
 use std::collections::BTreeSet;
 
 const TYPESET_JOIN_GAP_CS: u64 = 100;
-const COOLDOWN_CS: u64 = 9_000;
+pub const DEFAULT_COOLDOWN_CS: u64 = 9_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreviewShot {
@@ -72,7 +72,13 @@ pub fn select_preview_shots(
     max: usize,
     min_gap_cs: u64,
 ) -> PreviewSelection {
-    select_shots_with_stamps(&[ts], Some(ts), max, min_gap_cs)
+    select_shots_with_stamps_and_cooldown(
+        &[ts],
+        Some(ts),
+        max,
+        min_gap_cs,
+        DEFAULT_COOLDOWN_CS,
+    )
 }
 
 // Every script supplies manual stamps; only the explicit TS supplies automatic candidates.
@@ -81,6 +87,22 @@ pub fn select_shots_with_stamps(
     ts: Option<&SubstationAlpha>,
     max: usize,
     min_gap_cs: u64,
+) -> PreviewSelection {
+    select_shots_with_stamps_and_cooldown(
+        scripts,
+        ts,
+        max,
+        min_gap_cs,
+        DEFAULT_COOLDOWN_CS,
+    )
+}
+
+pub fn select_shots_with_stamps_and_cooldown(
+    scripts: &[&SubstationAlpha],
+    ts: Option<&SubstationAlpha>,
+    max: usize,
+    min_gap_cs: u64,
+    cooldown_cs: u64,
 ) -> PreviewSelection {
     let stamps = collect_stamps(scripts);
     if !stamps.is_empty() {
@@ -105,7 +127,7 @@ pub fn select_shots_with_stamps(
             ranking_log: format_ranking_table(&[]),
         };
     };
-    select_clusters(ts, max, min_gap_cs)
+    select_clusters(ts, max, min_gap_cs, cooldown_cs)
 }
 
 fn collect_stamps(scripts: &[&SubstationAlpha]) -> Vec<Stamp> {
@@ -149,7 +171,12 @@ fn stamp_shot(stamp: &Stamp) -> PreviewShot {
     }
 }
 
-fn select_clusters(ts: &SubstationAlpha, max: usize, min_gap_cs: u64) -> PreviewSelection {
+fn select_clusters(
+    ts: &SubstationAlpha,
+    max: usize,
+    min_gap_cs: u64,
+    cooldown_cs: u64,
+) -> PreviewSelection {
     let mut ranked = typeset_clusters(&ts.events, TYPESET_JOIN_GAP_CS);
     ranked.sort_by(compare_clusters);
 
@@ -173,7 +200,7 @@ fn select_clusters(ts: &SubstationAlpha, max: usize, min_gap_cs: u64) -> Preview
         if accepted.iter().any(|accepted_idx| {
             let accepted_cluster = &ranked[*accepted_idx];
             shot_cs > accepted_cluster.end_cs
-                && shot_cs <= accepted_cluster.end_cs.saturating_add(COOLDOWN_CS)
+                && shot_cs <= accepted_cluster.end_cs.saturating_add(cooldown_cs)
         }) {
             outcomes[idx] = Verdict::DeferredCooldown;
             deferred.push(idx);
@@ -694,6 +721,40 @@ mod tests {
                 .map(|shot| shot.centiseconds)
                 .collect::<Vec<_>>(),
             vec![3000, 30_000, 48_000]
+        );
+    }
+
+    #[test]
+    fn configurable_cooldown_can_be_disabled() {
+        let sub = test_sub(vec![
+            event(2900, 3100, "a"),
+            event(5900, 6100, "b"),
+            event(29_900, 30_100, "c"),
+        ]);
+        let default = select_preview_shots(&sub, 2, 1000);
+        assert_eq!(
+            default
+                .shots
+                .iter()
+                .map(|shot| shot.centiseconds)
+                .collect::<Vec<_>>(),
+            vec![3000, 30_000]
+        );
+
+        let disabled = select_shots_with_stamps_and_cooldown(
+            &[&sub],
+            Some(&sub),
+            2,
+            1000,
+            0,
+        );
+        assert_eq!(
+            disabled
+                .shots
+                .iter()
+                .map(|shot| shot.centiseconds)
+                .collect::<Vec<_>>(),
+            vec![3000, 6000]
         );
     }
 

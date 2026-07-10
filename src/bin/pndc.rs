@@ -618,8 +618,8 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "repo",
             name: "smartcode",
             summary: "Merge attached repo subtitles, then encode or preview an episode.",
-            usage: "/smartcode run episode:<n> [link] [preset] [concat] or /smartcode exp episode:<n> [link]",
-            details: "Requires this channel to be attached to an anime repo. `run` reads TL/TS files, uploads the release ASS, then encodes using the source link or SOURCE.md. `exp` performs the same merge/upload step, then renders up to three `\\fn` typeset preview screenshots instead of encoding.",
+            usage: "/smartcode run episode:<n> [link] [preset] [concat] or /smartcode exp episode:<n> [link] [cooldown]",
+            details: "Requires this channel to be attached to an anime repo. `run` reads TL/TS files, uploads the release ASS, then encodes using the source link or SOURCE.md. `exp` performs the same merge/upload step, then renders up to three stamp-first, cluster-ranked previews. Cooldown defaults to 90 seconds; set it to 0 to disable cooldown.",
         },
         HelpCommand {
             section: "repo",
@@ -2310,6 +2310,12 @@ impl EventHandler for Handler {
                         .add_sub_option(
                             CreateCommandOption::new(CommandOptionType::String, "link", "Source link. Falls back to SOURCE.md if omitted.")
                                 .required(false)
+                        )
+                        .add_sub_option(
+                            CreateCommandOption::new(CommandOptionType::Integer, "cooldown", "Post-shot cooldown in seconds (0 disables it)")
+                                .required(false)
+                                .min_int_value(0)
+                                .max_int_value(3600)
                         )
                 ),
             CreateCommand::new("merge")
