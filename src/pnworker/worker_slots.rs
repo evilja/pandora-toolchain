@@ -23,7 +23,7 @@ impl WorkerSlotKind {
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "download" | "dwl" => Some(Self::Download),
-            "probe" | "prb" => Some(Self::Probe),
+            "preview" | "prw" | "probe" | "prb" => Some(Self::Probe),
             "upload" | "upl" => Some(Self::Upload),
             _ => None,
         }
@@ -32,7 +32,7 @@ impl WorkerSlotKind {
     pub fn label(self) -> &'static str {
         match self {
             Self::Download => "download",
-            Self::Probe => "probe",
+            Self::Probe => "preview",
             Self::Upload => "upload",
         }
     }
@@ -40,7 +40,7 @@ impl WorkerSlotKind {
     pub fn worker_prefix(self) -> &'static str {
         match self {
             Self::Download => "dwl",
-            Self::Probe => "prb",
+            Self::Probe => "prw",
             Self::Upload => "upl",
         }
     }
@@ -200,11 +200,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_probe_worker_kind_aliases() {
+    fn parses_preview_worker_kind_and_legacy_probe_aliases() {
+        assert_eq!(WorkerSlotKind::parse("preview"), Some(WorkerSlotKind::Probe));
+        assert_eq!(WorkerSlotKind::parse("PRW"), Some(WorkerSlotKind::Probe));
         assert_eq!(WorkerSlotKind::parse("probe"), Some(WorkerSlotKind::Probe));
         assert_eq!(WorkerSlotKind::parse("PRB"), Some(WorkerSlotKind::Probe));
-        assert_eq!(WorkerSlotKind::Probe.label(), "probe");
-        assert_eq!(WorkerSlotKind::Probe.worker_prefix(), "prb");
+        assert_eq!(WorkerSlotKind::Probe.label(), "preview");
+        assert_eq!(WorkerSlotKind::Probe.worker_prefix(), "prw");
     }
 
     #[test]

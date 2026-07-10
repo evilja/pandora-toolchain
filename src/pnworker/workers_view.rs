@@ -32,7 +32,7 @@ pub fn build_workers_model(
     upload_slots: Vec<String>,
 ) -> WorkersModel {
     let mut download = prefixed_slots("dwl", download_slots);
-    let mut core = prefixed_slots("prb", probe_slots);
+    let mut core = prefixed_slots("prw", probe_slots);
     core.push("enc-main".to_string());
     let mut upload = prefixed_slots("upl", upload_slots);
     for view in views.iter().filter(|view| view.active) {
@@ -42,7 +42,7 @@ pub fn build_workers_model(
         if view.worker.starts_with("upl-") && !upload.iter().any(|slot| slot == &view.worker) {
             upload.push(view.worker.clone());
         }
-        if view.worker.starts_with("prb-") && !core.iter().any(|slot| slot == &view.worker) {
+        if view.worker.starts_with("prw-") && !core.iter().any(|slot| slot == &view.worker) {
             core.push(view.worker.clone());
         }
     }
@@ -112,6 +112,7 @@ pub fn worker_waiting(worker: &str) -> bool {
         worker,
         "dwl-pending"
             | "dwl-cache"
+            | "prw-pending"
             | "prb-pending"
             | "upl-pending"
             | "enc-forward"
@@ -288,7 +289,7 @@ mod tests {
 
         assert_eq!(model.download.len(), model.core.len());
         assert_eq!(model.core.len(), model.upload.len());
-        assert_eq!(model.core[1].as_ref().unwrap().name, "prb-p");
+        assert_eq!(model.core[1].as_ref().unwrap().name, "prw-p");
         assert_eq!(model.core[3].as_ref().unwrap().name, "enc-main");
         assert_eq!(model.download[2].as_ref().unwrap().name, "dwl-b");
         assert_eq!(model.upload[2].as_ref().unwrap().name, "upl-u");
@@ -305,9 +306,9 @@ mod tests {
     fn model_keeps_dynamic_active_slot_and_waiting_lines() {
         let views = vec![
             active("dwl-extra", 10),
-            active("prb-extra", 13),
+            active("prw-extra", 13),
             waiting("dwl-pending", 11),
-            waiting("prb-pending", 14),
+            waiting("prw-pending", 14),
             waiting("key-wait", 12),
         ];
         let model = build_workers_model(
@@ -324,7 +325,7 @@ mod tests {
         }));
         assert!(model.core.iter().any(|cell| {
             cell.as_ref()
-                .map(|cell| cell.name.as_str() == "prb-extra" && cell.active)
+                .map(|cell| cell.name.as_str() == "prw-extra" && cell.active)
                 .unwrap_or(false)
         }));
         assert_eq!(
@@ -354,7 +355,7 @@ mod tests {
             core: vec![
                 None,
                 Some(WorkerCell {
-                    name: "prb-hoshi".to_string(),
+                    name: "prw-hoshi".to_string(),
                     active: false,
                 }),
                 None,
@@ -375,13 +376,13 @@ mod tests {
         let (download, core, upload) = render_workers_columns(&model);
 
         assert_eq!(download, "🟢 dwl-a\n\u{200b}\n⚪ dwl-b");
-        assert_eq!(core, "\u{200b}\n⚪ prb-hoshi\n\u{200b}");
+        assert_eq!(core, "\u{200b}\n⚪ prw-hoshi\n\u{200b}");
         assert_eq!(upload, "\u{200b}\n\u{200b}\n🟢 upl-u");
     }
 
     #[test]
     fn model_centers_three_probe_slots_with_encoder() {
-        let views = vec![active("prb-b", 21)];
+        let views = vec![active("prw-b", 21)];
         let model = build_workers_model(
             &views,
             vec!["d".to_string()],
@@ -398,9 +399,9 @@ mod tests {
         assert_eq!(
             core,
             vec![
-                ("prb-a", false),
-                ("prb-b", true),
-                ("prb-c", false),
+                ("prw-a", false),
+                ("prw-b", true),
+                ("prw-c", false),
                 ("enc-main", false),
             ]
         );
