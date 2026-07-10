@@ -1,4 +1,4 @@
-use crate::lib::image::{Align, Canvas, Color, Font, ImageResult, TextOptions};
+use crate::lib::image::{Align, Canvas, Color, Font, ImageError, ImageResult, TextOptions};
 use crate::libkagami::complex::types::AssTime;
 use crate::libkagami::core::{Event, Stamp, SubstationAlpha};
 use std::collections::BTreeSet;
@@ -530,6 +530,37 @@ pub fn compose_preview(
     canvas.png_bytes()
 }
 
+pub fn merge_previews(frames: &[Vec<u8>]) -> ImageResult<Vec<u8>> {
+    const GUTTER: u32 = 8;
+
+    if frames.is_empty() {
+        return Err(ImageError::Dimensions("preview frames must not be empty".to_string()));
+    }
+    let decoded = frames
+        .iter()
+        .map(|frame| Canvas::from_png_bytes(frame))
+        .collect::<ImageResult<Vec<_>>>()?;
+    let width = decoded.iter().map(Canvas::width).max().unwrap();
+    let frames_height = decoded
+        .iter()
+        .try_fold(0u32, |height, frame| height.checked_add(frame.height()))
+        .ok_or_else(|| ImageError::Dimensions("merged preview height overflowed".to_string()))?;
+    let gutters = GUTTER
+        .checked_mul(decoded.len().saturating_sub(1) as u32)
+        .ok_or_else(|| ImageError::Dimensions("merged preview gutter height overflowed".to_string()))?;
+    let height = frames_height
+        .checked_add(gutters)
+        .ok_or_else(|| ImageError::Dimensions("merged preview height overflowed".to_string()))?;
+    let mut merged = Canvas::new(width, height, Color::BLACK)?;
+    let mut y = 0u32;
+    for frame in &decoded {
+        let x = (width - frame.width()) / 2;
+        merged.blit(frame, x, y);
+        y += frame.height() + GUTTER;
+    }
+    merged.png_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -849,5 +880,40 @@ mod tests {
         });
         assert!(top_changed);
         assert!(bottom_changed);
+    }
+
+    #[test]
+    fn merge_previews_stacks_two_frames_with_a_gutter() {
+        let red = Canvas::new(2, 2, Color { r: 255, g: 0, b: 0, a: 255 })
+            .unwrap()
+            .png_bytes()
+            .unwrap();
+        let blue = Canvas::new(2, 2, Color { r: 0, g: 0, b: 255, a: 255 })
+            .unwrap()
+            .png_bytes()
+            .unwrap();
+
+        let merged = Canvas::from_png_bytes(&merge_previews(&[red, blue]).unwrap()).unwrap();
+
+        assert_eq!((merged.width(), merged.height()), (2, 12));
+        assert_eq!(merged.pixel_rgba(0, 0).unwrap(), Color { r: 255, g: 0, b: 0, a: 255 });
+        assert_eq!(merged.pixel_rgba(0, 10).unwrap(), Color { r: 0, g: 0, b: 255, a: 255 });
+        assert_eq!(merged.pixel_rgba(0, 5).unwrap(), Color::BLACK);
+    }
+
+    #[test]
+    fn merge_previews_centers_frames_with_different_widths() {
+        let narrow = Canvas::new(2, 1, Color::WHITE).unwrap().png_bytes().unwrap();
+        let wide = Canvas::new(4, 2, Color { r: 0, g: 255, b: 0, a: 255 })
+            .unwrap()
+            .png_bytes()
+            .unwrap();
+
+        let merged = Canvas::from_png_bytes(&merge_previews(&[narrow, wide]).unwrap()).unwrap();
+
+        assert_eq!((merged.width(), merged.height()), (4, 11));
+        assert_eq!(merged.pixel_rgba(1, 0).unwrap(), Color::WHITE);
+        assert_eq!(merged.pixel_rgba(0, 0).unwrap(), Color::BLACK);
+        assert_eq!(merged.pixel_rgba(3, 9).unwrap(), Color { r: 0, g: 255, b: 0, a: 255 });
     }
 }

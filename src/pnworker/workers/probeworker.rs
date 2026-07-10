@@ -11,7 +11,7 @@ use crate::pnworker::messages::{
     CTORRENT_DONE, CTORRENT_FAIL, JOB_CANCELLED, MessagePayload, PREVIEW_DONE, PREVIEW_FAIL,
     PROBE_FAIL, PROBE_ROW, WORKER_ASSIGN,
 };
-use crate::pnworker::preview::compose_preview;
+use crate::pnworker::preview::{compose_preview, merge_previews};
 use crate::pnworker::tools::{PNCURL_TORRENT, PNP2P_PROBE};
 use crate::pnworker::util::PathValue;
 use crate::pnworker::util::{
@@ -436,11 +436,44 @@ async fn run_preview_job(
         return;
     }
 
-    let mut args = vec![rendered.len().to_string()];
-    for (label, path) in rendered {
-        args.push(label);
-        args.push(path.display().to_string());
+    let merged_path = work_dir.join("preview.png");
+    let mut frames = Vec::with_capacity(rendered.len());
+    let mut merge_error = None;
+    for (_, path) in &rendered {
+        match tokio::fs::read(path).await {
+            Ok(frame) => frames.push(frame),
+            Err(e) => {
+                merge_error = Some(format!("failed to read {}: {}", path.display(), e));
+                break;
+            }
+        }
     }
+    if merge_error.is_none() {
+        match tokio::task::spawn_blocking(move || merge_previews(&frames)).await {
+            Ok(Ok(merged)) => {
+                if let Err(e) = tokio::fs::write(&merged_path, merged).await {
+                    merge_error = Some(format!("failed to write {}: {}", merged_path.display(), e));
+                }
+            }
+            Ok(Err(e)) => merge_error = Some(e.to_string()),
+            Err(e) => merge_error = Some(format!("merge task failed: {}", e)),
+        }
+    }
+
+    let args = if let Some(e) = merge_error {
+        eprintln!("[Pandora Preview] merge failed for job {}: {}", job_id, e);
+        let mut args = vec![rendered.len().to_string()];
+        for (label, path) in rendered {
+            args.push(label);
+            args.push(path.display().to_string());
+        }
+        args
+    } else {
+        vec![
+            rendered.len().to_string(),
+            merged_path.display().to_string(),
+        ]
+    };
     tx.send((
         job_id,
         MessagePayload::Progress(PREVIEW_DONE, args),

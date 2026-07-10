@@ -618,8 +618,8 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "repo",
             name: "smartcode",
             summary: "Merge attached repo subtitles, then encode or preview an episode.",
-            usage: "/smartcode run episode:<n> [link] [preset] [concat] or /smartcode exp episode:<n> [link] [cooldown]",
-            details: "Requires this channel to be attached to an anime repo. `run` reads TL/TS files, uploads the release ASS, then encodes using the source link or SOURCE.md. `exp` performs the same merge/upload step, then renders up to three stamp-first, cluster-ranked previews. Cooldown defaults to 90 seconds; set it to 0 to disable cooldown.",
+            usage: "/smartcode do episode:<n> [link] [preset] [concat] or /smartcode preview episode:<n> [link] [cooldown]",
+            details: "Requires this channel to be attached to an anime repo. `do` reads TL/TS files, uploads the release ASS, then encodes using the source link or SOURCE.md. `preview` performs the same merge/upload step, then renders up to three stamp-first, cluster-ranked previews. Cooldown defaults to 90 seconds; set it to 0 to disable cooldown.",
         },
         HelpCommand {
             section: "repo",
@@ -794,7 +794,7 @@ fn help_catalog() -> &'static [HelpCommand] {
             name: "cfont",
             summary: "Set the preview watermark font.",
             usage: "/cfont [font:<family>]",
-            details: "Sets or shows the server's `/smartcode exp` watermark font. The default requested font is Gandhi Sans Bold; install it with `/font` if you want that exact face. Rendering falls back to an embedded Liberation Mono font when no configured/default font is available.",
+            details: "Sets or shows the server's `/smartcode preview` watermark font. Typing in the `font` option live-searches the fonts installed in this server's and the global fontconfig directories and offers a dropdown of matches. The default requested font is Gandhi Sans Bold; install it with `/font` if you want that exact face. Rendering falls back to an embedded Liberation Mono font when no configured/default font is available.",
         },
         HelpCommand {
             section: "fonts",
@@ -1950,8 +1950,8 @@ impl EventHandler for Handler {
                     handle_detach(&ctx, &command).await;
                 }
                 "smartcode" => {
-                    match subcommand_options(&command).map(|(name, _)| name).unwrap_or("run") {
-                        "run" => {
+                    match subcommand_options(&command).map(|(name, _)| name).unwrap_or("do") {
+                        "do" | "run" => {
                             let keep = match keep_request_from_options(&ctx, &command).await {
                                 Some(keep) => keep,
                                 None => return,
@@ -1961,8 +1961,8 @@ impl EventHandler for Handler {
                                 self.tx.send(JobClass::Job(job)).await.unwrap();
                             }
                         }
-                        "exp" => {
-                            if let Some(job) = handle_smartcode_exp(&ctx, &command).await {
+                        "preview" | "exp" => {
+                            if let Some(job) = handle_smartcode_preview(&ctx, &command).await {
                                 self.tx.send(JobClass::Job(job)).await.unwrap();
                             }
                         }
@@ -2077,6 +2077,10 @@ impl EventHandler for Handler {
                     ))).await.ok();
                 }
                 _ => {}
+            }
+        } else if let Interaction::Autocomplete(autocomplete) = interaction {
+            if autocomplete.data.name.as_str() == "cfont" {
+                handle_cfont_autocomplete(&ctx, &autocomplete).await;
             }
         } else if let Interaction::Component(component) = interaction {
             if component.data.custom_id.starts_with("pnhelp:") {
@@ -2278,7 +2282,7 @@ impl EventHandler for Handler {
             CreateCommand::new("smartcode")
                 .description("Merge attached TL/TS subtitles, then encode or preview an episode")
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::SubCommand, "run", "Merge subtitles and encode the episode")
+                    CreateCommandOption::new(CommandOptionType::SubCommand, "do", "Merge subtitles and encode the episode")
                         .add_sub_option(
                             CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (1-based)")
                                 .required(true)
@@ -2301,7 +2305,7 @@ impl EventHandler for Handler {
                         .add_sub_option(keyword_option.clone())
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::SubCommand, "exp", "Render 1-3 typeset preview screenshots")
+                    CreateCommandOption::new(CommandOptionType::SubCommand, "preview", "Render 1-3 typeset preview screenshots")
                         .add_sub_option(
                             CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (1-based)")
                                 .required(true)
@@ -2722,8 +2726,9 @@ impl EventHandler for Handler {
             CreateCommand::new("cfont")
                 .description("Set or show the smartcode preview watermark font")
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "font", "Font family name for preview watermark text")
+                    CreateCommandOption::new(CommandOptionType::String, "font", "Font family for the watermark (type to search)")
                         .required(false)
+                        .set_autocomplete(true)
                 ),
             CreateCommand::new("fontcheck")
                 .description("Count usable unique fonts in the DB fontconfig directories"),

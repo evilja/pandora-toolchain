@@ -161,6 +161,26 @@ impl Canvas {
         }
     }
 
+    pub fn blit(&mut self, src: &Canvas, x: u32, y: u32) {
+        let copy_width = src.width().min(self.width().saturating_sub(x));
+        let copy_height = src.height().min(self.height().saturating_sub(y));
+        if copy_width == 0 || copy_height == 0 {
+            return;
+        }
+
+        let src_width = src.width() as usize;
+        let dst_width = self.width() as usize;
+        let copy_bytes = copy_width as usize * 4;
+        let src_data = src.pixmap.data();
+        let dst_data = self.pixmap.data_mut();
+        for row in 0..copy_height as usize {
+            let src_start = row * src_width * 4;
+            let dst_start = ((y as usize + row) * dst_width + x as usize) * 4;
+            dst_data[dst_start..dst_start + copy_bytes]
+                .copy_from_slice(&src_data[src_start..src_start + copy_bytes]);
+        }
+    }
+
     pub fn png_bytes(&self) -> ImageResult<Vec<u8>> {
         self.pixmap
             .encode_png()
@@ -301,6 +321,19 @@ mod tests {
         canvas.fill_rect(2.0, 2.0, 3.0, 3.0, Color::WHITE);
         assert_eq!(canvas.pixel_rgba(3, 3).unwrap(), Color::WHITE);
         assert_eq!(canvas.pixel_rgba(0, 0).unwrap(), Color::TRANSPARENT);
+    }
+
+    #[test]
+    fn blit_copies_pixels_and_clips_at_canvas_edges() {
+        let mut destination = Canvas::new(4, 4, Color::BLACK).unwrap();
+        let source = Canvas::new(3, 2, Color { r: 255, g: 0, b: 0, a: 255 }).unwrap();
+
+        destination.blit(&source, 2, 3);
+
+        assert_eq!(destination.pixel_rgba(2, 3).unwrap(), Color { r: 255, g: 0, b: 0, a: 255 });
+        assert_eq!(destination.pixel_rgba(3, 3).unwrap(), Color { r: 255, g: 0, b: 0, a: 255 });
+        assert_eq!(destination.pixel_rgba(1, 3).unwrap(), Color::BLACK);
+        assert_eq!(destination.pixel_rgba(3, 2).unwrap(), Color::BLACK);
     }
 
     #[test]
