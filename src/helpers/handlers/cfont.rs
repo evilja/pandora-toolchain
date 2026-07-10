@@ -1,5 +1,8 @@
 use super::*;
-use pandora_toolchain::libkagami::core::{cached_font_names, collect_font_files, normalize_font_name};
+use pandora_toolchain::libkagami::core::{
+    cached_font_names, collect_font_files, load_font_name_cache, normalize_font_name,
+    save_font_name_cache,
+};
 use serde::{Deserialize, Serialize};
 use serenity::builder::CreateAutocompleteResponse;
 use std::collections::BTreeSet;
@@ -7,6 +10,9 @@ use std::collections::BTreeSet;
 const DEFAULT_PREVIEW_WATERMARK_FONT: &str = "Gandhi Sans Bold";
 const MAX_FONT_CHOICES: usize = 25;
 const MAX_FONT_CHOICE_CHARS: usize = 100;
+// Discord voids autocomplete interactions after 3s; leave headroom for the
+// HTTP round trip to the response endpoint.
+const AUTOCOMPLETE_SCAN_BUDGET: std::time::Duration = std::time::Duration::from_millis(2000);
 
 #[derive(Deserialize, Serialize)]
 struct PreviewConfig {
@@ -97,17 +103,58 @@ pub async fn handle_cfont_autocomplete(
         Some(guild_id) => preview_font_roots(guild_id.get()),
         None => vec![PathBuf::from("DB").join("fontconfig").join("global")],
     };
-    let names = tokio::task::spawn_blocking(move || collect_font_family_names(&roots))
-        .await
-        .unwrap_or_default();
+    let scan = tokio::task::spawn_blocking(move || collect_font_family_names(&roots));
+    let names = match tokio::time::timeout(AUTOCOMPLETE_SCAN_BUDGET, scan).await {
+        Ok(joined) => joined.unwrap_or_default(),
+        Err(_) => {
+            // Cold cache on a large font dir. Answer empty within the deadline;
+            // the dropped scan keeps running on the blocking pool and fills the
+            // per-file cache, so the next keystroke gets real matches.
+            eprintln!("[cfont] font scan exceeded the autocomplete budget; responding empty");
+            BTreeSet::new()
+        }
+    };
     let mut response = CreateAutocompleteResponse::new();
     for name in filter_font_choices(&names, &partial) {
         response = response.add_string_choice(name.clone(), name);
     }
-    interaction
+    if let Err(e) = interaction
         .create_response(ctx, CreateInteractionResponse::Autocomplete(response))
         .await
-        .ok();
+    {
+        eprintln!("[cfont] autocomplete response failed: {}", e);
+    }
+}
+
+// Walks every DB fontconfig dir once so the per-file name cache is hot before
+// the first autocomplete interaction has to race Discord's 3s deadline. The
+// cache is seeded from and saved back to an on-disk index, so only fonts that
+// changed since the previous boot are actually re-parsed.
+pub fn warm_font_name_cache() {
+    tokio::task::spawn_blocking(|| {
+        let started = std::time::Instant::now();
+        let index = font_name_index_path();
+        let seeded = load_font_name_cache(&index);
+        let mut files = Vec::new();
+        collect_font_files(&PathBuf::from("DB").join("fontconfig"), &mut files);
+        for path in &files {
+            let _ = cached_font_names(path);
+        }
+        match save_font_name_cache(&index) {
+            Ok(saved) => println!(
+                "[fonts] font name cache ready: {} file(s), {} seeded from index, {} saved, {:.1?}",
+                files.len(),
+                seeded,
+                saved,
+                started.elapsed()
+            ),
+            Err(e) => eprintln!("[fonts] font name index save failed: {}", e),
+        }
+    });
+}
+
+fn font_name_index_path() -> PathBuf {
+    PathBuf::from("DB").join("cache").join("font_names.json")
 }
 
 fn collect_font_family_names(roots: &[PathBuf]) -> BTreeSet<String> {
