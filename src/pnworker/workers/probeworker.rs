@@ -84,7 +84,7 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 };
                 tx2.send((
                     job_id,
-                    MessagePayload::Progress(WORKER_ASSIGN, vec![format!("prb-{}", name)]),
+                    MessagePayload::Progress(WORKER_ASSIGN, vec![format!("prw-{}", name)]),
                     None,
                 ))
                 .await
@@ -132,7 +132,7 @@ async fn run_probe_job(
 ) {
     let (directory, torrent, job_id) = data;
     let mut proto = Protocol::new(vec![1]);
-    let worker_key = format!("pn-probe-{}", worker_name);
+    let worker_key = format!("pn-preview-{}", worker_name);
     if job_cancelled(&directory) {
         tx.send((
             job_id,

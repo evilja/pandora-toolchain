@@ -310,7 +310,7 @@ async fn queue_probe_job(
     shrine: &mut TypedShrine<WorkerMsg>,
     job: &mut Job,
 ) -> bool {
-    if !prepare_queued_job(job, "prb-pending", false).await {
+    if !prepare_queued_job(job, "prw-pending", false).await {
         decline_job_setup(job, "could not prepare the work directory").await;
         return true;
     }
@@ -1563,7 +1563,7 @@ async fn do_job_progression_things(
                     dead.push(job.job_id);
                     continue;
                 };
-                job.worker = "prb-pending".to_string();
+                job.worker = "prw-pending".to_string();
                 db.update_worker(job.job_id, &job.worker).await.ok();
                 if !dispatch_or_kill(
                     shrine,
