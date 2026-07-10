@@ -41,7 +41,7 @@ pub use self::message::handle_message;
 pub use self::probe::handle_probe;
 pub use self::backup::handle_backup;
 pub use self::smartcode::{handle_smartcode, handle_smartcode_preview};
-pub use self::cfont::{handle_cfont, handle_cfont_autocomplete, resolve_preview_watermark_font_path, warm_font_name_cache};
+pub use self::cfont::{handle_cfont, handle_cfont_autocomplete, refresh_font_name_choices, resolve_preview_watermark_font_path, warm_font_name_cache};
 pub use self::merge::handle_merge;
 pub use self::release::handle_release;
 pub use self::source::handle_source;

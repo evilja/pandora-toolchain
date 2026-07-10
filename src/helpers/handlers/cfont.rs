@@ -5,7 +5,7 @@ use pandora_toolchain::libkagami::core::{
 };
 use serde::{Deserialize, Serialize};
 use serenity::builder::CreateAutocompleteResponse;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 const DEFAULT_PREVIEW_WATERMARK_FONT: &str = "Gandhi Sans Bold";
 const MAX_FONT_CHOICES: usize = 25;
@@ -13,6 +13,18 @@ const MAX_FONT_CHOICE_CHARS: usize = 100;
 // Discord voids autocomplete interactions after 3s; leave headroom for the
 // HTTP round trip to the response endpoint.
 const AUTOCOMPLETE_SCAN_BUDGET: std::time::Duration = std::time::Duration::from_millis(2000);
+
+#[derive(Default)]
+struct FontChoiceCache {
+    names: HashMap<PathBuf, BTreeSet<String>>,
+    scanned: HashSet<PathBuf>,
+}
+
+fn font_choice_cache() -> &'static std::sync::RwLock<FontChoiceCache> {
+    static CACHE: std::sync::OnceLock<std::sync::RwLock<FontChoiceCache>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::RwLock::new(FontChoiceCache::default()))
+}
 
 #[derive(Deserialize, Serialize)]
 struct PreviewConfig {
@@ -103,15 +115,19 @@ pub async fn handle_cfont_autocomplete(
         Some(guild_id) => preview_font_roots(guild_id.get()),
         None => vec![PathBuf::from("DB").join("fontconfig").join("global")],
     };
-    let scan = tokio::task::spawn_blocking(move || collect_font_family_names(&roots));
-    let names = match tokio::time::timeout(AUTOCOMPLETE_SCAN_BUDGET, scan).await {
-        Ok(joined) => joined.unwrap_or_default(),
-        Err(_) => {
-            // Cold cache on a large font dir. Answer empty within the deadline;
-            // the dropped scan keeps running on the blocking pool and fills the
-            // per-file cache, so the next keystroke gets real matches.
-            eprintln!("[cfont] font scan exceeded the autocomplete budget; responding empty");
-            BTreeSet::new()
+    let names = if let Some(names) = cached_font_family_names(&roots) {
+        names
+    } else {
+        let scan = tokio::task::spawn_blocking(move || refresh_font_family_names(&roots));
+        match tokio::time::timeout(AUTOCOMPLETE_SCAN_BUDGET, scan).await {
+            Ok(joined) => joined.unwrap_or_default(),
+            Err(_) => {
+                // Cold cache on a large font dir. Answer empty within the deadline;
+                // the dropped scan keeps running on the blocking pool and publishes
+                // a complete family index for subsequent keystrokes.
+                eprintln!("[cfont] font scan exceeded the autocomplete budget; responding empty");
+                BTreeSet::new()
+            }
         }
     };
     let mut response = CreateAutocompleteResponse::new();
@@ -135,15 +151,15 @@ pub fn warm_font_name_cache() {
         let started = std::time::Instant::now();
         let index = font_name_index_path();
         let seeded = load_font_name_cache(&index);
-        let mut files = Vec::new();
-        collect_font_files(&PathBuf::from("DB").join("fontconfig"), &mut files);
-        for path in &files {
-            let _ = cached_font_names(path);
-        }
+        let roots = font_choice_roots();
+        let files = roots
+            .iter()
+            .map(|root| refresh_font_family_names_for_root(root).1)
+            .sum::<usize>();
         match save_font_name_cache(&index) {
             Ok(saved) => println!(
                 "[fonts] font name cache ready: {} file(s), {} seeded from index, {} saved, {:.1?}",
-                files.len(),
+                files,
                 seeded,
                 saved,
                 started.elapsed()
@@ -153,15 +169,67 @@ pub fn warm_font_name_cache() {
     });
 }
 
+// Refreshes the affected bucket after /font extracts new files. This keeps
+// autocomplete disk-free without requiring a bot restart to see new fonts.
+pub async fn refresh_font_name_choices(server_id: u64) {
+    let root = PathBuf::from("DB")
+        .join("fontconfig")
+        .join(server_id.to_string());
+    if tokio::task::spawn_blocking(move || refresh_font_family_names_for_root(&root))
+        .await
+        .is_err()
+    {
+        eprintln!("[cfont] font choice refresh task failed for server {}", server_id);
+    }
+}
+
 fn font_name_index_path() -> PathBuf {
     PathBuf::from("DB").join("cache").join("font_names.json")
 }
 
-fn collect_font_family_names(roots: &[PathBuf]) -> BTreeSet<String> {
-    let mut files = Vec::new();
-    for root in roots {
-        collect_font_files(root, &mut files);
+fn font_choice_roots() -> Vec<PathBuf> {
+    let root = PathBuf::from("DB").join("fontconfig");
+    let mut roots = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+                roots.push(entry.path());
+            }
+        }
     }
+    roots.sort();
+    roots
+}
+
+fn cached_font_family_names(roots: &[PathBuf]) -> Option<BTreeSet<String>> {
+    let cache = font_choice_cache().read().unwrap();
+    if roots.iter().any(|root| !cache.scanned.contains(root)) {
+        return None;
+    }
+    let mut names = BTreeSet::new();
+    for root in roots {
+        if let Some(root_names) = cache.names.get(root) {
+            names.extend(root_names.iter().cloned());
+        }
+    }
+    Some(names)
+}
+
+fn refresh_font_family_names(roots: &[PathBuf]) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for root in roots {
+        if let Some(cached) = cached_font_family_names(std::slice::from_ref(root)) {
+            names.extend(cached);
+        } else {
+            names.extend(refresh_font_family_names_for_root(root).0);
+        }
+    }
+    names
+}
+
+fn refresh_font_family_names_for_root(root: &Path) -> (BTreeSet<String>, usize) {
+    let mut files = Vec::new();
+    collect_font_files(root, &mut files);
     let mut names = BTreeSet::new();
     for path in &files {
         for name in cached_font_names(path) {
@@ -171,7 +239,10 @@ fn collect_font_family_names(roots: &[PathBuf]) -> BTreeSet<String> {
             }
         }
     }
-    names
+    let mut cache = font_choice_cache().write().unwrap();
+    cache.names.insert(root.to_path_buf(), names.clone());
+    cache.scanned.insert(root.to_path_buf());
+    (names, files.len())
 }
 
 fn filter_font_choices(names: &BTreeSet<String>, partial: &str) -> Vec<String> {
