@@ -1,6 +1,10 @@
 use super::*;
 use pandora_toolchain::pnworker::core::PreviewRequest;
-use pandora_toolchain::pnworker::preview::select_shots_with_stamps;
+use pandora_toolchain::pnworker::preview::{
+    DEFAULT_COOLDOWN_CS, select_shots_with_stamps_and_cooldown,
+};
+
+const MAX_PREVIEW_COOLDOWN_SECONDS: i64 = 3600;
 
 pub async fn handle_smartcode(
     ctx: &Context,
@@ -87,7 +91,29 @@ pub async fn handle_smartcode_exp(
     if let Some(ts) = ts.as_ref() {
         scripts.push(ts);
     }
-    let selection = select_shots_with_stamps(&scripts, ts.as_ref(), 3, 1000);
+    let cooldown_seconds = match option_i64(command, "cooldown") {
+        Some(seconds) if (0..=MAX_PREVIEW_COOLDOWN_SECONDS).contains(&seconds) => seconds as u64,
+        Some(_) => {
+            let _ = response_msg
+                .edit(
+                    ctx,
+                    EditMessage::new().content(format!(
+                        "Preview cooldown must be between 0 and {} seconds.",
+                        MAX_PREVIEW_COOLDOWN_SECONDS
+                    )),
+                )
+                .await;
+            return None;
+        }
+        None => DEFAULT_COOLDOWN_CS / 100,
+    };
+    let selection = select_shots_with_stamps_and_cooldown(
+        &scripts,
+        ts.as_ref(),
+        3,
+        1000,
+        cooldown_seconds * 100,
+    );
     if selection.shots.is_empty() {
         let _ = response_msg
             .edit(
