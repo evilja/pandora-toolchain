@@ -1,6 +1,6 @@
 use super::*;
 use pandora_toolchain::pnworker::core::PreviewRequest;
-use pandora_toolchain::pnworker::preview::select_preview_shots;
+use pandora_toolchain::pnworker::preview::select_shots_with_stamps;
 
 pub async fn handle_smartcode(
     ctx: &Context,
@@ -56,34 +56,44 @@ pub async fn handle_smartcode_exp(
         smartcode_merge_upload(ctx, command, &mut response_msg, "/smartcode exp", "smartcode-exp")
             .await?;
 
-    let Some(ts_bytes) = result.ts_bytes.as_ref() else {
-        let _ = response_msg
-            .edit(
-                ctx,
-                EditMessage::new().content("Episode has no typeset file to preview."),
-            )
-            .await;
-        return None;
+    let tl = match load_preview_ass(response_msg.id.get(), "tl", &result.tl_bytes).await {
+        Ok(script) => script,
+        Err(e) => {
+            let _ = response_msg
+                .edit(
+                    ctx,
+                    EditMessage::new().content(format!("Failed to prepare TL preview file: {}", e)),
+                )
+                .await;
+            return None;
+        }
     };
-
-    let ts_path = preview_temp_ass_path(response_msg.id.get());
-    if let Err(e) = tokio::fs::write(&ts_path, ts_bytes).await {
-        let _ = response_msg
-            .edit(
-                ctx,
-                EditMessage::new().content(format!("Failed to prepare TS preview file: {}", e)),
-            )
-            .await;
-        return None;
+    let ts = match result.ts_bytes.as_deref() {
+        Some(bytes) => match load_preview_ass(response_msg.id.get(), "ts", bytes).await {
+            Ok(script) => Some(script),
+            Err(e) => {
+                let _ = response_msg
+                    .edit(
+                        ctx,
+                        EditMessage::new().content(format!("Failed to prepare TS preview file: {}", e)),
+                    )
+                    .await;
+                return None;
+            }
+        },
+        None => None,
+    };
+    let mut scripts = vec![&tl];
+    if let Some(ts) = ts.as_ref() {
+        scripts.push(ts);
     }
-    let ts = SubstationAlpha::load(ts_path.clone(), false).await;
-    let _ = tokio::fs::remove_file(&ts_path).await;
-    let shots = select_preview_shots(&ts, 3, 1000);
-    if shots.is_empty() {
+    let selection = select_shots_with_stamps(&scripts, ts.as_ref(), 3, 1000);
+    if selection.shots.is_empty() {
         let _ = response_msg
             .edit(
                 ctx,
-                EditMessage::new().content("TS file has no `\\fn` typeset lines to preview."),
+                EditMessage::new()
+                    .content("Episode has no stamp marks and no typeset lines to preview."),
             )
             .await;
         return None;
@@ -118,21 +128,33 @@ pub async fn handle_smartcode_exp(
         command.guild_id.map(|g| g.get()),
     );
     job.preview = Some(PreviewRequest {
-        shots: shots
+        shots: selection
+            .shots
             .into_iter()
             .map(|shot| (shot.centiseconds, shot.label))
             .collect(),
         watermark_font,
+        ranking_log: selection.ranking_log,
     });
     Some(job)
 }
 
-fn preview_temp_ass_path(job_id: u64) -> PathBuf {
+async fn load_preview_ass(job_id: u64, kind: &str, bytes: &[u8]) -> Result<SubstationAlpha, String> {
+    let path = preview_temp_ass_path(job_id, kind);
+    tokio::fs::write(&path, bytes)
+        .await
+        .map_err(|e| e.to_string())?;
+    let script = SubstationAlpha::load(path.clone(), true).await;
+    let _ = tokio::fs::remove_file(path).await;
+    Ok(script)
+}
+
+fn preview_temp_ass_path(job_id: u64, kind: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!("pandora_preview_ts_{}_{}.ass", job_id, nanos))
+    std::env::temp_dir().join(format!("pandora_preview_{}_{}_{}.ass", kind, job_id, nanos))
 }
 
 async fn build_acix_publish(

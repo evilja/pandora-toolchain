@@ -12,12 +12,14 @@ pub mod stringify;
 pub mod state;
 pub mod transform;
 
+#[derive(Clone)]
 pub enum ASSText {
     Override(ASSOverride),
     Drawing(Drawing),
     RawText(String),
 }
 
+#[derive(Clone)]
 pub struct ASSLine {
     pub current_overrides: Vec<ASSOverride>,
     pub data: Vec<ASSText>,
@@ -256,6 +258,61 @@ impl ASSLine {
         }
         out
     }
+
+    // Explicit tags inside raw fallback blocks intentionally report no signals.
+    pub fn has_fn(&self) -> bool {
+        self.data.iter().any(|item| match item {
+            ASSText::Override(ov) => override_has_fn(ov),
+            _ => false,
+        })
+    }
+
+    // Parsed drawings and positive drawing modes both count as vector work.
+    pub fn has_drawing(&self) -> bool {
+        self.data.iter().any(|item| match item {
+            ASSText::Drawing(_) => true,
+            ASSText::Override(ov) => override_has_drawing(ov),
+            ASSText::RawText(_) => false,
+        })
+    }
+
+    // A transform counts once itself and once for each recursively nested tag.
+    pub fn tag_count(&self) -> usize {
+        self.data.iter().map(|item| match item {
+            ASSText::Override(ov) => override_tag_count(ov),
+            _ => 0,
+        }).sum()
+    }
+}
+
+fn transform_tags(ov: &ASSOverride) -> Option<&[ASSOverride]> {
+    match ov {
+        ASSOverride::TransformI(tags) => Some(tags),
+        ASSOverride::TransformII(_, tags) => Some(tags),
+        ASSOverride::TransformIII(_, _, tags) => Some(tags),
+        ASSOverride::TransformIV(_, _, _, tags) => Some(tags),
+        _ => None,
+    }
+}
+
+fn override_has_fn(ov: &ASSOverride) -> bool {
+    matches!(ov, ASSOverride::Fn(_))
+        || transform_tags(ov)
+            .map(|tags| tags.iter().any(override_has_fn))
+            .unwrap_or(false)
+}
+
+fn override_has_drawing(ov: &ASSOverride) -> bool {
+    matches!(ov, ASSOverride::P(value) if *value > 0)
+        || transform_tags(ov)
+            .map(|tags| tags.iter().any(override_has_drawing))
+            .unwrap_or(false)
+}
+
+fn override_tag_count(ov: &ASSOverride) -> usize {
+    1 + transform_tags(ov)
+        .map(|tags| tags.iter().map(override_tag_count).sum::<usize>())
+        .unwrap_or(0)
 }
 
 fn push_text(data: &mut Vec<ASSText>, text: String, drawing_mode: u8) {
@@ -625,5 +682,39 @@ mod tests {
         assert!(line.current_overrides.iter().any(|t| matches!(t, ASSOverride::Fn(name) if name == "DefaultFont")));
         assert!(line.current_overrides.iter().any(|t| matches!(t, ASSOverride::Fs(80.0))));
         assert!(!line.current_overrides.iter().any(|t| matches!(t, ASSOverride::Fn(name) if name == "Trailing")));
+    }
+
+    #[test]
+    fn structured_weight_counts_explicit_tags_only() {
+        let line: ASSLine = r"{\pos(10,20)\fs40}text".parse().unwrap();
+        assert_eq!(line.tag_count(), 2);
+        assert!(!line.has_fn());
+
+        let transformed: ASSLine = r"{\t(\fs40\1c&HFFFFFF&)}text".parse().unwrap();
+        assert_eq!(transformed.tag_count(), 3);
+
+        let plain: ASSLine = r"foo\Nbar\hbaz".parse().unwrap();
+        assert_eq!(plain.tag_count(), 0);
+        assert!(!plain.has_fn());
+        assert!(!plain.has_drawing());
+    }
+
+    #[test]
+    fn structured_weight_detects_drawings_and_transformed_fonts() {
+        let drawing: ASSLine = r"{\p1}m 0 0 l 10 0 10 10{\p0}".parse().unwrap();
+        assert!(drawing.has_drawing());
+
+        let transformed_fn: ASSLine = r"{\t(\fnTypeset Font)}text".parse().unwrap();
+        assert!(transformed_fn.has_fn());
+        assert_eq!(transformed_fn.tag_count(), 2);
+    }
+
+    #[test]
+    fn structured_weight_raw_fallback_has_no_signals() {
+        let line: ASSLine = r"I {*\fnIgnored\p1\fs40}m 0 0 l 10 10".parse().unwrap();
+
+        assert!(!line.has_fn());
+        assert!(!line.has_drawing());
+        assert_eq!(line.tag_count(), 0);
     }
 }

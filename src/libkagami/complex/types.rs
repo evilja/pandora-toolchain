@@ -3,7 +3,7 @@ use crate::libkagami::complex::helpers::parse_ass_int_prefix;
 #[derive(Debug, Clone, Copy)]
 pub struct AssColour(u32);
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AssTime {
     pub hours: u8,
     pub minutes: u8,

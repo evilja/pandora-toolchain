@@ -82,6 +82,7 @@ use pandora_toolchain::lib::http::curl::core::{Host, Req, RpbData};
 struct SmartMergeResult {
     link: String,
     merged_bytes: Vec<u8>,
+    tl_bytes: Vec<u8>,
     ts_bytes: Option<Vec<u8>>,
     episode: u32,
     owner_repo: String,
@@ -394,6 +395,7 @@ async fn smartcode_merge_upload(
     Some(SmartMergeResult {
         link,
         merged_bytes,
+        tl_bytes,
         ts_bytes: ts_bytes_opt,
         episode,
         gdrive_folder_global: smartcode_global_drive_folder(&owner_repo, &safe_name),

@@ -204,7 +204,7 @@ async fn worker_slot_kind_from_command(
     match WorkerSlotKind::parse(&raw) {
         Some(kind) => Some(kind),
         None => {
-            command_error(ctx, command, "Error: `type` must be `download` or `upload`.").await;
+            command_error(ctx, command, "Error: `type` must be `download`, `probe`, or `upload`.").await;
             None
         }
     }
@@ -213,7 +213,7 @@ async fn worker_slot_kind_from_command(
 async fn handle_lsworker(ctx: &Context, command: &serenity::all::CommandInteraction) {
     let cfg = load_worker_slots().await;
     let mut lines = Vec::new();
-    for kind in [WorkerSlotKind::Download, WorkerSlotKind::Upload] {
+    for kind in [WorkerSlotKind::Download, WorkerSlotKind::Probe, WorkerSlotKind::Upload] {
         lines.push(format!("**{}**", kind.label()));
         for (idx, name) in cfg.slots(kind).iter().enumerate() {
             lines.push(format!(
@@ -589,22 +589,22 @@ fn help_catalog() -> &'static [HelpCommand] {
         HelpCommand {
             section: "workers",
             name: "lsworker",
-            summary: "List configured download/upload worker slots.",
+            summary: "List configured download/probe/upload worker slots.",
             usage: "/lsworker",
-            details: "Shows the worker slot names used by the download and upload worker pools. Rank 4 only.",
+            details: "Shows the worker slot names used by the download, probe, and upload worker pools. Rank 4 only.",
         },
         HelpCommand {
             section: "workers",
             name: "touchworker",
-            summary: "Add a download or upload worker slot.",
-            usage: "/touchworker type:<download|upload> name:<slot>",
+            summary: "Add a download, probe, or upload worker slot.",
+            usage: "/touchworker type:<download|probe|upload> name:<slot>",
             details: "Adds a validated slot name to the configured worker pool. Running workers refresh this config automatically. Rank 4 only.",
         },
         HelpCommand {
             section: "workers",
             name: "rmworker",
-            summary: "Remove a download or upload worker slot.",
-            usage: "/rmworker type:<download|upload> name:<slot>",
+            summary: "Remove a download, probe, or upload worker slot.",
+            usage: "/rmworker type:<download|probe|upload> name:<slot>",
             details: "Removes a configured slot. At least one slot must remain for each worker type. Active removed slots finish their current job before disappearing. Rank 4 only.",
         },
         HelpCommand {
@@ -2620,13 +2620,14 @@ impl EventHandler for Handler {
                         .required(true)
                 ),
             CreateCommand::new("lsworker")
-                .description("List configured download/upload worker slots"),
+                .description("List configured download/probe/upload worker slots"),
             CreateCommand::new("touchworker")
-                .description("Add a download or upload worker slot")
+                .description("Add a download, probe, or upload worker slot")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "type", "Worker type")
                         .required(true)
                         .add_string_choice("Download", "download")
+                        .add_string_choice("Probe", "probe")
                         .add_string_choice("Upload", "upload")
                 )
                 .add_option(
@@ -2634,11 +2635,12 @@ impl EventHandler for Handler {
                         .required(true)
                 ),
             CreateCommand::new("rmworker")
-                .description("Remove a download or upload worker slot")
+                .description("Remove a download, probe, or upload worker slot")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "type", "Worker type")
                         .required(true)
                         .add_string_choice("Download", "download")
+                        .add_string_choice("Probe", "probe")
                         .add_string_choice("Upload", "upload")
                 )
                 .add_option(

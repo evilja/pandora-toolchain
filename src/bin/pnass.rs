@@ -1,5 +1,5 @@
 use clap::Parser;
-use pandora_toolchain::libkagami::core::{ScriptInfo, SubstationAlpha};
+use pandora_toolchain::libkagami::core::{PandoraMeta, ScriptInfo, SubstationAlpha};
 use pandora_toolchain::libkagami::complex::overrides::ASSOverride;
 use pandora_toolchain::libkagami::tags::{ASSLine, ASSText};
 use pandora_toolchain::lib::protocol::core::{Protocol, Schema, ToolInfo};
@@ -428,6 +428,8 @@ fn split_sign_events(sub: &mut SubstationAlpha) -> Option<SubstationAlpha> {
         script_info: clone_script_info(&sub.script_info),
         v4p_styles: sign_styles,
         events: signs,
+        comments: Vec::new(),
+        pandora_meta: PandoraMeta::default(),
     })
 }
 
@@ -626,6 +628,8 @@ mod tests {
                     ASSText::RawText("line".to_string()),
                 ],
             )],
+            comments: Vec::new(),
+            pandora_meta: PandoraMeta::default(),
         }
     }
 
@@ -651,6 +655,8 @@ mod tests {
                     ASSText::RawText("line".to_string()),
                 ],
             )],
+            comments: Vec::new(),
+            pandora_meta: PandoraMeta::default(),
         };
 
         prune_unused_styles(&mut sub);
@@ -683,6 +689,8 @@ mod tests {
                     ])),
                 ],
             )],
+            comments: Vec::new(),
+            pandora_meta: PandoraMeta::default(),
         };
         let overlap = std::collections::HashSet::from(["Default".to_string()]);
 
@@ -721,6 +729,8 @@ mod tests {
             },
             v4p_styles: vec![style("Default"), style("Shared")],
             events: vec![event("Default", vec![ASSText::RawText("tl".to_string())])],
+            comments: Vec::new(),
+            pandora_meta: PandoraMeta::default(),
         };
         let mut secondary = SubstationAlpha {
             script_info: ScriptInfo {
@@ -736,6 +746,8 @@ mod tests {
             },
             v4p_styles: vec![style("Shared")],
             events: vec![event("Shared", vec![ASSText::RawText("ts".to_string())])],
+            comments: Vec::new(),
+            pandora_meta: PandoraMeta::default(),
         };
 
         prepare_merge_styles(&mut primary, &mut secondary);

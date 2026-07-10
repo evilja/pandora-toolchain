@@ -28,9 +28,12 @@ pub struct WorkersModel {
 pub fn build_workers_model(
     views: &[WorkerJobView],
     download_slots: Vec<String>,
+    probe_slots: Vec<String>,
     upload_slots: Vec<String>,
 ) -> WorkersModel {
     let mut download = prefixed_slots("dwl", download_slots);
+    let mut core = prefixed_slots("prb", probe_slots);
+    core.push("enc-main".to_string());
     let mut upload = prefixed_slots("upl", upload_slots);
     for view in views.iter().filter(|view| view.active) {
         if view.worker.starts_with("dwl-") && !download.iter().any(|slot| slot == &view.worker) {
@@ -39,12 +42,17 @@ pub fn build_workers_model(
         if view.worker.starts_with("upl-") && !upload.iter().any(|slot| slot == &view.worker) {
             upload.push(view.worker.clone());
         }
+        if view.worker.starts_with("prb-") && !core.iter().any(|slot| slot == &view.worker) {
+            core.push(view.worker.clone());
+        }
     }
 
     let download_offsets = worker_offsets(download.len());
+    let core_offsets = worker_offsets(core.len());
     let upload_offsets = worker_offsets(upload.len());
     let max_offset = download_offsets
         .iter()
+        .chain(core_offsets.iter())
         .chain(upload_offsets.iter())
         .map(|offset| offset.abs())
         .max()
@@ -60,14 +68,15 @@ pub fn build_workers_model(
     for (worker, offset) in upload.iter().zip(upload_offsets) {
         rows[(center + offset) as usize].2 = Some(cell_for_worker(views, worker));
     }
-    rows[(center - 1) as usize].1 = Some(cell_for_worker(views, "prb-main"));
-    rows[(center + 1) as usize].1 = Some(cell_for_worker(views, "enc-main"));
+    for (worker, offset) in core.iter().zip(core_offsets) {
+        rows[(center + offset) as usize].1 = Some(cell_for_worker(views, worker));
+    }
 
     let mut model = WorkersModel {
         download: Vec::new(),
         core: Vec::new(),
         upload: Vec::new(),
-        active: active_lines(views, &download, &upload),
+        active: active_lines(views, &download, &core, &upload),
         waiting: views
             .iter()
             .filter(|view| view.waiting)
@@ -75,7 +84,10 @@ pub fn build_workers_model(
             .collect(),
         queue_len: views.len(),
     };
-    for (download, core, upload) in rows.into_iter().filter(|row| row.0.is_some() || row.1.is_some() || row.2.is_some()) {
+    for (download, core, upload) in rows
+        .into_iter()
+        .filter(|row| row.0.is_some() || row.1.is_some() || row.2.is_some())
+    {
         model.download.push(download);
         model.core.push(core);
         model.upload.push(upload);
@@ -98,7 +110,13 @@ pub fn render_detail_lines(lines: &[String]) -> String {
 pub fn worker_waiting(worker: &str) -> bool {
     matches!(
         worker,
-        "dwl-pending" | "dwl-cache" | "upl-pending" | "enc-forward" | "dwl-forward" | "upl-forward"
+        "dwl-pending"
+            | "dwl-cache"
+            | "prb-pending"
+            | "upl-pending"
+            | "enc-forward"
+            | "dwl-forward"
+            | "upl-forward"
     ) || worker.starts_with("key-")
 }
 
@@ -133,20 +151,30 @@ fn cell_for_worker(views: &[WorkerJobView], worker: &str) -> WorkerCell {
     }
 }
 
-fn active_lines(views: &[WorkerJobView], download: &[String], upload: &[String]) -> Vec<String> {
+fn active_lines(
+    views: &[WorkerJobView],
+    download: &[String],
+    core: &[String],
+    upload: &[String],
+) -> Vec<String> {
     let mut workers = Vec::new();
     workers.extend(download.iter().cloned());
-    workers.push("prb-main".to_string());
-    workers.push("enc-main".to_string());
+    workers.extend(core.iter().cloned());
     workers.extend(upload.iter().cloned());
 
     let mut lines = Vec::new();
     for worker in &workers {
-        if let Some(view) = views.iter().find(|view| view.worker == *worker && view.active) {
+        if let Some(view) = views
+            .iter()
+            .find(|view| view.worker == *worker && view.active)
+        {
             lines.push(active_line(view));
         }
     }
-    for view in views.iter().filter(|view| view.active && !workers.iter().any(|worker| worker == &view.worker)) {
+    for view in views
+        .iter()
+        .filter(|view| view.active && !workers.iter().any(|worker| worker == &view.worker))
+    {
         lines.push(active_line(view));
     }
     lines
@@ -257,41 +285,91 @@ mod tests {
         let model = build_workers_model(
             &views,
             vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            vec!["p".to_string()],
             vec!["u".to_string()],
         );
 
         assert_eq!(model.download.len(), model.core.len());
         assert_eq!(model.core.len(), model.upload.len());
-        assert_eq!(model.core[1].as_ref().unwrap().name, "prb-main");
+        assert_eq!(model.core[1].as_ref().unwrap().name, "prb-p");
         assert_eq!(model.core[3].as_ref().unwrap().name, "enc-main");
         assert_eq!(model.download[2].as_ref().unwrap().name, "dwl-b");
         assert_eq!(model.upload[2].as_ref().unwrap().name, "upl-u");
-        assert_eq!(model.active, vec!["#10 encode - Org (encoding) - dwl-a", "#20 encode - Org (encoding) - enc-main"]);
+        assert_eq!(
+            model.active,
+            vec![
+                "#10 encode - Org (encoding) - dwl-a",
+                "#20 encode - Org (encoding) - enc-main"
+            ]
+        );
     }
 
     #[test]
     fn model_keeps_dynamic_active_slot_and_waiting_lines() {
-        let views = vec![active("dwl-extra", 10), waiting("dwl-pending", 11), waiting("key-wait", 12)];
-        let model = build_workers_model(&views, vec!["a".to_string()], vec!["u".to_string()]);
+        let views = vec![
+            active("dwl-extra", 10),
+            active("prb-extra", 13),
+            waiting("dwl-pending", 11),
+            waiting("prb-pending", 14),
+            waiting("key-wait", 12),
+        ];
+        let model = build_workers_model(
+            &views,
+            vec!["a".to_string()],
+            vec!["p".to_string()],
+            vec!["u".to_string()],
+        );
 
         assert!(model.download.iter().any(|cell| {
             cell.as_ref()
                 .map(|cell| cell.name.as_str() == "dwl-extra" && cell.job_id == Some(10))
                 .unwrap_or(false)
         }));
-        assert_eq!(model.waiting, vec!["#11 encode Org (queued)", "#12 encode Org (queued)"]);
+        assert!(model.core.iter().any(|cell| {
+            cell.as_ref()
+                .map(|cell| cell.name.as_str() == "prb-extra" && cell.job_id == Some(13))
+                .unwrap_or(false)
+        }));
+        assert_eq!(
+            model.waiting,
+            vec![
+                "#11 encode Org (queued)",
+                "#14 encode Org (queued)",
+                "#12 encode Org (queued)"
+            ]
+        );
     }
 
     #[test]
     fn renderer_marks_active_idle_and_padding() {
         let model = WorkersModel {
             download: vec![
-                Some(WorkerCell { name: "dwl-a".to_string(), job_id: Some(7) }),
+                Some(WorkerCell {
+                    name: "dwl-a".to_string(),
+                    job_id: Some(7),
+                }),
                 None,
-                Some(WorkerCell { name: "dwl-b".to_string(), job_id: None }),
+                Some(WorkerCell {
+                    name: "dwl-b".to_string(),
+                    job_id: None,
+                }),
             ],
-            core: vec![None, Some(WorkerCell { name: "prb-main".to_string(), job_id: None }), None],
-            upload: vec![None, None, Some(WorkerCell { name: "upl-u".to_string(), job_id: Some(8) })],
+            core: vec![
+                None,
+                Some(WorkerCell {
+                    name: "prb-hoshi".to_string(),
+                    job_id: None,
+                }),
+                None,
+            ],
+            upload: vec![
+                None,
+                None,
+                Some(WorkerCell {
+                    name: "upl-u".to_string(),
+                    job_id: Some(8),
+                }),
+            ],
             active: Vec::new(),
             waiting: Vec::new(),
             queue_len: 0,
@@ -300,7 +378,37 @@ mod tests {
         let (download, core, upload) = render_workers_columns(&model);
 
         assert_eq!(download, "🟢 dwl-a `#7`\n\u{200b}\n⚪ dwl-b");
-        assert_eq!(core, "\u{200b}\n⚪ prb-main\n\u{200b}");
+        assert_eq!(core, "\u{200b}\n⚪ prb-hoshi\n\u{200b}");
         assert_eq!(upload, "\u{200b}\n\u{200b}\n🟢 upl-u `#8`");
+    }
+
+    #[test]
+    fn model_centers_three_probe_slots_with_encoder() {
+        let views = vec![active("prb-b", 21)];
+        let model = build_workers_model(
+            &views,
+            vec!["d".to_string()],
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            vec!["u".to_string()],
+        );
+
+        let core = model
+            .core
+            .iter()
+            .filter_map(|cell| cell.as_ref())
+            .map(|cell| (cell.name.as_str(), cell.job_id))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            core,
+            vec![
+                ("prb-a", None),
+                ("prb-b", Some(21)),
+                ("prb-c", None),
+                ("enc-main", None),
+            ]
+        );
+        assert_eq!(model.download.len(), 5);
+        assert_eq!(model.core.len(), 5);
+        assert_eq!(model.upload.len(), 5);
     }
 }
