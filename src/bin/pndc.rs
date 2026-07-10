@@ -2832,6 +2832,7 @@ async fn main() {
     migrate_pandora_files().await;
     ensure_command_ranks_file();
     pandora_toolchain::lib::bin::ensure_startup_binaries().await;
+    warm_font_name_cache();
     match install_persisted_pandora_fonts().await {
         Ok(Some(installed)) => {
             let dirs = installed.dirs.iter()

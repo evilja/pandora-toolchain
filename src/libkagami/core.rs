@@ -645,15 +645,22 @@ pub fn find_fonts_with_roots(names: &[String], extra_roots: &[PathBuf]) -> Vec<P
     out
 }
 
+type FontNameCacheKey = (std::time::SystemTime, u64);
+
+fn font_name_cache()
+-> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, (FontNameCacheKey, Vec<String>)>> {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, (FontNameCacheKey, Vec<String>)>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
 // Returns the raw font names for a file, cached by mtime and length so
 // repeated lookups don't re-read and re-parse every font file on disk. The cache
 // is process-local and intentionally has no eviction; entries are only a few
 // strings per font file and changed files miss through metadata validation.
 pub fn cached_font_names(path: &Path) -> Vec<String> {
-    static CACHE: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<PathBuf, ((std::time::SystemTime, u64), Vec<String>)>>,
-    > = std::sync::OnceLock::new();
-    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let cache = font_name_cache();
 
     let key = std::fs::metadata(path)
         .and_then(|m| m.modified().map(|mtime| (mtime, m.len())))
@@ -674,6 +681,65 @@ pub fn cached_font_names(path: &Path) -> Vec<String> {
     } else {
         font_file_names(path).unwrap_or_default()
     }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct FontNameIndexEntry {
+    path: PathBuf,
+    mtime_secs: u64,
+    mtime_nanos: u32,
+    len: u64,
+    names: Vec<String>,
+}
+
+// Seeds the in-memory font-name cache from a previously saved index file and
+// returns the number of seeded entries. Entries carry the (mtime, len) key they
+// were recorded under, so files changed since the save simply miss and re-parse
+// on their next lookup — a stale index can never serve wrong names.
+pub fn load_font_name_cache(index_path: &Path) -> usize {
+    let Ok(raw) = std::fs::read(index_path) else {
+        return 0;
+    };
+    let Ok(entries) = serde_json::from_slice::<Vec<FontNameIndexEntry>>(&raw) else {
+        return 0;
+    };
+    let mut cache = font_name_cache().lock().unwrap();
+    let count = entries.len();
+    for entry in entries {
+        let mtime =
+            std::time::UNIX_EPOCH + std::time::Duration::new(entry.mtime_secs, entry.mtime_nanos);
+        cache.insert(entry.path, ((mtime, entry.len), entry.names));
+    }
+    count
+}
+
+// Persists the in-memory font-name cache; entries for files that no longer
+// exist are dropped so the index doesn't grow without bound.
+pub fn save_font_name_cache(index_path: &Path) -> std::io::Result<usize> {
+    let entries: Vec<FontNameIndexEntry> = {
+        let cache = font_name_cache().lock().unwrap();
+        cache
+            .iter()
+            .filter(|(path, _)| path.exists())
+            .filter_map(|(path, ((mtime, len), names))| {
+                let since = mtime.duration_since(std::time::UNIX_EPOCH).ok()?;
+                Some(FontNameIndexEntry {
+                    path: path.clone(),
+                    mtime_secs: since.as_secs(),
+                    mtime_nanos: since.subsec_nanos(),
+                    len: *len,
+                    names: names.clone(),
+                })
+            })
+            .collect()
+    };
+    if let Some(parent) = index_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let body = serde_json::to_vec(&entries)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    std::fs::write(index_path, body)?;
+    Ok(entries.len())
 }
 
 pub fn cached_normalized_font_names(path: &Path) -> Vec<String> {
@@ -1289,5 +1355,47 @@ Stamp: 0:00:10.00,0:00:12.00,durable note
             vec!["gandhisansbold".to_string()]
         );
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn font_name_index_seeds_cache_and_round_trips() {
+        let font_path = temp_font_path("index-seed");
+        std::fs::write(&font_path, synthetic_font(&["Disk Name"])).unwrap();
+        let metadata = std::fs::metadata(&font_path).unwrap();
+        let since = metadata
+            .modified()
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap();
+
+        let index_path = std::env::temp_dir().join(format!(
+            "pandora_font_index_{}.json",
+            std::process::id()
+        ));
+        let entries = serde_json::json!([{
+            "path": font_path,
+            "mtime_secs": since.as_secs(),
+            "mtime_nanos": since.subsec_nanos(),
+            "len": metadata.len(),
+            "names": ["Seeded Name"],
+        }]);
+        std::fs::write(&index_path, entries.to_string()).unwrap();
+
+        assert_eq!(load_font_name_cache(&index_path), 1);
+        // The seeded key matches the file on disk, so the lookup must serve the
+        // index names without re-parsing the font.
+        assert_eq!(cached_font_names(&font_path), vec!["Seeded Name".to_string()]);
+
+        let saved_path = index_path.with_extension("saved.json");
+        assert!(save_font_name_cache(&saved_path).unwrap() >= 1);
+        let raw = std::fs::read(&saved_path).unwrap();
+        let saved: Vec<serde_json::Value> = serde_json::from_slice(&raw).unwrap();
+        assert!(saved
+            .iter()
+            .any(|entry| entry["names"] == serde_json::json!(["Seeded Name"])));
+
+        let _ = std::fs::remove_file(font_path);
+        let _ = std::fs::remove_file(index_path);
+        let _ = std::fs::remove_file(saved_path);
     }
 }
