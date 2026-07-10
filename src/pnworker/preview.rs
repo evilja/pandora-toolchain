@@ -1,6 +1,10 @@
 use crate::lib::image::{Align, Canvas, Color, Font, ImageResult, TextOptions};
 use crate::libkagami::complex::types::AssTime;
-use crate::libkagami::core::SubstationAlpha;
+use crate::libkagami::core::{Event, Stamp, SubstationAlpha};
+use std::collections::BTreeSet;
+
+const TYPESET_JOIN_GAP_CS: u64 = 100;
+const COOLDOWN_CS: u64 = 9_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreviewShot {
@@ -8,57 +12,429 @@ pub struct PreviewShot {
     pub label: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    Selected,
+    DeferredCooldown,
+    BackfilledCooldown,
+    SkippedGap,
+    OverQuota,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClusterVerdict {
+    pub rank: usize,
+    pub span: (u64, u64),
+    pub shot_cs: u64,
+    pub fn_lines: usize,
+    pub drawing_lines: usize,
+    pub lines: usize,
+    pub max_tags: usize,
+    pub outcome: Verdict,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreviewSelection {
+    pub shots: Vec<PreviewShot>,
+    pub verdicts: Vec<ClusterVerdict>,
+    pub ranking_log: String,
+}
+
+#[derive(Clone, Debug)]
+struct ClusterMember {
+    start_cs: u64,
+    end_cs: u64,
+    midpoint_cs: u64,
+    has_drawing: bool,
+    tag_count: usize,
+}
+
+#[derive(Clone, Debug)]
+struct TypesetCluster {
+    start_cs: u64,
+    end_cs: u64,
+    lines: usize,
+    fn_lines: usize,
+    drawing_lines: usize,
+    max_tags: usize,
+    heavy_mid_cs: Option<u64>,
+    members: Vec<ClusterMember>,
+}
+
+#[derive(Clone, Copy)]
+enum LabelWeight {
+    Ranked(f64),
+    Stamped,
+}
+
 pub fn select_preview_shots(
     ts: &SubstationAlpha,
     max: usize,
     min_gap_cs: u64,
-) -> Vec<PreviewShot> {
-    let mut candidates = ts
-        .events
-        .iter()
-        .filter_map(|event| {
-            let start = event.start.total_centiseconds();
-            let end = event.end.total_centiseconds();
-            if end <= start || !event.raw_text().contains(r"\fn") {
-                return None;
-            }
-            Some((start, (start + end) / 2))
-        })
-        .collect::<Vec<_>>();
-    candidates.sort_by_key(|(start, midpoint)| (*start, *midpoint));
+) -> PreviewSelection {
+    select_shots_with_stamps(&[ts], Some(ts), max, min_gap_cs)
+}
 
-    let mut shots = Vec::new();
-    let mut last_midpoint = None;
-    for (_, midpoint) in candidates {
-        if shots.len() >= max {
+// Every script supplies manual stamps; only the explicit TS supplies automatic candidates.
+pub fn select_shots_with_stamps(
+    scripts: &[&SubstationAlpha],
+    ts: Option<&SubstationAlpha>,
+    max: usize,
+    min_gap_cs: u64,
+) -> PreviewSelection {
+    let stamps = collect_stamps(scripts);
+    if !stamps.is_empty() {
+        let shots = stamps
+            .into_iter()
+            .take(max)
+            .map(|stamp| stamp_shot(&stamp))
+            .collect();
+        let verdicts = Vec::new();
+        let ranking_log = "manual stamps selected; automatic ranking skipped\n".to_string();
+        return PreviewSelection {
+            shots,
+            verdicts,
+            ranking_log,
+        };
+    }
+
+    let Some(ts) = ts else {
+        return PreviewSelection {
+            shots: Vec::new(),
+            verdicts: Vec::new(),
+            ranking_log: format_ranking_table(&[]),
+        };
+    };
+    select_clusters(ts, max, min_gap_cs)
+}
+
+fn collect_stamps(scripts: &[&SubstationAlpha]) -> Vec<Stamp> {
+    let mut stamps = scripts
+        .iter()
+        .flat_map(|script| script.pandora_meta.stamps.iter().cloned())
+        .collect::<Vec<_>>();
+    stamps.sort_by_key(|stamp| {
+        (
+            stamp.start.total_centiseconds(),
+            stamp.end.total_centiseconds(),
+        )
+    });
+    let mut seen = BTreeSet::new();
+    stamps.retain(|stamp| seen.insert(stamp_midpoint(stamp)));
+    stamps
+}
+
+fn stamp_midpoint(stamp: &Stamp) -> u64 {
+    let start = stamp.start.total_centiseconds();
+    let end = stamp.end.total_centiseconds();
+    if end <= start {
+        start
+    } else {
+        start + (end - start) / 2
+    }
+}
+
+fn stamp_shot(stamp: &Stamp) -> PreviewShot {
+    let start = stamp.start.total_centiseconds();
+    let end = stamp.end.total_centiseconds();
+    let centiseconds = stamp_midpoint(stamp);
+    PreviewShot {
+        centiseconds,
+        label: format_shot_label(
+            centiseconds,
+            end.saturating_sub(start),
+            LabelWeight::Stamped,
+            Some(&stamp.note),
+        ),
+    }
+}
+
+fn select_clusters(ts: &SubstationAlpha, max: usize, min_gap_cs: u64) -> PreviewSelection {
+    let mut ranked = typeset_clusters(&ts.events, TYPESET_JOIN_GAP_CS);
+    ranked.sort_by(compare_clusters);
+
+    let ranks = dense_ranks(&ranked);
+    let weights = normalized_weights(&ranks);
+    let mut outcomes = vec![Verdict::OverQuota; ranked.len()];
+    let mut accepted = Vec::<usize>::new();
+    let mut deferred = Vec::<usize>::new();
+
+    for (idx, cluster) in ranked.iter().enumerate() {
+        if accepted.len() >= max {
+            continue;
+        }
+        let shot_cs = cluster.shot_cs();
+        if accepted.iter().any(|accepted_idx| {
+            ranked[*accepted_idx].shot_cs().abs_diff(shot_cs) < min_gap_cs
+        }) {
+            outcomes[idx] = Verdict::SkippedGap;
+            continue;
+        }
+        if accepted.iter().any(|accepted_idx| {
+            let accepted_cluster = &ranked[*accepted_idx];
+            shot_cs > accepted_cluster.end_cs
+                && shot_cs <= accepted_cluster.end_cs.saturating_add(COOLDOWN_CS)
+        }) {
+            outcomes[idx] = Verdict::DeferredCooldown;
+            deferred.push(idx);
+            continue;
+        }
+        outcomes[idx] = Verdict::Selected;
+        accepted.push(idx);
+    }
+
+    for idx in deferred {
+        if accepted.len() >= max {
             break;
         }
-        if let Some(last) = last_midpoint {
-            if midpoint < last + min_gap_cs {
-                continue;
-            }
+        let shot_cs = ranked[idx].shot_cs();
+        if accepted.iter().any(|accepted_idx| {
+            ranked[*accepted_idx].shot_cs().abs_diff(shot_cs) < min_gap_cs
+        }) {
+            outcomes[idx] = Verdict::SkippedGap;
+            continue;
         }
-        let active = ts
-            .events
-            .iter()
-            .filter(|event| {
-                event.start.total_centiseconds() <= midpoint
-                    && midpoint <= event.end.total_centiseconds()
-            })
-            .count();
-        let suffix = if active == 1 { "line" } else { "lines" };
-        shots.push(PreviewShot {
-            centiseconds: midpoint,
-            label: format!(
-                "{} · {} {}",
-                AssTime::from_centiseconds(midpoint),
-                active,
-                suffix
-            ),
-        });
-        last_midpoint = Some(midpoint);
+        outcomes[idx] = Verdict::BackfilledCooldown;
+        accepted.push(idx);
     }
-    shots
+
+    let mut shots = accepted
+        .into_iter()
+        .map(|idx| {
+            let cluster = &ranked[idx];
+            let centiseconds = cluster.shot_cs();
+            PreviewShot {
+                centiseconds,
+                label: format_shot_label(
+                    centiseconds,
+                    cluster.end_cs.saturating_sub(cluster.start_cs),
+                    LabelWeight::Ranked(weights[idx]),
+                    None,
+                ),
+            }
+        })
+        .collect::<Vec<_>>();
+    shots.sort_by_key(|shot| shot.centiseconds);
+
+    let verdicts = ranked
+        .iter()
+        .enumerate()
+        .map(|(idx, cluster)| ClusterVerdict {
+            rank: ranks[idx],
+            span: (cluster.start_cs, cluster.end_cs),
+            shot_cs: cluster.shot_cs(),
+            fn_lines: cluster.fn_lines,
+            drawing_lines: cluster.drawing_lines,
+            lines: cluster.lines,
+            max_tags: cluster.max_tags,
+            outcome: outcomes[idx].clone(),
+        })
+        .collect::<Vec<_>>();
+    let ranking_log = format_ranking_table(&verdicts);
+    PreviewSelection {
+        shots,
+        verdicts,
+        ranking_log,
+    }
+}
+
+fn typeset_clusters(events: &[Event], join_gap_cs: u64) -> Vec<TypesetCluster> {
+    let mut candidates = events
+        .iter()
+        .filter_map(|event| {
+            let start_cs = event.start.total_centiseconds();
+            let end_cs = event.end.total_centiseconds();
+            (end_cs > start_cs).then_some((event, start_cs, end_cs))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|(_, start, end)| (*start, *end));
+
+    let mut clusters = Vec::<TypesetCluster>::new();
+    for (event, start_cs, end_cs) in candidates {
+        let member = ClusterMember {
+            start_cs,
+            end_cs,
+            midpoint_cs: start_cs + (end_cs - start_cs) / 2,
+            has_drawing: event.has_drawing(),
+            tag_count: event.tag_count(),
+        };
+        let joins = clusters
+            .last()
+            .map(|cluster| start_cs <= cluster.end_cs.saturating_add(join_gap_cs))
+            .unwrap_or(false);
+        if joins {
+            let cluster = clusters.last_mut().unwrap();
+            cluster.end_cs = cluster.end_cs.max(end_cs);
+            cluster.lines += 1;
+            cluster.fn_lines += usize::from(event.has_fn());
+            cluster.drawing_lines += usize::from(member.has_drawing);
+            cluster.max_tags = cluster.max_tags.max(member.tag_count);
+            cluster.members.push(member);
+        } else {
+            clusters.push(TypesetCluster {
+                start_cs,
+                end_cs,
+                lines: 1,
+                fn_lines: usize::from(event.has_fn()),
+                drawing_lines: usize::from(member.has_drawing),
+                max_tags: member.tag_count,
+                heavy_mid_cs: None,
+                members: vec![member],
+            });
+        }
+    }
+    for cluster in &mut clusters {
+        cluster.finish_placement();
+    }
+    clusters
+}
+
+impl TypesetCluster {
+    fn finish_placement(&mut self) {
+        if self.drawing_lines == 0 && self.max_tags == 0 {
+            return;
+        }
+        let center = self.start_cs + (self.end_cs - self.start_cs) / 2;
+        self.heavy_mid_cs = self
+            .members
+            .iter()
+            .max_by(|left, right| {
+                (left.has_drawing, left.tag_count)
+                    .cmp(&(right.has_drawing, right.tag_count))
+                    .then_with(|| right.midpoint_cs.abs_diff(center).cmp(&left.midpoint_cs.abs_diff(center)))
+                    .then_with(|| right.midpoint_cs.cmp(&left.midpoint_cs))
+            })
+            .map(|member| member.midpoint_cs);
+    }
+
+    fn shot_cs(&self) -> u64 {
+        if let Some(midpoint) = self.heavy_mid_cs {
+            return midpoint;
+        }
+        let center = self.start_cs + (self.end_cs - self.start_cs) / 2;
+        if self
+            .members
+            .iter()
+            .any(|member| member.start_cs < center && center < member.end_cs)
+        {
+            return center;
+        }
+        self.members
+            .iter()
+            .min_by_key(|member| (member.midpoint_cs.abs_diff(center), member.midpoint_cs))
+            .map(|member| member.midpoint_cs)
+            .unwrap_or(center)
+    }
+
+    fn duration(&self) -> u64 {
+        self.end_cs.saturating_sub(self.start_cs)
+    }
+}
+
+fn compare_clusters(left: &TypesetCluster, right: &TypesetCluster) -> std::cmp::Ordering {
+    (right.fn_lines > 0)
+        .cmp(&(left.fn_lines > 0))
+        .then_with(|| right.drawing_lines.cmp(&left.drawing_lines))
+        .then_with(|| right.lines.cmp(&left.lines))
+        .then_with(|| right.max_tags.cmp(&left.max_tags))
+        .then_with(|| right.duration().cmp(&left.duration()))
+        .then_with(|| left.start_cs.cmp(&right.start_cs))
+}
+
+fn same_rank(left: &TypesetCluster, right: &TypesetCluster) -> bool {
+    (left.fn_lines > 0) == (right.fn_lines > 0)
+        && left.drawing_lines == right.drawing_lines
+        && left.lines == right.lines
+        && left.max_tags == right.max_tags
+        && left.duration() == right.duration()
+}
+
+fn dense_ranks(clusters: &[TypesetCluster]) -> Vec<usize> {
+    let mut ranks = Vec::with_capacity(clusters.len());
+    let mut rank = 0;
+    for (idx, cluster) in clusters.iter().enumerate() {
+        if idx == 0 || !same_rank(&clusters[idx - 1], cluster) {
+            rank += 1;
+        }
+        ranks.push(rank);
+    }
+    ranks
+}
+
+fn normalized_weights(ranks: &[usize]) -> Vec<f64> {
+    let distinct = ranks.last().copied().unwrap_or(0);
+    if distinct <= 1 {
+        return vec![1.0; ranks.len()];
+    }
+    ranks
+        .iter()
+        .map(|rank| 1.0 - (*rank as f64 - 1.0) / (distinct as f64 - 1.0))
+        .collect()
+}
+
+fn format_shot_label(
+    shot_cs: u64,
+    length_cs: u64,
+    weight: LabelWeight,
+    note: Option<&str>,
+) -> String {
+    let weight = match weight {
+        LabelWeight::Ranked(value) => format!("{value:.2}"),
+        LabelWeight::Stamped => "+".to_string(),
+    };
+    let mut label = format!(
+        "{} · {:.1}s · {}",
+        AssTime::from_centiseconds(shot_cs),
+        length_cs as f64 / 100.0,
+        weight
+    );
+    if let Some(note) = note.map(str::trim).filter(|note| !note.is_empty()) {
+        label.push_str(" · ");
+        label.push_str(&truncate_note(note, 40));
+    }
+    label
+}
+
+fn truncate_note(note: &str, max_chars: usize) -> String {
+    if note.chars().count() <= max_chars {
+        return note.to_string();
+    }
+    let keep = max_chars.saturating_sub(3);
+    format!("{}...", note.chars().take(keep).collect::<String>())
+}
+
+pub fn format_ranking_table(verdicts: &[ClusterVerdict]) -> String {
+    let mut out = String::from(
+        "rank  span                           shot         fn  drw  lines  tags  outcome\n",
+    );
+    for verdict in verdicts {
+        out.push_str(&format!(
+            "{:<5} {:<30} {:<12} {:<3} {:<4} {:<6} {:<5} {}\n",
+            verdict.rank,
+            format!(
+                "{}-{}",
+                AssTime::from_centiseconds(verdict.span.0),
+                AssTime::from_centiseconds(verdict.span.1)
+            ),
+            AssTime::from_centiseconds(verdict.shot_cs),
+            if verdict.fn_lines > 0 { "y" } else { "n" },
+            verdict.drawing_lines,
+            verdict.lines,
+            verdict.max_tags,
+            verdict_label(&verdict.outcome),
+        ));
+    }
+    out
+}
+
+fn verdict_label(verdict: &Verdict) -> &'static str {
+    match verdict {
+        Verdict::Selected => "selected",
+        Verdict::DeferredCooldown => "deferred-cooldown",
+        Verdict::BackfilledCooldown => "backfilled",
+        Verdict::SkippedGap => "skipped-gap",
+        Verdict::OverQuota => "over-quota",
+    }
 }
 
 pub fn compose_preview(
@@ -132,8 +508,8 @@ mod tests {
     use super::*;
     use crate::lib::image::{Canvas, Color};
     use crate::libkagami::complex::types::AssColour;
-    use crate::libkagami::core::{Event, ScriptInfo, V4pStyle};
-    use crate::libkagami::tags::{ASSLine, ASSText};
+    use crate::libkagami::core::{Event, PandoraMeta, ScriptInfo, Stamp, V4pStyle};
+    use crate::libkagami::tags::ASSLine;
 
     fn test_sub(events: Vec<Event>) -> SubstationAlpha {
         SubstationAlpha {
@@ -176,6 +552,8 @@ mod tests {
                 encoding: 1,
             }],
             events,
+            comments: Vec::new(),
+            pandora_meta: PandoraMeta::default(),
         }
     }
 
@@ -190,48 +568,206 @@ mod tests {
             margin_r: 0,
             margin_v: 0,
             effect: String::new(),
-            text: ASSLine {
-                current_overrides: Vec::new(),
-                data: vec![ASSText::RawText(text.to_string())],
-            },
+            text: text.parse::<ASSLine>().unwrap(),
+        }
+    }
+
+    fn stamp(start: u64, end: u64, note: &str) -> Stamp {
+        Stamp {
+            start: AssTime::from_centiseconds(start),
+            end: AssTime::from_centiseconds(end),
+            note: note.to_string(),
         }
     }
 
     #[test]
-    fn select_preview_shots_rejects_files_without_fn_lines() {
-        let sub = test_sub(vec![event(0, 200, "{\\pos(1,2)}sign")]);
-        assert!(select_preview_shots(&sub, 3, 1000).is_empty());
+    fn plain_timed_lines_are_preview_candidates() {
+        let sub = test_sub(vec![event(0, 200, "plain sign")]);
+        let selection = select_preview_shots(&sub, 3, 1000);
+        assert_eq!(selection.shots.len(), 1);
+        assert_eq!(selection.shots[0].centiseconds, 100);
+        assert!(selection.shots[0].label.ends_with("2.0s · 1.00"));
     }
 
     #[test]
-    fn select_preview_shots_collapses_cluster_by_midpoint_gap() {
+    fn overlapping_stack_is_one_centered_cluster() {
+        let sub = test_sub((0..10).map(|_| event(0, 400, "plain")).collect());
+        let selection = select_preview_shots(&sub, 3, 1000);
+        assert_eq!(selection.shots.len(), 1);
+        assert_eq!(selection.shots[0].centiseconds, 200);
+        assert_eq!(selection.verdicts[0].lines, 10);
+    }
+
+    #[test]
+    fn cluster_join_tolerance_and_seam_snapping_are_applied() {
+        let joined = test_sub(vec![event(0, 400, "a"), event(450, 900, "b")]);
+        let clusters = typeset_clusters(&joined.events, TYPESET_JOIN_GAP_CS);
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(clusters[0].shot_cs(), 675);
+
+        let split = test_sub(vec![event(0, 400, "a"), event(501, 900, "b")]);
+        assert_eq!(typeset_clusters(&split.events, TYPESET_JOIN_GAP_CS).len(), 2);
+    }
+
+    #[test]
+    fn fn_presence_outranks_a_larger_plain_cluster() {
+        let mut events = (0..10)
+            .map(|_| event(0, 200, "plain"))
+            .collect::<Vec<_>>();
+        events.push(event(20_000, 20_200, r"{\fnFancy}a"));
+        events.push(event(20_000, 20_200, "layer"));
+        let selection = select_preview_shots(&test_sub(events), 1, 1000);
+        assert_eq!(selection.shots[0].centiseconds, 20_100);
+        assert!(selection.verdicts[0].fn_lines > 0);
+    }
+
+    #[test]
+    fn denser_cluster_wins_the_contested_slot() {
         let sub = test_sub(vec![
-            event(0, 200, r"{\fnFancy}a"),
-            event(100, 300, r"{\fnFancy}b"),
-            event(1200, 1400, r"{\fnFancy}c"),
+            event(0, 200, "a"),
+            event(20_000, 20_200, "b"),
+            event(40_000, 40_200, "c1"),
+            event(40_000, 40_200, "c2"),
+            event(40_000, 40_200, "c3"),
         ]);
-        let shots = select_preview_shots(&sub, 3, 1000);
+        let selection = select_preview_shots(&sub, 1, 1000);
+        assert_eq!(selection.shots[0].centiseconds, 40_100);
+        assert_eq!(selection.verdicts[0].lines, 3);
+    }
+
+    #[test]
+    fn heavy_member_controls_cluster_placement() {
+        let sub = test_sub(vec![
+            event(0, 3000, "plain"),
+            event(200, 600, r"{\pos(10,20)\fs40}heavy"),
+        ]);
+        let selection = select_preview_shots(&sub, 1, 1000);
+        assert_eq!(selection.shots[0].centiseconds, 400);
+    }
+
+    #[test]
+    fn hard_gap_is_measured_between_actual_shot_times() {
+        let sub = test_sub(vec![
+            event(0, 200, r"{\pos(1,2)}a"),
+            event(500, 700, "b"),
+        ]);
+        let selection = select_preview_shots(&sub, 3, 1000);
+        assert_eq!(selection.shots.len(), 1);
+        assert!(selection
+            .verdicts
+            .iter()
+            .any(|row| row.outcome == Verdict::SkippedGap));
+    }
+
+    #[test]
+    fn cooldown_defers_then_backfills_only_when_needed() {
+        let base = test_sub(vec![
+            event(2900, 3100, "a"),
+            event(5900, 6100, "b"),
+            event(29_900, 30_100, "c"),
+        ]);
+        let selection = select_preview_shots(&base, 3, 1000);
         assert_eq!(
-            shots.iter().map(|shot| shot.centiseconds).collect::<Vec<_>>(),
-            vec![100, 1300]
+            selection
+                .shots
+                .iter()
+                .map(|shot| shot.centiseconds)
+                .collect::<Vec<_>>(),
+            vec![3000, 6000, 30_000]
+        );
+        assert!(selection
+            .verdicts
+            .iter()
+            .any(|row| row.shot_cs == 6000 && row.outcome == Verdict::BackfilledCooldown));
+
+        let spread = test_sub(vec![
+            event(2900, 3100, "a"),
+            event(5900, 6100, "b"),
+            event(29_900, 30_100, "c"),
+            event(47_900, 48_100, "d"),
+        ]);
+        let selection = select_preview_shots(&spread, 3, 1000);
+        assert_eq!(
+            selection
+                .shots
+                .iter()
+                .map(|shot| shot.centiseconds)
+                .collect::<Vec<_>>(),
+            vec![3000, 30_000, 48_000]
         );
     }
 
     #[test]
-    fn select_preview_shots_caps_at_three_and_counts_active_lines() {
+    fn stamps_across_scripts_are_authoritative_deduped_and_capped() {
+        let mut tl = test_sub(vec![]);
+        tl.pandora_meta.stamps = vec![stamp(100, 300, "TL note"), stamp(1000, 1200, "")];
+        let mut ts = test_sub(vec![event(20_000, 20_200, r"{\fnFancy}auto")]);
+        ts.pandora_meta.stamps = vec![
+            stamp(200, 200, "same midpoint"),
+            stamp(2000, 2200, "third"),
+            stamp(3000, 3200, "over cap"),
+        ];
+
+        let selection = select_shots_with_stamps(&[&tl, &ts], Some(&ts), 3, 1000);
+        assert_eq!(
+            selection
+                .shots
+                .iter()
+                .map(|shot| shot.centiseconds)
+                .collect::<Vec<_>>(),
+            vec![200, 1100, 2100]
+        );
+        assert_eq!(selection.shots[0].label, "0:00:02.00 · 2.0s · + · TL note");
+        assert!(selection.verdicts.is_empty());
+    }
+
+    #[test]
+    fn tl_stamp_works_without_ts_and_midpoints_dedup_globally() {
+        let mut tl = test_sub(vec![]);
+        tl.pandora_meta.stamps = vec![
+            stamp(0, 1000, "wide"),
+            stamp(100, 200, "between"),
+            stamp(400, 600, "duplicate midpoint"),
+        ];
+
+        let selection = select_shots_with_stamps(&[&tl], None, 3, 1000);
+        assert_eq!(selection.shots.len(), 2);
+        assert_eq!(
+            selection
+                .shots
+                .iter()
+                .map(|shot| shot.centiseconds)
+                .collect::<Vec<_>>(),
+            vec![500, 150]
+        );
+    }
+
+    #[test]
+    fn labels_report_dense_rank_weight_and_length() {
         let sub = test_sub(vec![
-            event(0, 400, r"{\fnFancy}a"),
-            event(100, 300, "layered"),
-            event(1200, 1400, r"{\fnFancy}b"),
-            event(2400, 2600, r"{\fnFancy}c"),
-            event(3600, 3800, r"{\fnFancy}d"),
-            event(4800, 5000, r"{\fnFancy}e"),
+            event(0, 1450, r"{\fnFancy}top"),
+            event(20_000, 20_200, r"{\p1}m 0 0 l 10 0 10 10{\p0}"),
+            event(40_000, 40_200, "plain"),
         ]);
-        let shots = select_preview_shots(&sub, 3, 1000);
-        assert_eq!(shots.len(), 3);
-        assert_eq!(shots[0].centiseconds, 200);
-        assert_eq!(shots[0].label, "0:00:02.00 · 2 lines");
-        assert_eq!(shots[2].label, "0:00:25.00 · 1 line");
+        let selection = select_preview_shots(&sub, 3, 1000);
+        assert!(selection.shots[0].label.ends_with("14.5s · 1.00"));
+        assert!(selection.shots[1].label.ends_with("2.0s · 0.50"));
+        assert!(selection.shots[2].label.ends_with("2.0s · 0.00"));
+
+        let tied = select_preview_shots(
+            &test_sub(vec![event(0, 200, "a"), event(20_000, 20_200, "b")]),
+            2,
+            1000,
+        );
+        assert!(tied.shots.iter().all(|shot| shot.label.ends_with("1.00")));
+    }
+
+    #[test]
+    fn ranking_table_is_auditable() {
+        let selection = select_preview_shots(&test_sub(vec![event(0, 200, "plain")]), 1, 1000);
+        assert!(selection.ranking_log.starts_with("rank  span"));
+        assert!(selection.ranking_log.contains("0:00:00.00-0:00:02.00"));
+        assert!(selection.ranking_log.contains("selected"));
     }
 
     #[test]
@@ -241,7 +777,7 @@ mod tests {
             .png_bytes()
             .unwrap();
         let font = Font::fallback();
-        let output = compose_preview(&input, "0:00:02.00 · 2 lines", &font, &font).unwrap();
+        let output = compose_preview(&input, "0:00:02.00 · 2.0s · 1.00", &font, &font).unwrap();
         let canvas = Canvas::from_png_bytes(&output).unwrap();
 
         let top_changed = (0..80).any(|x| {

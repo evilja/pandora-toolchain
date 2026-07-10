@@ -97,6 +97,7 @@ impl V4pStyle {
     }
 }
 
+#[derive(Clone)]
 pub struct Event {
     pub layer: u16,
     pub start: AssTime,
@@ -129,13 +130,43 @@ impl Event {
             })
             .collect()
     }
+
+    pub fn is_stamp(&self) -> bool {
+        self.name.trim().eq_ignore_ascii_case("stamp")
+            || self.effect.trim().eq_ignore_ascii_case("stamp")
+    }
+
+    pub fn has_fn(&self) -> bool {
+        self.text.has_fn()
+    }
+
+    pub fn has_drawing(&self) -> bool {
+        self.text.has_drawing()
+    }
+
+    pub fn tag_count(&self) -> usize {
+        self.text.tag_count()
+    }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PandoraMeta {
+    pub stamps: Vec<Stamp>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stamp {
+    pub start: AssTime,
+    pub end: AssTime,
+    pub note: String,
+}
 
 pub struct SubstationAlpha {
     pub script_info: ScriptInfo,
     pub v4p_styles: Vec<V4pStyle>,
     pub events: Vec<Event>,
+    pub comments: Vec<Event>,
+    pub pandora_meta: PandoraMeta,
 }
 
 impl SubstationAlpha {
@@ -210,6 +241,8 @@ impl SubstationAlpha {
         let mut layout_res_y = 0u16;
         let mut v4p_styles = Vec::new();
         let mut events = Vec::new();
+        let mut comments = Vec::new();
+        let mut pandora_meta = PandoraMeta::default();
 
         let mut section = "";
 
@@ -275,34 +308,49 @@ impl SubstationAlpha {
                 }
                 "[Events]" => {
                     if let Some(data) = line.strip_prefix("Dialogue:") {
-                        let f: Vec<&str> = data.trim().splitn(10, ',').collect();
-                        if f.len() < 10 { continue; }
-                        let text = if adv_parsing {
-                            let style_overrides = v4p_styles.iter()
-                                .find(|s| s.name == f[3])
-                                .map(|s| s.to_overrides())
-                                .unwrap_or_default();
-                            ASSLine::from_str_store(f[9], style_overrides)
-                        } else {
-                            ASSLine { current_overrides: vec![], data: vec![ASSText::RawText(f[9].into())] }
+                        if let Some(event) = parse_event(data, adv_parsing, &v4p_styles) {
+                            events.push(event);
+                        }
+                    } else if let Some(data) = line.strip_prefix("Comment:") {
+                        if let Some(event) = parse_event(data, false, &v4p_styles) {
+                            comments.push(event);
+                        }
+                    }
+                }
+                "[Pandora Meta]" => {
+                    if let Some(data) = line.strip_prefix("Stamp:") {
+                        let mut fields = data.strip_prefix(' ').unwrap_or(data).splitn(3, ',');
+                        let (Some(start), Some(end), Some(note)) =
+                            (fields.next(), fields.next(), fields.next())
+                        else {
+                            continue;
                         };
-                        events.push(Event {
-                            layer:    f[0].parse().unwrap_or(0),
-                            start:    f[1].parse().unwrap_or(AssTime { hours: 0, minutes: 0, seconds: 0, centiseconds: 0 }),
-                            end:      f[2].parse().unwrap_or(AssTime { hours: 0, minutes: 0, seconds: 0, centiseconds: 0 }),
-                            style:    f[3].to_string(),
-                            name:     f[4].to_string(),
-                            margin_l: f[5].parse().unwrap_or(0),
-                            margin_r: f[6].parse().unwrap_or(0),
-                            margin_v: f[7].parse().unwrap_or(0),
-                            effect:   f[8].to_string(),
-                            text,
+                        let (Ok(start), Ok(end)) = (start.trim().parse(), end.trim().parse()) else {
+                            continue;
+                        };
+                        pandora_meta.stamps.push(Stamp {
+                            start,
+                            end,
+                            note: note.to_string(),
                         });
                     }
                 }
                 _ => {}
             }
         }
+
+        pandora_meta.stamps.extend(
+            comments.iter().filter(|event| event.is_stamp()).map(|event| Stamp {
+                start: event.start,
+                end: event.end,
+                note: event.raw_text(),
+            })
+        );
+        let mut seen = BTreeSet::new();
+        pandora_meta.stamps.retain(|stamp| {
+            seen.insert((stamp.start.total_centiseconds(), stamp.end.total_centiseconds()))
+        });
+        pandora_meta.stamps.sort_by_key(|stamp| stamp.start.total_centiseconds());
 
         Self {
             script_info: ScriptInfo {
@@ -318,6 +366,8 @@ impl SubstationAlpha {
             },
             v4p_styles,
             events,
+            comments,
+            pandora_meta,
         }
     }
     pub fn add_style(&mut self, style: V4pStyle) {
@@ -336,13 +386,7 @@ impl SubstationAlpha {
         }
         out.into_iter().collect()
     }
-    pub async fn dump_to_file(&self, path: PathBuf) -> Result<(), ()> {
-        let mut file = match File::create(path).await {
-            Ok(f) => f,
-            Err(_) => {
-                return Err(())
-            }
-        };
+    pub fn stringify(&self) -> String {
         let mut sevent = String::new();
         // Script Info
         sevent.push_str("[Script Info]\n");
@@ -359,11 +403,59 @@ impl SubstationAlpha {
         for i in &self.events {
             sevent.push_str(&i.stringify());
         }
+        if !self.pandora_meta.stamps.is_empty() {
+            sevent.push_str("\n[Pandora Meta]\n");
+            for stamp in &self.pandora_meta.stamps {
+                sevent.push_str(&format!(
+                    "Stamp: {},{},{}\n",
+                    stamp.start, stamp.end, stamp.note
+                ));
+            }
+        }
+        sevent
+    }
+
+    pub async fn dump_to_file(&self, path: PathBuf) -> Result<(), ()> {
+        let mut file = match File::create(path).await {
+            Ok(f) => f,
+            Err(_) => {
+                return Err(())
+            }
+        };
+        let sevent = self.stringify();
         match file.write_all(sevent.as_bytes()).await {
             Ok(_) => return Ok(()),
             Err(_) => return Err(())
         }
     }
+}
+
+fn parse_event(data: &str, adv_parsing: bool, v4p_styles: &[V4pStyle]) -> Option<Event> {
+    let f: Vec<&str> = data.trim().splitn(10, ',').collect();
+    if f.len() < 10 {
+        return None;
+    }
+    let text = if adv_parsing {
+        let style_overrides = v4p_styles.iter()
+            .find(|s| s.name == f[3])
+            .map(|s| s.to_overrides())
+            .unwrap_or_default();
+        ASSLine::from_str_store(f[9], style_overrides)
+    } else {
+        ASSLine { current_overrides: vec![], data: vec![ASSText::RawText(f[9].into())] }
+    };
+    Some(Event {
+        layer:    f[0].parse().unwrap_or(0),
+        start:    f[1].parse().unwrap_or(AssTime { hours: 0, minutes: 0, seconds: 0, centiseconds: 0 }),
+        end:      f[2].parse().unwrap_or(AssTime { hours: 0, minutes: 0, seconds: 0, centiseconds: 0 }),
+        style:    f[3].to_string(),
+        name:     f[4].to_string(),
+        margin_l: f[5].parse().unwrap_or(0),
+        margin_r: f[6].parse().unwrap_or(0),
+        margin_v: f[7].parse().unwrap_or(0),
+        effect:   f[8].to_string(),
+        text,
+    })
 }
 
 fn border_scalar(scaled_border_and_shadow: bool, screen_scale: f32, layout_scale: f32) -> f32 {
@@ -846,7 +938,29 @@ mod tests {
                 effect: String::new(),
                 text: text.parse().unwrap(),
             }],
+            comments: Vec::new(),
+            pandora_meta: PandoraMeta::default(),
         }
+    }
+
+    fn temp_ass_path(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "pandora_libkagami_{}_{}_{}.ass",
+            std::process::id(),
+            nanos,
+            name
+        ))
+    }
+
+    async fn load_ass(name: &str, contents: &str, adv_parsing: bool) -> (SubstationAlpha, PathBuf) {
+        let path = temp_ass_path(name);
+        std::fs::write(&path, contents).unwrap();
+        let sub = SubstationAlpha::load(path.clone(), adv_parsing).await;
+        (sub, path)
     }
 
     fn temp_font_path(name: &str) -> PathBuf {
@@ -1007,6 +1121,95 @@ mod tests {
         scroll.scale(1280, 960).unwrap();
 
         assert_eq!(scroll.events[0].effect, "Scroll up;20;200;20;40");
+    }
+
+    #[tokio::test]
+    async fn comments_are_parsed_separately_and_never_stringified() {
+        let source = r#"[Script Info]
+ScriptType: v4.00+
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,spoken
+Comment: 0,0:00:03.00,0:00:04.00,Default,note,0,0,0,,{*garbage}commented
+"#;
+        let (sub, path) = load_ass("comments", source, true).await;
+
+        assert_eq!(sub.events.len(), 1);
+        assert_eq!(sub.comments.len(), 1);
+        assert_eq!(sub.comments[0].raw_text(), "{*garbage}commented");
+        assert!(matches!(sub.comments[0].text.data.as_slice(), [ASSText::RawText(_)]));
+        assert!(!sub.stringify().contains("Comment:"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn stamp_match_is_trimmed_case_insensitive_equality() {
+        let source = r#"[Events]
+Comment: 0,0:00:01.00,0:00:02.00,Default, StAmP ,0,0,0,,actor
+Comment: 0,0:00:03.00,0:00:04.00,Default,,0,0,0, stamp ,effect
+Comment: 0,0:00:05.00,0:00:06.00,Default,Stamped,0,0,0,,not actor
+Comment: 0,0:00:07.00,0:00:08.00,Default,,0,0,0,stampx,not effect
+"#;
+        let (sub, path) = load_ass("stamp-match", source, false).await;
+
+        assert!(sub.comments[0].is_stamp());
+        assert!(sub.comments[1].is_stamp());
+        assert!(!sub.comments[2].is_stamp());
+        assert!(!sub.comments[3].is_stamp());
+        assert_eq!(sub.pandora_meta.stamps.len(), 2);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn stamp_comments_round_trip_as_pandora_metadata() {
+        let source = r#"[Script Info]
+ScriptType: v4.00+
+
+[Events]
+Comment: 0,0:03:12.00,0:03:15.00,Default,stamp,0,0,0,,first, with comma
+Comment: 0,0:01:02.00,0:01:04.00,Default,,0,0,0,STAMP,second
+"#;
+        let (sub, source_path) = load_ass("stamp-roundtrip-source", source, true).await;
+        let expected = sub.pandora_meta.stamps.clone();
+        let output = sub.stringify();
+        let output_path = temp_ass_path("stamp-roundtrip-output");
+        std::fs::write(&output_path, &output).unwrap();
+        let reloaded = SubstationAlpha::load(output_path.clone(), true).await;
+
+        assert!(output.contains("[Pandora Meta]"));
+        assert!(!output.contains("Comment:"));
+        assert_eq!(expected.len(), 2);
+        assert_eq!(expected[0].note, "second");
+        assert_eq!(expected[1].note, "first, with comma");
+        assert_eq!(reloaded.pandora_meta.stamps, expected);
+        assert!(reloaded.comments.is_empty());
+
+        let _ = std::fs::remove_file(source_path);
+        let _ = std::fs::remove_file(output_path);
+    }
+
+    #[tokio::test]
+    async fn pandora_metadata_and_comments_merge_without_duplicate_ranges() {
+        let source = r#"[Events]
+Comment: 0,0:00:10.00,0:00:12.00,Default,stamp,0,0,0,,duplicate comment
+Comment: 0,0:00:05.00,0:00:06.00,Default,,0,0,0,stamp,new comment
+
+[Pandora Meta]
+Unknown: ignored
+Stamp: 0:00:10.00,0:00:12.00,durable note
+"#;
+        let (sub, path) = load_ass("stamp-merge", source, false).await;
+
+        assert_eq!(sub.pandora_meta.stamps.len(), 2);
+        assert_eq!(sub.pandora_meta.stamps[0].start.total_centiseconds(), 500);
+        assert_eq!(sub.pandora_meta.stamps[0].note, "new comment");
+        assert_eq!(sub.pandora_meta.stamps[1].start.total_centiseconds(), 1_000);
+        assert_eq!(sub.pandora_meta.stamps[1].note, "durable note");
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

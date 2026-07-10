@@ -6,10 +6,16 @@ pub const MAX_WORKER_SLOTS: usize = 16;
 
 const DEFAULT_DOWNLOAD: &[&str] = &["kawari", "fuan", "odo", "shitai"];
 const DEFAULT_UPLOAD: &[&str] = &["tsuki", "sora", "tenki", "suisei"];
+const DEFAULT_PROBE: &[&str] = &["hoshi", "kumo"];
+
+fn default_probe_slots() -> Vec<String> {
+    DEFAULT_PROBE.iter().map(|s| s.to_string()).collect()
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum WorkerSlotKind {
     Download,
+    Probe,
     Upload,
 }
 
@@ -17,6 +23,7 @@ impl WorkerSlotKind {
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "download" | "dwl" => Some(Self::Download),
+            "probe" | "prb" => Some(Self::Probe),
             "upload" | "upl" => Some(Self::Upload),
             _ => None,
         }
@@ -25,6 +32,7 @@ impl WorkerSlotKind {
     pub fn label(self) -> &'static str {
         match self {
             Self::Download => "download",
+            Self::Probe => "probe",
             Self::Upload => "upload",
         }
     }
@@ -32,6 +40,7 @@ impl WorkerSlotKind {
     pub fn worker_prefix(self) -> &'static str {
         match self {
             Self::Download => "dwl",
+            Self::Probe => "prb",
             Self::Upload => "upl",
         }
     }
@@ -40,6 +49,8 @@ impl WorkerSlotKind {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct WorkerSlotsConfig {
     pub download: Vec<String>,
+    #[serde(default = "default_probe_slots")]
+    pub probe: Vec<String>,
     pub upload: Vec<String>,
 }
 
@@ -47,6 +58,7 @@ impl Default for WorkerSlotsConfig {
     fn default() -> Self {
         Self {
             download: DEFAULT_DOWNLOAD.iter().map(|s| s.to_string()).collect(),
+            probe: default_probe_slots(),
             upload: DEFAULT_UPLOAD.iter().map(|s| s.to_string()).collect(),
         }
     }
@@ -56,6 +68,7 @@ impl WorkerSlotsConfig {
     pub fn slots(&self, kind: WorkerSlotKind) -> &[String] {
         match kind {
             WorkerSlotKind::Download => &self.download,
+            WorkerSlotKind::Probe => &self.probe,
             WorkerSlotKind::Upload => &self.upload,
         }
     }
@@ -63,6 +76,7 @@ impl WorkerSlotsConfig {
     fn slots_mut(&mut self, kind: WorkerSlotKind) -> &mut Vec<String> {
         match kind {
             WorkerSlotKind::Download => &mut self.download,
+            WorkerSlotKind::Probe => &mut self.probe,
             WorkerSlotKind::Upload => &mut self.upload,
         }
     }
@@ -75,12 +89,16 @@ pub async fn load_worker_slots() -> WorkerSlotsConfig {
     };
     let mut cfg = toml::from_str::<WorkerSlotsConfig>(&raw).unwrap_or_default();
     normalize_slots(&mut cfg.download);
+    normalize_slots(&mut cfg.probe);
     normalize_slots(&mut cfg.upload);
     if cfg.download.is_empty() {
         cfg.download = WorkerSlotsConfig::default().download;
     }
     if cfg.upload.is_empty() {
         cfg.upload = WorkerSlotsConfig::default().upload;
+    }
+    if cfg.probe.is_empty() {
+        cfg.probe = WorkerSlotsConfig::default().probe;
     }
     cfg
 }
@@ -91,6 +109,10 @@ pub async fn download_worker_slots() -> Vec<String> {
 
 pub async fn upload_worker_slots() -> Vec<String> {
     load_worker_slots().await.upload
+}
+
+pub async fn probe_worker_slots() -> Vec<String> {
+    load_worker_slots().await.probe
 }
 
 pub async fn add_worker_slot(kind: WorkerSlotKind, name: &str) -> Result<usize, String> {
@@ -118,7 +140,10 @@ pub async fn remove_worker_slot(kind: WorkerSlotKind, name: &str) -> Result<(), 
     let mut cfg = load_worker_slots().await;
     let slots = cfg.slots_mut(kind);
     if slots.len() <= 1 {
-        return Err(format!("{} workers must keep at least one slot", kind.label()));
+        return Err(format!(
+            "{} workers must keep at least one slot",
+            kind.label()
+        ));
     }
     let Some(pos) = slots.iter().position(|slot| slot == &name) else {
         return Err(format!("{} worker `{}` does not exist", kind.label(), name));
@@ -163,7 +188,38 @@ pub fn normalize_name(name: &str) -> Result<String, String> {
         .chars()
         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
     {
-        return Err("worker name may only contain lowercase letters, numbers, `_`, and `-`".to_string());
+        return Err(
+            "worker name may only contain lowercase letters, numbers, `_`, and `-`".to_string(),
+        );
     }
     Ok(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_probe_worker_kind_aliases() {
+        assert_eq!(WorkerSlotKind::parse("probe"), Some(WorkerSlotKind::Probe));
+        assert_eq!(WorkerSlotKind::parse("PRB"), Some(WorkerSlotKind::Probe));
+        assert_eq!(WorkerSlotKind::Probe.label(), "probe");
+        assert_eq!(WorkerSlotKind::Probe.worker_prefix(), "prb");
+    }
+
+    #[test]
+    fn legacy_config_gets_default_probe_slots() {
+        let cfg: WorkerSlotsConfig = toml::from_str(
+            r#"
+download = ["one"]
+upload = ["two"]
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.download, vec!["one"]);
+        assert_eq!(cfg.probe, vec!["hoshi", "kumo"]);
+        assert_eq!(cfg.upload, vec!["two"]);
+        assert_eq!(cfg.slots(WorkerSlotKind::Probe), cfg.probe.as_slice());
+    }
 }

@@ -37,7 +37,7 @@ use crate::pnworker::workers::uploadworker::*;
 use crate::pnworker::workers_view::{
     build_workers_model, render_detail_lines, render_workers_columns, worker_waiting, WorkerJobView,
 };
-use crate::pnworker::worker_slots::{download_worker_slots, upload_worker_slots};
+use crate::pnworker::worker_slots::{download_worker_slots, probe_worker_slots, upload_worker_slots};
 use crate::pnworker::util::job_cancelled;
 use serenity::all::{Context, CreateEmbed, Message};
 use std::collections::HashMap;
@@ -310,7 +310,7 @@ async fn queue_probe_job(
     shrine: &mut TypedShrine<WorkerMsg>,
     job: &mut Job,
 ) -> bool {
-    if !prepare_queued_job(job, "prb-main", false).await {
+    if !prepare_queued_job(job, "prb-pending", false).await {
         decline_job_setup(job, "could not prepare the work directory").await;
         return true;
     }
@@ -943,6 +943,7 @@ enum CancelDisposition {
 
 async fn create_workers_embed(queue: &[Job]) -> CreateEmbed {
     let download = download_worker_slots().await;
+    let probe = probe_worker_slots().await;
     let upload = upload_worker_slots().await;
     let views = queue
         .iter()
@@ -956,7 +957,7 @@ async fn create_workers_embed(queue: &[Job]) -> CreateEmbed {
             stage_label: stage_label(job.ready),
         })
         .collect::<Vec<_>>();
-    let model = build_workers_model(&views, download, upload);
+    let model = build_workers_model(&views, download, probe, upload);
     let (download_column, core_column, upload_column) = render_workers_columns(&model);
     let mut embed = CreateEmbed::new()
         .title("Pandora workers")
@@ -1560,7 +1561,7 @@ async fn do_job_progression_things(
                     dead.push(job.job_id);
                     continue;
                 };
-                job.worker = "prv-main".to_string();
+                job.worker = "prb-pending".to_string();
                 db.update_worker(job.job_id, &job.worker).await.ok();
                 if !dispatch_or_kill(
                     shrine,
@@ -1569,6 +1570,7 @@ async fn do_job_progression_things(
                         job.directory.clone(),
                         preview.shots,
                         preview.watermark_font,
+                        preview.ranking_log,
                         job.job_id,
                         job.server_id,
                     )),
@@ -1953,6 +1955,7 @@ pub struct KeycodeRequest {
 pub struct PreviewRequest {
     pub shots: Vec<(u64, String)>,
     pub watermark_font: Option<PathBuf>,
+    pub ranking_log: String,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
