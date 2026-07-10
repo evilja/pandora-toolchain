@@ -89,6 +89,7 @@ pub async fn handle_font(
         Ok(None) => {}
         Err(e) => message.push_str(&format!(" Linux font install failed: {}", e)),
     }
+    refresh_font_name_choices(server_id).await;
     font_response(ctx, command, message).await;
 }
 
