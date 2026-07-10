@@ -692,6 +692,14 @@ struct FontNameIndexEntry {
     names: Vec<String>,
 }
 
+const FONT_NAME_INDEX_VERSION: u32 = 2;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct FontNameIndex {
+    version: u32,
+    entries: Vec<FontNameIndexEntry>,
+}
+
 // Seeds the in-memory font-name cache from a previously saved index file and
 // returns the number of seeded entries. Entries carry the (mtime, len) key they
 // were recorded under, so files changed since the save simply miss and re-parse
@@ -700,12 +708,15 @@ pub fn load_font_name_cache(index_path: &Path) -> usize {
     let Ok(raw) = std::fs::read(index_path) else {
         return 0;
     };
-    let Ok(entries) = serde_json::from_slice::<Vec<FontNameIndexEntry>>(&raw) else {
+    let Ok(index) = serde_json::from_slice::<FontNameIndex>(&raw) else {
         return 0;
     };
+    if index.version != FONT_NAME_INDEX_VERSION {
+        return 0;
+    }
     let mut cache = font_name_cache().lock().unwrap();
-    let count = entries.len();
-    for entry in entries {
+    let count = index.entries.len();
+    for entry in index.entries {
         let mtime =
             std::time::UNIX_EPOCH + std::time::Duration::new(entry.mtime_secs, entry.mtime_nanos);
         cache.insert(entry.path, ((mtime, entry.len), entry.names));
@@ -736,10 +747,14 @@ pub fn save_font_name_cache(index_path: &Path) -> std::io::Result<usize> {
     if let Some(parent) = index_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let body = serde_json::to_vec(&entries)
+    let saved = entries.len();
+    let body = serde_json::to_vec(&FontNameIndex {
+        version: FONT_NAME_INDEX_VERSION,
+        entries,
+    })
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     std::fs::write(index_path, body)?;
-    Ok(entries.len())
+    Ok(saved)
 }
 
 pub fn cached_normalized_font_names(path: &Path) -> Vec<String> {
@@ -885,7 +900,9 @@ fn sfnt_names(data: &[u8], base: usize) -> Result<Vec<String>, ()> {
     for i in 0..num_tables {
         let rec = base + 12 + i * 16;
         if data.get(rec..rec + 4) == Some(b"name") {
-            name_offset = read_u32(data, rec + 8).map(|o| base + o as usize);
+            // Table offsets are relative to the beginning of the font file,
+            // including for faces embedded in a TrueType Collection.
+            name_offset = read_u32(data, rec + 8).map(|o| o as usize);
             break;
         }
     }
@@ -1107,7 +1124,16 @@ mod tests {
             offset += font.len();
         }
         for font in fonts {
-            out.extend(font);
+            let base = out.len();
+            let mut relocated = font.clone();
+            let table_count = read_u16(&relocated, 4).unwrap() as usize;
+            for index in 0..table_count {
+                let offset_pos = 12 + index * 16 + 8;
+                let table_offset = read_u32(&relocated, offset_pos).unwrap() as usize;
+                relocated[offset_pos..offset_pos + 4]
+                    .copy_from_slice(&((base + table_offset) as u32).to_be_bytes());
+            }
+            out.extend(relocated);
         }
         out
     }
@@ -1298,8 +1324,7 @@ Stamp: 0:00:10.00,0:00:12.00,durable note
 
         let names = cached_normalized_font_names(&path);
 
-        assert!(names.contains(&"firstfont".to_string()));
-        assert!(names.contains(&"secondfont".to_string()));
+        assert_eq!(names, vec!["firstfont".to_string(), "secondfont".to_string()]);
         let _ = std::fs::remove_file(path);
     }
 
@@ -1372,14 +1397,23 @@ Stamp: 0:00:10.00,0:00:12.00,durable note
             "pandora_font_index_{}.json",
             std::process::id()
         ));
-        let entries = serde_json::json!([{
+        let entry = serde_json::json!({
             "path": font_path,
             "mtime_secs": since.as_secs(),
             "mtime_nanos": since.subsec_nanos(),
             "len": metadata.len(),
             "names": ["Seeded Name"],
-        }]);
-        std::fs::write(&index_path, entries.to_string()).unwrap();
+        });
+        // The pre-versioned index may contain names produced by an older
+        // parser, so it must never seed the cache after a parser correction.
+        std::fs::write(&index_path, serde_json::json!([entry.clone()]).to_string()).unwrap();
+        assert_eq!(load_font_name_cache(&index_path), 0);
+
+        let index = serde_json::json!({
+            "version": FONT_NAME_INDEX_VERSION,
+            "entries": [entry],
+        });
+        std::fs::write(&index_path, index.to_string()).unwrap();
 
         assert_eq!(load_font_name_cache(&index_path), 1);
         // The seeded key matches the file on disk, so the lookup must serve the
@@ -1389,8 +1423,11 @@ Stamp: 0:00:10.00,0:00:12.00,durable note
         let saved_path = index_path.with_extension("saved.json");
         assert!(save_font_name_cache(&saved_path).unwrap() >= 1);
         let raw = std::fs::read(&saved_path).unwrap();
-        let saved: Vec<serde_json::Value> = serde_json::from_slice(&raw).unwrap();
-        assert!(saved
+        let saved: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(saved["version"], FONT_NAME_INDEX_VERSION);
+        assert!(saved["entries"]
+            .as_array()
+            .unwrap()
             .iter()
             .any(|entry| entry["names"] == serde_json::json!(["Seeded Name"])));
 
