@@ -95,6 +95,136 @@ async fn keep_request_from_options(
     })
 }
 
+async fn handle_encode_command(
+    ctx: &Context,
+    command: &serenity::all::CommandInteraction,
+    tx: &Sender<JobClass>,
+    intros: &IntrosConfig,
+) {
+    let Some((subcommand, _)) = subcommand_options(command) else {
+        command_error(ctx, command, "Error: encode subcommand is required").await;
+        return;
+    };
+
+    match subcommand {
+        "do" | "keep" => {
+            let torrent_url = match required_trimmed_option(ctx, command, "torrent", "Torrent URL").await {
+                Some(url) => url,
+                None => return,
+            };
+            let preset = resolve_preset(command, intros);
+            if let Some(mut job) = handle_interaction(ctx, command, torrent_url, preset).await {
+                if subcommand == "keep" {
+                    job.keep = Some(KeepRequest::new(option_trimmed(command, "keyword")));
+                }
+                tx.send(JobClass::Job(job)).await.unwrap();
+            }
+        }
+        "pan" => {
+            let probe_job_id = match option_str(command, "job_id").and_then(|id| id.parse::<u64>().ok()) {
+                Some(id) => id,
+                None => {
+                    command_error(ctx, command, "Error: job_id must be a number").await;
+                    return;
+                }
+            };
+            let file_index = match option_i64(command, "index") {
+                Some(index) if index >= 0 => index as u64,
+                _ => {
+                    command_error(ctx, command, "Error: file index is required").await;
+                    return;
+                }
+            };
+            let db = match JobDb::new().await {
+                Ok(db) => db,
+                Err(e) => {
+                    command_error(ctx, command, format!("Error: failed to open job DB: {}", e)).await;
+                    return;
+                }
+            };
+            let probe_source = match db.get_job(probe_job_id).await {
+                Ok(Some(row)) => row.link,
+                Ok(None) => {
+                    command_error(ctx, command, "Error: probe job was not found.").await;
+                    return;
+                }
+                Err(e) => {
+                    command_error(ctx, command, format!("Error: failed to read probe job: {}", e)).await;
+                    return;
+                }
+            };
+            let preset = resolve_preset(command, intros);
+            if let Some(mut job) = handle_interaction(ctx, command, String::new(), preset).await {
+                job.job_type = JobType::Pancode;
+                job.torrent = nyaaise(&probe_source);
+                job.display_link = Some(format!("{} : {}", probe_source, file_index));
+                job.probe_job_id = Some(probe_job_id);
+                job.probe_file_index = Some(file_index);
+                tx.send(JobClass::Job(job)).await.unwrap();
+            }
+        }
+        "link" => {
+            let torrent_url = match required_trimmed_option(ctx, command, "torrent", "Torrent URL").await {
+                Some(url) => url,
+                None => return,
+            };
+            let preset = resolve_preset(command, intros);
+            if let Some(job) = handle_gitcode(ctx, command, torrent_url, preset).await {
+                tx.send(JobClass::Job(job)).await.unwrap();
+            }
+        }
+        "key" => {
+            let keywords_raw = match required_trimmed_option(ctx, command, "keywords", "keywords").await {
+                Some(value) => value,
+                None => return,
+            };
+            let keywords = keywords_raw
+                .split(',')
+                .map(|keyword| keyword.trim().to_string())
+                .filter(|keyword| !keyword.is_empty())
+                .collect::<Vec<_>>();
+            if keywords.is_empty() {
+                command_error(ctx, command, "Error: keywords must not be empty").await;
+                return;
+            }
+            let concat_candidates = option_str(command, "concat")
+                .and_then(|group| intros.resolve(group));
+            let attachment_bytes = match option_attachment(command, "subtitle") {
+                Some(attachment) => match attachment.download().await {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        command_error(ctx, command, format!("Failed to download subtitle: {}", e)).await;
+                        return;
+                    }
+                },
+                None => Vec::new(),
+            };
+            let response_msg = match working_response(ctx, command, "...").await {
+                Some(message) => message,
+                None => return,
+            };
+            response_msg.react(ctx, '❌').await.ok();
+            let mut job = Job::new(
+                command.user.id.get(),
+                command.channel_id.get(),
+                response_msg.id.get(),
+                JobType::Keycode,
+                response_msg.id.get(),
+                Preset::Standard(None),
+                TorrentType::Link("keycode".to_string()),
+                attachment_bytes,
+                ctx.clone(),
+                response_msg,
+                read_lang(command.guild_id),
+                command.guild_id.map(|guild| guild.get()),
+            );
+            job.keycode = Some(KeycodeRequest { keywords, concat_candidates });
+            tx.send(JobClass::Job(job)).await.unwrap();
+        }
+        other => command_error(ctx, command, format!("Unknown encode subcommand `{}`.", other)).await,
+    }
+}
+
 async fn handle_lspool(ctx: &Context, command: &serenity::all::CommandInteraction) {
     let pool = configured_keyword_pool();
     let page_size = 20usize;
@@ -284,21 +414,15 @@ async fn handle_rmworker(ctx: &Context, command: &serenity::all::CommandInteract
     let Some(kind) = worker_slot_kind_from_command(ctx, command).await else {
         return;
     };
-    let name = match option_trimmed(command, "name") {
-        Some(raw) => match normalize_name(&raw) {
-            Ok(name) => name,
-            Err(e) => {
-                command_error(ctx, command, format!("Error: {}", e)).await;
-                return;
-            }
-        },
+    let selector = match option_trimmed(command, "name") {
+        Some(raw) => raw,
         None => {
             command_error(ctx, command, "Error: `name` is required.").await;
             return;
         }
     };
-    match remove_worker_slot(kind, &name).await {
-        Ok(()) => {
+    match remove_worker_slot(kind, &selector).await {
+        Ok(name) => {
             command
                 .create_response(
                     ctx,
@@ -336,12 +460,9 @@ const COMMAND_RANKS_PATH: &str = "DB/config/global/environment/command_ranks.pan
 
 const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("encode", 0),
-    ("pancode", 0),
     ("probe", 0),
     ("backup", 0),
     ("backupall", 0),
-    ("keycode", 0),
-    ("gitcode", 0),
     ("smartcode", 0),
     ("merge", 0),
     ("release", 0),
@@ -526,23 +647,16 @@ fn help_catalog() -> &'static [HelpCommand] {
         HelpCommand {
             section: "encode",
             name: "encode",
-            summary: "Encode a torrent or Google Drive source with an ASS subtitle.",
-            usage: "/encode torrent:<link> subtitle:<ass> [preset] [concat]",
-            details: "Accepts torrent URLs, magnet links, and Google Drive links. The attached subtitle must be ASS. Optional presets control encoder mode; concat selects an intro group.",
+            summary: "Encode, locally keep, or join video outputs.",
+            usage: "/encode do|pan|link|keep|key ...",
+            details: "`do` encodes with an attached ASS; `pan` selects a file from `/probe`; `link` fetches the ASS from a URL; `keep` encodes an attachment and stores the output under a keyword; `key` joins kept keyword outputs.",
         },
         HelpCommand {
             section: "encode",
             name: "probe",
             summary: "Inspect a torrent and list selectable files.",
             usage: "/probe torrent:<link>",
-            details: "Downloads and probes a torrent or magnet link, then returns file indexes. Use the resulting job id and index with /pancode or /backup. Google Drive links are not supported here.",
-        },
-        HelpCommand {
-            section: "encode",
-            name: "pancode",
-            summary: "Encode one file from a previous /probe job.",
-            usage: "/pancode job_id:<probe_job> index:<file_index> subtitle:<ass> [preset] [concat]",
-            details: "Uses the torrent data saved by /probe and encodes the selected file with the provided ASS subtitle.",
+            details: "Downloads and probes a torrent or magnet link, then returns file indexes. Use the resulting job id and index with `/encode pan` or `/backup`. Google Drive links are not supported here.",
         },
         HelpCommand {
             section: "encode",
@@ -557,13 +671,6 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Upload every MKV from a torrent to Drive.",
             usage: "/backupall torrent:<link>",
             details: "Downloads the torrent or magnet link and backs up all MKV outputs instead of selecting a single file.",
-        },
-        HelpCommand {
-            section: "encode",
-            name: "keycode",
-            summary: "[EXPERIMENTAL] Join kept keyword outputs.",
-            usage: "/keycode keywords:<a,b,c> [concat] [subtitle]",
-            details: "Joins kept encode keywords by concat. Backup keywords require a subtitle and are re-encoded over the joined timeline.",
         },
         HelpCommand {
             section: "misc",
@@ -604,22 +711,15 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "workers",
             name: "rmworker",
             summary: "Remove a download, preview, or upload worker slot.",
-            usage: "/rmworker type:<download|preview|upload> name:<slot>",
-            details: "Removes a configured slot. At least one slot must remain for each worker type. Active removed slots finish their current job before disappearing. Rank 4 only.",
-        },
-        HelpCommand {
-            section: "encode",
-            name: "gitcode",
-            summary: "Encode with a subtitle fetched from a URL.",
-            usage: "/gitcode torrent:<link> subtitle_url:<url> [preset] [concat]",
-            details: "Fetches the ASS file from a URL. GitHub blob links are rewritten to raw GitHub links automatically.",
+            usage: "/rmworker type:<download|preview|upload> name:<slot|index>",
+            details: "Removes a configured slot by its name or the 1-based index shown by `/lsworker`. At least one slot must remain for each worker type. Active removed slots finish their current job before disappearing. Rank 4 only.",
         },
         HelpCommand {
             section: "repo",
             name: "smartcode",
             summary: "Merge attached repo subtitles, then encode or preview an episode.",
-            usage: "/smartcode do episode:<n> [link] [preset] [concat] or /smartcode preview episode:<n> [link] [cooldown]",
-            details: "Requires this channel to be attached to an anime repo. `do` reads TL/TS files, uploads the release ASS, then encodes using the source link or SOURCE.md. `preview` performs the same merge/upload step, then renders up to three stamp-first, cluster-ranked previews. Cooldown defaults to 90 seconds; set it to 0 to disable cooldown.",
+            usage: "/smartcode do|keep episode:<n> [link] [preset] [concat] or /smartcode preview episode:<n> [link] [cooldown]",
+            details: "Requires this channel to be attached to an anime repo. `do` reads TL/TS files, uploads the release ASS, then encodes using the source link or SOURCE.md. `keep` runs the same flow and retains the encode locally under a generated or supplied keyword. `preview` performs the merge/upload step, then renders up to three stamp-first, cluster-ranked previews. Cooldown defaults to 90 seconds; set it to 0 to disable cooldown.",
         },
         HelpCommand {
             section: "repo",
@@ -1686,20 +1786,7 @@ impl EventHandler for Handler {
                     handle_providers(&ctx, &command).await;
                 }
                 "encode" => {
-                    let torrent_url = match required_trimmed_option(&ctx, &command, "torrent", "Torrent URL").await {
-                        Some(url) => url,
-                        None => return,
-                    };
-                    let keep = match keep_request_from_options(&ctx, &command).await {
-                        Some(keep) => keep,
-                        None => return,
-                    };
-                    let preset = resolve_preset(&command, &self.intros);
-
-                    if let Some(mut job) = handle_interaction(&ctx, &command, torrent_url, preset).await {
-                        job.keep = keep;
-                        self.tx.send(JobClass::Job(job)).await.unwrap();
-                    }
+                    handle_encode_command(&ctx, &command, &self.tx, &self.intros).await;
                 }
                 "probe" => {
                     let torrent_url = match required_trimmed_option(&ctx, &command, "torrent", "Torrent URL").await {
@@ -1708,60 +1795,6 @@ impl EventHandler for Handler {
                     };
 
                     if let Some(job) = handle_probe(&ctx, &command, torrent_url).await {
-                        self.tx.send(JobClass::Job(job)).await.unwrap();
-                    }
-                }
-                "pancode" => {
-                    let probe_job_id = match option_str(&command, "job_id") {
-                        Some(id) => match id.parse::<u64>() {
-                            Ok(x) => x,
-                            Err(_) => {return;}
-                        },
-                        None => {
-                            command_error(&ctx, &command, "Error: job_id is required").await;
-                            return;
-                        }
-                    };
-
-                    let file_index = match option_i64(&command, "index") {
-                        Some(i) => i as u64,
-                        None => {
-                            command_error(&ctx, &command, "Error: file index is required").await;
-                            return;
-                        }
-                    };
-                    let preset = resolve_preset(&command, &self.intros);
-                    let keep = match keep_request_from_options(&ctx, &command).await {
-                        Some(keep) => keep,
-                        None => return,
-                    };
-                    let db = match JobDb::new().await {
-                        Ok(db) => db,
-                        Err(e) => {
-                            command_error(&ctx, &command, format!("Error: failed to open job DB: {}", e)).await;
-                            return;
-                        }
-                    };
-                    let probe_source = match db.get_job(probe_job_id).await {
-                        Ok(Some(row)) => row.link,
-                        Ok(None) => {
-                            command_error(&ctx, &command, "Error: probe job was not found.").await;
-                            return;
-                        }
-                        Err(e) => {
-                            command_error(&ctx, &command, format!("Error: failed to read probe job: {}", e)).await;
-                            return;
-                        }
-                    };
-
-                    if let Some(mut job) = handle_interaction(&ctx, &command, String::new(), preset).await {
-                        // Override job type and carry the probe linkage via job_id
-                        job.job_type = JobType::Pancode;
-                        job.torrent = nyaaise(&probe_source);
-                        job.display_link = Some(format!("{} : {}", probe_source, file_index));
-                        job.probe_job_id = Some(probe_job_id);
-                        job.probe_file_index = Some(file_index);
-                        job.keep = keep;
                         self.tx.send(JobClass::Job(job)).await.unwrap();
                     }
                 }
@@ -1952,12 +1985,13 @@ impl EventHandler for Handler {
                 "smartcode" => {
                     match subcommand_options(&command).map(|(name, _)| name).unwrap_or("do") {
                         "do" | "run" => {
-                            let keep = match keep_request_from_options(&ctx, &command).await {
-                                Some(keep) => keep,
-                                None => return,
-                            };
+                            if let Some(job) = handle_smartcode(&ctx, &command, &self.intros).await {
+                                self.tx.send(JobClass::Job(job)).await.unwrap();
+                            }
+                        }
+                        "keep" => {
                             if let Some(mut job) = handle_smartcode(&ctx, &command, &self.intros).await {
-                                job.keep = keep;
+                                job.keep = Some(KeepRequest::new(option_trimmed(&command, "keyword")));
                                 self.tx.send(JobClass::Job(job)).await.unwrap();
                             }
                         }
@@ -1985,70 +2019,6 @@ impl EventHandler for Handler {
                 }
                 "job" => {
                     handle_job(&ctx, &command).await;
-                }
-                "gitcode" => {
-                    let torrent_url = match required_trimmed_option(&ctx, &command, "torrent", "Torrent URL").await {
-                        Some(url) => url,
-                        None => return,
-                    };
-                    let keep = match keep_request_from_options(&ctx, &command).await {
-                        Some(keep) => keep,
-                        None => return,
-                    };
-                    let preset = resolve_preset(&command, &self.intros);
-
-                    if let Some(mut job) = handle_gitcode(&ctx, &command, torrent_url, preset).await {
-                        job.keep = keep;
-                        self.tx.send(JobClass::Job(job)).await.unwrap();
-                    }
-                }
-                "keycode" => {
-                    let keywords_raw = match required_trimmed_option(&ctx, &command, "keywords", "keywords").await {
-                        Some(v) => v,
-                        None => return,
-                    };
-                    let keywords = keywords_raw
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect::<Vec<_>>();
-                    if keywords.is_empty() {
-                        command_error(&ctx, &command, "Error: keywords must not be empty").await;
-                        return;
-                    }
-                    let concat_candidates = option_str(&command, "concat")
-                        .and_then(|group| self.intros.resolve(group));
-                    let attachment_bytes = match option_attachment(&command, "subtitle") {
-                        Some(att) => match att.download().await {
-                            Ok(b) => b,
-                            Err(e) => {
-                                command_error(&ctx, &command, format!("Failed to download subtitle: {}", e)).await;
-                                return;
-                            }
-                        },
-                        None => Vec::new(),
-                    };
-                    let response_msg = match working_response(&ctx, &command, "...").await {
-                        Some(m) => m,
-                        None => return,
-                    };
-                    response_msg.react(&ctx, '❌').await.ok();
-                    let mut job = Job::new(
-                        command.user.id.get(),
-                        command.channel_id.get(),
-                        response_msg.id.get(),
-                        JobType::Keycode,
-                        response_msg.id.get(),
-                        Preset::Standard(None),
-                        TorrentType::Link("keycode".to_string()),
-                        attachment_bytes,
-                        ctx.clone(),
-                        response_msg,
-                        read_lang(command.guild_id),
-                        command.guild_id.map(|g| g.get()),
-                    );
-                    job.keycode = Some(KeycodeRequest { keywords, concat_candidates });
-                    self.tx.send(JobClass::Job(job)).await.unwrap();
                 }
                 "gitsync" => {
                     let response_msg = match working_response(&ctx, &command, "Tüm işlemler kapatılıyor.").await {
@@ -2112,7 +2082,7 @@ impl EventHandler for Handler {
         let keep_option = CreateCommandOption::new(
             CommandOptionType::Boolean,
             "keep",
-            "Keep output locally for /keycode instead of uploading"
+            "Keep output locally for /encode key instead of uploading"
         ).required(false);
         let keyword_option = CreateCommandOption::new(
             CommandOptionType::String,
@@ -2130,32 +2100,93 @@ impl EventHandler for Handler {
         let help_command = CreateCommand::new("help")
             .description("Open an interactive command guide")
             .add_option(help_section_option);
+        let preset_option = CreateCommandOption::new(
+            CommandOptionType::String,
+            "preset",
+            "Encoding preset",
+        )
+        .required(false)
+        .add_string_choice("Pseudo Lossless", "pseudolossless")
+        .add_string_choice("Standard x264", "standard")
+        .add_string_choice("GPU", "gpu")
+        .add_string_choice("DEV", "dummy");
+        let encode_command = CreateCommand::new("encode")
+            .description("Encode, keep, or join video outputs")
+            .add_option(
+                CreateCommandOption::new(CommandOptionType::SubCommand, "do", "Encode with an attached ASS subtitle")
+                    .add_sub_option(
+                        CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent URL, magnet link, or Google Drive link")
+                            .required(true)
+                    )
+                    .add_sub_option(
+                        CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "ASS subtitle file")
+                            .required(true)
+                    )
+                    .add_sub_option(preset_option.clone())
+                    .add_sub_option(concat_option.clone())
+            )
+            .add_option(
+                CreateCommandOption::new(CommandOptionType::SubCommand, "pan", "Encode using a previously probed torrent")
+                    .add_sub_option(
+                        CreateCommandOption::new(CommandOptionType::String, "job_id", "Job ID from /probe result")
+                            .required(true)
+                    )
+                    .add_sub_option(
+                        CreateCommandOption::new(CommandOptionType::Integer, "index", "File index from probe results")
+                            .required(true)
+                    )
+                    .add_sub_option(
+                        CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "ASS subtitle file")
+                            .required(true)
+                    )
+                    .add_sub_option(preset_option.clone())
+                    .add_sub_option(concat_option.clone())
+            )
+            .add_option(
+                CreateCommandOption::new(CommandOptionType::SubCommand, "link", "Encode with an ASS subtitle fetched from a URL")
+                    .add_sub_option(
+                        CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent URL, magnet link, or Google Drive link")
+                            .required(true)
+                    )
+                    .add_sub_option(
+                        CreateCommandOption::new(CommandOptionType::String, "subtitle_url", "URL to an .ass subtitle file (raw or GitHub blob)")
+                            .required(true)
+                    )
+                    .add_sub_option(preset_option.clone())
+                    .add_sub_option(concat_option.clone())
+            )
+            .add_option(
+                CreateCommandOption::new(CommandOptionType::SubCommand, "keep", "Encode and keep the output locally")
+                    .add_sub_option(
+                        CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent URL, magnet link, or Google Drive link")
+                            .required(true)
+                    )
+                    .add_sub_option(
+                        CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "ASS subtitle file")
+                            .required(true)
+                    )
+                    .add_sub_option(preset_option.clone())
+                    .add_sub_option(concat_option.clone())
+                    .add_sub_option(keyword_option.clone())
+            )
+            .add_option(
+                CreateCommandOption::new(CommandOptionType::SubCommand, "key", "Join kept keyword outputs and upload")
+                    .add_sub_option(
+                        CreateCommandOption::new(CommandOptionType::String, "keywords", "Comma-separated keep keywords")
+                            .required(true)
+                    )
+                    .add_sub_option(concat_option.clone())
+                    .add_sub_option(
+                        CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "ASS subtitle file; required for backup keywords")
+                            .required(false)
+                    )
+            );
 
         let commands = vec![
             help_command,
             CreateCommand::new("providers")
                 .description("Show attached provider APIs"),
-            CreateCommand::new("encode")
-                .description("Encode a video with subtitle")
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent URL, magnet link, or Google Drive link")
-                        .required(true)
-                )
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "ASS subtitle file")
-                        .required(true)
-                )
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "preset", "Encoding preset")
-                        .required(false)
-                        .add_string_choice("Pseudo Lossless", "pseudolossless")
-                        .add_string_choice("Standard x264", "standard")
-                        .add_string_choice("GPU", "gpu")
-                        .add_string_choice("DEV", "dummy")
-                )
-                .add_option(concat_option.clone())
-                .add_option(keep_option.clone())
-                .add_option(keyword_option.clone()),
+            encode_command,
             CreateCommand::new("hearts")
                 .description("Check the health of all worker threads"),
             CreateCommand::new("workers")
@@ -2166,31 +2197,6 @@ impl EventHandler for Handler {
                     CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent URL or magnet link")
                         .required(true)
                 ),
-            CreateCommand::new("pancode")
-                .description("Encode using a previously probed torrent")
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "job_id", "Job ID from /probe result")
-                        .required(true)
-                )
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::Integer, "index", "File index from probe results")
-                        .required(true)
-                )
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "ASS subtitle file")
-                        .required(true)
-                )
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "preset", "Encoding preset")
-                        .required(false)
-                        .add_string_choice("Pseudo Lossless", "pseudolossless")
-                        .add_string_choice("Standard x264", "standard")
-                        .add_string_choice("GPU", "gpu")
-                        .add_string_choice("DEV", "dummy")
-                )
-                .add_option(concat_option.clone())
-                .add_option(keep_option.clone())
-                .add_option(keyword_option.clone()),
             CreateCommand::new("gitsync")
                 .description("Sync with the git repo"),
             CreateCommand::new("gitquery")
@@ -2301,7 +2307,20 @@ impl EventHandler for Handler {
                                 .add_string_choice("DEV", "dummy")
                         )
                         .add_sub_option(concat_option.clone())
-                        .add_sub_option(keep_option.clone())
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::SubCommand, "keep", "Merge, encode, and keep the episode locally")
+                        .add_sub_option(
+                            CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (1-based)")
+                                .required(true)
+                                .min_int_value(1)
+                        )
+                        .add_sub_option(
+                            CreateCommandOption::new(CommandOptionType::String, "link", "Source link. Falls back to SOURCE.md if omitted.")
+                                .required(false)
+                        )
+                        .add_sub_option(preset_option.clone())
+                        .add_sub_option(concat_option.clone())
                         .add_sub_option(keyword_option.clone())
                 )
                 .add_option(
@@ -2363,38 +2382,6 @@ impl EventHandler for Handler {
                     CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (1-based)")
                         .required(true)
                         .min_int_value(1)
-                ),
-            CreateCommand::new("gitcode")
-                .description("Encode with a subtitle fetched from a URL")
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent URL, magnet link, or Google Drive link")
-                        .required(true)
-                )
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "subtitle_url", "URL to an .ass subtitle file (raw or github blob)")
-                        .required(true)
-                )
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "preset", "Encoding preset")
-                        .required(false)
-                        .add_string_choice("Pseudo Lossless", "pseudolossless")
-                        .add_string_choice("Standard x264", "standard")
-                        .add_string_choice("GPU", "gpu")
-                        .add_string_choice("DEV", "dummy")
-                )
-                .add_option(concat_option.clone())
-                .add_option(keep_option.clone())
-                .add_option(keyword_option.clone()),
-            CreateCommand::new("keycode")
-                .description("[EXPERIMENTAL] Join kept keywords and upload")
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "keywords", "Comma-separated keep keywords")
-                        .required(true)
-                )
-                .add_option(concat_option.clone())
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "ASS subtitle file; required for backup keywords")
-                        .required(false)
                 ),
             CreateCommand::new("configure")
                 .description("Configure this server (language, Forgejo, Google Drive)")
@@ -2654,7 +2641,7 @@ impl EventHandler for Handler {
                         .add_string_choice("Upload", "upload")
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "name", "Worker slot name")
+                    CreateCommandOption::new(CommandOptionType::String, "name", "Worker slot name or /lsworker index")
                         .required(true)
                 ),
             CreateCommand::new("lsauth")
