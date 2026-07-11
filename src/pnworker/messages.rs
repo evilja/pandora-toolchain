@@ -86,7 +86,7 @@ static DEFAULT_ENTRIES: &[(&str, &str, usize)] = &[
     ("JOB_CANCELLED", "\nİşlem iptal edildi.", 0),
     (
         "PROBE_TIMEOUT",
-        "Probe timed out. use /pancode or /backup within 3 minutes next time.",
+        "Probe timed out. use /encode pan or /backup within 3 minutes next time.",
         0,
     ),
     ("GITSYNC_PROGRESS", "Tüm işlemler kapatılıyor.", 0),

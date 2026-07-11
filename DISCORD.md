@@ -6,7 +6,7 @@ Discord-facing behavior: commands, authorization tiers, presence updates, and th
 
 Authorization is managed in `bin/pndc.rs` (one Discord user-id per line):
 
-- `authorize.pandora` — `/encode`, `/probe`, `/pancode`, `/backup`, `/gitcode`, `/smartcode`, `/source`
+- `authorize.pandora` — `/encode`, `/probe`, `/backup`, `/smartcode`, `/source`
 - `upper.pandora` — `/attach`, `/init`, `/gentoken`, `/destruct`, `/detach` (privileged workflow)
 - `fansubber.pandora` — `/job` (subtitle-uploader workflow, kept separate from repo-`/init` so a translator/typesetter can be granted the lighter tier without repo-creation rights)
 - `admin.pandora` — `/hearts`, `/gitsync`, `/gitquery`, `/configure`, `/edit`, `/touchapi`, `/gettranslation`, `/touchtranslation`, `/gettranslationall`, `/touchtranslationall`, `!auth`, `!ban`
@@ -17,13 +17,16 @@ The level hierarchy is `witch > upper > admin > fansubber > authorize` (rank 4/3
 ## Discord commands
 
 - `/help [section]` — public, ephemeral command guide. Bare `/help` shows section overview; `section` choices are `encode`, `repo`, `workers`, `admin`, `publish`, `fonts`, and `misc`. Section and command menus are filtered to commands the caller can run.
-- `/encode <torrent> <subtitle attachment> [preset] [concat]` — encode with an attached ASS file. Accepts torrent URLs, magnet links, Google Drive links, and direct video file links.
+- `/encode do <torrent> <subtitle attachment> [preset] [concat]` — encode with an attached ASS file. Accepts torrent URLs, magnet links, Google Drive links, and direct video file links.
+- `/encode pan <job_id> <index> <subtitle attachment> [preset] [concat]` — re-encode using a previously probed torrent's `fetch.torrent` (the probe job's `contents/fetch.torrent` is copied into the new job's dir). When this finishes, the parent probe job is archived.
+- `/encode link <torrent> <subtitle_url> [preset] [concat]` — like `/encode do` but the subtitle is fetched from a URL. `https://github.com/<u>/<r>/blob/<b>/<path>` is auto-rewritten to `https://raw.githubusercontent.com/<u>/<r>/<b>/<path>`; other URLs pass through. 60s HTTP timeout.
+- `/encode keep <torrent> <subtitle attachment> [preset] [concat] [keyword]` — encode with an attached ASS and keep the output locally under a generated or supplied keyword instead of uploading it.
+- `/encode key <keywords> [concat] [subtitle attachment]` — join locally kept outputs and upload the result. Backup keywords require a subtitle.
 - `/providers` — public command that shows built-in download/encode support and currently attached provider APIs: upload providers from env/global+server Drive config (Google Drive, Doodstream, LuluStream, Voe, Abyss), distribution providers (AnimeciX, AniSub), and persistence providers inferred from the server Forgejo/GitHub org config. Implemented in `src/helpers/handlers/providers.rs` and available to everyone like `/help`.
-- `/probe <torrent>` — download + ffprobe a torrent, list the files inside as a numbered table, then idle at `Probed` for 180s so a follow-up `/pancode` can pick a file. GDrive and direct video links are rejected.
-- `/pancode <job_id> <index> <subtitle attachment> [preset] [concat]` — re-encode using a previously probed torrent's `fetch.torrent` (the probe job's `contents/fetch.torrent` is copied into the new job's dir). When this finishes, the parent probe job is archived.
+- `/probe <torrent>` — download + ffprobe a torrent, list the files inside as a numbered table, then idle at `Probed` for 180s so a follow-up `/encode pan` can pick a file. GDrive and direct video links are rejected.
 - `/backup <torrent>` — download + Drive-only re-upload (no streaming hosts). GDrive and direct video links are supported (treated as downloads from non-torrent sources).
-- `/gitcode <torrent> <subtitle_url> [preset] [concat]` — like `/encode` but the subtitle is fetched from a URL. `https://github.com/<u>/<r>/blob/<b>/<path>` is auto-rewritten to `https://raw.githubusercontent.com/<u>/<r>/<b>/<path>`; other URLs pass through. 60s HTTP timeout.
 - `/smartcode do <episode> [link] [preset] [concat]` — merge the channel's attached TL (required) and TS (optional) subtitles for an episode via `pnass --merge`, upload the merged result to the channel's repo as `Release - <name> - E<NN>.ass`, upsert `SOURCE.md`, then queue a regular `/encode` job against the merged file. `link` is optional: if absent, the source link is read from `{pad2(episode)}/SOURCE.md` (parser skips blank/`;`-prefixed lines and strips a leading `#`); the existing `SOURCE.md` is left untouched in that case. See [`/smartcode`](#smartcode) for the merge details.
+- `/smartcode keep <episode> [link] [preset] [concat] [keyword]` — run the same merge/upload/encode flow as `/smartcode do`, but retain the encode locally under a generated or supplied keyword instead of uploading it.
 - `/smartcode preview <episode> [link]` — runs the same smartcode merge/upload step, then renders 1-3 TS preview screenshots from `\fn` typeset lines instead of encoding.
 - `/source <episode> <link>` — write `{pad2(episode)}/SOURCE.md` (content `# <link>\n`) to the channel's attached Forgejo repo. Requires the channel to be attached and `episode` in `1..=episode_count`. Commit message: `"Set source link"`. No worker, no encoder — pure in-handler Forgejo upsert.
 - `/attach <mal> <repo> [season]` — fetch MAL metadata via JIKAN, then bootstrap an existing Forgejo repo: create per-episode folders (`pad2` for 1..=episode_count, accepting `1`/`01`/`001` as equivalent on existence check), each with an empty `.gitkeep`; create `README.md` at root only if absent (and only if `DB/config/<serverid>/base.md` is present). Requires both `mal` and `repo`. `season` is the 1-based sequel number stored in the channel meta (defaults to 1). Repos are public.
@@ -32,7 +35,7 @@ The level hierarchy is `witch > upper > admin > fansubber > authorize` (rank 4/3
 - `/destruct` — **upper-tier**; deletes the channel's Forgejo repo (`delete_repo`) **and** removes the attachment. Irreversible. In-handler, no worker.
 - `/hearts` — admin; reports each shrine layer's `alive` / `last_beat_secs` / `reboot_count`.
 - `/workers` — admin; shows a Discord embed diagram with download, core (configured `prw-*` slots plus `enc-main`), and upload columns, plus active-job details and queued/cache-forward waiting work.
-- `/touchworker <type> <name>` / `/lsworker` / `/rmworker <type> <name>` — witch; add/list/remove configurable download, preview, or upload worker slots. Running pools refresh this config automatically; removed active slots finish their current job first. Legacy `probe`/`prb` type input remains accepted.
+- `/touchworker <type> <name>` / `/lsworker` / `/rmworker <type> <name-or-index>` — witch; add/list/remove configurable download, preview, or upload worker slots. `/rmworker` accepts either the slot name or the 1-based number shown by `/lsworker`. Running pools refresh this config automatically; removed active slots finish their current job first. Legacy `probe`/`prb` type input remains accepted.
 - `/gitsync` — admin; `git fetch` + fast-forward, kills the shrine, archives `DB/work`, `std::process::exit(0)` to restart.
 - `/gitquery` — admin; disables new encode jobs, waits for current encode jobs to finish, then runs the same sync/restart path as `/gitsync`.
 - `/configure <language> [forgejo] [wrapstyle]` — admin; writes `DB/config/<guild_id>/meta.pandora` and records the channel the command was issued in as the announcement channel. `language` is `EN` / `TR` / `JP` (string choice). `forgejo` is optional — leave empty to unset. `wrapstyle` controls ASS WrapStyle normalization (`dont_touch` default, or `0`/`1`/`2`/`3`). `/edit` can update the same field without rewriting the rest of the config.
@@ -100,7 +103,7 @@ Flow:
 
 Slash command with two subcommands:
 
-- `/smartcode do episode:<n> [link] [preset] [concat]` merges the channel's attached TL and TS subtitles, uploads the result, and queues a regular `JobType::Encode` against the merged file.
+- `/smartcode do episode:<n> [link] [preset] [concat]` merges the channel's attached TL and TS subtitles, uploads the result, and queues a regular `JobType::Encode` against the merged file. `/smartcode keep` performs the same work but retains the encode locally under a generated or supplied keyword.
 - `/smartcode preview episode:<n> [link]` runs the same merge/upload flow, then queues `JobType::Preview` to render 1-3 screenshot previews from TS `Dialogue` events containing `\fn` font override tags.
 
 The channel **must** already be attached (`read_channel_meta` non-empty) and the episode must be in `1..=episode_count`.

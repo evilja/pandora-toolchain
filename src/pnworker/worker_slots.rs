@@ -135,21 +135,38 @@ pub async fn add_worker_slot(kind: WorkerSlotKind, name: &str) -> Result<usize, 
     Ok(len)
 }
 
-pub async fn remove_worker_slot(kind: WorkerSlotKind, name: &str) -> Result<(), String> {
-    let name = normalize_name(name)?;
+pub async fn remove_worker_slot(kind: WorkerSlotKind, selector: &str) -> Result<String, String> {
+    let selector = normalize_name(selector)?;
     let mut cfg = load_worker_slots().await;
     let slots = cfg.slots_mut(kind);
+    let pos = worker_slot_position(slots, &selector)
+        .map_err(|e| format!("{} {}", kind.label(), e))?;
     if slots.len() <= 1 {
         return Err(format!(
             "{} workers must keep at least one slot",
             kind.label()
         ));
     }
-    let Some(pos) = slots.iter().position(|slot| slot == &name) else {
-        return Err(format!("{} worker `{}` does not exist", kind.label(), name));
-    };
-    slots.remove(pos);
-    save_worker_slots(&cfg).await
+    let removed = slots.remove(pos);
+    save_worker_slots(&cfg).await?;
+    Ok(removed)
+}
+
+fn worker_slot_position(slots: &[String], selector: &str) -> Result<usize, String> {
+    if let Some(pos) = slots.iter().position(|slot| slot == selector) {
+        return Ok(pos);
+    }
+    if let Ok(index) = selector.parse::<usize>() {
+        if index > 0 && index <= slots.len() {
+            return Ok(index - 1);
+        }
+        return Err(format!(
+            "worker index `{}` is out of range (1-{})",
+            index,
+            slots.len()
+        ));
+    }
+    Err(format!("worker `{}` does not exist", selector))
 }
 
 async fn save_worker_slots(cfg: &WorkerSlotsConfig) -> Result<(), String> {
@@ -223,5 +240,17 @@ upload = ["two"]
         assert_eq!(cfg.probe, vec!["hoshi", "kumo"]);
         assert_eq!(cfg.upload, vec!["two"]);
         assert_eq!(cfg.slots(WorkerSlotKind::Probe), cfg.probe.as_slice());
+    }
+
+    #[test]
+    fn worker_slot_position_accepts_name_or_display_index() {
+        let slots = vec!["kumo".to_string(), "jinsei".to_string()];
+
+        assert_eq!(worker_slot_position(&slots, "jinsei"), Ok(1));
+        assert_eq!(worker_slot_position(&slots, "1"), Ok(0));
+        assert_eq!(worker_slot_position(&slots, "2"), Ok(1));
+        assert!(worker_slot_position(&slots, "0").is_err());
+        assert!(worker_slot_position(&slots, "3").is_err());
+        assert!(worker_slot_position(&slots, "missing").is_err());
     }
 }
