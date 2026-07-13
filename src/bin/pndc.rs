@@ -789,7 +789,7 @@ fn help_catalog() -> &'static [HelpCommand] {
             name: "edit",
             summary: "Edit individual server metadata fields, leaving the rest untouched.",
             usage: "/edit [language] [forgejo] [api_key] [gdrive_client_id] [gdrive_client_secret] [gdrive_refresh_token] [gdrive_folder_id] [gdrive_anon_folder_id] [local_gdrive] [wrapstyle] [preset] [concat] [announcement_channel]",
-            details: "Like /configure but every field is optional — omitted fields keep their current value. Pass `-` to clear a text field. Set local_gdrive:false to keep stored server Drive credentials but upload through global Drive. gdrive_folder_id is the smartcode/default root; gdrive_anon_folder_id is the random encode root. wrapstyle can be dont_touch or 0-3. preset and concat set server-wide encode defaults; concat must name an existing intro group or use `-` to disable it. Set announcement_channel:true to point announcements at the current channel. Requires the server to already be configured.",
+            details: "Like /configure but every field is optional — omitted fields keep their current value. Pass `-` to clear a text field. Set local_gdrive:false to keep stored server Drive credentials but upload through global Drive. gdrive_folder_id is the smartcode/default root; gdrive_anon_folder_id is the random encode root. wrapstyle can be dont_touch or 0-3. preset and concat set server-wide encode defaults; type/search in concat and select a registered `/touchintro` group, or select `Disable concat` to clear it. The dropdown updates from the global intro config as groups are added. Set announcement_channel:true to point announcements at the current channel. Requires the server to already be configured.",
         },
         HelpCommand {
             section: "admin",
@@ -2052,8 +2052,10 @@ impl EventHandler for Handler {
                 _ => {}
             }
         } else if let Interaction::Autocomplete(autocomplete) = interaction {
-            if autocomplete.data.name.as_str() == "cfont" {
-                handle_cfont_autocomplete(&ctx, &autocomplete).await;
+            match autocomplete.data.name.as_str() {
+                "cfont" => handle_cfont_autocomplete(&ctx, &autocomplete).await,
+                "edit" => handle_edit_autocomplete(&ctx, &autocomplete).await,
+                _ => {}
             }
         } else if let Interaction::Component(component) = interaction {
             if component.data.custom_id.starts_with("pnhelp:") {
@@ -2452,8 +2454,9 @@ impl EventHandler for Handler {
                         .add_string_choice("DEV", "dummy")
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "concat", "Default intro group; use - to disable.")
+                    CreateCommandOption::new(CommandOptionType::String, "concat", "Type/search and select an intro group; choose Disable concat to clear.")
                         .required(false)
+                        .set_autocomplete(true)
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::Boolean, "announcement_channel", "Set the announcement channel to this channel.")

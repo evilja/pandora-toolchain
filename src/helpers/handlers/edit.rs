@@ -1,6 +1,65 @@
 use super::*;
+use serenity::builder::CreateAutocompleteResponse;
 
 const CLEAR_SENTINEL: &str = "-";
+const DISABLE_CONCAT_LABEL: &str = "Disable concat";
+const MAX_CONCAT_CHOICES: usize = 25;
+const MAX_CONCAT_GROUP_CHOICES: usize = MAX_CONCAT_CHOICES - 1;
+const MAX_CONCAT_CHOICE_CHARS: usize = 100;
+
+fn filter_concat_choices(
+    groups: &std::collections::HashMap<String, Vec<String>>,
+    partial: &str,
+) -> Vec<(String, String)> {
+    let partial = partial.to_lowercase();
+    let mut names = groups
+        .keys()
+        .filter(|name| {
+            !name.trim().is_empty()
+                && name.as_str() != CLEAR_SENTINEL
+                && name.chars().count() <= MAX_CONCAT_CHOICE_CHARS
+                && name.to_lowercase().contains(&partial)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    names.sort_by(|left, right| {
+        left.to_lowercase()
+            .cmp(&right.to_lowercase())
+            .then_with(|| left.cmp(right))
+    });
+
+    let mut choices = vec![(DISABLE_CONCAT_LABEL.to_string(), CLEAR_SENTINEL.to_string())];
+    choices.extend(
+        names
+            .into_iter()
+            .take(MAX_CONCAT_GROUP_CHOICES)
+            .map(|name| (name.clone(), name)),
+    );
+    choices
+}
+
+pub async fn handle_edit_autocomplete(
+    ctx: &Context,
+    interaction: &serenity::all::CommandInteraction,
+) {
+    let partial = interaction
+        .data
+        .autocomplete()
+        .filter(|option| option.name == "concat")
+        .map(|option| option.value.to_string())
+        .unwrap_or_default();
+    let config = IntrosConfig::load();
+    let mut response = CreateAutocompleteResponse::new();
+    for (label, value) in filter_concat_choices(&config.groups, &partial) {
+        response = response.add_string_choice(label, value);
+    }
+    if let Err(e) = interaction
+        .create_response(ctx, CreateInteractionResponse::Autocomplete(response))
+        .await
+    {
+        eprintln!("[edit] concat autocomplete response failed: {}", e);
+    }
+}
 
 fn edit_text_field(command: &serenity::all::CommandInteraction, name: &str, existing: &str) -> String {
     match option_str(command, name).map(str::trim) {
@@ -140,4 +199,84 @@ pub async fn handle_edit(
                 server_id, language, forgejo_display, api_key_display, gdrive_display, gdrive_anon_display, local_gdrive_display, wrap_display, preset, if concat.is_empty() { "(disabled)" } else { &concat }, channel_display))
             .ephemeral(true)
     )).await.ok();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{filter_concat_choices, CLEAR_SENTINEL, DISABLE_CONCAT_LABEL, MAX_CONCAT_CHOICES};
+    use std::collections::HashMap;
+
+    fn groups(names: &[&str]) -> HashMap<String, Vec<String>> {
+        names
+            .iter()
+            .map(|name| ((*name).to_string(), Vec::new()))
+            .collect()
+    }
+
+    #[test]
+    fn empty_input_lists_groups_alphabetically() {
+        let choices = filter_concat_choices(&groups(&["Beta", "Alpha", "Gamma"]), "");
+        assert_eq!(
+            choices,
+            vec![
+                (DISABLE_CONCAT_LABEL.to_string(), CLEAR_SENTINEL.to_string()),
+                ("Alpha".to_string(), "Alpha".to_string()),
+                ("Beta".to_string(), "Beta".to_string()),
+                ("Gamma".to_string(), "Gamma".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn matching_is_case_insensitive() {
+        let choices = filter_concat_choices(&groups(&["Summer Intro", "Winter Intro"]), "SUMMER");
+        assert_eq!(
+            choices,
+            vec![
+                (DISABLE_CONCAT_LABEL.to_string(), CLEAR_SENTINEL.to_string()),
+                ("Summer Intro".to_string(), "Summer Intro".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn disable_choice_is_always_present() {
+        let choices = filter_concat_choices(&HashMap::new(), "missing");
+        assert_eq!(choices, vec![(DISABLE_CONCAT_LABEL.to_string(), CLEAR_SENTINEL.to_string())]);
+    }
+
+    #[test]
+    fn choices_are_capped_at_discord_limit() {
+        let names = (0..40)
+            .map(|idx| format!("Group {:02}", idx))
+            .collect::<Vec<_>>();
+        let groups = names
+            .iter()
+            .map(|name| (name.clone(), Vec::new()))
+            .collect::<HashMap<_, Vec<String>>>();
+        let choices = filter_concat_choices(&groups, "group");
+        assert_eq!(choices.len(), MAX_CONCAT_CHOICES);
+        assert_eq!(choices[0], (DISABLE_CONCAT_LABEL.to_string(), CLEAR_SENTINEL.to_string()));
+        assert_eq!(choices[24].0, "Group 23");
+    }
+
+    #[test]
+    fn invalid_group_names_are_excluded() {
+        let long_name = "x".repeat(101);
+        let choices = filter_concat_choices(&groups(&["", "   ", "Valid"]), "");
+        let mut malformed = HashMap::new();
+        malformed.insert(long_name, Vec::new());
+        malformed.insert("Valid".to_string(), Vec::new());
+        malformed.insert("".to_string(), Vec::new());
+        malformed.insert("\t".to_string(), Vec::new());
+        malformed.insert(CLEAR_SENTINEL.to_string(), Vec::new());
+        assert_eq!(
+            filter_concat_choices(&malformed, ""),
+            vec![
+                (DISABLE_CONCAT_LABEL.to_string(), CLEAR_SENTINEL.to_string()),
+                ("Valid".to_string(), "Valid".to_string()),
+            ]
+        );
+        assert_eq!(choices[0], (DISABLE_CONCAT_LABEL.to_string(), CLEAR_SENTINEL.to_string()));
+    }
 }
