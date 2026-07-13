@@ -55,7 +55,7 @@ pub use self::job::handle_job;
 pub use self::ts_message::handle_ts_message;
 pub use self::gitcode::handle_gitcode;
 pub use self::configure::handle_configure;
-pub use self::edit::handle_edit;
+pub use self::edit::{handle_edit, handle_edit_autocomplete};
 pub use self::addapi::handle_addapi;
 pub use self::gentoken::handle_gentoken;
 pub use self::acixconfirm::handle_acixconfirm;
