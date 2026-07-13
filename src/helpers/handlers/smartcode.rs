@@ -9,9 +9,7 @@ const MAX_PREVIEW_COOLDOWN_SECONDS: i64 = 3600;
 pub async fn handle_smartcode(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,
-    intros: &IntrosConfig,
 ) -> Option<Job> {
-    let preset = resolve_preset(command, intros);
     let mut response_msg = working_response(ctx, command, "Working…").await?;
     let result = smartcode_merge_upload(ctx, command, &mut response_msg, "/smartcode", "smartcode").await?;
 
@@ -30,7 +28,6 @@ pub async fn handle_smartcode(
         final_msg.id.get(),
         JobType::Encode,
         final_msg.id.get(),
-        preset,
         nyaaise(&result.link),
         result.merged_bytes,
         ctx.clone(),
@@ -151,7 +148,6 @@ pub async fn handle_smartcode_preview(
         final_msg.id.get(),
         JobType::Preview,
         final_msg.id.get(),
-        Preset::Dummy(None),
         nyaaise(&result.link),
         result.merged_bytes,
         ctx.clone(),

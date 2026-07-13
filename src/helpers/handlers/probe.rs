@@ -20,7 +20,6 @@ pub async fn handle_probe(
         response_msg.id.get(),
         JobType::Probe,
         response_msg.id.get(),
-        Preset::Dummy(None),   // irrelevant for probe
         nyaaise(&torrent_url),
         vec![],                // no attachment
         ctx.clone(),

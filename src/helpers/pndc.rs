@@ -1,5 +1,3 @@
-use pandora_toolchain::pnworker::core::Preset;
-use pandora_toolchain::pnworker::util::IntrosConfig;
 use serenity::{
     all::{CommandDataOption, CommandDataOptionValue, Context, Message},
     builder::{CreateInteractionResponse, CreateInteractionResponseMessage},
@@ -63,16 +61,6 @@ pub(super) fn option_attachment<'a>(
         .find(|opt| opt.name == name)
         .and_then(|opt| opt.value.as_attachment_id())
         .and_then(|id| command.data.resolved.attachments.get(&id))
-}
-
-pub(super) fn resolve_preset(command: &serenity::all::CommandInteraction, intros: &IntrosConfig) -> Preset {
-    let candidates = option_str(command, "concat")
-        .and_then(|group| intros.resolve(group));
-    match option_str(command, "preset").unwrap_or("standard") {
-        "gpu" | "standard" => Preset::Standard(candidates),
-        "dummy" => Preset::Dummy(candidates),
-        _ => Preset::PseudoLossless(candidates),
-    }
 }
 
 pub(super) async fn command_error(

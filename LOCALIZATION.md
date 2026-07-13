@@ -3,6 +3,7 @@
 User-facing strings (status updates, embed fields, stage labels, preset labels) are language-aware.
 
 - `src/pnworker/messages.rs` defines string IDs as `&'static str` consts (`pub const TORRENT_DONE: &str = "TORRENT_DONE";` etc.) — never as `usize` indices.
+- `SERVER_EFFECTS_FAIL` is emitted when the post-download server-scoped subtitle effects step cannot probe the input or inject the configured watermark.
 - `MessagePayload` enum is what workers send over `CommData`:
   ```rust
   pub enum MessagePayload {

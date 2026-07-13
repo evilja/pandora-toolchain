@@ -4,7 +4,6 @@ pub async fn handle_interaction(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,
     torrent_url: String,
-    preset: Preset,
 ) -> Option<Job> {
     let attachment_bytes = match option_attachment(command, "subtitle") {
         Some(att) => match att.download().await {
@@ -30,7 +29,6 @@ pub async fn handle_interaction(
         response_msg.id.get(),
         JobType::Encode,
         response_msg.id.get(),
-        preset,
         nyaaise(&torrent_url),
         attachment_bytes,
         ctx.clone(),

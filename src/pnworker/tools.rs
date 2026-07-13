@@ -312,6 +312,23 @@ pub const PNASS_JOB: &[CliParam] = &[
     CliParam::Literal("0.1.1"),
 ];
 
+pub const PNASS_INJECT: &[CliParam] = &[
+    CliParam::Literal("--input"),
+    CliParam::Path("INPUT"),
+    CliParam::Literal("--inject"),
+    CliParam::Path("INJECT"),
+    CliParam::Literal("--output"),
+    CliParam::Path("OUTPUT"),
+    CliParam::Literal("--duration-centiseconds"),
+    CliParam::Path("DURATION"),
+    CliParam::Literal("--negkey"),
+    CliParam::Literal("PNassEffects"),
+    CliParam::Literal("--negotiator"),
+    CliParam::Literal("PNdc"),
+    CliParam::Literal("--negver"),
+    CliParam::Literal("0.1.1"),
+];
+
 pub const PNASS_SPLIT_SIGNS: &[CliParam] = &[
     CliParam::Literal("--input"),
     CliParam::Path("INPUT"),

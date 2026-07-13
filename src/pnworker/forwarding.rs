@@ -157,11 +157,14 @@ pub(crate) fn encode_forward_keys(job: &Job) -> Vec<String> {
 
 fn encode_forward_key(job: &Job, source_key: String) -> String {
     let payload = serde_json::json!([
-        "v1",
+        "v2",
         source_key,
         job.probe_file_index,
         preset_forward_key(&job.preset),
         format!("{:x}", md5::compute(&job.attachment)),
+        job.server_watermark
+            .as_deref()
+            .map(|watermark| format!("{:x}", md5::compute(watermark))),
         job.server_id,
         job.gdrive_folder_global.as_deref(),
         job.gdrive_folder_local.as_deref(),
@@ -217,6 +220,7 @@ mod tests {
             torrent: TorrentType::Magnet("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567".to_string()),
             display_link: None,
             attachment: b"ass".to_vec(),
+            server_watermark: None,
             frontend: Frontend::None,
             directory: PathBuf::from("DB/work/1"),
             ready: Stage::Queued,
@@ -249,5 +253,14 @@ mod tests {
         let smartcode = encode_forward_keys(&encode_job(Some("pntools/anime")));
         let anonymous = encode_forward_keys(&encode_job(None));
         assert_ne!(smartcode, anonymous);
+    }
+
+    #[test]
+    fn different_server_watermarks_do_not_share_forward_key() {
+        let mut first = encode_job(None);
+        let mut second = encode_job(None);
+        first.server_watermark = Some(b"watermark-a".to_vec());
+        second.server_watermark = Some(b"watermark-b".to_vec());
+        assert_ne!(encode_forward_keys(&first), encode_forward_keys(&second));
     }
 }

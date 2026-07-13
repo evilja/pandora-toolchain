@@ -36,6 +36,7 @@ mod interaction;
 mod providers;
 mod translation;
 mod addintro;
+mod watermark;
 #[allow(unused_imports)]
 pub use self::message::handle_message;
 pub use self::probe::handle_probe;
@@ -73,7 +74,9 @@ pub use self::interaction::handle_interaction;
 pub use self::providers::handle_providers;
 pub use self::translation::{handle_addtranslation, handle_addtranslationall, handle_gettranslation, handle_gettranslationall};
 pub use self::addintro::handle_addintro;
+pub use self::watermark::handle_touchwatermark;
 
+use pandora_toolchain::pnworker::util::IntrosConfig;
 use pandora_toolchain::lib::env::standard::{
     CLIENT_ID, CLIENT_SECRET, ENV_PATH, ENV_SEP, PARENTID, REFRESH_TOKEN,
 };

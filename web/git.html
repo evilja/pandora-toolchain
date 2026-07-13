@@ -784,9 +784,8 @@
         { name: "channel_id", label: "Attached anime", type: "attachment", required: true },
         { name: "episode",    label: "Episode", type: "number", required: true, placeholder: "1" },
         { name: "link",       label: "Source link", type: "text", optional: true, placeholder: "blank → read the episode's SOURCE.md" },
-        { name: "preset",     label: "Preset", type: "select", options: ["standard", "gpu", "pseudolossless", "dummy"] }
       ],
-      run: function (v) { return api("POST", "/api/v1/git/smartcode", bodyFrom(v, ["channel_id", "episode", "link", "preset"])); }
+      run: function (v) { return api("POST", "/api/v1/git/smartcode", bodyFrom(v, ["channel_id", "episode", "link"])); }
     },
     detach: {
       label: "Detach",

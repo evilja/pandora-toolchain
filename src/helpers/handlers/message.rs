@@ -4,7 +4,6 @@ pub async fn handle_message(
     context: &Context,
     msg: &Message,
     torrent_url: String,
-    preset: Preset,
 ) -> Option<Job> {
     if msg.attachments.is_empty() {
         msg.reply(context, "Error: Subtitle attachment required").await.ok();
@@ -35,7 +34,6 @@ pub async fn handle_message(
         response_msg.id.get(),
         JobType::Encode,
         msg.id.get(),
-        preset,
         nyaaise(&torrent_url),
         attachment_bytes,
         context.clone(),

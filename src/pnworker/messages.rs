@@ -26,6 +26,7 @@ pub const ENCODE_PROG: &str = "ENCODE_PROG";
 pub const ENCODE_CONCAT_PROG: &str = "ENCODE_CONCAT_PROG";
 pub const ENCODE_START: &str = "ENCODE_START";
 pub const ENCODE_WARNING: &str = "ENCODE_WARNING";
+pub const SERVER_EFFECTS_FAIL: &str = "SERVER_EFFECTS_FAIL";
 pub const ENCODE_DONE: &str = "ENCODE_DONE";
 pub const ENCODE_FAIL: &str = "ENCODE_FAIL";
 pub const UPLOAD_PROG: &str = "UPLOAD_PROG";
@@ -138,6 +139,7 @@ static DEFAULT_ENTRIES: &[(&str, &str, usize)] = &[
     ),
     ("ENCODE_DONE", "\n\nÇıktı sunuculara yükleniyor.", 0),
     ("ENCODE_FAIL", "\n\nDosya encode edilemedi.", 0),
+    ("SERVER_EFFECTS_FAIL", "\n\nSunucu subtitle efektleri uygulanamadı: {}", 1),
     (
         "KEEP_READY",
         "\n\nKeep keyword ayrıldı.\nParent keyword: `{}`\nKeyword: `{}`",
