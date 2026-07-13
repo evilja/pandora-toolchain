@@ -1,6 +1,7 @@
 use clap::Parser;
 use pandora_toolchain::libkagami::core::{PandoraMeta, ScriptInfo, SubstationAlpha};
 use pandora_toolchain::libkagami::complex::overrides::ASSOverride;
+use pandora_toolchain::libkagami::complex::types::AssTime;
 use pandora_toolchain::libkagami::tags::{ASSLine, ASSText};
 use pandora_toolchain::lib::protocol::core::{Protocol, Schema, ToolInfo};
 use pandora_toolchain::{pn_data, pn_emit, pn_schema};
@@ -22,6 +23,12 @@ struct Args {
 
     #[arg(long)]
     merge: Option<String>,
+
+    #[arg(long)]
+    inject: Option<String>,
+
+    #[arg(long)]
+    duration_centiseconds: Option<u64>,
 
     #[arg(long)]
     set_layer: Option<u16>,
@@ -95,12 +102,27 @@ async fn main() {
     }
 
     let warning_event_count = sub.events.len();
-    let has_merge = args.merge.is_some();
+    let has_merge = args.merge.is_some() || args.inject.is_some();
     let prune_styles = has_merge || args.negkey.as_deref() == Some("PNassMerge");
 
-    if let Some(merge_path) = args.merge.as_deref() {
+    if args.merge.is_some() && args.inject.is_some() {
+        eprintln!("pnass: --merge and --inject cannot be used together");
+        std::process::exit(1);
+    }
+    if let Some(merge_path) = args.merge.as_deref().or(args.inject.as_deref()) {
         let mut secondary = SubstationAlpha::load(PathBuf::from(merge_path), adv_parsing).await;
         fill_script_info_defaults(&mut secondary.script_info, wrap_style);
+        if args.inject.is_some() {
+            let Some(duration) = args.duration_centiseconds else {
+                eprintln!("pnass: --duration-centiseconds is required with --inject");
+                std::process::exit(1);
+            };
+            if duration > max_ass_centiseconds() {
+                eprintln!("pnass: injection duration is too long for ASS timestamps");
+                std::process::exit(1);
+            }
+            apply_injection_timings(&mut secondary, duration);
+        }
         if let Err(e) = normalize_merge_resolutions(&mut sub, &mut secondary) {
             println!("{}", pn_emit!(protocol = proto, negkey = &neg,
                 schema = [leaf, leaf], data = ["4", e]).unwrap());
@@ -266,6 +288,20 @@ fn fill_script_info_defaults(si: &mut ScriptInfo, wrap_style: Option<u8>) {
     }
     if si.layout_res_y == 0 {
         si.layout_res_y = si.playresy;
+    }
+}
+
+fn max_ass_centiseconds() -> u64 {
+    255 * 360_000 + 59 * 6_000 + 59 * 100 + 99
+}
+
+fn apply_injection_timings(sub: &mut SubstationAlpha, duration: u64) {
+    let end = AssTime::from_centiseconds(duration);
+    for event in &mut sub.events {
+        if event.effect.trim().eq_ignore_ascii_case("[all]") {
+            event.start = AssTime::from_centiseconds(0);
+            event.end = end;
+        }
     }
 }
 
@@ -804,6 +840,24 @@ mod tests {
         assert!(err.contains("incompatible PlayRes ratios"));
         assert_eq!(primary.script_info.playresx, 1440);
         assert_eq!(secondary.script_info.playresx, 1920);
+    }
+
+    #[test]
+    fn injection_timings_use_video_duration_only_for_all_events() {
+        let mut sub = sub_with_res(1920, 1080);
+        let mut all = event("Default", vec![ASSText::RawText("all".to_string())]);
+        all.effect = "[ALL]".to_string();
+        let mut precise = event("Default", vec![ASSText::RawText("precise".to_string())]);
+        precise.effect = "[precise]".to_string();
+        let default_precise = event("Default", vec![ASSText::RawText("default".to_string())]);
+        sub.events = vec![all, precise, default_precise];
+
+        apply_injection_timings(&mut sub, 12345);
+
+        assert_eq!(sub.events[0].start, AssTime::from_centiseconds(0));
+        assert_eq!(sub.events[0].end, AssTime::from_centiseconds(12345));
+        assert_eq!(sub.events[1].end, AssTime::from_centiseconds(100));
+        assert_eq!(sub.events[2].end, AssTime::from_centiseconds(100));
     }
 
     #[test]

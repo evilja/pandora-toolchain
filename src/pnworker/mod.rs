@@ -2,6 +2,7 @@ pub mod core;
 pub mod acix;
 pub mod messages;
 pub mod util;
+pub mod server_effects;
 pub mod tools;
 pub mod worker_slots;
 pub mod smartcode_drive;

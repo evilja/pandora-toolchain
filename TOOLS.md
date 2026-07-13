@@ -23,13 +23,14 @@ Always emits a pnprotocol negotiation line on stdout (`PNprotocol:PNdc@0.1.1@1:P
 
 - `--input <path>` / `--output <path>` — required. Reads via `SubstationAlpha::load(path, true)` (adv_parsing — events get parsed Override blocks), writes via `dump_to_file`.
 - `--merge <path>` — optional secondary ASS to merge into `--input`. When set, the intersection of TL/TS style names drives a per-style rename of the secondary (TL styles stay intact), then TS's styles and events are appended after TL's. See [pnass `--merge` semantics](#pnass---merge-semantics).
+- `--inject <path> --duration-centiseconds <N>` — injects a server watermark after the main subtitle using the same resolution and style-collision checks as `--merge`. Watermark events append after main events; `[all]` Effect spans `0:00:00.00` through the supplied duration, while `[precise]` and other/empty Effects retain their own timings.
 - `--set-layer <N>` — when set, walks every `Event` and assigns `layer = N`.
 - `--smart-layer <N>` — sign-aware layer normalization for smartcode: only events whose style name does not contain `Sign` and whose parsed text contains only raw text plus basic bold/italic/underline/strikeout overrides get `layer = N`; events with positioning, drawings, clips, colours, transforms, reset tags, etc. keep their original layer.
 - `--split-signs <path>` — split sign-style events (style name contains `Sign`) from `--input` into a separate ASS at `<path>`, leaving non-sign events in `--output`; used by smartcode when the repo has TL but no TS.
 - `--wrap-style <dont_touch|0|1|2|3>` — controls whether `ScriptInfo.wrap_style` is forced during pnass output. Missing/`dont_touch` preserves the loaded value; numeric values force that WrapStyle. `/configure` and `/edit` store this per server.
 - `--title <S>` — optional. When provided, overwrites `ScriptInfo.title`. When absent, the loaded title is preserved.
 - The other `ScriptInfo` fields (`ScriptType`, `ScaledBorderAndShadow`, `PlayResX/Y`, `YCbCr Matrix`, `LayoutResX/Y`) only get default-filled if they were missing/zero in the loaded file. `LayoutResX/Y` defaults to `PlayResX/Y` (not 1920/1080). `WrapStyle` is not forced unless `--wrap-style` is numeric.
-- `--negkey` / `--negotiator` / `--negver` — protocol negotiation overrides. Default `negotiator`/`negver` are `"PNass"` / `"0.1.1"`; default `negkey` is `"PNassCLI"`.
+- `--negkey` / `--negotiator` / `--negver` — protocol negotiation overrides. Default `negotiator`/`negver` are `"PNass"` / `"0.1.1"`; default `negkey` is `"PNassCLI"`. The worker's injection spec uses `PNassEffects`.
 
 Exit non-zero on `dump_to_file` failure.
 

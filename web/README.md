@@ -45,9 +45,10 @@ The git console never asks for a raw channel id:
   (`GET /api/v1/git/channels`, from `DB/config/<server>/channels.json`, which the bot publishes
   and keeps in sync via channel/thread events).
 
-**Smartcode** also takes an episode, an optional source link (blank reads the episode's
-`SOURCE.md`), and a preset; it merges, uploads the release, and queues an encode job (track it on
-the encode console). **Destruct** deletes the Forgejo repo, so it requires a confirm checkbox.
+**Smartcode** also takes an episode and an optional source link (blank reads the episode's
+`SOURCE.md`); it derives preset/concat from the server's `/edit` settings, merges, uploads the
+release, and queues an encode job (track it on the encode console). Encode forms do not ask for
+preset or concat. **Destruct** deletes the Forgejo repo, so it requires a confirm checkbox.
 
 Both dropdowns are refreshable and remember the last pick in the browser.
 

@@ -3,9 +3,9 @@ use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::sleep;
 use crate::lib::env::core::get_pandora_env;
-use crate::lib::env::standard::PNMPEG;
+use crate::lib::env::standard::{PNASS, PNMPEG};
 use crate::lib::protocol::core::Protocol;
-use crate::pnworker::messages::{ENCODE_CONCAT_PROG, ENCODE_DONE, ENCODE_FAIL, ENCODE_PROG, ENCODE_START, ENCODE_WARNING, JOB_CANCELLED, MessagePayload};
+use crate::pnworker::messages::{ENCODE_CONCAT_PROG, ENCODE_DONE, ENCODE_FAIL, ENCODE_PROG, ENCODE_START, ENCODE_WARNING, JOB_CANCELLED, MessagePayload, SERVER_EFFECTS_FAIL};
 use crate::pnworker::util::{ToolResult, job_cancelled, run_tool};
 use crate::pnworker::tools::{PNMPEG_CONCAT, PNMPEG_ENCODE, PNMPEG_JOIN, PNMPEG_JOIN_ASS};
 use tokio::fs::rename;
@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use crate::pnworker::core::{KeepKind, Preset, Stage, WorkerMsg};
 use crate::pnworker::util::PathValue;
 use crate::pnworker::core::CommData;
-pub type EncodeData = (PathBuf, Preset, u64, Option<u64>);
+pub type EncodeData = (PathBuf, Preset, u64, Option<u64>, Option<Vec<u8>>);
 pub type KeycodeData = (PathBuf, Vec<PathBuf>, KeepKind, u64, Option<u64>);
 
 
@@ -33,7 +33,9 @@ fn path_to_ffmpeg(path: &Path) -> String {
 
 pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, pulse: Sender<()>) {
     let mut proto = Protocol::new(vec![1]);
-    let pnmpeg_path = get_pandora_env().get(PNMPEG).cloned().unwrap_or_default();
+    let env = get_pandora_env();
+    let pnmpeg_path = env.get(PNMPEG).cloned().unwrap_or_default();
+    let pnass_path = env.get(PNASS).cloned().unwrap_or_default();
     'll: loop {
         if let Ok(msg) = rx.try_recv() {
             if let WorkerMsg::Keycode((directory, inputs, kind, job_id, _server_id)) = msg {
@@ -84,7 +86,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 }
                 continue 'll;
             }
-            let WorkerMsg::Encode((directory, preset, job_id, server_id)) = msg else {
+            let WorkerMsg::Encode((directory, preset, job_id, server_id, watermark)) = msg else {
                 continue 'll;
             };
             let (concat_value, insert) = match preset {
@@ -103,6 +105,25 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 tx.send((job_id, MessagePayload::Static(JOB_CANCELLED), Some(Stage::Cancelled))).await.unwrap();
                 continue 'll;
             }
+            let effects = match crate::pnworker::server_effects::server_effects(
+                &directory,
+                watermark.as_deref(),
+                &pnass_path,
+                job_id,
+            ).await {
+                Ok(effects) => effects,
+                Err(e) if e == "cancelled" => {
+                    tx.send((job_id, MessagePayload::Static(JOB_CANCELLED), Some(Stage::Cancelled))).await.unwrap();
+                    continue 'll;
+                }
+                Err(e) => {
+                    tx.send((job_id, MessagePayload::Progress(SERVER_EFFECTS_FAIL, vec![e]), Some(Stage::Failed))).await.unwrap();
+                    continue 'll;
+                }
+            };
+            for warning in effects.warnings {
+                tx.try_send((job_id, MessagePayload::Progress(ENCODE_WARNING, vec![warning]), None)).ok();
+            }
             tx.try_send((job_id, MessagePayload::Static(ENCODE_START), Some(Stage::Encoding))).ok();
             let result = run_tool(
                 &pnmpeg_path,
@@ -110,7 +131,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 &HashMap::from([
                     ("INPUT",      PathValue::from(path_to_ffmpeg(directory.join("contents").join("torrent").join("input.mkv").as_path()))),
                     ("OUTPUT",     PathValue::from(path_to_ffmpeg(directory.join("work").join("output_noconcat.mp4").as_path()))),
-                    ("ASS",        PathValue::from(path_to_ffmpeg(directory.join("contents").join("subtitle.ass").as_path()))),
+                    ("ASS",        PathValue::from(path_to_ffmpeg(effects.subtitle.as_path()))),
                     ("FONTCONFIG", PathValue::from(path_to_ffmpeg(fontconfig_dir.as_path()))),
                     ("PRESET",     PathValue::from(format!("--{}", insert))),
                     ("NEGKEY",     PathValue::from("pn-encode-main".to_string())),

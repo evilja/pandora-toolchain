@@ -5,8 +5,8 @@ use serenity::{
     prelude::*,
 };
 use pandora_toolchain::lib::p2p::nyaaise::{nyaaise, TorrentType};
-use pandora_toolchain::pnworker::core::{HalfJob, Job, JobClass, JobType, KeepRequest, KeycodeRequest, Preset};
-use pandora_toolchain::pnworker::util::{CliParam, IntrosConfig, PathValue, ToolResult, run_tool};
+use pandora_toolchain::pnworker::core::{HalfJob, Job, JobClass, JobType, KeepRequest, KeycodeRequest};
+use pandora_toolchain::pnworker::util::{CliParam, PathValue, ToolResult, run_tool};
 use pandora_toolchain::pnworker::tools::PNASS_JOB;
 use pandora_toolchain::pnworker::tools::PNASS_MERGE;
 use pandora_toolchain::pnworker::tools::PNASS_MERGE_TL_ONLY;
@@ -45,7 +45,6 @@ use handlers::*;
 
 pub struct Handler {
     pub tx: Sender<JobClass>,
-    pub intros: IntrosConfig,
 }
 
 const ALL_LEVELS: &[&str] = &[
@@ -99,7 +98,6 @@ async fn handle_encode_command(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,
     tx: &Sender<JobClass>,
-    intros: &IntrosConfig,
 ) {
     let Some((subcommand, _)) = subcommand_options(command) else {
         command_error(ctx, command, "Error: encode subcommand is required").await;
@@ -112,8 +110,7 @@ async fn handle_encode_command(
                 Some(url) => url,
                 None => return,
             };
-            let preset = resolve_preset(command, intros);
-            if let Some(mut job) = handle_interaction(ctx, command, torrent_url, preset).await {
+            if let Some(mut job) = handle_interaction(ctx, command, torrent_url).await {
                 if subcommand == "keep" {
                     job.keep = Some(KeepRequest::new(option_trimmed(command, "keyword")));
                 }
@@ -153,8 +150,7 @@ async fn handle_encode_command(
                     return;
                 }
             };
-            let preset = resolve_preset(command, intros);
-            if let Some(mut job) = handle_interaction(ctx, command, String::new(), preset).await {
+            if let Some(mut job) = handle_interaction(ctx, command, String::new()).await {
                 job.job_type = JobType::Pancode;
                 job.torrent = nyaaise(&probe_source);
                 job.display_link = Some(format!("{} : {}", probe_source, file_index));
@@ -168,8 +164,7 @@ async fn handle_encode_command(
                 Some(url) => url,
                 None => return,
             };
-            let preset = resolve_preset(command, intros);
-            if let Some(job) = handle_gitcode(ctx, command, torrent_url, preset).await {
+            if let Some(job) = handle_gitcode(ctx, command, torrent_url).await {
                 tx.send(JobClass::Job(job)).await.unwrap();
             }
         }
@@ -187,8 +182,6 @@ async fn handle_encode_command(
                 command_error(ctx, command, "Error: keywords must not be empty").await;
                 return;
             }
-            let concat_candidates = option_str(command, "concat")
-                .and_then(|group| intros.resolve(group));
             let attachment_bytes = match option_attachment(command, "subtitle") {
                 Some(attachment) => match attachment.download().await {
                     Ok(bytes) => bytes,
@@ -210,7 +203,6 @@ async fn handle_encode_command(
                 response_msg.id.get(),
                 JobType::Keycode,
                 response_msg.id.get(),
-                Preset::Standard(None),
                 TorrentType::Link("keycode".to_string()),
                 attachment_bytes,
                 ctx.clone(),
@@ -218,7 +210,7 @@ async fn handle_encode_command(
                 read_lang(command.guild_id),
                 command.guild_id.map(|guild| guild.get()),
             );
-            job.keycode = Some(KeycodeRequest { keywords, concat_candidates });
+            job.keycode = Some(KeycodeRequest { keywords });
             tx.send(JobClass::Job(job)).await.unwrap();
         }
         other => command_error(ctx, command, format!("Unknown encode subcommand `{}`.", other)).await,
@@ -482,6 +474,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("workers", 2),
     ("configure", 2),
     ("edit", 2),
+    ("touchwatermark", 2),
     ("readmebase", 2),
     ("touchapi", 2),
     ("touchtranslation", 2),
@@ -648,7 +641,7 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "encode",
             name: "encode",
             summary: "Encode, locally keep, or join video outputs.",
-            usage: "/encode do|pan|link|keep|key ...",
+            usage: "/encode do|pan|link|keep|key ... (preset and intro come from /edit)",
             details: "`do` encodes with an attached ASS; `pan` selects a file from `/probe`; `link` fetches the ASS from a URL; `keep` encodes an attachment and stores the output under a keyword; `key` joins kept keyword outputs.",
         },
         HelpCommand {
@@ -718,7 +711,7 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "repo",
             name: "smartcode",
             summary: "Merge attached repo subtitles, then encode or preview an episode.",
-            usage: "/smartcode do|keep episode:<n> [link] [preset] [concat] or /smartcode preview episode:<n> [link] [cooldown]",
+            usage: "/smartcode do|keep episode:<n> [link] or /smartcode preview episode:<n> [link] [cooldown]",
             details: "Requires this channel to be attached to an anime repo. `do` reads TL/TS files, uploads the release ASS, then encodes using the source link or SOURCE.md. `keep` runs the same flow and retains the encode locally under a generated or supplied keyword. `preview` performs the merge/upload step, then renders up to three stamp-first, cluster-ranked previews. Cooldown defaults to 90 seconds; set it to 0 to disable cooldown.",
         },
         HelpCommand {
@@ -788,15 +781,22 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "admin",
             name: "configure",
             summary: "Configure server language, Forgejo, and Google Drive credentials.",
-            usage: "/configure language:<EN|TR|JP> [forgejo] [api_key] [gdrive_client_id] [gdrive_client_secret] [gdrive_refresh_token] [gdrive_folder_id] [gdrive_anon_folder_id] [wrapstyle]",
-            details: "Writes server metadata. Run this before /init if the server needs a Forgejo org/base or per-guild Google Drive upload credentials configured. wrapstyle controls ASS WrapStyle normalization; default dont_touch leaves existing subtitles unchanged.",
+            usage: "/configure language:<EN|TR|JP> [forgejo] [api_key] [gdrive_client_id] [gdrive_client_secret] [gdrive_refresh_token] [gdrive_folder_id] [gdrive_anon_folder_id] [wrapstyle] (encode defaults are set with /edit)",
+            details: "Writes server metadata. Run this before /init if the server needs a Forgejo org/base or per-guild Google Drive upload credentials configured. Encode preset and intro defaults are managed later with /edit. wrapstyle controls ASS WrapStyle normalization; default dont_touch leaves existing subtitles unchanged.",
         },
         HelpCommand {
             section: "admin",
             name: "edit",
             summary: "Edit individual server metadata fields, leaving the rest untouched.",
-            usage: "/edit [language] [forgejo] [api_key] [gdrive_client_id] [gdrive_client_secret] [gdrive_refresh_token] [gdrive_folder_id] [gdrive_anon_folder_id] [local_gdrive] [wrapstyle] [announcement_channel]",
-            details: "Like /configure but every field is optional — omitted fields keep their current value. Pass `-` to clear a text field. Set local_gdrive:false to keep stored server Drive credentials but upload through global Drive. gdrive_folder_id is the smartcode/default root; gdrive_anon_folder_id is the random encode root. wrapstyle can be dont_touch or 0-3. Set announcement_channel:true to point announcements at the current channel. Requires the server to already be configured.",
+            usage: "/edit [language] [forgejo] [api_key] [gdrive_client_id] [gdrive_client_secret] [gdrive_refresh_token] [gdrive_folder_id] [gdrive_anon_folder_id] [local_gdrive] [wrapstyle] [preset] [concat] [announcement_channel]",
+            details: "Like /configure but every field is optional — omitted fields keep their current value. Pass `-` to clear a text field. Set local_gdrive:false to keep stored server Drive credentials but upload through global Drive. gdrive_folder_id is the smartcode/default root; gdrive_anon_folder_id is the random encode root. wrapstyle can be dont_touch or 0-3. preset and concat set server-wide encode defaults; concat must name an existing intro group or use `-` to disable it. Set announcement_channel:true to point announcements at the current channel. Requires the server to already be configured.",
+        },
+        HelpCommand {
+            section: "admin",
+            name: "touchwatermark",
+            summary: "Replace the server-scoped subtitle watermark.",
+            usage: "/touchwatermark watermark:<file.ass>",
+            details: "Replaces the watermark applied to future encodes. Dialogue Effect `[all]` spans the downloaded video; `[precise]` and other effects preserve the watermark event's own timing. Admin only.",
         },
         HelpCommand {
             section: "admin",
@@ -1786,7 +1786,7 @@ impl EventHandler for Handler {
                     handle_providers(&ctx, &command).await;
                 }
                 "encode" => {
-                    handle_encode_command(&ctx, &command, &self.tx, &self.intros).await;
+                    handle_encode_command(&ctx, &command, &self.tx).await;
                 }
                 "probe" => {
                     let torrent_url = match required_trimmed_option(&ctx, &command, "torrent", "Torrent URL").await {
@@ -1856,6 +1856,9 @@ impl EventHandler for Handler {
                 }
                 "edit" => {
                     handle_edit(&ctx, &command).await;
+                }
+                "touchwatermark" => {
+                    handle_touchwatermark(&ctx, &command).await;
                 }
                 "touchapi" => {
                     handle_addapi(&ctx, &command).await;
@@ -1985,12 +1988,12 @@ impl EventHandler for Handler {
                 "smartcode" => {
                     match subcommand_options(&command).map(|(name, _)| name).unwrap_or("do") {
                         "do" | "run" => {
-                            if let Some(job) = handle_smartcode(&ctx, &command, &self.intros).await {
+                            if let Some(job) = handle_smartcode(&ctx, &command).await {
                                 self.tx.send(JobClass::Job(job)).await.unwrap();
                             }
                         }
                         "keep" => {
-                            if let Some(mut job) = handle_smartcode(&ctx, &command, &self.intros).await {
+                            if let Some(mut job) = handle_smartcode(&ctx, &command).await {
                                 job.keep = Some(KeepRequest::new(option_trimmed(&command, "keyword")));
                                 self.tx.send(JobClass::Job(job)).await.unwrap();
                             }
@@ -2070,15 +2073,6 @@ impl EventHandler for Handler {
         );
         pandora_toolchain::pnworker::presence::set_global_context(ctx.clone());
 
-        let mut concat_option = CreateCommandOption::new(
-            CommandOptionType::String,
-            "concat",
-            "Intro"
-        ).required(false);
-
-        for group_name in self.intros.groups.keys() {
-            concat_option = concat_option.add_string_choice(group_name, group_name);
-        }
         let keep_option = CreateCommandOption::new(
             CommandOptionType::Boolean,
             "keep",
@@ -2100,16 +2094,6 @@ impl EventHandler for Handler {
         let help_command = CreateCommand::new("help")
             .description("Open an interactive command guide")
             .add_option(help_section_option);
-        let preset_option = CreateCommandOption::new(
-            CommandOptionType::String,
-            "preset",
-            "Encoding preset",
-        )
-        .required(false)
-        .add_string_choice("Pseudo Lossless", "pseudolossless")
-        .add_string_choice("Standard x264", "standard")
-        .add_string_choice("GPU", "gpu")
-        .add_string_choice("DEV", "dummy");
         let encode_command = CreateCommand::new("encode")
             .description("Encode, keep, or join video outputs")
             .add_option(
@@ -2122,8 +2106,6 @@ impl EventHandler for Handler {
                         CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "ASS subtitle file")
                             .required(true)
                     )
-                    .add_sub_option(preset_option.clone())
-                    .add_sub_option(concat_option.clone())
             )
             .add_option(
                 CreateCommandOption::new(CommandOptionType::SubCommand, "pan", "Encode using a previously probed torrent")
@@ -2139,8 +2121,6 @@ impl EventHandler for Handler {
                         CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "ASS subtitle file")
                             .required(true)
                     )
-                    .add_sub_option(preset_option.clone())
-                    .add_sub_option(concat_option.clone())
             )
             .add_option(
                 CreateCommandOption::new(CommandOptionType::SubCommand, "link", "Encode with an ASS subtitle fetched from a URL")
@@ -2152,8 +2132,6 @@ impl EventHandler for Handler {
                         CreateCommandOption::new(CommandOptionType::String, "subtitle_url", "URL to an .ass subtitle file (raw or GitHub blob)")
                             .required(true)
                     )
-                    .add_sub_option(preset_option.clone())
-                    .add_sub_option(concat_option.clone())
             )
             .add_option(
                 CreateCommandOption::new(CommandOptionType::SubCommand, "keep", "Encode and keep the output locally")
@@ -2165,8 +2143,6 @@ impl EventHandler for Handler {
                         CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "ASS subtitle file")
                             .required(true)
                     )
-                    .add_sub_option(preset_option.clone())
-                    .add_sub_option(concat_option.clone())
                     .add_sub_option(keyword_option.clone())
             )
             .add_option(
@@ -2175,7 +2151,6 @@ impl EventHandler for Handler {
                         CreateCommandOption::new(CommandOptionType::String, "keywords", "Comma-separated keep keywords")
                             .required(true)
                     )
-                    .add_sub_option(concat_option.clone())
                     .add_sub_option(
                         CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "ASS subtitle file; required for backup keywords")
                             .required(false)
@@ -2298,15 +2273,6 @@ impl EventHandler for Handler {
                             CreateCommandOption::new(CommandOptionType::String, "link", "Source link. Falls back to SOURCE.md if omitted.")
                                 .required(false)
                         )
-                        .add_sub_option(
-                            CreateCommandOption::new(CommandOptionType::String, "preset", "Encoding preset")
-                                .required(false)
-                                .add_string_choice("Pseudo Lossless", "pseudolossless")
-                                .add_string_choice("Standard x264", "standard")
-                                .add_string_choice("GPU", "gpu")
-                                .add_string_choice("DEV", "dummy")
-                        )
-                        .add_sub_option(concat_option.clone())
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::SubCommand, "keep", "Merge, encode, and keep the episode locally")
@@ -2319,8 +2285,6 @@ impl EventHandler for Handler {
                             CreateCommandOption::new(CommandOptionType::String, "link", "Source link. Falls back to SOURCE.md if omitted.")
                                 .required(false)
                         )
-                        .add_sub_option(preset_option.clone())
-                        .add_sub_option(concat_option.clone())
                         .add_sub_option(keyword_option.clone())
                 )
                 .add_option(
@@ -2480,8 +2444,26 @@ impl EventHandler for Handler {
                         .add_string_choice("3", "3")
                 )
                 .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "preset", "Default encoding preset for this server.")
+                        .required(false)
+                        .add_string_choice("Pseudo Lossless", "pseudolossless")
+                        .add_string_choice("Standard x264", "standard")
+                        .add_string_choice("GPU", "gpu")
+                        .add_string_choice("DEV", "dummy")
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "concat", "Default intro group; use - to disable.")
+                        .required(false)
+                )
+                .add_option(
                     CreateCommandOption::new(CommandOptionType::Boolean, "announcement_channel", "Set the announcement channel to this channel.")
                         .required(false)
+                ),
+            CreateCommand::new("touchwatermark")
+                .description("Replace the server-scoped subtitle watermark")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Attachment, "watermark", "ASS watermark subtitle")
+                        .required(true)
                 ),
             CreateCommand::new("touchapi")
                 .description("Write or update an API token in the toolchain env file")
@@ -2843,11 +2825,9 @@ async fn main() {
             }
         });
     }
-    let intros = IntrosConfig::load();
-    println!("{:?}", intros);
     pandora_toolchain::pnworker::messages::init_language_files();
     let mut discord = Client::builder(env.get(TOKEN).cloned().unwrap_or_default(), GatewayIntents::all())
-        .event_handler(Handler { tx, intros })
+        .event_handler(Handler { tx })
         .await
         .unwrap();
 

@@ -20,7 +20,6 @@ pub async fn handle_backup(
         response_msg.id.get(),
         JobType::Backup,
         response_msg.id.get(),
-        Preset::Dummy(None),
         nyaaise(&torrent_url),
         vec![],
         ctx.clone(),

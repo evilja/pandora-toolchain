@@ -41,6 +41,8 @@ pub async fn handle_edit(
     let existing_wrap_style = existing_lines.get(8).copied().unwrap_or("");
     let existing_local_gdrive = existing_lines.get(9).copied().unwrap_or("true");
     let existing_gdrive_anon_folder_id = existing_lines.get(10).copied().unwrap_or("");
+    let existing_preset = existing_lines.get(11).copied().unwrap_or("standard");
+    let existing_concat = existing_lines.get(12).copied().unwrap_or("");
 
     let language = match option_str(command, "language") {
         Some(l) if matches!(l, "EN" | "TR" | "JP") => l.to_string(),
@@ -85,6 +87,23 @@ pub async fn handle_edit(
     let local_gdrive = option_bool(command, "local_gdrive")
         .map(|v| if v { "true" } else { "false" }.to_string())
         .unwrap_or_else(|| existing_local_gdrive.to_string());
+    let preset = match option_str(command, "preset").map(str::trim) {
+        None => existing_preset.to_string(),
+        Some("standard") | Some("gpu") | Some("pseudolossless") | Some("dummy") => option_str(command, "preset").unwrap().to_string(),
+        Some(other) => {
+            command_error(ctx, command, format!("Error: preset `{}` is not standard, gpu, pseudolossless, or dummy", other)).await;
+            return;
+        }
+    };
+    let concat = match option_str(command, "concat").map(str::trim) {
+        None => existing_concat.to_string(),
+        Some("-") | Some("") => String::new(),
+        Some(group) if IntrosConfig::load().resolve(group).is_some() => group.to_string(),
+        Some(group) => {
+            command_error(ctx, command, format!("Error: concat group `{}` does not exist", group)).await;
+            return;
+        }
+    };
     let gdrive_auth_parts = [&gdrive_client_id, &gdrive_client_secret, &gdrive_refresh_token];
     let any_gdrive = gdrive_auth_parts.iter().any(|s| !s.is_empty())
         || !gdrive_folder_id.is_empty()
@@ -97,7 +116,7 @@ pub async fn handle_edit(
         return;
     }
 
-    let body = format!("{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n", language, forgejo, channel, new_api_key, gdrive_client_id, gdrive_client_secret, gdrive_refresh_token, gdrive_folder_id, wrap_style, local_gdrive, gdrive_anon_folder_id);
+    let body = format!("{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n", language, forgejo, channel, new_api_key, gdrive_client_id, gdrive_client_secret, gdrive_refresh_token, gdrive_folder_id, wrap_style, local_gdrive, gdrive_anon_folder_id, preset, concat);
     let path = dir.join("meta.pandora");
     if let Err(e) = tokio::fs::write(&path, body).await {
         command.create_response(ctx, CreateInteractionResponse::Message(
@@ -117,8 +136,8 @@ pub async fn handle_edit(
     let local_gdrive_display = if local_gdrive == "false" { "disabled" } else { "enabled" };
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
-            .content(format!("Edited server `{}` — language: {}, forgejo: {}, forgejo api_key: {}, gdrive: {}, gdrive_anon_folder_id: {}, local_gdrive: {}, wrapstyle: {}, announcement channel: {}",
-                server_id, language, forgejo_display, api_key_display, gdrive_display, gdrive_anon_display, local_gdrive_display, wrap_display, channel_display))
+            .content(format!("Edited server `{}` — language: {}, forgejo: {}, forgejo api_key: {}, gdrive: {}, gdrive_anon_folder_id: {}, local_gdrive: {}, wrapstyle: {}, preset: {}, concat: {}, announcement channel: {}",
+                server_id, language, forgejo_display, api_key_display, gdrive_display, gdrive_anon_display, local_gdrive_display, wrap_display, preset, if concat.is_empty() { "(disabled)" } else { &concat }, channel_display))
             .ephemeral(true)
     )).await.ok();
 }

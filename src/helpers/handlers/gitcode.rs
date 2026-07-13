@@ -4,7 +4,6 @@ pub async fn handle_gitcode(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,
     torrent_url: String,
-    preset: Preset,
 ) -> Option<Job> {
     let subtitle_url = required_trimmed_option(ctx, command, "subtitle_url", "subtitle_url").await?;
 
@@ -78,7 +77,6 @@ pub async fn handle_gitcode(
         response_msg.id.get(),
         JobType::Encode,
         response_msg.id.get(),
-        preset,
         nyaaise(&torrent_url),
         attachment_bytes,
         ctx.clone(),

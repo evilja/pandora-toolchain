@@ -14,7 +14,7 @@ use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, mpsc::Sender};
 
-use crate::pnworker::core::{HalfJob, Job, JobClass, JobType, KeepRequest, KeycodeRequest, Preset, SmartcodeDriveName, Stage};
+use crate::pnworker::core::{HalfJob, Job, JobClass, JobType, KeepRequest, KeycodeRequest, SmartcodeDriveName, Stage};
 use crate::pnworker::acix::confirm_acix;
 use crate::lib::http::acix::{AnimeCix, MediaType, MixedUpload};
 use crate::lib::db::core::{JobDb, JobStatus};
@@ -28,7 +28,6 @@ use crate::lib::env::core::get_pandora_env;
 use crate::lib::env::standard::{
     API_AUTHOR_ID, API_HOST, API_RATE_LIMIT, API_RATE_WINDOW_SECS, API_TOKENS_PATH,
 };
-use crate::pnworker::util::IntrosConfig;
 
 #[derive(Clone)]
 struct AppState {
@@ -373,8 +372,6 @@ struct EncodeReq {
     torrent: String,
     subtitle_b64: String,
     #[serde(default)]
-    preset: Option<String>,
-    #[serde(default)]
     lang: Option<String>,
     #[serde(default)]
     channel_id: Option<u64>,
@@ -395,7 +392,6 @@ async fn submit_encode(State(st): State<AppState>, Extension(auth): Extension<Ap
         st.api_author,
         req.channel_id.unwrap_or(0),
         JobType::Encode,
-        preset_from_str(req.preset.as_deref()),
         nyaaise(&req.torrent),
         subtitle,
         req.lang.unwrap_or_else(|| "EN".to_string()),
@@ -438,7 +434,6 @@ async fn submit_backup(State(st): State<AppState>, Extension(auth): Extension<Ap
         st.api_author,
         req.channel_id.unwrap_or(0),
         job_type,
-        Preset::Dummy(None),
         nyaaise(&req.torrent),
         vec![],
         req.lang.unwrap_or_else(|| "EN".to_string()),
@@ -460,7 +455,6 @@ async fn submit_probe(State(st): State<AppState>, Json(req): Json<ProbeReq>) -> 
         st.api_author,
         0,
         JobType::Probe,
-        Preset::Dummy(None),
         nyaaise(&req.torrent),
         vec![],
         "EN".to_string(),
@@ -474,8 +468,6 @@ struct PancodeReq {
     probe_job_id: String,
     file_index: u64,
     subtitle_b64: String,
-    #[serde(default)]
-    preset: Option<String>,
     #[serde(default)]
     keep: bool,
     #[serde(default)]
@@ -506,7 +498,6 @@ async fn submit_pancode(State(st): State<AppState>, Extension(auth): Extension<A
         st.api_author,
         0,
         JobType::Pancode,
-        preset_from_str(req.preset.as_deref()),
         nyaaise(&probe.link),
         subtitle,
         "EN".to_string(),
@@ -534,8 +525,6 @@ struct GitcodeReq {
     torrent: String,
     subtitle_url: String,
     #[serde(default)]
-    preset: Option<String>,
-    #[serde(default)]
     keep: bool,
     #[serde(default)]
     keyword: Option<String>,
@@ -551,7 +540,6 @@ async fn submit_gitcode(State(st): State<AppState>, Extension(auth): Extension<A
         st.api_author,
         0,
         JobType::Encode,
-        preset_from_str(req.preset.as_deref()),
         nyaaise(&req.torrent),
         subtitle,
         "EN".to_string(),
@@ -568,8 +556,6 @@ async fn submit_gitcode(State(st): State<AppState>, Extension(auth): Extension<A
 #[derive(Deserialize)]
 struct KeycodeReq {
     keywords: Vec<String>,
-    #[serde(default)]
-    concat: Option<String>,
     #[serde(default)]
     subtitle_b64: Option<String>,
     #[serde(default)]
@@ -597,23 +583,16 @@ async fn submit_keycode(State(st): State<AppState>, Extension(auth): Extension<A
         },
         _ => Vec::new(),
     };
-    let concat_candidates = req
-        .concat
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .and_then(|group| IntrosConfig::load().resolve(group));
     let mut job = Job::new_api(
         st.api_author,
         req.channel_id.unwrap_or(0),
         JobType::Keycode,
-        Preset::Standard(None),
         TorrentType::Link("keycode".to_string()),
         subtitle,
         req.lang.unwrap_or_else(|| "EN".to_string()),
         effective_server_id(&auth, req.server_id),
     );
-    job.keycode = Some(KeycodeRequest { keywords, concat_candidates });
+    job.keycode = Some(KeycodeRequest { keywords });
     submit(&st, job).await
 }
 
@@ -886,8 +865,6 @@ struct GitSmartcodeReq {
     #[serde(default)]
     link: Option<String>,
     #[serde(default)]
-    preset: Option<String>,
-    #[serde(default)]
     keep: bool,
     #[serde(default)]
     keyword: Option<String>,
@@ -905,7 +882,6 @@ async fn git_smartcode(State(st): State<AppState>, Extension(auth): Extension<Ap
         st.api_author,
         channel_id,
         JobType::Encode,
-        preset_from_str(req.preset.as_deref()),
         nyaaise(&merge.link),
         merge.merged_bytes,
         "EN".to_string(),
@@ -1050,14 +1026,6 @@ async fn acix_publish(Extension(auth): Extension<ApiAuth>, Json(req): Json<AcixP
     match client.multishare_mixed(&up).await {
         Ok(v) => Json(v).into_response(),
         Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
-    }
-}
-
-fn preset_from_str(s: Option<&str>) -> Preset {
-    match s.unwrap_or("standard") {
-        "gpu" | "standard" => Preset::Standard(None),
-        "dummy" => Preset::Dummy(None),
-        _ => Preset::PseudoLossless(None),
     }
 }
 

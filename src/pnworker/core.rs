@@ -29,6 +29,7 @@ use crate::pnworker::messages::{
 use crate::pnworker::presence::{Presence, presence_from_queue};
 use crate::pnworker::progress::{drive_link_from_payload, persist_side_effects};
 use crate::pnworker::pull::git_pull;
+use crate::pnworker::server_effects::load_server_settings;
 use crate::pnworker::smartcode_drive::{replace_smartcode_upload, SmartcodeDriveUpload};
 use crate::pnworker::workers::downloadworker::*;
 use crate::pnworker::workers::encodeworker::*;
@@ -259,6 +260,20 @@ async fn prepare_queued_job(job: &mut Job, worker: &str, write_subtitle: bool) -
             );
             return false;
         }
+        if let Some(watermark) = &job.server_watermark {
+            if let Err(e) = write(
+                job.directory.join("contents").join("server_watermark.ass"),
+                watermark,
+            )
+            .await
+            {
+                eprintln!(
+                    "[Pandora] job {} watermark setup failed: {}",
+                    job.job_id, e
+                );
+                return false;
+            }
+        }
     }
     true
 }
@@ -487,15 +502,20 @@ async fn dispatch_keycode_ready(
     db: &JobDb,
     shrine: &mut TypedShrine<WorkerMsg>,
     job: &mut Job,
-    request: KeycodeRequest,
+    _request: KeycodeRequest,
     resolved: ResolvedKeywords,
 ) -> KeycodeDispatch {
     if resolved.kind == KeepKind::Backup && job.attachment.is_empty() {
         return fail_keycode(db, job, "backup keywords require a subtitle").await;
     }
     let mut inputs = resolved.paths;
-    if let Some(intro) = request
-        .concat_candidates
+    let concat_candidates = match &job.preset {
+        Preset::PseudoLossless(candidates)
+        | Preset::Dummy(candidates)
+        | Preset::Standard(candidates)
+        | Preset::Gpu(candidates) => candidates,
+    };
+    if let Some(intro) = concat_candidates
         .as_ref()
         .and_then(|c| select_keycode_intro(inputs.first(), c))
     {
@@ -1717,6 +1737,7 @@ async fn do_job_progression_things(
                         job.preset.clone(),
                         job.job_id,
                         job.server_id,
+                        job.server_watermark.clone(),
                     )),
                     job,
                     db,
@@ -1950,7 +1971,6 @@ impl KeepRequest {
 #[derive(Clone, Debug)]
 pub struct KeycodeRequest {
     pub keywords: Vec<String>,
-    pub concat_candidates: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -2177,6 +2197,7 @@ pub struct Job {
     pub torrent: TorrentType,
     pub display_link: Option<String>,
     pub attachment: Vec<u8>,
+    pub server_watermark: Option<Vec<u8>>,
     pub frontend: Frontend,
     pub directory: PathBuf,
     pub ready: Stage,
@@ -2216,7 +2237,6 @@ impl Job {
         response_id: u64,
         job_type: JobType,
         job_id: u64,
-        preset: Preset,
         torrent: TorrentType,
         attachment: Vec<u8>,
         context: Context,
@@ -2227,6 +2247,17 @@ impl Job {
         let requested_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or(Duration::from_secs(0));
+        let settings = load_server_settings(server_id);
+        let preset = match job_type {
+            JobType::Encode | JobType::Pancode => settings.preset.clone(),
+            JobType::Keycode => match settings.preset {
+                Preset::PseudoLossless(candidates)
+                | Preset::Dummy(candidates)
+                | Preset::Standard(candidates)
+                | Preset::Gpu(candidates) => Preset::Standard(candidates),
+            },
+            _ => Preset::Dummy(None),
+        };
         Self {
             author,
             channel_id,
@@ -2237,6 +2268,11 @@ impl Job {
             torrent,
             display_link: None,
             attachment,
+            server_watermark: if matches!(job_type, JobType::Encode | JobType::Pancode) {
+                settings.watermark
+            } else {
+                None
+            },
             frontend: Frontend::discord(context, msg),
             directory: env::current_dir()
                 .unwrap_or_else(|_| PathBuf::from("."))
@@ -2273,7 +2309,6 @@ impl Job {
         author: u64,
         channel_id: u64,
         job_type: JobType,
-        preset: Preset,
         torrent: TorrentType,
         attachment: Vec<u8>,
         lang: String,
@@ -2286,6 +2321,17 @@ impl Job {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0);
+        let settings = load_server_settings(server_id);
+        let preset = match job_type {
+            JobType::Encode | JobType::Pancode => settings.preset.clone(),
+            JobType::Keycode => match settings.preset {
+                Preset::PseudoLossless(candidates)
+                | Preset::Dummy(candidates)
+                | Preset::Standard(candidates)
+                | Preset::Gpu(candidates) => Preset::Standard(candidates),
+            },
+            _ => Preset::Dummy(None),
+        };
         Self {
             author,
             channel_id,
@@ -2296,6 +2342,11 @@ impl Job {
             torrent,
             display_link: None,
             attachment,
+            server_watermark: if matches!(job_type, JobType::Encode | JobType::Pancode) {
+                settings.watermark
+            } else {
+                None
+            },
             frontend: Frontend::Web,
             directory: env::current_dir()
                 .unwrap_or_else(|_| PathBuf::from("."))

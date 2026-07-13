@@ -226,7 +226,6 @@ mod tests {
             0,
             0,
             JobType::Encode,
-            Preset::Standard(None),
             TorrentType::Link("https://example.invalid/input.torrent".to_string()),
             Vec::new(),
             "EN".to_string(),

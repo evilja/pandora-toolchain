@@ -115,6 +115,31 @@ pub fn ffprobe_samplerate(path: &str) -> Option<u32> {
     data.streams.into_iter().next()?.sample_rate.parse::<u32>().ok()
 }
 
+pub fn ffprobe_duration_centiseconds(path: &str) -> Option<u64> {
+    let output = Command::new(resolve_runtime_binary("ffprobe"))
+        .args([
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            path,
+        ])
+        .output()
+        .ok()?;
+    duration_to_centiseconds(String::from_utf8(output.stdout).ok()?.trim())
+}
+
+fn duration_to_centiseconds(value: &str) -> Option<u64> {
+    let seconds = value.parse::<f64>().ok()?;
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return None;
+    }
+    let centiseconds = (seconds * 100.0).ceil() as u64;
+    if centiseconds > 255 * 360_000 + 59 * 6_000 + 59 * 100 + 99 {
+        return None;
+    }
+    Some(centiseconds)
+}
+
 pub fn ffprobe_video_height(path: &str) -> Option<u32> {
     let output = Command::new(resolve_runtime_binary("ffprobe"))
         .args([
@@ -128,4 +153,22 @@ pub fn ffprobe_video_height(path: &str) -> Option<u32> {
 
     let stdout = String::from_utf8(output.stdout).ok()?;
     stdout.trim().parse::<u32>().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::duration_to_centiseconds;
+
+    #[test]
+    fn duration_rounds_up_to_ass_centiseconds() {
+        assert_eq!(duration_to_centiseconds("61.2301"), Some(6124));
+        assert_eq!(duration_to_centiseconds("61.23"), Some(6123));
+    }
+
+    #[test]
+    fn duration_rejects_invalid_or_unrepresentable_values() {
+        assert_eq!(duration_to_centiseconds("0"), None);
+        assert_eq!(duration_to_centiseconds("NaN"), None);
+        assert_eq!(duration_to_centiseconds("91800000"), None);
+    }
 }
