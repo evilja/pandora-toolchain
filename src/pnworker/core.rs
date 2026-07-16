@@ -81,6 +81,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
     shrine.layer(Worker::Upload, pn_uloadworker, 5, 50);
     shrine.layer(Worker::Probe, pn_probeworker, 5, 50);
     let mut queue_estimator = QueueEstimator::new();
+    let mut next_encode_dispatch_order = 1u64;
     let mut encode_reboot_epoch = shrine.reboot_epoch(&Worker::Encode);
     let mut gitquery: Option<HalfJob> = None;
 
@@ -104,7 +105,13 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
         do_duplicate_waiting_things(&db, &mut queue).await;
         do_queued_download_waiting_things(&db, &mut queue, &mut shrine).await;
         check_encode_reboot_epoch(&shrine, &mut encode_reboot_epoch, &mut queue);
-        do_job_progression_things(&db, &mut queue, &mut shrine).await;
+        do_job_progression_things(
+            &db,
+            &mut queue,
+            &mut shrine,
+            &mut next_encode_dispatch_order,
+        )
+        .await;
         if let Some(halfjob) = gitquery.take() {
             if encode_jobs_active(&queue) {
                 gitquery = Some(halfjob);
@@ -193,6 +200,7 @@ fn reset_encode_dispatches_after_reboot(queue: &mut [Job]) {
             || (job.job_type == JobType::Keycode && job.ready == Stage::Queued)
         {
             job.encode_dispatched = false;
+            job.encode_dispatch_order = None;
         }
     }
 }
@@ -482,6 +490,7 @@ async fn try_dispatch_keycode(
     db: &JobDb,
     shrine: &mut TypedShrine<WorkerMsg>,
     job: &mut Job,
+    next_encode_dispatch_order: &mut u64,
 ) -> KeycodeDispatch {
     let Some(request) = job.keycode.clone() else {
         return fail_keycode(db, job, "missing keycode request").await;
@@ -495,7 +504,15 @@ async fn try_dispatch_keycode(
             }
             Err(e) => return fail_keycode(db, job, &e).await,
         };
-    dispatch_keycode_ready(db, shrine, job, request, resolved).await
+    dispatch_keycode_ready(
+        db,
+        shrine,
+        job,
+        request,
+        resolved,
+        next_encode_dispatch_order,
+    )
+    .await
 }
 
 async fn dispatch_keycode_ready(
@@ -504,6 +521,7 @@ async fn dispatch_keycode_ready(
     job: &mut Job,
     _request: KeycodeRequest,
     resolved: ResolvedKeywords,
+    next_encode_dispatch_order: &mut u64,
 ) -> KeycodeDispatch {
     if resolved.kind == KeepKind::Backup && job.attachment.is_empty() {
         return fail_keycode(db, job, "backup keywords require a subtitle").await;
@@ -544,7 +562,7 @@ async fn dispatch_keycode_ready(
     {
         return KeycodeDispatch::Failed;
     }
-    job.encode_dispatched = true;
+    mark_encode_dispatched(job, next_encode_dispatch_order);
     KeycodeDispatch::Dispatched
 }
 
@@ -1291,6 +1309,7 @@ async fn do_worker_message_things(
                         .await;
                 } else {
                     i.encode_dispatched = false;
+                    i.encode_dispatch_order = None;
                 }
                 if a == Stage::Uploaded && previous_ready != Stage::Uploaded {
                     i.frontend.ghost_ping(i.author).await;
@@ -1504,6 +1523,7 @@ async fn do_job_progression_things(
     db: &JobDb,
     queue: &mut Vec<Job>,
     shrine: &mut TypedShrine<WorkerMsg>,
+    next_encode_dispatch_order: &mut u64,
 ) {
     let qlen = queue.len();
     let mut dead: Vec<u64> = vec![];
@@ -1555,7 +1575,7 @@ async fn do_job_progression_things(
             continue;
         }
         if job.job_type == JobType::Keycode && job.ready == Stage::Queued && !job.encode_dispatched {
-            match try_dispatch_keycode(db, shrine, job).await {
+            match try_dispatch_keycode(db, shrine, job, next_encode_dispatch_order).await {
                 KeycodeDispatch::Waiting => continue,
                 KeycodeDispatch::Dispatched => {
                     continue;
@@ -1748,7 +1768,7 @@ async fn do_job_progression_things(
                     dead.push(job.job_id);
                     continue;
                 }
-                job.encode_dispatched = true;
+                mark_encode_dispatched(job, next_encode_dispatch_order);
                 for key in cache_keys {
                     active_encode_sources
                         .entry(key)
@@ -1820,6 +1840,12 @@ async fn do_job_progression_things(
         sync_forwarded_state(db, queue, parent_id, Some(stage), Some(&worker)).await;
     }
     queue.retain(|j| !dead.contains(&j.job_id));
+}
+
+fn mark_encode_dispatched(job: &mut Job, next_encode_dispatch_order: &mut u64) {
+    job.encode_dispatched = true;
+    job.encode_dispatch_order = Some(*next_encode_dispatch_order);
+    *next_encode_dispatch_order = next_encode_dispatch_order.saturating_add(1);
 }
 
 async fn finish_keep_job(db: &JobDb, job: &mut Job, kind: KeepKind) -> bool {
@@ -2216,6 +2242,7 @@ pub struct Job {
     pub forward_parent: Option<u64>,
     pub encode_warnings: Vec<String>,
     pub encode_dispatched: bool,
+    pub encode_dispatch_order: Option<u64>,
     pub encode_frame: Option<u64>,
     pub encode_total: Option<u64>,
     pub encode_fps: Option<f64>,
@@ -2296,6 +2323,7 @@ impl Job {
             forward_parent: None,
             encode_warnings: Vec::new(),
             encode_dispatched: false,
+            encode_dispatch_order: None,
             encode_frame: None,
             encode_total: None,
             encode_fps: None,
@@ -2370,6 +2398,7 @@ impl Job {
             forward_parent: None,
             encode_warnings: Vec::new(),
             encode_dispatched: false,
+            encode_dispatch_order: None,
             encode_frame: None,
             encode_total: None,
             encode_fps: None,

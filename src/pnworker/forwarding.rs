@@ -239,6 +239,7 @@ mod tests {
             forward_parent: None,
             encode_warnings: Vec::new(),
             encode_dispatched: false,
+            encode_dispatch_order: None,
             encode_frame: None,
             encode_total: None,
             encode_fps: None,
