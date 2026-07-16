@@ -156,22 +156,44 @@ fn active_encode_job(job: &Job) -> bool {
         && job.ready == Stage::Encoding
 }
 
-pub(crate) fn queue_position(pos: usize, queue: &[Job]) -> usize {
-    1 + queue
+fn ordered_encode_jobs(queue: &[Job]) -> Vec<(usize, &Job)> {
+    let mut jobs = queue
         .iter()
-        .take(pos)
-        .filter(|job| render_queue_estimate_for_job(job) || active_encode_job(job))
-        .count()
+        .enumerate()
+        .filter(|(_, job)| render_queue_estimate_for_job(job) || active_encode_job(job))
+        .collect::<Vec<_>>();
+    jobs.sort_by_key(|(idx, job)| {
+        let state_order = if active_encode_job(job) {
+            0
+        } else if job.encode_dispatched {
+            1
+        } else {
+            2
+        };
+        (
+            state_order,
+            job.encode_dispatch_order.unwrap_or(u64::MAX),
+            job.requested_at,
+            job.job_id,
+            *idx,
+        )
+    });
+    jobs
+}
+
+pub(crate) fn queue_position(pos: usize, queue: &[Job]) -> usize {
+    ordered_encode_jobs(queue)
+        .iter()
+        .position(|(idx, _)| *idx == pos)
+        .map(|position| position + 1)
+        .unwrap_or(1)
 }
 
 fn estimate_wait_secs(pos: usize, queue: &[Job], estimator: &QueueEstimator) -> Option<u64> {
+    let jobs = ordered_encode_jobs(queue);
+    let target_position = jobs.iter().position(|(idx, _)| *idx == pos).unwrap_or(0);
     let mut total = 0u64;
-    let mut saw_any = false;
-    for job in queue
-        .iter()
-        .take(pos)
-        .filter(|job| render_queue_estimate_for_job(job) || active_encode_job(job))
-    {
+    for (_, job) in jobs.into_iter().take(target_position) {
         let frames = estimator.frames_for_job(job).unwrap_or(None);
         let secs = if active_encode_job(job) {
             remaining_secs_active(job.encode_frame, job.encode_total, job.encode_fps)
@@ -180,13 +202,8 @@ fn estimate_wait_secs(pos: usize, queue: &[Job], estimator: &QueueEstimator) -> 
             remaining_secs_queued(frames, &job.preset)
         };
         total = total.saturating_add(secs.unwrap_or(UNKNOWN_JOB_ESTIMATE_SECS));
-        saw_any = true;
     }
-    if saw_any {
-        Some(total)
-    } else {
-        Some(0)
-    }
+    Some(total)
 }
 
 pub(crate) fn remaining_secs_active(frame: Option<u64>, total: Option<u64>, fps: Option<f64>) -> Option<u64> {
@@ -234,6 +251,7 @@ mod tests {
         job.job_id = id;
         job.ready = ready;
         job.encode_dispatched = dispatched;
+        job.encode_dispatch_order = dispatched.then_some(id);
         job
     }
 
@@ -272,5 +290,34 @@ mod tests {
         assert!(render_queue_estimate_for_job(&queue[1]));
         assert_eq!(queue_position(1, &queue), 2);
         assert_eq!(estimate_wait_secs(1, &queue, &QueueEstimator::new()), Some(5));
+    }
+
+    #[test]
+    fn active_later_job_is_counted_ahead_of_earlier_queue_entry() {
+        let mut waiting = encode_job(1, Stage::Downloaded, true);
+        waiting.encode_dispatch_order = Some(2);
+        let mut active = encode_job(2, Stage::Encoding, true);
+        active.encode_dispatch_order = Some(1);
+        active.encode_frame = Some(100);
+        active.encode_total = Some(220);
+        active.encode_fps = Some(24.0);
+        let queue = vec![waiting, active];
+
+        assert_eq!(queue_position(0, &queue), 2);
+        assert_eq!(estimate_wait_secs(0, &queue, &QueueEstimator::new()), Some(5));
+    }
+
+    #[test]
+    fn dispatched_waiters_follow_encoder_dispatch_order() {
+        let mut last = encode_job(1, Stage::Downloaded, true);
+        last.encode_dispatch_order = Some(3);
+        let mut active = encode_job(2, Stage::Encoding, true);
+        active.encode_dispatch_order = Some(1);
+        let mut next = encode_job(3, Stage::Downloaded, true);
+        next.encode_dispatch_order = Some(2);
+        let queue = vec![last, active, next];
+
+        assert_eq!(queue_position(0, &queue), 3);
+        assert_eq!(queue_position(2, &queue), 2);
     }
 }
