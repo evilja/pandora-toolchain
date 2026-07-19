@@ -66,6 +66,10 @@ pub struct StudioTrack {
     pub duck_volume_percent: u8,
     #[serde(default)]
     pub fade_ms: u64,
+    #[serde(default)]
+    pub trim_start_ms: u64,
+    #[serde(default)]
+    pub trim_end_ms: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -302,6 +306,8 @@ impl StudioStore {
             display_name: display_name.unwrap_or("audio").to_string(),
             duck_volume_percent,
             fade_ms,
+            trim_start_ms: 0,
+            trim_end_ms: 0,
         };
         meta.tracks.push(track.clone());
         refresh_meta(&mut meta)?;
@@ -324,6 +330,26 @@ impl StudioStore {
         )?;
         let track = meta.tracks.iter_mut().find(|track| track.id == track_id).unwrap();
         track.offset_ms = offset;
+        let result = track.clone();
+        refresh_meta(&mut meta)?;
+        write_json_atomic(&meta_path(guild_id, &meta.studio_id), &meta).await?;
+        Ok(result)
+    }
+
+    pub async fn cut_track(
+        &self,
+        guild_id: u64,
+        user_id: u64,
+        track_id: u64,
+        amount_ms: u64,
+        cut_start: bool,
+        cut_end: bool,
+    ) -> Result<StudioTrack, String> {
+        let _guard = studio_lock().lock().await;
+        let mut meta = self.get_authorized_without_refresh_locked(guild_id, user_id).await?;
+        let track = meta.tracks.iter_mut().find(|track| track.id == track_id)
+            .ok_or_else(|| format!("track `{}` does not exist", track_id))?;
+        apply_track_cut(track, amount_ms, cut_start, cut_end)?;
         let result = track.clone();
         refresh_meta(&mut meta)?;
         write_json_atomic(&meta_path(guild_id, &meta.studio_id), &meta).await?;
@@ -450,6 +476,37 @@ pub async fn cleanup_studios_startup() {
 
 pub async fn cleanup_expired_studios() {
     cleanup_studios_startup().await;
+}
+
+fn apply_track_cut(track: &mut StudioTrack, amount_ms: u64, cut_start: bool, cut_end: bool) -> Result<(), String> {
+    if amount_ms == 0 || (!cut_start && !cut_end) {
+        return Err("cut amount and at least one side are required".to_string());
+    }
+    let side_count = cut_start as u64 + cut_end as u64;
+    let removed_ms = amount_ms.checked_mul(side_count)
+        .ok_or_else(|| "cut amount is too large".to_string())?;
+    if removed_ms >= track.duration_ms {
+        return Err(format!(
+            "cut would remove the entire track; current remaining duration is {:.3}s",
+            track.duration_ms as f64 / 1000.0,
+        ));
+    }
+    let trim_start_ms = if cut_start {
+        track.trim_start_ms.checked_add(amount_ms)
+            .ok_or_else(|| "start cut is too large".to_string())?
+    } else {
+        track.trim_start_ms
+    };
+    let trim_end_ms = if cut_end {
+        track.trim_end_ms.checked_add(amount_ms)
+            .ok_or_else(|| "end cut is too large".to_string())?
+    } else {
+        track.trim_end_ms
+    };
+    track.trim_start_ms = trim_start_ms;
+    track.trim_end_ms = trim_end_ms;
+    track.duration_ms -= removed_ms;
+    Ok(())
 }
 
 pub fn parse_keywords(raw: &str) -> Result<Vec<String>, String> {
@@ -723,6 +780,7 @@ fn to_manifest(meta: &StudioMeta, preview: Option<PreviewWindow>, video_preset: 
             id: track.id, path: track.path.clone(), mode: track.mode, offset_ms: track.offset_ms,
             duration_ms: track.duration_ms, display_name: track.display_name.clone(),
             duck_volume_percent: track.duck_volume_percent, fade_ms: track.fade_ms,
+            trim_start_ms: track.trim_start_ms, trim_end_ms: track.trim_end_ms,
         }).collect(),
         total_duration_ms: meta.total_duration_ms,
         fps_num: meta.fps_num,
@@ -736,6 +794,40 @@ fn to_manifest(meta: &StudioMeta, preview: Option<PreviewWindow>, video_preset: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_track(duration_ms: u64) -> StudioTrack {
+        StudioTrack {
+            id: 1,
+            path: PathBuf::from("track.ogg"),
+            mode: StudioTrackMode::Insert,
+            offset_ms: 0,
+            duration_ms,
+            display_name: "track".to_string(),
+            duck_volume_percent: 100,
+            fade_ms: 0,
+            trim_start_ms: 0,
+            trim_end_ms: 0,
+        }
+    }
+
+    #[test]
+    fn cuts_are_cumulative_and_reduce_effective_duration() {
+        let mut track = test_track(10_000);
+        assert!(apply_track_cut(&mut track, 1_250, true, false).is_ok());
+        assert!(apply_track_cut(&mut track, 500, true, true).is_ok());
+        assert_eq!(track.trim_start_ms, 1_750);
+        assert_eq!(track.trim_end_ms, 500);
+        assert_eq!(track.duration_ms, 7_750);
+    }
+
+    #[test]
+    fn cut_cannot_remove_the_entire_remaining_track() {
+        let mut track = test_track(2_000);
+        assert!(apply_track_cut(&mut track, 1_000, true, true).is_err());
+        assert_eq!(track.duration_ms, 2_000);
+        assert_eq!(track.trim_start_ms, 0);
+        assert_eq!(track.trim_end_ms, 0);
+    }
 
     #[test]
     fn parses_all_documented_offset_forms() {
