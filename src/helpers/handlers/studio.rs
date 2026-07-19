@@ -157,6 +157,45 @@ pub async fn handle_studio(
                 Err(e) => edit_text(ctx, &mut response, format!("Studio move failed: {}", e)).await,
             }
         }
+        "cut" => {
+            let Some(track_id) = positive_track_option(ctx, command).await else {
+                return;
+            };
+            let Some(side) = required_trimmed_option(ctx, command, "side", "side").await else {
+                return;
+            };
+            let (cut_start, cut_end) = match side.as_str() {
+                "start" => (true, false),
+                "end" => (false, true),
+                "both" => (true, true),
+                _ => {
+                    command_error(ctx, command, "Error: `side` must be start, end, or both.").await;
+                    return;
+                }
+            };
+            let Some(seconds) = option_f64(command, "seconds")
+                .filter(|value| value.is_finite() && *value >= 0.001 && *value <= 86_400.0)
+            else {
+                command_error(ctx, command, "Error: `seconds` must be from 0.001 to 86400.").await;
+                return;
+            };
+            let amount_ms = (seconds * 1000.0).round() as u64;
+            let Some(mut response) = working_response(ctx, command, "Cutting Studio track...").await else {
+                return;
+            };
+            match store.cut_track(guild_id, user_id, track_id, amount_ms, cut_start, cut_end).await {
+                Ok(track) => edit_text(ctx, &mut response, format!(
+                    "Cut track `#{}` by `{}` from {}. Remaining duration: `{}`. Total start/end cuts: `{}` / `{}`.",
+                    track.id,
+                    format_duration_precise(amount_ms),
+                    side,
+                    format_duration_precise(track.duration_ms),
+                    format_duration_precise(track.trim_start_ms),
+                    format_duration_precise(track.trim_end_ms),
+                )).await,
+                Err(e) => edit_text(ctx, &mut response, format!("Studio cut failed: {}", e)).await,
+            }
+        }
         "remove" => {
             let Some(track_id) = positive_track_option(ctx, command).await else {
                 return;

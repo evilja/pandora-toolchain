@@ -44,6 +44,10 @@ pub struct StudioRenderTrack {
     pub duck_volume_percent: u8,
     #[serde(default)]
     pub fade_ms: u64,
+    #[serde(default)]
+    pub trim_start_ms: u64,
+    #[serde(default)]
+    pub trim_end_ms: u64,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
@@ -215,7 +219,7 @@ pub fn build_studio_audio_filter(manifest: &StudioRenderManifest) -> String {
         if stop <= start {
             continue;
         }
-        let track_start = start.saturating_sub(track.offset_ms);
+        let track_start = track.trim_start_ms.saturating_add(start.saturating_sub(track.offset_ms));
         let track_duration = stop.saturating_sub(start);
         let delay = start.saturating_sub(render_start);
         let raw_label = format!("[studio-track-{}-raw]", track.id);
@@ -343,6 +347,8 @@ mod tests {
             display_name: "x".into(),
             duck_volume_percent: 100,
             fade_ms: 0,
+            trim_start_ms: 0,
+            trim_end_ms: 0,
         }
     }
 
@@ -411,6 +417,20 @@ mod tests {
         let parsed: StudioRenderTrack = serde_json::from_str(raw).unwrap();
         assert_eq!(parsed.duck_volume_percent, 100);
         assert_eq!(parsed.fade_ms, 0);
+        assert_eq!(parsed.trim_start_ms, 0);
+        assert_eq!(parsed.trim_end_ms, 0);
+    }
+
+    #[test]
+    fn trimmed_track_starts_from_retained_audio() {
+        let mut m = manifest();
+        let mut trimmed = track(1, StudioTrackMode::Override, 10_000, 5_000);
+        trimmed.trim_start_ms = 2_500;
+        trimmed.trim_end_ms = 1_000;
+        m.tracks = vec![trimmed];
+        let graph = build_studio_audio_filter(&m);
+        assert!(graph.contains("atrim=start=2.500:duration=5.000"));
+        assert!(graph.contains("between(t,10.000, 15.000)"));
     }
 
     #[test]
