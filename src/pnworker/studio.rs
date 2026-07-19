@@ -219,6 +219,10 @@ impl StudioStore {
             total.checked_add(probe.duration_ms)
         }).ok_or_else(|| "replacement Studio duration is too large".to_string())?;
 
+        let _guard = studio_lock().lock().await;
+        let mut meta = self.get_authorized_without_refresh_locked(guild_id, user_id).await?;
+        refresh_meta(&mut meta)?;
+
         let generation = random_hex(12)?;
         let stage_dir = studios_root().join(format!(".stage-{}", generation));
         let stage_sources = stage_dir.join("sources");
@@ -233,18 +237,6 @@ impl StudioStore {
             }
         }
 
-        let _guard = studio_lock().lock().await;
-        let mut meta = match self.get_authorized_without_refresh_locked(guild_id, user_id).await {
-            Ok(meta) => meta,
-            Err(e) => {
-                fs::remove_dir_all(&stage_dir).await.ok();
-                return Err(e);
-            }
-        };
-        if let Err(e) = refresh_meta(&mut meta) {
-            fs::remove_dir_all(&stage_dir).await.ok();
-            return Err(e);
-        }
         let final_sources = studio_dir(guild_id, &meta.studio_id).join(format!("sources-{}", generation));
         if let Err(e) = fs::rename(&stage_sources, &final_sources).await {
             fs::remove_dir_all(&stage_dir).await.ok();
