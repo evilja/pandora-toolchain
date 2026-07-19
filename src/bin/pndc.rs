@@ -651,7 +651,7 @@ fn help_catalog() -> &'static [HelpCommand] {
             name: "studio",
             summary: "Edit kept videos with mixed, replacement, or ducking audio tracks.",
             usage: "/studio create|insert|override|duck|move|remove|preview|timeline|done|disown|reown ...",
-            details: "Create a Studio from ordered comma-separated keep keywords. Insert overlays audio; override mutes source audio for that track's interval. Duck mixes its input while fading every other audio source to a target percentage and back. Move accepts seconds, MM:SS, HH:MM:SS, or frame offsets ending in f. Share the Studio ID so guild collaborators can reown it. Active Studios expire after 24 hours of inactivity; a Studio with no collaborators expires after 30 minutes.",
+            details: "Create a Studio from ordered comma-separated keep keywords. Insert overlays audio; override mutes source audio for that track's interval. Duck mixes its input while fading every other audio source to a target percentage and back. Move accepts absolute or +/- relative seconds, MM:SS, HH:MM:SS, and frame offsets ending in f. Share the Studio ID so guild collaborators can reown it. Active Studios expire after 24 hours of inactivity; a Studio with no collaborators expires after 30 minutes.",
         },
         HelpCommand {
             section: "encode",
@@ -2225,7 +2225,7 @@ impl EventHandler for Handler {
             .add_option(
                 CreateCommandOption::new(CommandOptionType::SubCommand, "move", "Move a Studio track to a frame or time offset")
                     .add_sub_option(CreateCommandOption::new(CommandOptionType::Integer, "track", "Stable track number").required(true).min_int_value(1))
-                    .add_sub_option(CreateCommandOption::new(CommandOptionType::String, "offset", "Examples: 30s, 00:30, 720f").required(true))
+                    .add_sub_option(CreateCommandOption::new(CommandOptionType::String, "offset", "Absolute or relative: 30s, +5s, -00:03, +24f").required(true))
             )
             .add_option(
                 CreateCommandOption::new(CommandOptionType::SubCommand, "remove", "Remove a Studio audio track")

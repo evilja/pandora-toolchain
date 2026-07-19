@@ -59,6 +59,13 @@ impl PreviewWindow {
         let start_ms = ideal_start.min(total_duration_ms.saturating_sub(duration_ms));
         Self { start_ms, duration_ms }
     }
+
+    pub fn around_track_start(track_start_ms: u64, total_duration_ms: u64) -> Self {
+        let start_ms = track_start_ms.saturating_sub(2_000).min(total_duration_ms);
+        let end_ms = track_start_ms.saturating_add(30_000).min(total_duration_ms);
+        let duration_ms = end_ms.saturating_sub(start_ms);
+        Self { start_ms, duration_ms }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -352,6 +359,13 @@ mod tests {
         assert_eq!(PreviewWindow::centered(39_000, 40_000), PreviewWindow { start_ms: 10_000, duration_ms: 30_000 });
         assert_eq!(PreviewWindow::centered(2_000, 40_000), PreviewWindow { start_ms: 0, duration_ms: 30_000 });
         assert_eq!(PreviewWindow::centered(2_000, 10_000), PreviewWindow { start_ms: 0, duration_ms: 10_000 });
+    }
+
+    #[test]
+    fn track_start_preview_has_two_second_preroll_and_thirty_seconds_after() {
+        assert_eq!(PreviewWindow::around_track_start(5_000, 60_000), PreviewWindow { start_ms: 3_000, duration_ms: 32_000 });
+        assert_eq!(PreviewWindow::around_track_start(1_000, 60_000), PreviewWindow { start_ms: 0, duration_ms: 31_000 });
+        assert_eq!(PreviewWindow::around_track_start(50_000, 60_000), PreviewWindow { start_ms: 48_000, duration_ms: 12_000 });
     }
 
     #[test]
