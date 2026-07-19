@@ -14,6 +14,7 @@ pub enum StudioSourceKind {
 pub enum StudioTrackMode {
     Insert,
     Override,
+    Duck,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +40,10 @@ pub struct StudioRenderTrack {
     pub offset_ms: u64,
     pub duration_ms: u64,
     pub display_name: String,
+    #[serde(default = "default_duck_volume_percent")]
+    pub duck_volume_percent: u8,
+    #[serde(default)]
+    pub fade_ms: u64,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
@@ -100,8 +105,57 @@ pub fn write_ffconcat(path: &Path, inputs: &[StudioInput]) -> Result<(), String>
     std::fs::write(path, ffconcat_contents(inputs)).map_err(|e| e.to_string())
 }
 
+fn default_duck_volume_percent() -> u8 {
+    100
+}
+
 fn seconds(ms: u64) -> String {
     format!("{:.3}", ms as f64 / 1000.0)
+}
+
+fn signed_seconds(ms: i128) -> String {
+    format!("{:.3}", ms as f64 / 1000.0)
+}
+
+fn duck_volume_filter(track: &StudioRenderTrack, render_start: u64) -> String {
+    let target = track.duck_volume_percent.min(100) as f64 / 100.0;
+    let start_ms = track.offset_ms as i128 - render_start as i128;
+    let end_ms = start_ms + track.duration_ms as i128;
+    let fade_ms = track.fade_ms.min(track.duration_ms / 2);
+    let start = signed_seconds(start_ms);
+    let end = signed_seconds(end_ms);
+    if fade_ms == 0 {
+        return format!("volume={:.4}:enable='between(t,{},{})'", target, start, end);
+    }
+
+    let down_end = signed_seconds(start_ms + fade_ms as i128);
+    let up_start_ms = end_ms - fade_ms as i128;
+    let up_start = signed_seconds(up_start_ms);
+    let fade = seconds(fade_ms);
+    format!(
+        "volume='if(lt(t,{start}),1,if(lt(t,{down_end}),1+({target:.4}-1)*(t-{start})/{fade},if(lt(t,{up_start}),{target:.4},if(lt(t,{end}),{target:.4}+(1-{target:.4})*(t-{up_start})/{fade},1))))':eval=frame"
+    )
+}
+
+fn apply_ducking(
+    graph: &mut Vec<String>,
+    manifest: &StudioRenderManifest,
+    initial_label: String,
+    excluded_track_id: Option<u64>,
+    render_start: u64,
+    label_prefix: &str,
+) -> String {
+    let mut label = initial_label;
+    for duck in manifest.tracks.iter().filter(|track| {
+        track.mode == StudioTrackMode::Duck
+            && Some(track.id) != excluded_track_id
+            && track.duck_volume_percent < 100
+    }) {
+        let next = format!("[{}-duck-{}]", label_prefix, duck.id);
+        graph.push(format!("{}{}{}", label, duck_volume_filter(duck, render_start), next));
+        label = next;
+    }
+    label
 }
 
 pub fn build_studio_audio_filter(manifest: &StudioRenderManifest) -> String {
@@ -109,22 +163,23 @@ pub fn build_studio_audio_filter(manifest: &StudioRenderManifest) -> String {
     let render_start = preview.map(|p| p.start_ms).unwrap_or(0);
     let render_duration = manifest.render_duration_ms();
     let end = render_start.saturating_add(render_duration);
-    let mut graph = String::new();
+    let base_trim_start = if preview.is_some() { 0 } else { render_start };
+    let mut graph = Vec::new();
 
+    let base_raw = "[studio-base-raw]".to_string();
     if manifest.sources.first().map(|s| s.has_audio).unwrap_or(false) {
-        graph.push_str("[0:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo");
+        graph.push(format!(
+            "[0:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,atrim=start={}:duration={},asetpts=PTS-STARTPTS{}",
+            seconds(base_trim_start), seconds(render_duration), base_raw
+        ));
     } else {
-        graph.push_str(&format!(
-            "anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration={}",
-            seconds(render_duration)
+        graph.push(format!(
+            "anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration={},asetpts=PTS-STARTPTS{}",
+            seconds(render_duration), base_raw
         ));
     }
-    let base_trim_start = if preview.is_some() { 0 } else { render_start };
-    graph.push_str(&format!(",atrim=start={}:duration={}", seconds(base_trim_start), seconds(render_duration)));
-    graph.push_str(",asetpts=PTS-STARTPTS");
 
-    let mut base_label = "[studio-base]".to_string();
-    graph.push_str(&base_label);
+    let mut base_label = base_raw;
     for track in &manifest.tracks {
         if track.mode != StudioTrackMode::Override {
             continue;
@@ -134,17 +189,19 @@ pub fn build_studio_audio_filter(manifest: &StudioRenderManifest) -> String {
         if stop <= start {
             continue;
         }
-        let local_start = seconds(start.saturating_sub(render_start));
-        let local_stop = seconds(stop.saturating_sub(render_start));
         let next = format!("[studio-mute-{}]", track.id);
-        graph.push_str(&format!(
-            ";{}volume=enable='between(t,{}, {})':volume=0{}",
-            base_label, local_start, local_stop, next
+        graph.push(format!(
+            "{}volume=enable='between(t,{}, {})':volume=0{}",
+            base_label,
+            seconds(start.saturating_sub(render_start)),
+            seconds(stop.saturating_sub(render_start)),
+            next,
         ));
         base_label = next;
     }
+    base_label = apply_ducking(&mut graph, manifest, base_label, None, render_start, "studio-base");
 
-    let mut inputs = vec![base_label.clone()];
+    let mut inputs = vec![base_label];
     for (idx, track) in manifest.tracks.iter().enumerate() {
         let start = track.offset_ms.max(render_start);
         let stop = track.offset_ms.saturating_add(track.duration_ms).min(end);
@@ -154,28 +211,33 @@ pub fn build_studio_audio_filter(manifest: &StudioRenderManifest) -> String {
         let track_start = start.saturating_sub(track.offset_ms);
         let track_duration = stop.saturating_sub(start);
         let delay = start.saturating_sub(render_start);
-        let label = format!("[studio-track-{}]", track.id);
-        graph.push_str(&format!(
-            ";[{}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,atrim=start={}:duration={},asetpts=PTS-STARTPTS,adelay={}|{}{}",
+        let raw_label = format!("[studio-track-{}-raw]", track.id);
+        graph.push(format!(
+            "[{}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,atrim=start={}:duration={},asetpts=PTS-STARTPTS,adelay={}|{}{}",
             idx + 1,
             seconds(track_start),
             seconds(track_duration),
             delay,
             delay,
-            label
+            raw_label,
         ));
+        let label = apply_ducking(
+            &mut graph,
+            manifest,
+            raw_label,
+            Some(track.id),
+            render_start,
+            &format!("studio-track-{}", track.id),
+        );
         inputs.push(label);
     }
 
-    graph.push(';');
-    for input in &inputs {
-        graph.push_str(input);
-    }
-    graph.push_str(&format!(
-        "amix=inputs={}:duration=longest:dropout_transition=0,alimiter=limit=0.95,atrim=duration={},asetpts=PTS-STARTPTS[studio-aout]",
-        inputs.len(), seconds(render_duration)
+    let mix_inputs = inputs.concat();
+    graph.push(format!(
+        "{}amix=inputs={}:duration=longest:dropout_transition=0,alimiter=limit=0.95,atrim=duration={},asetpts=PTS-STARTPTS[studio-aout]",
+        mix_inputs, inputs.len(), seconds(render_duration)
     ));
-    graph
+    graph.join(";")
 }
 
 pub fn studio_ffmpeg_params(
@@ -265,7 +327,16 @@ mod tests {
     }
 
     fn track(id: u64, mode: StudioTrackMode, offset_ms: u64, duration_ms: u64) -> StudioRenderTrack {
-        StudioRenderTrack { id, path: PathBuf::from(format!("track{}.ogg", id)), mode, offset_ms, duration_ms, display_name: "x".into() }
+        StudioRenderTrack {
+            id,
+            path: PathBuf::from(format!("track{}.ogg", id)),
+            mode,
+            offset_ms,
+            duration_ms,
+            display_name: "x".into(),
+            duck_volume_percent: 100,
+            fade_ms: 0,
+        }
     }
 
     fn manifest() -> StudioRenderManifest {
@@ -318,5 +389,42 @@ mod tests {
         assert!(graph.contains("anullsrc"));
         assert!(graph.contains("duration=1.000"));
         assert!(graph.contains("adelay=59000|59000"));
+    }
+
+    #[test]
+    fn old_track_json_defaults_to_no_ducking() {
+        let raw = r#"{"id":1,"path":"track.ogg","mode":"Insert","offset_ms":0,"duration_ms":1000,"display_name":"x"}"#;
+        let parsed: StudioRenderTrack = serde_json::from_str(raw).unwrap();
+        assert_eq!(parsed.duck_volume_percent, 100);
+        assert_eq!(parsed.fade_ms, 0);
+    }
+
+    #[test]
+    fn duck_fades_all_other_inputs_but_not_itself() {
+        let mut m = manifest();
+        let insert = track(1, StudioTrackMode::Insert, 0, 30_000);
+        let mut duck = track(2, StudioTrackMode::Duck, 10_000, 10_000);
+        duck.duck_volume_percent = 25;
+        duck.fade_ms = 2_000;
+        m.tracks = vec![insert, duck];
+        let graph = build_studio_audio_filter(&m);
+        assert!(graph.contains("[studio-base-raw]volume='if(lt(t,10.000)"));
+        assert!(graph.contains("[studio-track-1-raw]volume='if(lt(t,10.000)"));
+        assert!(!graph.contains("[studio-track-2-raw]volume='if(lt(t,10.000)"));
+        assert!(graph.contains("lt(t,12.000)"));
+        assert!(graph.contains("lt(t,18.000),0.2500"));
+        assert!(graph.contains("lt(t,20.000)"));
+    }
+
+    #[test]
+    fn duck_fade_is_clamped_to_half_the_track_duration() {
+        let mut m = manifest();
+        let mut duck = track(1, StudioTrackMode::Duck, 5_000, 2_000);
+        duck.duck_volume_percent = 0;
+        duck.fade_ms = 5_000;
+        m.tracks = vec![duck];
+        let graph = build_studio_audio_filter(&m);
+        assert!(graph.contains("lt(t,6.000)"));
+        assert!(graph.contains("(t-6.000)/1.000"));
     }
 }

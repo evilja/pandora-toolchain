@@ -649,9 +649,9 @@ fn help_catalog() -> &'static [HelpCommand] {
         HelpCommand {
             section: "encode",
             name: "studio",
-            summary: "Edit kept videos with inserted or replacement audio tracks.",
-            usage: "/studio create|insert|override|move|remove|preview|timeline|done|disown|reown ...",
-            details: "Create a Studio from ordered comma-separated keep keywords. Insert overlays audio; override mutes source audio for that track's interval. Move accepts seconds, MM:SS, HH:MM:SS, or frame offsets ending in f. Share the Studio ID so guild collaborators can reown it. Active Studios expire after 24 hours of inactivity; a Studio with no collaborators expires after 30 minutes.",
+            summary: "Edit kept videos with mixed, replacement, or ducking audio tracks.",
+            usage: "/studio create|insert|override|duck|move|remove|preview|timeline|done|disown|reown ...",
+            details: "Create a Studio from ordered comma-separated keep keywords. Insert overlays audio; override mutes source audio for that track's interval. Duck mixes its input while fading every other audio source to a target percentage and back. Move accepts seconds, MM:SS, HH:MM:SS, or frame offsets ending in f. Share the Studio ID so guild collaborators can reown it. Active Studios expire after 24 hours of inactivity; a Studio with no collaborators expires after 30 minutes.",
         },
         HelpCommand {
             section: "encode",
@@ -2213,6 +2213,14 @@ impl EventHandler for Handler {
             .add_option(
                 CreateCommandOption::new(CommandOptionType::SubCommand, "override", "Replace source audio during an audio track")
                     .add_sub_option(CreateCommandOption::new(CommandOptionType::Attachment, "audio", "Audio attachment").required(true))
+            )
+            .add_option(
+                CreateCommandOption::new(CommandOptionType::SubCommand, "duck", "Lower all other audio while this track plays")
+                    .add_sub_option(CreateCommandOption::new(CommandOptionType::Attachment, "audio", "Audio attachment").required(true))
+                    .add_sub_option(CreateCommandOption::new(CommandOptionType::Integer, "volume", "Target volume percentage for other audio")
+                        .required(true).min_int_value(0).max_int_value(100))
+                    .add_sub_option(CreateCommandOption::new(CommandOptionType::Number, "fade", "Fade-down and fade-up time in seconds")
+                        .required(true).min_number_value(0.0).max_number_value(3600.0))
             )
             .add_option(
                 CreateCommandOption::new(CommandOptionType::SubCommand, "move", "Move a Studio track to a frame or time offset")

@@ -71,6 +71,7 @@ pub fn render_timeline(spec: &TimelineSpec) -> ImageResult<Vec<u8>> {
         let color = match track.mode {
             StudioTrackMode::Insert => Color { r: 64, g: 190, b: 130, a: 235 },
             StudioTrackMode::Override => Color { r: 222, g: 112, b: 91, a: 235 },
+            StudioTrackMode::Duck => Color { r: 176, g: 116, b: 224, a: 235 },
         };
         let label = format!("#{} {} ({:?})", track.id, truncate(&track.name, 22), track.mode);
         draw_lane(&mut canvas, &font, &label, index + 1, left, scale, duration_ms, height, color)?;
