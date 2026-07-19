@@ -650,8 +650,8 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "encode",
             name: "studio",
             summary: "Edit kept videos with mixed, replacement, or ducking audio tracks.",
-            usage: "/studio create|insert|override|duck|move|cut|remove|preview|timeline|done|disown|reown ...",
-            details: "Create a Studio from ordered comma-separated keep keywords. Insert overlays audio; override mutes source audio for that track's interval. Duck mixes its input while fading every other audio source to a target percentage and back. Move accepts absolute or +/- relative seconds, MM:SS, HH:MM:SS, and frame offsets ending in f. Cut cumulatively trims decimal seconds from the start, end, or both sides of a track. Share the Studio ID so guild collaborators can reown it. Active Studios expire after 24 hours of inactivity; a Studio with no collaborators expires after 30 minutes.",
+            usage: "/studio create|keywords|insert|override|duck|move|cut|remove|preview|timeline|done|disown|reown ...",
+            details: "Create a Studio from ordered comma-separated keep keywords. Insert overlays audio; override mutes source audio for that track's interval. Duck mixes its input while fading every other audio source to a target percentage and back. Move accepts absolute or +/- relative seconds, MM:SS, HH:MM:SS, and frame offsets ending in f. Keywords atomically replaces the Studio's ordered source keeps. Cut cumulatively trims decimal seconds from the start, end, or both sides of a track. Share the Studio ID so guild collaborators can reown it. Active Studios expire after 24 hours of inactivity; a Studio with no collaborators expires after 30 minutes.",
         },
         HelpCommand {
             section: "encode",
@@ -2199,6 +2199,10 @@ impl EventHandler for Handler {
             .description("Edit kept videos with collaborative audio tracks")
             .add_option(
                 CreateCommandOption::new(CommandOptionType::SubCommand, "create", "Create a Studio from ordered keep keywords")
+                    .add_sub_option(CreateCommandOption::new(CommandOptionType::String, "keywords", "Comma-separated keep keywords").required(true))
+            )
+            .add_option(
+                CreateCommandOption::new(CommandOptionType::SubCommand, "keywords", "Replace the Studio's ordered source keeps")
                     .add_sub_option(CreateCommandOption::new(CommandOptionType::String, "keywords", "Comma-separated keep keywords").required(true))
             )
             .add_option(CreateCommandOption::new(CommandOptionType::SubCommand, "disown", "Leave your current Studio"))

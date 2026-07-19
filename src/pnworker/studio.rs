@@ -194,6 +194,99 @@ impl StudioStore {
         Ok(meta)
     }
 
+    pub async fn replace_keywords(
+        &self,
+        guild_id: u64,
+        user_id: u64,
+        raw_keywords: &str,
+    ) -> Result<(StudioMeta, usize), String> {
+        let keywords = parse_keywords(raw_keywords)?;
+        let resolved = resolve_studio_keywords(guild_id, &keywords).await?;
+        let mut probes = Vec::with_capacity(resolved.paths.len());
+        for path in &resolved.paths {
+            let probe = probe_media(path.clone()).await?;
+            validate_video_probe(path, &probe)?;
+            probes.push(probe);
+        }
+        validate_source_compatibility(&probes)?;
+        let total_duration_ms = probes.iter().try_fold(0u64, |total, probe| {
+            total.checked_add(probe.duration_ms)
+        }).ok_or_else(|| "replacement Studio duration is too large".to_string())?;
+
+        let generation = random_hex(12)?;
+        let stage_dir = studios_root().join(format!(".stage-{}", generation));
+        let stage_sources = stage_dir.join("sources");
+        fs::create_dir_all(&stage_sources).await
+            .map_err(|e| format!("failed to create Studio source staging directory: {}", e))?;
+        for (idx, source) in resolved.paths.iter().enumerate() {
+            let ext = safe_extension(source).unwrap_or_else(|| "mkv".to_string());
+            let target = stage_sources.join(format!("{:03}.{}", idx + 1, ext));
+            if let Err(e) = fs::copy(source, &target).await {
+                fs::remove_dir_all(&stage_dir).await.ok();
+                return Err(format!("failed to copy replacement source {}: {}", idx + 1, e));
+            }
+        }
+
+        let _guard = studio_lock().lock().await;
+        let mut meta = match self.get_authorized_without_refresh_locked(guild_id, user_id).await {
+            Ok(meta) => meta,
+            Err(e) => {
+                fs::remove_dir_all(&stage_dir).await.ok();
+                return Err(e);
+            }
+        };
+        if let Err(e) = refresh_meta(&mut meta) {
+            fs::remove_dir_all(&stage_dir).await.ok();
+            return Err(e);
+        }
+        let final_sources = studio_dir(guild_id, &meta.studio_id).join(format!("sources-{}", generation));
+        if let Err(e) = fs::rename(&stage_sources, &final_sources).await {
+            fs::remove_dir_all(&stage_dir).await.ok();
+            return Err(format!("failed to commit replacement Studio sources: {}", e));
+        }
+        fs::remove_dir_all(&stage_dir).await.ok();
+
+        let current_studio_dir = studio_dir(guild_id, &meta.studio_id);
+        let old_source_dirs = meta.sources.iter()
+            .filter_map(|source| source.path.parent().map(Path::to_path_buf))
+            .filter(|path| path.starts_with(&current_studio_dir) && path != &current_studio_dir)
+            .collect::<std::collections::HashSet<_>>();
+        meta.sources = keywords.iter().zip(probes.iter()).enumerate().map(|(idx, (keyword, probe))| {
+            let ext = safe_extension(&resolved.paths[idx]).unwrap_or_else(|| "mkv".to_string());
+            StudioSource {
+                keyword: keyword.clone(),
+                path: final_sources.join(format!("{:03}.{}", idx + 1, ext)),
+                kind: resolved.kind,
+                duration_ms: probe.duration_ms,
+                fps_num: probe.fps_num,
+                fps_den: probe.fps_den,
+                width: probe.width,
+                height: probe.height,
+                has_audio: probe.has_audio,
+            }
+        }).collect();
+        meta.source_kind = resolved.kind;
+        meta.total_duration_ms = total_duration_ms;
+        meta.fps_num = probes[0].fps_num;
+        meta.fps_den = probes[0].fps_den;
+        let removed_track_paths = remove_out_of_range_tracks(&mut meta.tracks, total_duration_ms);
+        let removed_tracks = removed_track_paths.len();
+        if let Err(e) = write_json_atomic(&meta_path(guild_id, &meta.studio_id), &meta).await {
+            fs::remove_dir_all(&final_sources).await.ok();
+            return Err(e);
+        }
+
+        for old_dir in old_source_dirs {
+            if old_dir != final_sources {
+                fs::remove_dir_all(old_dir).await.ok();
+            }
+        }
+        for path in removed_track_paths {
+            fs::remove_file(path).await.ok();
+        }
+        Ok((meta, removed_tracks))
+    }
+
     pub async fn get_current(&self, guild_id: u64, user_id: u64) -> Result<StudioMeta, String> {
         let _guard = studio_lock().lock().await;
         let pointers = read_pointers(guild_id, user_id).await?;
@@ -476,6 +569,19 @@ pub async fn cleanup_studios_startup() {
 
 pub async fn cleanup_expired_studios() {
     cleanup_studios_startup().await;
+}
+
+fn remove_out_of_range_tracks(tracks: &mut Vec<StudioTrack>, total_duration_ms: u64) -> Vec<PathBuf> {
+    let mut removed = Vec::new();
+    tracks.retain(|track| {
+        if track.offset_ms >= total_duration_ms {
+            removed.push(track.path.clone());
+            false
+        } else {
+            true
+        }
+    });
+    removed
 }
 
 fn apply_track_cut(track: &mut StudioTrack, amount_ms: u64, cut_start: bool, cut_end: bool) -> Result<(), String> {
@@ -808,6 +914,23 @@ mod tests {
             trim_start_ms: 0,
             trim_end_ms: 0,
         }
+    }
+
+    #[test]
+    fn keyword_replacement_removes_only_tracks_outside_new_timeline() {
+        let mut first = test_track(5_000);
+        first.id = 1;
+        first.offset_ms = 9_999;
+        let mut boundary = test_track(5_000);
+        boundary.id = 2;
+        boundary.offset_ms = 10_000;
+        let mut later = test_track(5_000);
+        later.id = 3;
+        later.offset_ms = 12_000;
+        let mut tracks = vec![first, boundary, later];
+        let removed = remove_out_of_range_tracks(&mut tracks, 10_000);
+        assert_eq!(tracks.iter().map(|track| track.id).collect::<Vec<_>>(), vec![1]);
+        assert_eq!(removed, vec![PathBuf::from("track.ogg"), PathBuf::from("track.ogg")]);
     }
 
     #[test]

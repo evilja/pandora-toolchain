@@ -36,6 +36,24 @@ pub async fn handle_studio(
                 Err(e) => edit_text(ctx, &mut response, format!("Studio create failed: {}", e)).await,
             }
         }
+        "keywords" => {
+            let Some(keywords) = required_trimmed_option(ctx, command, "keywords", "keywords").await else {
+                return;
+            };
+            let Some(mut response) = working_response(ctx, command, "Replacing Pandora Studio sources...").await else {
+                return;
+            };
+            match store.replace_keywords(guild_id, user_id, &keywords).await {
+                Ok((meta, removed_tracks)) => edit_text(ctx, &mut response, format!(
+                    "Replaced Studio `{}` sources with {} keep(s). Duration: `{}`. Removed {} out-of-range track(s).",
+                    meta.studio_id,
+                    meta.sources.len(),
+                    format_duration(meta.total_duration_ms),
+                    removed_tracks,
+                )).await,
+                Err(e) => edit_text(ctx, &mut response, format!("Studio keyword replacement failed: {}", e)).await,
+            }
+        }
         "disown" => {
             let Some(mut response) = working_response(ctx, command, "Updating Pandora Studio...").await else {
                 return;
