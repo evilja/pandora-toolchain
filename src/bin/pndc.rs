@@ -650,8 +650,8 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "encode",
             name: "studio",
             summary: "Edit kept videos with mixed, replacement, or ducking audio tracks.",
-            usage: "/studio create|keywords|insert|override|duck|move|cut|remove|preview|timeline|done|disown|reown ...",
-            details: "Create a Studio from ordered comma-separated keep keywords. Insert overlays audio; override mutes source audio for that track's interval. Duck mixes its input while fading every other audio source to a target percentage and back. Move accepts absolute or +/- relative seconds, MM:SS, HH:MM:SS, and frame offsets ending in f. Keywords atomically replaces the Studio's ordered source keeps. Cut cumulatively trims decimal seconds from the start, end, or both sides of a track. Share the Studio ID so guild collaborators can reown it. Active Studios expire after 24 hours of inactivity; a Studio with no collaborators expires after 30 minutes.",
+            usage: "/studio create|keywords|insert|override|duck|edittrack|move|cut|remove|preview|timeline|done|disown|reown ...",
+            details: "Create a Studio from ordered comma-separated keep keywords. Insert overlays audio; override mutes source audio for that track's interval. Duck mixes its input while fading every other audio source to a target percentage and back. Move accepts absolute or +/- relative seconds, MM:SS, HH:MM:SS, and frame offsets ending in f. Keywords atomically replaces the Studio's ordered source keeps. Edittrack changes a track's own volume, type, and Duck settings. Cut cumulatively trims decimal seconds from the start, end, or both sides of a track. Share the Studio ID so guild collaborators can reown it. Active Studios expire after 24 hours of inactivity; a Studio with no collaborators expires after 30 minutes.",
         },
         HelpCommand {
             section: "encode",
@@ -2225,6 +2225,29 @@ impl EventHandler for Handler {
                         .required(true).min_int_value(0).max_int_value(100))
                     .add_sub_option(CreateCommandOption::new(CommandOptionType::Number, "fade", "Fade-down and fade-up time in seconds")
                         .required(true).min_number_value(0.0).max_number_value(3600.0))
+            )
+            .add_option(
+                CreateCommandOption::new(CommandOptionType::SubCommand, "edittrack", "Edit a Studio track's volume, type, or Duck settings")
+                    .add_sub_option(CreateCommandOption::new(CommandOptionType::Integer, "track", "Stable track number").required(true).min_int_value(1))
+                    .add_sub_option(
+                        CreateCommandOption::new(CommandOptionType::Integer, "volume", "Track's own volume percentage (0-200)")
+                            .required(false).min_int_value(0).max_int_value(200)
+                    )
+                    .add_sub_option(
+                        CreateCommandOption::new(CommandOptionType::String, "type", "Track type")
+                            .required(false)
+                            .add_string_choice("Insert", "insert")
+                            .add_string_choice("Override", "override")
+                            .add_string_choice("Duck", "duck")
+                    )
+                    .add_sub_option(
+                        CreateCommandOption::new(CommandOptionType::Integer, "duck_volume", "Duck target percentage for other audio (0-100)")
+                            .required(false).min_int_value(0).max_int_value(100)
+                    )
+                    .add_sub_option(
+                        CreateCommandOption::new(CommandOptionType::Number, "fade", "Duck fade time in seconds each way")
+                            .required(false).min_number_value(0.0).max_number_value(3600.0)
+                    )
             )
             .add_option(
                 CreateCommandOption::new(CommandOptionType::SubCommand, "move", "Move a Studio track to a frame or time offset")

@@ -16,7 +16,7 @@ CLI tool flags and ASS parsing details.
 - Encode-kind full renders use video stream copy and AAC audio; preview windows always use the Dummy libx264 preset.
 - Backup-kind full renders use the selected Standard/GPU/PseudoLossless/Dummy video settings without subtitle or intro filters.
 - Insert tracks are delayed and mixed over base audio. Override tracks additionally mute base audio for their clipped placement intervals. Duck tracks lower every other source to their configured target percentage, with symmetric fade-down/fade-up times clamped to half the duck track duration; overlapping duck envelopes multiply. A source with no audio receives duration-matched stereo silence.
-- Every track applies its cumulative start/end cuts, is normalized to 48 kHz stereo, mixed with a limiter, and clipped to the video or preview duration.
+- Every track applies its cumulative start/end cuts and own 0-200% volume, is normalized to 48 kHz stereo, mixed with a limiter, and clipped to the video or preview duration.
 - Preview input seeking is applied before the concat source and track trims/delays are made relative to the preview window. Invalid manifests and concat-list failures exit nonzero so the worker reports failure rather than uploading a missing output.
 
 ## `ffmpeg` preview screenshots
