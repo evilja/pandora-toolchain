@@ -1,6 +1,6 @@
 use super::*;
 use pandora_toolchain::lib::image::timeline::{render_timeline, TimelineSpec, TimelineTrack};
-use pandora_toolchain::lib::mpeg::studio::{StudioTrackMode, StudioVideoPreset};
+use pandora_toolchain::lib::mpeg::studio::{PreviewWindow, StudioTrackMode, StudioVideoPreset};
 use pandora_toolchain::pnworker::core::{KeepKind, Preset, StudioJobRequest};
 use pandora_toolchain::pnworker::server_effects::load_server_settings;
 use pandora_toolchain::pnworker::studio::{StudioMeta, StudioStore};
@@ -265,12 +265,31 @@ async fn queue_studio_job(
         read_lang(command.guild_id),
         Some(guild_id),
     );
-    job.display_link = Some(format!("Pandora Studio `{}`", meta.studio_id));
+    job.display_link = Some(studio_job_display(&meta, preview_track));
     job.preset = job_preset;
     job.studio = Some(StudioJobRequest { manifest });
     if tx.send(JobClass::Job(job)).await.is_err() {
         tokio::fs::remove_dir_all(directory).await.ok();
     }
+}
+
+fn studio_job_display(meta: &StudioMeta, preview_track: Option<u64>) -> String {
+    let Some(track_id) = preview_track else {
+        return format!("Pandora Studio `{}`", meta.studio_id);
+    };
+    let Some(track) = meta.tracks.iter().find(|track| track.id == track_id) else {
+        return format!("Pandora Studio `{}`", meta.studio_id);
+    };
+    let center = track.offset_ms.saturating_add(track.duration_ms / 2);
+    let window = PreviewWindow::centered(center, meta.total_duration_ms);
+    format!(
+        "Pandora Studio `{}`\nTrack `#{}` offset: `{}`\nPreview window: `{}` - `{}`",
+        meta.studio_id,
+        track.id,
+        format_timestamp(track.offset_ms),
+        format_timestamp(window.start_ms),
+        format_timestamp(window.start_ms.saturating_add(window.duration_ms)),
+    )
 }
 
 fn studio_server_preset(guild_id: u64) -> (Preset, StudioVideoPreset) {
@@ -344,6 +363,18 @@ fn format_duration_precise(ms: u64) -> String {
         format!("{}s", ms / 1000)
     } else {
         format!("{:.3}s", ms as f64 / 1000.0)
+    }
+}
+
+fn format_timestamp(ms: u64) -> String {
+    let hours = ms / 3_600_000;
+    let minutes = (ms % 3_600_000) / 60_000;
+    let seconds = (ms % 60_000) / 1000;
+    let millis = ms % 1000;
+    if hours > 0 {
+        format!("{}:{:02}:{:02}.{:03}", hours, minutes, seconds, millis)
+    } else {
+        format!("{}:{:02}.{:03}", minutes, seconds, millis)
     }
 }
 
