@@ -8,6 +8,7 @@ pub struct TimelineTrack {
     pub id: u64,
     pub name: String,
     pub mode: StudioTrackMode,
+    pub volume_percent: u16,
     pub offset_ms: u64,
     pub duration_ms: u64,
 }
@@ -26,6 +27,7 @@ impl TimelineSpec {
                 id: track.id,
                 name: track.display_name.clone(),
                 mode: track.mode,
+                volume_percent: track.volume_percent,
                 offset_ms: track.offset_ms,
                 duration_ms: track.duration_ms,
             }).collect(),
@@ -73,7 +75,7 @@ pub fn render_timeline(spec: &TimelineSpec) -> ImageResult<Vec<u8>> {
             StudioTrackMode::Override => Color { r: 222, g: 112, b: 91, a: 235 },
             StudioTrackMode::Duck => Color { r: 176, g: 116, b: 224, a: 235 },
         };
-        let label = format!("#{} {} ({:?})", track.id, truncate(&track.name, 22), track.mode);
+        let label = format!("#{} {} ({:?}, {}%)", track.id, truncate(&track.name, 18), track.mode, track.volume_percent);
         draw_lane(&mut canvas, &font, &label, index + 1, left, scale, duration_ms, height, color)?;
         let start = track.offset_ms.min(duration_ms);
         let end = track.offset_ms.saturating_add(track.duration_ms).min(duration_ms);
@@ -128,7 +130,7 @@ mod tests {
     use super::*;
 
     fn t(id: u64, mode: StudioTrackMode, offset_ms: u64, duration_ms: u64) -> TimelineTrack {
-        TimelineTrack { id, name: format!("track-{}", id), mode, offset_ms, duration_ms }
+        TimelineTrack { id, name: format!("track-{}", id), mode, volume_percent: 100, offset_ms, duration_ms }
     }
 
     #[test]

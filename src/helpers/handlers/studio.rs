@@ -158,6 +158,83 @@ pub async fn handle_studio(
                 Err(e) => edit_text(ctx, &mut response, format!("Studio track upload failed: {}", e)).await,
             }
         }
+        "edittrack" => {
+            let Some(track_id) = positive_track_option(ctx, command).await else {
+                return;
+            };
+            let mode = match option_trimmed(command, "type").as_deref() {
+                Some("insert") => Some(StudioTrackMode::Insert),
+                Some("override") => Some(StudioTrackMode::Override),
+                Some("duck") => Some(StudioTrackMode::Duck),
+                Some(_) => {
+                    command_error(ctx, command, "Error: `type` must be insert, override, or duck.").await;
+                    return;
+                }
+                None => None,
+            };
+            let volume_percent = match option_i64(command, "volume") {
+                Some(value) if (0..=200).contains(&value) => Some(value as u16),
+                Some(_) => {
+                    command_error(ctx, command, "Error: `volume` must be a percentage from 0 to 200.").await;
+                    return;
+                }
+                None => None,
+            };
+            let duck_volume_percent = match option_i64(command, "duck_volume") {
+                Some(value) if (0..=100).contains(&value) => Some(value as u8),
+                Some(_) => {
+                    command_error(ctx, command, "Error: `duck_volume` must be a percentage from 0 to 100.").await;
+                    return;
+                }
+                None => None,
+            };
+            let fade_ms = match option_f64(command, "fade") {
+                Some(value) if value.is_finite() && (0.0..=3600.0).contains(&value) => {
+                    Some((value * 1000.0).round() as u64)
+                }
+                Some(_) => {
+                    command_error(ctx, command, "Error: `fade` must be from 0 to 3600 seconds.").await;
+                    return;
+                }
+                None => None,
+            };
+            if mode.is_none() && volume_percent.is_none() && duck_volume_percent.is_none() && fade_ms.is_none() {
+                command_error(ctx, command, "Error: supply at least one track setting to edit.").await;
+                return;
+            }
+            let Some(mut response) = working_response(ctx, command, "Editing Studio track...").await else {
+                return;
+            };
+            match store.edit_track(
+                guild_id,
+                user_id,
+                track_id,
+                mode,
+                volume_percent,
+                duck_volume_percent,
+                fade_ms,
+            ).await {
+                Ok(track) => {
+                    let duck = if track.mode == StudioTrackMode::Duck {
+                        format!(
+                            " Duck target: `{}%`; fade: `{}` each way.",
+                            track.duck_volume_percent,
+                            format_duration_precise(track.fade_ms),
+                        )
+                    } else {
+                        String::new()
+                    };
+                    edit_text(ctx, &mut response, format!(
+                        "Edited track `#{}`. Type: `{:?}`; own volume: `{}%`.{}",
+                        track.id,
+                        track.mode,
+                        track.volume_percent,
+                        duck,
+                    )).await;
+                }
+                Err(e) => edit_text(ctx, &mut response, format!("Studio track edit failed: {}", e)).await,
+            }
+        }
         "move" => {
             let Some(track_id) = positive_track_option(ctx, command).await else {
                 return;
@@ -377,6 +454,7 @@ fn timeline_spec(meta: &StudioMeta) -> TimelineSpec {
             id: track.id,
             name: track.display_name.clone(),
             mode: track.mode,
+            volume_percent: track.volume_percent,
             offset_ms: track.offset_ms,
             duration_ms: track.duration_ms,
         }).collect(),

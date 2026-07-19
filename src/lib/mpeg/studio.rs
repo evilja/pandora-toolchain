@@ -40,6 +40,8 @@ pub struct StudioRenderTrack {
     pub offset_ms: u64,
     pub duration_ms: u64,
     pub display_name: String,
+    #[serde(default = "default_track_volume_percent")]
+    pub volume_percent: u16,
     #[serde(default = "default_duck_volume_percent")]
     pub duck_volume_percent: u8,
     #[serde(default)]
@@ -117,6 +119,10 @@ pub fn write_ffconcat(path: &Path, inputs: &[StudioInput]) -> Result<(), String>
 }
 
 fn default_duck_volume_percent() -> u8 {
+    100
+}
+
+fn default_track_volume_percent() -> u16 {
     100
 }
 
@@ -232,10 +238,22 @@ pub fn build_studio_audio_filter(manifest: &StudioRenderManifest) -> String {
             delay,
             raw_label,
         ));
+        let own_volume_label = if track.volume_percent == 100 {
+            raw_label
+        } else {
+            let label = format!("[studio-track-{}-volume]", track.id);
+            graph.push(format!(
+                "[studio-track-{}-raw]volume={:.4}{}",
+                track.id,
+                track.volume_percent.min(200) as f64 / 100.0,
+                label,
+            ));
+            label
+        };
         let label = apply_ducking(
             &mut graph,
             manifest,
-            raw_label,
+            own_volume_label,
             Some(track.id),
             render_start,
             &format!("studio-track-{}", track.id),
@@ -345,6 +363,7 @@ mod tests {
             offset_ms,
             duration_ms,
             display_name: "x".into(),
+            volume_percent: 100,
             duck_volume_percent: 100,
             fade_ms: 0,
             trim_start_ms: 0,
@@ -415,10 +434,22 @@ mod tests {
     fn old_track_json_defaults_to_no_ducking() {
         let raw = r#"{"id":1,"path":"track.ogg","mode":"Insert","offset_ms":0,"duration_ms":1000,"display_name":"x"}"#;
         let parsed: StudioRenderTrack = serde_json::from_str(raw).unwrap();
+        assert_eq!(parsed.volume_percent, 100);
         assert_eq!(parsed.duck_volume_percent, 100);
         assert_eq!(parsed.fade_ms, 0);
         assert_eq!(parsed.trim_start_ms, 0);
         assert_eq!(parsed.trim_end_ms, 0);
+    }
+
+    #[test]
+    fn own_track_volume_is_applied_before_mix() {
+        let mut m = manifest();
+        let mut quieter = track(1, StudioTrackMode::Insert, 5_000, 10_000);
+        quieter.volume_percent = 40;
+        m.tracks = vec![quieter];
+        let graph = build_studio_audio_filter(&m);
+        assert!(graph.contains("[studio-track-1-raw]volume=0.4000[studio-track-1-volume]"));
+        assert!(graph.contains("[studio-base-raw][studio-track-1-volume]amix"));
     }
 
     #[test]

@@ -16,6 +16,10 @@ fn default_duck_volume_percent() -> u8 {
     100
 }
 
+fn default_track_volume_percent() -> u16 {
+    100
+}
+
 fn studio_lock() -> &'static Arc<Mutex<()>> {
     static LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
     LOCK.get_or_init(|| Arc::new(Mutex::new(())))
@@ -62,6 +66,8 @@ pub struct StudioTrack {
     pub offset_ms: u64,
     pub duration_ms: u64,
     pub display_name: String,
+    #[serde(default = "default_track_volume_percent")]
+    pub volume_percent: u16,
     #[serde(default = "default_duck_volume_percent")]
     pub duck_volume_percent: u8,
     #[serde(default)]
@@ -397,6 +403,7 @@ impl StudioStore {
             offset_ms: 0,
             duration_ms: probe.duration_ms,
             display_name: display_name.unwrap_or("audio").to_string(),
+            volume_percent: 100,
             duck_volume_percent,
             fade_ms,
             trim_start_ms: 0,
@@ -423,6 +430,27 @@ impl StudioStore {
         )?;
         let track = meta.tracks.iter_mut().find(|track| track.id == track_id).unwrap();
         track.offset_ms = offset;
+        let result = track.clone();
+        refresh_meta(&mut meta)?;
+        write_json_atomic(&meta_path(guild_id, &meta.studio_id), &meta).await?;
+        Ok(result)
+    }
+
+    pub async fn edit_track(
+        &self,
+        guild_id: u64,
+        user_id: u64,
+        track_id: u64,
+        mode: Option<StudioTrackMode>,
+        volume_percent: Option<u16>,
+        duck_volume_percent: Option<u8>,
+        fade_ms: Option<u64>,
+    ) -> Result<StudioTrack, String> {
+        let _guard = studio_lock().lock().await;
+        let mut meta = self.get_authorized_without_refresh_locked(guild_id, user_id).await?;
+        let track = meta.tracks.iter_mut().find(|track| track.id == track_id)
+            .ok_or_else(|| format!("track `{}` does not exist", track_id))?;
+        apply_track_edit(track, mode, volume_percent, duck_volume_percent, fade_ms)?;
         let result = track.clone();
         refresh_meta(&mut meta)?;
         write_json_atomic(&meta_path(guild_id, &meta.studio_id), &meta).await?;
@@ -582,6 +610,47 @@ fn remove_out_of_range_tracks(tracks: &mut Vec<StudioTrack>, total_duration_ms: 
         }
     });
     removed
+}
+
+fn apply_track_edit(
+    track: &mut StudioTrack,
+    mode: Option<StudioTrackMode>,
+    volume_percent: Option<u16>,
+    duck_volume_percent: Option<u8>,
+    fade_ms: Option<u64>,
+) -> Result<(), String> {
+    if mode.is_none() && volume_percent.is_none() && duck_volume_percent.is_none() && fade_ms.is_none() {
+        return Err("at least one track setting must be supplied".to_string());
+    }
+    if volume_percent.is_some_and(|value| value > 200) {
+        return Err("track volume must be a percentage from 0 to 200".to_string());
+    }
+    if duck_volume_percent.is_some_and(|value| value > 100) {
+        return Err("duck volume must be a percentage from 0 to 100".to_string());
+    }
+
+    let resulting_mode = mode.unwrap_or(track.mode);
+    if resulting_mode == StudioTrackMode::Duck {
+        if track.mode != StudioTrackMode::Duck
+            && (duck_volume_percent.is_none() || fade_ms.is_none())
+        {
+            return Err("changing a track to Duck requires both `duck_volume` and `fade`".to_string());
+        }
+    } else if duck_volume_percent.is_some() || fade_ms.is_some() {
+        return Err("`duck_volume` and `fade` can only be edited on a Duck track".to_string());
+    }
+
+    track.mode = resulting_mode;
+    if let Some(value) = volume_percent {
+        track.volume_percent = value;
+    }
+    if let Some(value) = duck_volume_percent {
+        track.duck_volume_percent = value;
+    }
+    if let Some(value) = fade_ms {
+        track.fade_ms = value;
+    }
+    Ok(())
 }
 
 fn apply_track_cut(track: &mut StudioTrack, amount_ms: u64, cut_start: bool, cut_end: bool) -> Result<(), String> {
@@ -885,6 +954,7 @@ fn to_manifest(meta: &StudioMeta, preview: Option<PreviewWindow>, video_preset: 
         tracks: meta.tracks.iter().map(|track| StudioRenderTrack {
             id: track.id, path: track.path.clone(), mode: track.mode, offset_ms: track.offset_ms,
             duration_ms: track.duration_ms, display_name: track.display_name.clone(),
+            volume_percent: track.volume_percent,
             duck_volume_percent: track.duck_volume_percent, fade_ms: track.fade_ms,
             trim_start_ms: track.trim_start_ms, trim_end_ms: track.trim_end_ms,
         }).collect(),
@@ -909,11 +979,39 @@ mod tests {
             offset_ms: 0,
             duration_ms,
             display_name: "track".to_string(),
+            volume_percent: 100,
             duck_volume_percent: 100,
             fade_ms: 0,
             trim_start_ms: 0,
             trim_end_ms: 0,
         }
+    }
+
+    #[test]
+    fn track_edit_updates_own_volume_and_type() {
+        let mut track = test_track(10_000);
+        assert!(apply_track_edit(
+            &mut track,
+            Some(StudioTrackMode::Duck),
+            Some(150),
+            Some(25),
+            Some(750),
+        ).is_ok());
+        assert_eq!(track.mode, StudioTrackMode::Duck);
+        assert_eq!(track.volume_percent, 150);
+        assert_eq!(track.duck_volume_percent, 25);
+        assert_eq!(track.fade_ms, 750);
+        assert!(apply_track_edit(&mut track, Some(StudioTrackMode::Override), Some(80), None, None).is_ok());
+        assert_eq!(track.mode, StudioTrackMode::Override);
+        assert_eq!(track.volume_percent, 80);
+    }
+
+    #[test]
+    fn changing_to_duck_requires_duck_settings() {
+        let mut track = test_track(10_000);
+        assert!(apply_track_edit(&mut track, Some(StudioTrackMode::Duck), None, Some(20), None).is_err());
+        assert_eq!(track.mode, StudioTrackMode::Insert);
+        assert!(apply_track_edit(&mut track, None, None, Some(20), Some(500)).is_err());
     }
 
     #[test]
