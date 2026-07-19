@@ -9,6 +9,16 @@ CLI tool flags and ASS parsing details.
 - `--drive --backup`: Drive-only upload with the same unlimited upload behavior.
 - `--gscrape`: Google Drive scraper. Parses the file id from the link, GETs the confirm page, extracts the `uuid` from the form, then GETs the final URL with `confirm=t&uuid=...` and streams chunks to `--opcode`. Client timeout 600s.
 
+## `pnmpeg` Pandora Studio mode
+
+`pnmpeg --studio --input <manifest.json> --output <video.mp4>` renders a file-backed Pandora Studio snapshot through the normal pnprotocol progress/cancel/log path. The JSON manifest supplies ordered ffconcat video inputs, stable audio tracks, source kind, video preset, total FPS/duration, and an optional preview window.
+
+- Encode-kind full renders use video stream copy and AAC audio; preview windows always use the Dummy libx264 preset.
+- Backup-kind full renders use the selected Standard/GPU/PseudoLossless/Dummy video settings without subtitle or intro filters.
+- Insert tracks are delayed and mixed over base audio. Override tracks additionally mute base audio for their clipped placement intervals. A source with no audio receives duration-matched stereo silence.
+- Every track is normalized to 48 kHz stereo, mixed with a limiter, and clipped to the video or preview duration.
+- Preview input seeking is applied before the concat source and track trims/delays are made relative to the preview window. Invalid manifests and concat-list failures exit nonzero so the worker reports failure rather than uploading a missing output.
+
 ## `ffmpeg` preview screenshots
 
 `/smartcode exp` uses `lib::mpeg::preview::ffmpeg_screenshot` through the probe worker after the normal download/cache path finishes. For each selected TS line midpoint it runs one bounded ffmpeg frame extraction with subtitles burned in:

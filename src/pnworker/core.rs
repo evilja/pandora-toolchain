@@ -21,6 +21,7 @@ use crate::pnworker::keep::{
     store_output,
 };
 use crate::pnworker::lifecycle::{cleanup_job, render};
+use crate::pnworker::studio::{cleanup_expired_studios, cleanup_studios_startup};
 use crate::pnworker::messages::{
     ENCODE_CONCAT_PROG, ENCODE_PROG, ENCODE_WARNING, GITQUERY_BLOCKED, JOB_SETUP_FAIL,
     MessagePayload, QUEUE_TOO_LONG, QUEUED, TORRENT_DUPLICATE_WAIT, UPLOAD_DONE, UPLOAD_PROG,
@@ -57,7 +58,9 @@ pub enum WorkerMsg {
     Download(DownloadData),
     Probe(ProbeData),
     Preview(PreviewData),
+    StudioPreview(StudioData),
     Encode(EncodeData),
+    Studio(StudioData),
     Keycode(KeycodeData),
     Upload(UploadData),
     UploadAll(UploadAllData),
@@ -73,6 +76,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
     cleanup_pandora_qbit().await;
     cleanup_input_cache_startup().await;
     cleanup_keep_startup().await;
+    cleanup_studios_startup().await;
 
     let mut queue: Vec<Job> = vec![];
     let mut shrine: TypedShrine<WorkerMsg> = TypedShrine::new();
@@ -84,6 +88,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
     let mut next_encode_dispatch_order = 1u64;
     let mut encode_reboot_epoch = shrine.reboot_epoch(&Worker::Encode);
     let mut gitquery: Option<HalfJob> = None;
+    let mut next_studio_cleanup = tokio::time::Instant::now() + Duration::from_secs(60);
 
     loop {
         sleep(Duration::from_millis(200)).await;
@@ -92,6 +97,10 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
         check_encode_reboot_epoch(&shrine, &mut encode_reboot_epoch, &mut queue);
         cleanup_expired_input_cache().await;
         cleanup_expired_keeps().await;
+        if tokio::time::Instant::now() >= next_studio_cleanup {
+            cleanup_expired_studios().await;
+            next_studio_cleanup = tokio::time::Instant::now() + Duration::from_secs(60);
+        }
 
         if do_queue_things(&mut rx, &db, &mut queue, &mut shrine, &mut gitquery).await {
             check_encode_reboot_epoch(&shrine, &mut encode_reboot_epoch, &mut queue);
@@ -143,6 +152,9 @@ async fn do_queue_things(
             if queue.len() > 4 {
                 job.ready = Stage::Declined;
                 render(&mut job, MessagePayload::Static(QUEUE_TOO_LONG)).await;
+                if matches!(job.job_type, JobType::Studio | JobType::StudioPreview) {
+                    remove_dir_all(&job.directory).await.ok();
+                }
                 return true;
             }
             if queue_new_job(db, queue, shrine, &mut job).await {
@@ -164,7 +176,7 @@ async fn do_queue_things(
 }
 
 fn is_encode_job_type(job_type: JobType) -> bool {
-    matches!(job_type, JobType::Encode | JobType::Pancode | JobType::Keycode)
+    matches!(job_type, JobType::Encode | JobType::Pancode | JobType::Keycode | JobType::Studio)
 }
 
 fn encode_jobs_active(queue: &[Job]) -> bool {
@@ -231,6 +243,8 @@ async fn queue_new_job(
         JobType::BackupAll => queue_backup_all_job(db, queue, shrine, job).await,
         JobType::Keycode => queue_keycode_job(db, queue, shrine, job).await,
         JobType::Preview => queue_preview_job(db, queue, shrine, job).await,
+        JobType::Studio => queue_studio_job(db, queue, shrine, job).await,
+        JobType::StudioPreview => queue_studio_preview_job(db, queue, shrine, job).await,
         _ => false,
     }
 }
@@ -527,16 +541,16 @@ async fn dispatch_keycode_ready(
         return fail_keycode(db, job, "backup keywords require a subtitle").await;
     }
     let mut inputs = resolved.paths;
-    let concat_candidates = match &job.preset {
+    let intro = match &job.preset {
         Preset::PseudoLossless(candidates)
         | Preset::Dummy(candidates)
         | Preset::Standard(candidates)
-        | Preset::Gpu(candidates) => candidates,
+        | Preset::Gpu(candidates) => candidates
+            .as_ref()
+            .and_then(|c| select_keycode_intro(inputs.first(), c)),
+        Preset::Copy => None,
     };
-    if let Some(intro) = concat_candidates
-        .as_ref()
-        .and_then(|c| select_keycode_intro(inputs.first(), c))
-    {
+    if let Some(intro) = intro {
         inputs.insert(0, intro);
     }
     if inputs.is_empty() {
@@ -676,6 +690,7 @@ fn preset_without_intro(preset: &Preset) -> Preset {
         Preset::Dummy(_) => Preset::Dummy(None),
         Preset::Standard(_) => Preset::Standard(None),
         Preset::Gpu(_) => Preset::Gpu(None),
+        Preset::Copy => Preset::Copy,
     }
 }
 
@@ -766,6 +781,73 @@ async fn queue_preview_job(
         return true;
     }
     queue_download_job(db, queue, shrine, job, None, false).await
+}
+
+async fn queue_studio_job(
+    _db: &JobDb,
+    queue: &[Job],
+    shrine: &mut TypedShrine<WorkerMsg>,
+    job: &mut Job,
+) -> bool {
+    let Some(request) = job.studio.clone() else {
+        decline_job_setup(job, "missing Studio render manifest").await;
+        return true;
+    };
+    if !request.manifest.exists() {
+        decline_job_setup(job, "Studio render manifest is missing").await;
+        return true;
+    }
+    if !prepare_queued_job(job, "enc-main", false).await {
+        decline_job_setup(job, "could not prepare the Studio work directory").await;
+        return true;
+    }
+    if !dispatch_or_kill(
+        shrine,
+        &Worker::Encode,
+        WorkerMsg::Studio((job.directory.clone(), request.manifest, job.job_id)),
+        job,
+        _db,
+        false,
+    ).await {
+        return true;
+    }
+    job.ready = Stage::Encoding;
+    job.encode_dispatched = true;
+    job.frontend.set_presence(Presence::Encoding { idx: queue.len(), total: queue.len() + 1 }).await;
+    false
+}
+
+async fn queue_studio_preview_job(
+    _db: &JobDb,
+    queue: &[Job],
+    shrine: &mut TypedShrine<WorkerMsg>,
+    job: &mut Job,
+) -> bool {
+    let Some(request) = job.studio.clone() else {
+        decline_job_setup(job, "missing Studio preview manifest").await;
+        return true;
+    };
+    if !request.manifest.exists() {
+        decline_job_setup(job, "Studio preview manifest is missing").await;
+        return true;
+    }
+    if !prepare_queued_job(job, "prw-pending", false).await {
+        decline_job_setup(job, "could not prepare the Studio preview directory").await;
+        return true;
+    }
+    if !dispatch_or_kill(
+        shrine,
+        &Worker::Probe,
+        WorkerMsg::StudioPreview((job.directory.clone(), request.manifest, job.job_id)),
+        job,
+        _db,
+        false,
+    ).await {
+        return true;
+    }
+    job.ready = Stage::Encoding;
+    job.frontend.set_presence(Presence::Encoding { idx: queue.len(), total: queue.len() + 1 }).await;
+    false
 }
 
 async fn queue_download_job(
@@ -1086,6 +1168,8 @@ fn job_type_label(job_type: JobType) -> &'static str {
         JobType::Keycode => "keycode",
         JobType::GitQuery => "gitquery",
         JobType::Preview => "preview",
+        JobType::Studio => "studio",
+        JobType::StudioPreview => "studio-preview",
     }
 }
 
@@ -1800,7 +1884,7 @@ async fn do_job_progression_things(
                         "{}.mp4",
                         job.directory.file_name().unwrap_or_default().display()
                     ),
-                    if job.job_type == JobType::Keycode {
+                    if matches!(job.job_type, JobType::Keycode | JobType::Studio) {
                         true
                     } else {
                         match job.preset {
@@ -1960,9 +2044,10 @@ pub enum Preset {
     Dummy(Option<Vec<String>>),
     Standard(Option<Vec<String>>),
     Gpu(Option<Vec<String>>),
+    Copy,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum KeepKind {
     Encode,
     Backup,
@@ -2006,6 +2091,11 @@ pub struct PreviewRequest {
     pub ranking_log: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct StudioJobRequest {
+    pub manifest: PathBuf,
+}
+
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(u16)]
 pub enum JobType {
@@ -2022,6 +2112,8 @@ pub enum JobType {
     Keycode = 010,
     GitQuery = 011,
     Preview = 013,
+    Studio = 014,
+    StudioPreview = 015,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -2249,6 +2341,7 @@ pub struct Job {
     pub keep: Option<KeepRequest>,
     pub keycode: Option<KeycodeRequest>,
     pub preview: Option<PreviewRequest>,
+    pub studio: Option<StudioJobRequest>,
 }
 
 impl PartialEq for Job {
@@ -2282,7 +2375,10 @@ impl Job {
                 | Preset::Dummy(candidates)
                 | Preset::Standard(candidates)
                 | Preset::Gpu(candidates) => Preset::Standard(candidates),
+                Preset::Copy => Preset::Standard(None),
             },
+            JobType::Studio => Preset::Copy,
+            JobType::StudioPreview => Preset::Dummy(None),
             _ => Preset::Dummy(None),
         };
         Self {
@@ -2330,6 +2426,7 @@ impl Job {
             keep: None,
             keycode: None,
             preview: None,
+            studio: None,
         }
     }
 
@@ -2357,7 +2454,10 @@ impl Job {
                 | Preset::Dummy(candidates)
                 | Preset::Standard(candidates)
                 | Preset::Gpu(candidates) => Preset::Standard(candidates),
+                Preset::Copy => Preset::Standard(None),
             },
+            JobType::Studio => Preset::Copy,
+            JobType::StudioPreview => Preset::Dummy(None),
             _ => Preset::Dummy(None),
         };
         Self {
@@ -2405,6 +2505,7 @@ impl Job {
             keep: None,
             keycode: None,
             preview: None,
+            studio: None,
         }
     }
 }

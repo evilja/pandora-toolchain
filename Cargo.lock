@@ -1848,7 +1848,7 @@ dependencies = [
 
 [[package]]
 name = "pandora-toolchain"
-version = "3.1.9-substitute"
+version = "3.2.0-owari"
 dependencies = [
  "ab_glyph",
  "async_zip",

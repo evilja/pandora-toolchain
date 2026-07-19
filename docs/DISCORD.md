@@ -6,7 +6,7 @@ Discord-facing behavior: commands, authorization tiers, presence updates, and th
 
 Authorization is managed in `bin/pndc.rs` (one Discord user-id per line):
 
-- `authorize.pandora` — `/encode`, `/probe`, `/backup`, `/smartcode`, `/source`
+- `authorize.pandora` — `/encode`, `/studio`, `/probe`, `/backup`, `/smartcode`, `/source`
 - `upper.pandora` — `/attach`, `/init`, `/gentoken`, `/destruct`, `/detach` (privileged workflow)
 - `fansubber.pandora` — `/job` (subtitle-uploader workflow, kept separate from repo-`/init` so a translator/typesetter can be granted the lighter tier without repo-creation rights)
 - `admin.pandora` — `/hearts`, `/gitsync`, `/gitquery`, `/configure`, `/edit`, `/touchwatermark`, `/touchapi`, `/gettranslation`, `/touchtranslation`, `/gettranslationall`, `/touchtranslationall`, `!auth`, `!ban`
@@ -22,6 +22,13 @@ The level hierarchy is `witch > upper > admin > fansubber > authorize` (rank 4/3
 - `/encode link <torrent> <subtitle_url>` — like `/encode do` but the subtitle is fetched from a URL. `https://github.com/<u>/<r>/blob/<b>/<path>` is auto-rewritten to `https://raw.githubusercontent.com/<u>/<r>/<b>/<path>`; other URLs pass through. 60s HTTP timeout.
 - `/encode keep <torrent> <subtitle attachment> [keyword]` — encode with an attached ASS and keep the output locally under a generated or supplied keyword instead of uploading it.
 - `/encode key <keywords> [subtitle attachment]` — join locally kept outputs and upload the result. The server’s configured concat setting is used automatically. Backup keywords require a subtitle.
+- `/studio create <keywords>` — create a Pandora Studio from guild-scoped keep outputs, concatenated in comma-separated order. All keywords must be ready and of the same Encode/Backup kind. Studio copies are isolated from the original keeps.
+- `/studio insert <audio>` / `/studio override <audio>` — add a stable-numbered audio track at offset zero. Insert overlays source audio; Override mutes source audio only for the placed track interval and overlays the replacement.
+- `/studio move <track> <offset>` / `/studio remove <track>` — move or remove a stable track number. Offsets accept seconds (`30s`/`30.5`), `MM:SS`, `HH:MM:SS`, or frames (`720f`/`frame:720`).
+- `/studio preview <track>` — render and attach a bounded, at-most-30-second Dummy MP4 around the selected track using the complete current mix. It runs in the preview worker pool.
+- `/studio timeline` — attach a visual PNG of base audio and all inserted/override lanes.
+- `/studio done` — snapshot the current mix and send it through normal uploads. Encode keeps copy the video stream and encode mixed AAC audio; Backup keeps encode video with the server preset and no automatic intro/subtitle.
+- `/studio disown` / `/studio reown [studio_id]` — leave or join a Studio. IDs can be shared with authorized users in the same guild for concurrent collaboration. A user has one current Studio; active Studios expire after 24 hours without a successful Studio command, and Studios with no collaborators expire after 30 minutes. Studio is Discord-only for now.
 - `/providers` — public command that shows built-in download/encode support and currently attached provider APIs: upload providers from env/global+server Drive config (Google Drive, Doodstream, LuluStream, Voe, Abyss), distribution providers (AnimeciX, AniSub), and persistence providers inferred from the server Forgejo/GitHub org config. Implemented in `src/helpers/handlers/providers.rs` and available to everyone like `/help`.
 - `/probe <torrent>` — download + ffprobe a torrent, list the files inside as a numbered table, then idle at `Probed` for 180s so a follow-up `/encode pan` can pick a file. GDrive and direct video links are rejected.
 - `/backup <torrent>` — download + Drive-only re-upload (no streaming hosts). GDrive and direct video links are supported (treated as downloads from non-torrent sources).

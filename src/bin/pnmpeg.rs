@@ -9,6 +9,7 @@ use pandora_toolchain::lib::mpeg::{
 use tokio::{fs::File, io::AsyncWriteExt, time::{Duration, Instant}};
 use pandora_toolchain::{pn_data, pn_emit, pn_schema};
 use pandora_toolchain::lib::mpeg::core::RpbData;
+use pandora_toolchain::lib::mpeg::studio::{studio_ffmpeg_params, write_ffconcat, StudioRenderManifest};
 use pandora_toolchain::lib::protocol::core::{Protocol, Schema, ToolInfo};
 use std::str::FromStr;
 use clap::Parser;
@@ -40,6 +41,10 @@ struct Args {
 
     #[arg(long)]
     dummy: bool,
+
+    /// Render a serialized Pandora Studio manifest.
+    #[arg(long)]
+    studio: bool,
 
     #[arg(long)]
     legacyconcat: bool,
@@ -114,6 +119,41 @@ async fn main() {
                   });
 
     let encoder = FFmpeg::new();
+
+    if args.studio {
+        let manifest_bytes = match tokio::fs::read(&args.input).await {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                eprintln!("Studio manifest read failed: {}", e);
+                std::process::exit(1);
+            }
+        };
+        let manifest: StudioRenderManifest = match serde_json::from_slice(&manifest_bytes) {
+            Ok(manifest) => manifest,
+            Err(e) => {
+                eprintln!("Studio manifest is invalid: {}", e);
+                std::process::exit(1);
+            }
+        };
+        if manifest.sources.is_empty() || manifest.total_duration_ms == 0 {
+            eprintln!("Studio manifest has no usable video sources");
+            std::process::exit(1);
+        }
+        let manifest_path = PathBuf::from_str(&args.input).unwrap_or_else(|_| PathBuf::from("studio.json"));
+        let concat_path = manifest_path.parent().unwrap_or(std::path::Path::new("."))
+            .join("studio.ffconcat");
+        if let Err(e) = write_ffconcat(&concat_path, &manifest.sources) {
+            eprintln!("Studio concat list failed: {}", e);
+            std::process::exit(1);
+        }
+        let params = studio_ffmpeg_params(&manifest, &concat_path, std::path::Path::new(&args.output));
+        let totalframe = (manifest.render_duration_ms() as f64
+            * manifest.fps_num as f64 / manifest.fps_den.max(1) as f64 / 1000.0)
+            .ceil() as u64;
+        run_with_progress(&mut proto, &neg, encoder, params, totalframe, args.cancelfile, args.logfile).await;
+        return;
+    }
+
     let concfilepath = PathBuf::from_str(&args.input).unwrap()
         .parent().unwrap()
         .canonicalize().unwrap()
