@@ -74,9 +74,7 @@ fn input_cache_touch(key: &str) -> PathBuf {
 }
 
 pub(crate) async fn cleanup_input_cache_startup() {
-    remove_dir_all(PathBuf::from("DB").join("cache").join("inputs"))
-        .await
-        .ok();
+    cleanup_expired_input_cache().await;
 }
 
 pub(crate) async fn cleanup_expired_input_cache() {
