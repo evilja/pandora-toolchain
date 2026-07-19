@@ -280,8 +280,7 @@ fn studio_job_display(meta: &StudioMeta, preview_track: Option<u64>) -> String {
     let Some(track) = meta.tracks.iter().find(|track| track.id == track_id) else {
         return format!("Pandora Studio `{}`", meta.studio_id);
     };
-    let center = track.offset_ms.saturating_add(track.duration_ms / 2);
-    let window = PreviewWindow::centered(center, meta.total_duration_ms);
+    let window = PreviewWindow::around_track_start(track.offset_ms, meta.total_duration_ms);
     format!(
         "Pandora Studio `{}`\nTrack `#{}` offset: `{}`\nPreview window: `{}` - `{}`",
         meta.studio_id,

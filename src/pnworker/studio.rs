@@ -312,9 +312,17 @@ impl StudioStore {
     pub async fn move_track(&self, guild_id: u64, user_id: u64, track_id: u64, raw_offset: &str) -> Result<StudioTrack, String> {
         let _guard = studio_lock().lock().await;
         let mut meta = self.get_authorized_without_refresh_locked(guild_id, user_id).await?;
-        let offset = parse_offset(raw_offset, meta.fps_num, meta.fps_den, meta.total_duration_ms)?;
-        let track = meta.tracks.iter_mut().find(|track| track.id == track_id)
+        let current_offset = meta.tracks.iter().find(|track| track.id == track_id)
+            .map(|track| track.offset_ms)
             .ok_or_else(|| format!("track `{}` does not exist", track_id))?;
+        let offset = parse_move_offset(
+            raw_offset,
+            current_offset,
+            meta.fps_num,
+            meta.fps_den,
+            meta.total_duration_ms,
+        )?;
+        let track = meta.tracks.iter_mut().find(|track| track.id == track_id).unwrap();
         track.offset_ms = offset;
         let result = track.clone();
         refresh_meta(&mut meta)?;
@@ -357,8 +365,7 @@ impl StudioStore {
             Some(id) => {
                 let track = meta.tracks.iter().find(|track| track.id == id)
                     .ok_or_else(|| format!("track `{}` does not exist", id))?;
-                let center = track.offset_ms.saturating_add(track.duration_ms / 2);
-                Some(PreviewWindow::centered(center, meta.total_duration_ms))
+                Some(PreviewWindow::around_track_start(track.offset_ms, meta.total_duration_ms))
             }
             None => None,
         };
@@ -466,11 +473,38 @@ pub fn parse_keywords(raw: &str) -> Result<Vec<String>, String> {
 }
 
 pub fn parse_offset(raw: &str, fps_num: u32, fps_den: u32, video_duration_ms: u64) -> Result<u64, String> {
+    let value_ms = parse_offset_value(raw, fps_num, fps_den)?;
+    validate_track_offset(value_ms, video_duration_ms)
+}
+
+pub fn parse_move_offset(
+    raw: &str,
+    current_offset_ms: u64,
+    fps_num: u32,
+    fps_den: u32,
+    video_duration_ms: u64,
+) -> Result<u64, String> {
+    let raw = raw.trim();
+    let value_ms = if let Some(delta) = raw.strip_prefix('+') {
+        let delta_ms = parse_offset_value(delta, fps_num, fps_den)?;
+        current_offset_ms.checked_add(delta_ms)
+            .ok_or_else(|| "relative move is too large".to_string())?
+    } else if let Some(delta) = raw.strip_prefix('-') {
+        let delta_ms = parse_offset_value(delta, fps_num, fps_den)?;
+        current_offset_ms.checked_sub(delta_ms)
+            .ok_or_else(|| "relative move would place the track before the start of the video".to_string())?
+    } else {
+        parse_offset_value(raw, fps_num, fps_den)?
+    };
+    validate_track_offset(value_ms, video_duration_ms)
+}
+
+fn parse_offset_value(raw: &str, fps_num: u32, fps_den: u32) -> Result<u64, String> {
     let raw = raw.trim();
     if raw.is_empty() {
         return Err("offset is empty".to_string());
     }
-    let value_ms = if let Some(frame_text) = raw.strip_suffix('f').or_else(|| raw.strip_prefix("frame:").map(|v| v)) {
+    if let Some(frame_text) = raw.strip_suffix('f').or_else(|| raw.strip_prefix("frame:").map(|v| v)) {
         let frames = frame_text.trim().parse::<u64>().map_err(|_| "invalid frame offset".to_string())?;
         if fps_num == 0 || fps_den == 0 {
             return Err("Studio source FPS is unavailable for a frame offset".to_string());
@@ -479,17 +513,20 @@ pub fn parse_offset(raw: &str, fps_num: u32, fps_den: u32, video_duration_ms: u6
         if !value.is_finite() || value < 0.0 || value > u64::MAX as f64 {
             return Err("frame offset is not finite".to_string());
         }
-        value.round() as u64
+        Ok(value.round() as u64)
     } else if raw.contains(':') {
-        parse_colon_time(raw)?
+        parse_colon_time(raw)
     } else {
         let seconds = raw.strip_suffix('s').unwrap_or(raw).trim().parse::<f64>()
             .map_err(|_| "invalid seconds offset".to_string())?;
         if !seconds.is_finite() || seconds < 0.0 || seconds > u64::MAX as f64 / 1000.0 {
             return Err("offset must be a finite non-negative time".to_string());
         }
-        (seconds * 1000.0).round() as u64
-    };
+        Ok((seconds * 1000.0).round() as u64)
+    }
+}
+
+fn validate_track_offset(value_ms: u64, video_duration_ms: u64) -> Result<u64, String> {
     if value_ms >= video_duration_ms {
         return Err("offset must be before the end of the video".to_string());
     }
@@ -716,6 +753,22 @@ mod tests {
         assert!(parse_offset("NaN", 24, 1, 60_000).is_err());
         assert!(parse_offset("60s", 24, 1, 60_000).is_err());
         assert!(parse_offset("1:60.0", 24, 1, 60_000).is_err());
+    }
+
+    #[test]
+    fn move_offsets_support_relative_time_and_frames() {
+        assert_eq!(parse_move_offset("+2.5s", 10_000, 24, 1, 60_000), Ok(12_500));
+        assert_eq!(parse_move_offset("-00:03", 10_000, 24, 1, 60_000), Ok(7_000));
+        assert_eq!(parse_move_offset("+24f", 10_000, 24, 1, 60_000), Ok(11_000));
+        assert_eq!(parse_move_offset("-frame:48", 10_000, 24, 1, 60_000), Ok(8_000));
+        assert_eq!(parse_move_offset("20s", 10_000, 24, 1, 60_000), Ok(20_000));
+    }
+
+    #[test]
+    fn relative_moves_reject_timeline_boundaries() {
+        assert!(parse_move_offset("-11s", 10_000, 24, 1, 60_000).is_err());
+        assert!(parse_move_offset("+50s", 10_000, 24, 1, 60_000).is_err());
+        assert_eq!(parse_move_offset("-10s", 10_000, 24, 1, 60_000), Ok(0));
     }
 
     #[test]
