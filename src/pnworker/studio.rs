@@ -12,6 +12,10 @@ pub const STUDIO_ACTIVE_TTL_SECS: u64 = 24 * 60 * 60;
 pub const STUDIO_DISOWNED_TTL_SECS: u64 = 30 * 60;
 pub const STUDIO_MAX_TRACKS: usize = 64;
 
+fn default_duck_volume_percent() -> u8 {
+    100
+}
+
 fn studio_lock() -> &'static Arc<Mutex<()>> {
     static LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
     LOCK.get_or_init(|| Arc::new(Mutex::new(())))
@@ -58,6 +62,10 @@ pub struct StudioTrack {
     pub offset_ms: u64,
     pub duration_ms: u64,
     pub display_name: String,
+    #[serde(default = "default_duck_volume_percent")]
+    pub duck_volume_percent: u8,
+    #[serde(default)]
+    pub fade_ms: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -259,7 +267,17 @@ impl StudioStore {
         source: &Path,
         mode: StudioTrackMode,
         display_name: Option<&str>,
+        duck_volume_percent: u8,
+        fade_ms: u64,
     ) -> Result<StudioTrack, String> {
+        if duck_volume_percent > 100 {
+            return Err("duck volume must be a percentage from 0 to 100".to_string());
+        }
+        let (duck_volume_percent, fade_ms) = if mode == StudioTrackMode::Duck {
+            (duck_volume_percent, fade_ms)
+        } else {
+            (100, 0)
+        };
         let probe = probe_media(source.to_path_buf()).await?;
         if !probe.has_audio || probe.duration_ms == 0 {
             return Err("attachment must contain a non-empty decodable audio stream".to_string());
@@ -282,6 +300,8 @@ impl StudioStore {
             offset_ms: 0,
             duration_ms: probe.duration_ms,
             display_name: display_name.unwrap_or("audio").to_string(),
+            duck_volume_percent,
+            fade_ms,
         };
         meta.tracks.push(track.clone());
         refresh_meta(&mut meta)?;
@@ -665,6 +685,7 @@ fn to_manifest(meta: &StudioMeta, preview: Option<PreviewWindow>, video_preset: 
         tracks: meta.tracks.iter().map(|track| StudioRenderTrack {
             id: track.id, path: track.path.clone(), mode: track.mode, offset_ms: track.offset_ms,
             duration_ms: track.duration_ms, display_name: track.display_name.clone(),
+            duck_volume_percent: track.duck_volume_percent, fade_ms: track.fade_ms,
         }).collect(),
         total_duration_ms: meta.total_duration_ms,
         fps_num: meta.fps_num,

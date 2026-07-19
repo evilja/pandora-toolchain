@@ -47,6 +47,12 @@ pub(super) fn option_i64(command: &serenity::all::CommandInteraction, name: &str
         .and_then(|opt| opt.value.as_i64())
 }
 
+pub(super) fn option_f64(command: &serenity::all::CommandInteraction, name: &str) -> Option<f64> {
+    command_options(command).iter()
+        .find(|opt| opt.name == name)
+        .and_then(|opt| opt.value.as_f64())
+}
+
 pub(super) fn option_bool(command: &serenity::all::CommandInteraction, name: &str) -> Option<bool> {
     command_options(command).iter()
         .find(|opt| opt.name == name)

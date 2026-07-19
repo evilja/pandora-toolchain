@@ -62,12 +62,29 @@ pub async fn handle_studio(
                 Err(e) => edit_text(ctx, &mut response, format!("Studio reown failed: {}", e)).await,
             }
         }
-        "insert" | "override" => {
+        "insert" | "override" | "duck" => {
             let Some(attachment) = option_attachment(command, "audio") else {
                 command_error(ctx, command, "Error: an audio attachment is required.").await;
                 return;
             };
-            let mode = if subcommand == "insert" { StudioTrackMode::Insert } else { StudioTrackMode::Override };
+            let mode = match subcommand {
+                "insert" => StudioTrackMode::Insert,
+                "override" => StudioTrackMode::Override,
+                _ => StudioTrackMode::Duck,
+            };
+            let (duck_volume_percent, fade_ms) = if mode == StudioTrackMode::Duck {
+                let Some(volume) = option_i64(command, "volume").filter(|value| (0..=100).contains(value)) else {
+                    command_error(ctx, command, "Error: `volume` must be a percentage from 0 to 100.").await;
+                    return;
+                };
+                let Some(fade) = option_f64(command, "fade").filter(|value| value.is_finite() && *value >= 0.0 && *value <= 3600.0) else {
+                    command_error(ctx, command, "Error: `fade` must be from 0 to 3600 seconds.").await;
+                    return;
+                };
+                (volume as u8, (fade * 1000.0).round() as u64)
+            } else {
+                (100, 0)
+            };
             let Some(mut response) = working_response(ctx, command, "Adding Studio audio track...").await else {
                 return;
             };
@@ -85,7 +102,15 @@ pub async fn handle_studio(
             let result = match attachment.download().await {
                 Ok(bytes) => match tokio::fs::write(&temp, bytes).await {
                     Ok(()) => store
-                        .add_track_from_path(guild_id, user_id, &temp, mode, Some(&attachment.filename))
+                        .add_track_from_path(
+                            guild_id,
+                            user_id,
+                            &temp,
+                            mode,
+                            Some(&attachment.filename),
+                            duck_volume_percent,
+                            fade_ms,
+                        )
                         .await,
                     Err(e) => Err(format!("failed to stage attachment: {}", e)),
                 },
@@ -93,13 +118,25 @@ pub async fn handle_studio(
             };
             tokio::fs::remove_file(&temp).await.ok();
             match result {
-                Ok(track) => edit_text(ctx, &mut response, format!(
-                    "Added {:?} track `#{}` (`{}`), duration {}. Initial offset: `0:00`.",
-                    track.mode,
-                    track.id,
-                    track.display_name,
-                    format_duration(track.duration_ms),
-                )).await,
+                Ok(track) => {
+                    let ducking = if track.mode == StudioTrackMode::Duck {
+                        format!(
+                            " Other audio target: `{}%`; fade: `{}` each way.",
+                            track.duck_volume_percent,
+                            format_duration_precise(track.fade_ms),
+                        )
+                    } else {
+                        String::new()
+                    };
+                    edit_text(ctx, &mut response, format!(
+                        "Added {:?} track `#{}` (`{}`), duration {}. Initial offset: `0:00`.{}",
+                        track.mode,
+                        track.id,
+                        track.display_name,
+                        format_duration(track.duration_ms),
+                        ducking,
+                    )).await;
+                }
                 Err(e) => edit_text(ctx, &mut response, format!("Studio track upload failed: {}", e)).await,
             }
         }
@@ -299,6 +336,14 @@ fn format_duration(ms: u64) -> String {
         format!("{}:{:02}:{:02}", hours, minutes, seconds)
     } else {
         format!("{}:{:02}", minutes, seconds)
+    }
+}
+
+fn format_duration_precise(ms: u64) -> String {
+    if ms % 1000 == 0 {
+        format!("{}s", ms / 1000)
+    } else {
+        format!("{:.3}s", ms as f64 / 1000.0)
     }
 }
 
