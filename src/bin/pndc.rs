@@ -29,6 +29,7 @@ use pandora_toolchain::lib::env::standard::{PNASS, ANISUB, API_PORT};
 use pandora_toolchain::libkagami::core::{SubstationAlpha, find_fonts_with_roots};
 use pandora_toolchain::lib::protocol::core::Protocol;
 use pandora_toolchain::lib::db::core::JobDb;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::{channel, Sender, Receiver};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -1571,6 +1572,30 @@ async fn sync_guild_channels(ctx: &Context, guild_id: u64) {
     }
 }
 
+const COMMAND_REGISTRATION_LOG: &str = "DB/log/discord-command-registration.log";
+
+async fn write_command_registration_log(contents: &str) {
+    if let Some(parent) = Path::new(COMMAND_REGISTRATION_LOG).parent() {
+        if let Err(e) = tokio::fs::create_dir_all(parent).await {
+            eprintln!("Failed to create command registration log directory: {}", e);
+            return;
+        }
+    }
+    match tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(COMMAND_REGISTRATION_LOG)
+        .await
+    {
+        Ok(mut file) => {
+            if let Err(e) = file.write_all(contents.as_bytes()).await {
+                eprintln!("Failed to write command registration log: {}", e);
+            }
+        }
+        Err(e) => eprintln!("Failed to open command registration log: {}", e),
+    }
+}
+
 async fn auto_detach_channel(server_id: u64, channel_id: u64) {
     let meta = read_channel_meta(server_id, channel_id);
     if meta.mal_id.is_none() && meta.repo_url.as_deref().map_or(true, str::is_empty) {
@@ -2821,13 +2846,42 @@ impl EventHandler for Handler {
                 ),
         ];
 
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+        let mut registration_log = format!(
+            "\n[{}] Discord command registration started: guilds={}, requested_commands={}, studio_requested=true\n",
+            timestamp,
+            ready.guilds.len(),
+            commands.len(),
+        );
+        if ready.guilds.is_empty() {
+            registration_log.push_str("WARN no guilds were present in the Ready payload; no guild commands were submitted\n");
+        }
         for guild in &ready.guilds {
-            if let Err(why) = guild.id.set_commands(&ctx.http, commands.clone()).await {
-                println!("Failed to register commands for guild {}: {}", guild.id, why);
+            match guild.id.set_commands(&ctx.http, commands.clone()).await {
+                Ok(registered) => {
+                    let studio_registered = registered.iter().any(|command| command.name == "studio");
+                    let line = format!(
+                        "OK guild={} registered_commands={} studio_registered={}\n",
+                        guild.id,
+                        registered.len(),
+                        studio_registered,
+                    );
+                    print!("{}", line);
+                    registration_log.push_str(&line);
+                }
+                Err(why) => {
+                    let line = format!("ERROR guild={} {}\n", guild.id, why);
+                    eprint!("{}", line);
+                    registration_log.push_str(&line);
+                }
             }
         }
-
-        println!("Slash commands registered!");
+        registration_log.push_str("Discord command registration finished\n");
+        write_command_registration_log(&registration_log).await;
+        println!("Slash command registration attempt finished; details: {}", COMMAND_REGISTRATION_LOG);
     }
 
     async fn reaction_add(&self, ctx: Context, reaction: serenity::all::Reaction) {
