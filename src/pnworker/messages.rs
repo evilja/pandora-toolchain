@@ -44,6 +44,8 @@ pub const PROBE_FAIL: &str = "PROBE_FAIL";
 pub const PROBE_ROW: &str = "PROBE_ROW";
 pub const PREVIEW_DONE: &str = "PREVIEW_DONE";
 pub const PREVIEW_FAIL: &str = "PREVIEW_FAIL";
+pub const STUDIO_PREVIEW_DONE: &str = "STUDIO_PREVIEW_DONE";
+pub const STUDIO_PREVIEW_FAIL: &str = "STUDIO_PREVIEW_FAIL";
 pub const EMBED_TITLE: &str = "EMBED_TITLE";
 pub const FIELD_JOBID: &str = "FIELD_JOBID";
 pub const FIELD_AUTHOR: &str = "FIELD_AUTHOR";
@@ -71,6 +73,7 @@ pub const PRESET_GPU_NOINTRO: &str = "PRESET_GPU_NOINTRO";
 pub const PRESET_STANDARD_INTRO: &str = "PRESET_STANDARD_INTRO";
 pub const PRESET_STANDARD_NOINTRO: &str = "PRESET_STANDARD_NOINTRO";
 pub const PRESET_DUMMY: &str = "PRESET_DUMMY";
+pub const PRESET_COPY: &str = "PRESET_COPY";
 pub const WORKER_ASSIGN: &str = "WORKER_ASSIGN";
 pub const QUEUE_POSITION: &str = "QUEUE_POSITION";
 
@@ -171,6 +174,8 @@ static DEFAULT_ENTRIES: &[(&str, &str, usize)] = &[
     ("PROBE_ROW", "\n\nDosya numaraları:\n{}", 1),
     ("PREVIEW_DONE", "\n\nÖnizleme hazır: {} kare.", 1),
     ("PREVIEW_FAIL", "\n\nÖnizleme oluşturulamadı: {}", 1),
+    ("STUDIO_PREVIEW_DONE", "\n\nStudio preview hazır.", 1),
+    ("STUDIO_PREVIEW_FAIL", "\n\nStudio preview oluşturulamadı: {}", 1),
     ("EMBED_TITLE", "Encode İşlemi ({})", 1),
     ("FIELD_JOBID", "İşlem Numarası", 0),
     ("FIELD_AUTHOR", "İşlem Sahibi", 0),
@@ -210,6 +215,7 @@ static DEFAULT_ENTRIES: &[(&str, &str, usize)] = &[
         0,
     ),
     ("PRESET_DUMMY", "DEVELOPER", 0),
+    ("PRESET_COPY", "Video copy with mixed AAC audio", 0),
 ];
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -343,6 +349,7 @@ pub fn create_job_embed(job: &Job, payload: &MessagePayload) -> CreateEmbed {
             Preset::Standard(Some(_)) => get_message(PRESET_STANDARD_INTRO, lang),
             Preset::Standard(None) => get_message(PRESET_STANDARD_NOINTRO, lang),
             Preset::Dummy(a) => format!("{} | {:?}", get_message(PRESET_DUMMY, lang), a),
+            Preset::Copy => get_message(PRESET_COPY, lang),
         });
 
     let color = match job.ready {

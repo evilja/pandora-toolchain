@@ -329,6 +329,7 @@ mod tests {
             keep: None,
             keycode: None,
             preview: None,
+            studio: None,
         }
     }
 

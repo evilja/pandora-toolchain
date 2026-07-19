@@ -152,7 +152,7 @@ fn render_queue_estimate_for_job(job: &Job) -> bool {
 
 fn active_encode_job(job: &Job) -> bool {
     job.forward_parent.is_none()
-        && matches!(job.job_type, JobType::Encode | JobType::Pancode | JobType::Keycode)
+        && matches!(job.job_type, JobType::Encode | JobType::Pancode | JobType::Keycode | JobType::Studio)
         && job.ready == Stage::Encoding
 }
 
@@ -221,6 +221,7 @@ pub(crate) fn remaining_secs_queued(frames: Option<u64>, preset: &Preset) -> Opt
         Preset::PseudoLossless(_) => 30.0,
         Preset::Dummy(_) => 150.0,
         Preset::Standard(_) | Preset::Gpu(_) => 60.0,
+        Preset::Copy => 300.0,
     };
     frames.map(|frames| (frames as f64 / fps).ceil() as u64)
 }

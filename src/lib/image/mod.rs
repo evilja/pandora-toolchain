@@ -1,6 +1,7 @@
 pub mod core;
 pub mod svg;
 pub mod text;
+pub mod timeline;
 
 pub use self::core::{Canvas, Color, ImageError, ImageResult, Ratio};
 pub use self::svg::{FitMode, Placement, SvgImage};

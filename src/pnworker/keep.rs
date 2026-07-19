@@ -62,12 +62,12 @@ pub(crate) struct PreparedKeep {
     pub parent_keyword: String,
 }
 
-pub(crate) struct ResolvedKeywords {
+pub struct ResolvedKeywords {
     pub kind: KeepKind,
     pub paths: Vec<PathBuf>,
 }
 
-pub(crate) enum KeywordResolve {
+pub enum KeywordResolve {
     Ready(ResolvedKeywords),
     Waiting(Vec<String>),
 }
@@ -312,6 +312,47 @@ pub(crate) async fn resolve_keywords_for_keycode(
     Ok(KeywordResolve::Ready(ResolvedKeywords { kind, paths }))
 }
 
+pub async fn resolve_studio_keywords(
+    guild_id: u64,
+    keywords: &[String],
+) -> Result<ResolvedKeywords, String> {
+    cleanup_expired_keeps().await;
+    if keywords.is_empty() {
+        return Err("at least one keyword is required".to_string());
+    }
+    let server_scope = scope(Some(guild_id));
+    let mut metas = Vec::with_capacity(keywords.len());
+    let mut seen = std::collections::HashSet::new();
+    for raw in keywords {
+        let keyword = sanitize_keyword(raw).ok_or_else(|| format!("invalid keyword `{}`", raw))?;
+        if !seen.insert(keyword.clone()) {
+            return Err(format!("duplicate keyword `{}`", keyword));
+        }
+        let meta = read_meta(&server_scope, &keyword)
+            .await?
+            .ok_or_else(|| format!("unknown keyword `{}`", keyword))?;
+        if meta.expires_at <= now_secs() {
+            remove_dir_all(keyword_dir(&server_scope, &keyword)).await.ok();
+            return Err(format!("keyword `{}` expired", keyword));
+        }
+        if meta.failed {
+            return Err(format!("keyword `{}` failed", keyword));
+        }
+        if !meta.ready || !output_path(&meta).exists() {
+            return Err(format!("keyword `{}` is not ready", keyword));
+        }
+        metas.push(meta);
+    }
+    let kind = metas[0].kind;
+    if metas.iter().any(|meta| meta.kind != kind) {
+        return Err("mixed encode and backup keywords are not supported in one Studio".to_string());
+    }
+    Ok(ResolvedKeywords {
+        kind,
+        paths: metas.iter().map(output_path).collect(),
+    })
+}
+
 async fn read_meta(server_scope: &str, keyword: &str) -> Result<Option<KeepMeta>, String> {
     match read_to_string(meta_path(server_scope, keyword)).await {
         Ok(raw) => {
@@ -341,7 +382,7 @@ async fn allocate_keyword(server_scope: &str) -> Result<String, String> {
     Err("keyword pool is exhausted".to_string())
 }
 
-fn sanitize_keyword(raw: &str) -> Option<String> {
+pub fn sanitize_keyword(raw: &str) -> Option<String> {
     let s = raw.trim().to_ascii_lowercase();
     if s.is_empty() {
         return None;
@@ -358,7 +399,7 @@ fn sanitize_keyword(raw: &str) -> Option<String> {
     }
 }
 
-fn now_secs() -> u64 {
+pub fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::from_secs(0))
@@ -371,6 +412,7 @@ fn preset_label(preset: &Preset) -> String {
         Preset::Dummy(_) => "dummy",
         Preset::Standard(_) => "standard",
         Preset::Gpu(_) => "gpu",
+        Preset::Copy => "copy",
     }
     .to_string()
 }

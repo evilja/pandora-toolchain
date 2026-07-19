@@ -178,6 +178,7 @@ fn preset_forward_key(preset: &Preset) -> serde_json::Value {
         Preset::Dummy(candidates) => serde_json::json!(["dummy", candidates]),
         Preset::Standard(candidates) => serde_json::json!(["standard", candidates]),
         Preset::Gpu(candidates) => serde_json::json!(["gpu", candidates]),
+        Preset::Copy => serde_json::json!(["copy", null]),
     }
 }
 
@@ -246,6 +247,7 @@ mod tests {
             keep: None,
             keycode: None,
             preview: None,
+            studio: None,
         }
     }
 

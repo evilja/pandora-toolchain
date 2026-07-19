@@ -142,6 +142,7 @@ impl JobDb {
             Preset::Standard(c)       => (1i64, candidates_to_db(c)),
             Preset::Gpu(c)            => (2i64, candidates_to_db(c)),
             Preset::Dummy(c)          => (3i64, candidates_to_db(c)),
+            Preset::Copy              => (4i64, None),
         };
         let link = job
             .display_link
@@ -436,6 +437,8 @@ pub fn job_type_label(job_type: i64) -> &'static str {
         10 => "Keycode",
         11 => "GitQuery",
         13 => "Preview",
+        14 => "Studio",
+        15 => "StudioPreview",
         _ => "Unknown",
     }
 }
@@ -446,6 +449,7 @@ pub fn preset_label(preset_type: i64) -> &'static str {
         1 => "Standard",
         2 => "Gpu",
         3 => "Dummy",
+        4 => "Copy",
         _ => "Unknown",
     }
 }

@@ -69,6 +69,24 @@ pub const PNP2P_TORRENT: &[CliParam] = &[
     CliParam::Path("CANCELFILE"),
 ];
 
+pub const PNMPEG_STUDIO: &[CliParam] = &[
+    CliParam::Literal("--studio"),
+    CliParam::Literal("--input"),
+    CliParam::Path("MANIFEST"),
+    CliParam::Literal("--output"),
+    CliParam::Path("OUTPUT"),
+    CliParam::Literal("--negkey"),
+    CliParam::Path("NEGKEY"),
+    CliParam::Literal("--negotiator"),
+    CliParam::Literal("PNencdeworker"),
+    CliParam::Literal("--negver"),
+    CliParam::NegVer("1"),
+    CliParam::Literal("--cancelfile"),
+    CliParam::Path("CANCELFILE"),
+    CliParam::Literal("--logfile"),
+    CliParam::Path("LOGFILE"),
+];
+
 pub const PNMPEG_ENCODE: &[CliParam] = &[
     CliParam::Literal("--input"),
     CliParam::Path("INPUT"),

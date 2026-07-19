@@ -3,7 +3,7 @@ use serenity::builder::CreateAttachment;
 use serenity::all::{ActivityData, Context, CreateEmbed, EditMessage, Message, OnlineStatus};
 use tokio::time::{sleep, Duration};
 use crate::pnworker::core::Job;
-use crate::pnworker::messages::{MessagePayload, create_job_embed, PREVIEW_DONE};
+use crate::pnworker::messages::{MessagePayload, create_job_embed, PREVIEW_DONE, STUDIO_PREVIEW_DONE};
 use crate::pnworker::presence::{change_presence_job, global_context, Presence};
 
 #[derive(Clone)]
@@ -21,16 +21,31 @@ impl Frontend {
     pub async fn update(&mut self, job: &Job, payload: &MessagePayload) {
         match self {
             Frontend::Discord { ctx, msg } => {
-                if let Some(edit) = preview_done_edit(job, payload).await {
-                    if msg.edit(&**ctx, edit).await.is_ok() {
-                        return;
+                if is_attachment_done(payload) {
+                    match preview_done_edit(job, payload).await {
+                        Some(edit) => {
+                            if msg.edit(&**ctx, edit).await.is_ok() {
+                                return;
+                            }
+                            eprintln!("[Pandora Preview] Discord preview attachment edit failed for {}", job.job_id);
+                            let _ = msg.edit(&**ctx, EditMessage::new().content("Preview was rendered, but Discord rejected the attachment. Check the guild upload-size limit and retry.").embed(create_job_embed(job, payload))).await;
+                            return;
+                        }
+                        None => {
+                            let text = if is_studio_preview_done(payload) {
+                                "Studio preview was rendered, but its MP4 attachment could not be prepared."
+                            } else {
+                                "Preview was rendered, but its attachment could not be prepared."
+                            };
+                            let _ = msg.edit(&**ctx, EditMessage::new().content(text).embed(create_job_embed(job, payload))).await;
+                            return;
+                        }
                     }
-                    eprintln!("[Pandora Preview] Discord preview attachment edit failed for {}", job.job_id);
                 }
                 let _ = msg.edit(&**ctx, EditMessage::new().content("").embed(create_job_embed(job, payload))).await;
             }
             Frontend::Web => {
-                if is_preview_done(payload) {
+                if is_attachment_done(payload) {
                     eprintln!("[Pandora Preview] preview attachments are Discord-only for job {}", job.job_id);
                 }
             }
@@ -122,12 +137,33 @@ fn is_preview_done(payload: &MessagePayload) -> bool {
     matches!(payload, MessagePayload::Progress(id, _) if *id == PREVIEW_DONE)
 }
 
+fn is_studio_preview_done(payload: &MessagePayload) -> bool {
+    matches!(payload, MessagePayload::Progress(id, _) if *id == STUDIO_PREVIEW_DONE)
+}
+
+fn is_attachment_done(payload: &MessagePayload) -> bool {
+    is_preview_done(payload) || is_studio_preview_done(payload)
+}
+
 async fn preview_done_edit(job: &Job, payload: &MessagePayload) -> Option<EditMessage> {
     let MessagePayload::Progress(id, args) = payload else {
         return None;
     };
-    if *id != PREVIEW_DONE {
+    if *id != PREVIEW_DONE && *id != STUDIO_PREVIEW_DONE {
         return None;
+    }
+    if *id == STUDIO_PREVIEW_DONE {
+        let path = args.first()?;
+        return match CreateAttachment::path(path).await {
+            Ok(mut attachment) => {
+                attachment.filename = "studio-preview.mp4".to_string();
+                Some(EditMessage::new().content("").embed(create_job_embed(job, payload)).new_attachment(attachment))
+            }
+            Err(e) => {
+                eprintln!("[Pandora Studio] failed to attach preview `{}`: {}", path, e);
+                None
+            }
+        };
     }
     if args.len() == 2 {
         let path = &args[1];

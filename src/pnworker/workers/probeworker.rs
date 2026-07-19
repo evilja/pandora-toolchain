@@ -1,5 +1,5 @@
 use crate::lib::env::core::get_pandora_env;
-use crate::lib::env::standard::{PNCURL, PNP2P};
+use crate::lib::env::standard::{PNCURL, PNP2P, PNMPEG};
 use crate::lib::image::Font;
 use crate::lib::mpeg::preview::ffmpeg_screenshot;
 use crate::lib::p2p::nyaaise::TorrentType;
@@ -8,11 +8,11 @@ use crate::libkagami::core::{SubstationAlpha, find_fonts_with_roots};
 use crate::pnworker::core::Stage;
 use crate::pnworker::core::{CommData, WorkerMsg};
 use crate::pnworker::messages::{
-    CTORRENT_DONE, CTORRENT_FAIL, JOB_CANCELLED, MessagePayload, PREVIEW_DONE, PREVIEW_FAIL,
-    PROBE_FAIL, PROBE_ROW, WORKER_ASSIGN,
+    CTORRENT_DONE, CTORRENT_FAIL, ENCODE_PROG, ENCODE_START, ENCODE_WARNING, JOB_CANCELLED, MessagePayload, PREVIEW_DONE, PREVIEW_FAIL,
+    PROBE_FAIL, PROBE_ROW, STUDIO_PREVIEW_DONE, STUDIO_PREVIEW_FAIL, WORKER_ASSIGN,
 };
 use crate::pnworker::preview::{compose_preview, merge_previews};
-use crate::pnworker::tools::{PNCURL_TORRENT, PNP2P_PROBE};
+use crate::pnworker::tools::{PNCURL_TORRENT, PNP2P_PROBE, PNMPEG_STUDIO};
 use crate::pnworker::util::PathValue;
 use crate::pnworker::util::{
     ToolResult, WorkerNamePool, job_cancelled, run_tool, string_byte_to_mb,
@@ -45,6 +45,7 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
     let env = get_pandora_env();
     let pncurl_path = env.get(PNCURL).cloned().unwrap_or_default();
     let pnp2p_path = env.get(PNP2P).cloned().unwrap_or_default();
+    let pnmpeg_path = env.get(PNMPEG).cloned().unwrap_or_default();
     let mut pool = WorkerNamePool::new(probe_worker_slots().await);
     let mut next_slot_refresh = Instant::now() + Duration::from_secs(1);
     let (done_tx, mut done_rx) = channel::<String>(32);
@@ -59,7 +60,7 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             pool.release(&name);
         }
         while let Ok(msg) = rx.try_recv() {
-            if matches!(msg, WorkerMsg::Probe(_) | WorkerMsg::Preview(_)) {
+            if matches!(msg, WorkerMsg::Probe(_) | WorkerMsg::Preview(_) | WorkerMsg::StudioPreview(_)) {
                 pending.push_back(msg);
             }
         }
@@ -76,10 +77,12 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             let done_tx2 = done_tx.clone();
             let pncurl_path2 = pncurl_path.clone();
             let pnp2p_path2 = pnp2p_path.clone();
+            let pnmpeg_path2 = pnmpeg_path.clone();
             tokio::spawn(async move {
                 let job_id = match &msg {
                     WorkerMsg::Probe((_, _, job_id))
-                    | WorkerMsg::Preview((_, _, _, _, job_id, _)) => *job_id,
+                    | WorkerMsg::Preview((_, _, _, _, job_id, _))
+                    | WorkerMsg::StudioPreview((_, _, job_id)) => *job_id,
                     _ => unreachable!(),
                 };
                 tx2.send((
@@ -112,6 +115,9 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                             &pulse2,
                         )
                         .await;
+                    }
+                    WorkerMsg::StudioPreview((directory, manifest, job_id)) => {
+                        run_studio_preview_job(directory, manifest, job_id, &pnmpeg_path2, &tx2).await;
                     }
                     _ => unreachable!(),
                 }
@@ -481,6 +487,63 @@ async fn run_preview_job(
     ))
     .await
     .ok();
+}
+
+async fn run_studio_preview_job(
+    directory: PathBuf,
+    manifest: PathBuf,
+    job_id: u64,
+    pnmpeg_path: &str,
+    tx: &Sender<CommData>,
+) {
+    if job_cancelled(&directory) {
+        tx.send((job_id, MessagePayload::Static(JOB_CANCELLED), Some(Stage::Cancelled))).await.ok();
+        return;
+    }
+    let output = directory.join("work").join("studio-preview.mp4");
+    tx.try_send((job_id, MessagePayload::Static(ENCODE_START), Some(Stage::Encoding))).ok();
+    let mut proto = Protocol::new(vec![1]);
+    let result = run_tool(
+        pnmpeg_path,
+        PNMPEG_STUDIO,
+        &HashMap::from([
+            ("MANIFEST", PathValue::from(manifest.display().to_string())),
+            ("OUTPUT", PathValue::from(output.display().to_string())),
+            ("NEGKEY", PathValue::from("pn-preview-studio".to_string())),
+            ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),
+            ("LOGFILE", PathValue::from(directory.join("log").join(format!("PNmpeg_StudioPreview{}.log", job_id)).display().to_string())),
+        ]),
+        job_id,
+        &mut proto,
+        |data| {
+            let code = data.get(0).and_then(|v| v.parse::<u16>())?;
+            match code {
+                0 => {
+                    let values = data.get(1).and_then(|v| v.as_multi())?;
+                    tx.try_send((job_id, MessagePayload::Progress(ENCODE_PROG, vec![
+                        "1".into(),
+                        values.get(1).and_then(|v| v.as_str()).unwrap_or("0").into(),
+                        values.get(2).and_then(|v| v.as_str()).unwrap_or("0").into(),
+                        values.get(0).and_then(|v| v.as_str()).unwrap_or("0").into(),
+                        values.get(3).and_then(|v| v.as_str()).unwrap_or("0").into(),
+                    ]), None)).ok();
+                }
+                1 => return Some(ToolResult::Success),
+                2 => return Some(ToolResult::Fail),
+                3 => return Some(ToolResult::Cancel),
+                4 => if let Some(warning) = data.get(1).and_then(|v| v.as_str()) {
+                    tx.try_send((job_id, MessagePayload::Progress(ENCODE_WARNING, vec![warning.into()]), None)).ok();
+                },
+                _ => {}
+            }
+            None
+        },
+    ).await;
+    match result {
+        ToolResult::Success => tx.send((job_id, MessagePayload::Progress(STUDIO_PREVIEW_DONE, vec![output.display().to_string()]), Some(Stage::Uploaded))).await.ok(),
+        ToolResult::Fail => tx.send((job_id, MessagePayload::Progress(STUDIO_PREVIEW_FAIL, vec!["pnmpeg failed".into()]), Some(Stage::Failed))).await.ok(),
+        ToolResult::Cancel => tx.send((job_id, MessagePayload::Static(JOB_CANCELLED), Some(Stage::Cancelled))).await.ok(),
+    };
 }
 
 async fn stage_preview_fonts(directory: &Path, server_id: Option<u64>) -> PathBuf {

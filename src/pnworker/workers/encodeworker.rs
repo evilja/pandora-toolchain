@@ -7,7 +7,7 @@ use crate::lib::env::standard::{PNASS, PNMPEG};
 use crate::lib::protocol::core::Protocol;
 use crate::pnworker::messages::{ENCODE_CONCAT_PROG, ENCODE_DONE, ENCODE_FAIL, ENCODE_PROG, ENCODE_START, ENCODE_WARNING, JOB_CANCELLED, MessagePayload, SERVER_EFFECTS_FAIL};
 use crate::pnworker::util::{ToolResult, job_cancelled, run_tool};
-use crate::pnworker::tools::{PNMPEG_CONCAT, PNMPEG_ENCODE, PNMPEG_JOIN, PNMPEG_JOIN_ASS};
+use crate::pnworker::tools::{PNMPEG_CONCAT, PNMPEG_ENCODE, PNMPEG_JOIN, PNMPEG_JOIN_ASS, PNMPEG_STUDIO};
 use tokio::fs::rename;
 use std::path::PathBuf;
 use std::collections::HashMap;
@@ -15,6 +15,7 @@ use crate::pnworker::core::{KeepKind, Preset, Stage, WorkerMsg};
 use crate::pnworker::util::PathValue;
 use crate::pnworker::core::CommData;
 pub type EncodeData = (PathBuf, Preset, u64, Option<u64>, Option<Vec<u8>>);
+pub type StudioData = (PathBuf, PathBuf, u64);
 pub type KeycodeData = (PathBuf, Vec<PathBuf>, KeepKind, u64, Option<u64>);
 
 
@@ -38,6 +39,10 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
     let pnass_path = env.get(PNASS).cloned().unwrap_or_default();
     'll: loop {
         if let Ok(msg) = rx.try_recv() {
+            if let WorkerMsg::Studio((directory, manifest, job_id)) = msg {
+                run_studio_job(&pnmpeg_path, directory, manifest, job_id, &mut proto, &tx).await;
+                continue 'll;
+            }
             if let WorkerMsg::Keycode((directory, inputs, kind, job_id, _server_id)) = msg {
                 let Some(first) = inputs.first() else {
                     tx.send((job_id, MessagePayload::Static(ENCODE_FAIL), Some(Stage::Failed))).await.unwrap();
@@ -94,6 +99,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 Preset::Gpu(cc)            => (cc, "gpu"),
                 Preset::Standard(cc)       => (cc, "x264"),
                 Preset::Dummy(cc)          => (cc, "dummy"),
+                Preset::Copy               => (None, "copy"),
             };
             let intro_q = if concat_value.is_some() { 2 } else { 1 };
             let fontconfig_dir = PathBuf::from("DB").join("fontconfig").join(
@@ -265,6 +271,71 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
         sleep(Duration::from_secs(5)).await;
         pulse.try_send(()).ok();
     }
+}
+
+async fn run_studio_job(
+    pnmpeg_path: &str,
+    directory: PathBuf,
+    manifest: PathBuf,
+    job_id: u64,
+    proto: &mut Protocol,
+    tx: &Sender<CommData>,
+) {
+    let output = directory.join("work").join("output.mp4");
+    if job_cancelled(&directory) {
+        tx.send((job_id, MessagePayload::Static(JOB_CANCELLED), Some(Stage::Cancelled))).await.ok();
+        return;
+    }
+    tx.try_send((job_id, MessagePayload::Static(ENCODE_START), Some(Stage::Encoding))).ok();
+    let result = run_tool(
+        pnmpeg_path,
+        PNMPEG_STUDIO,
+        &HashMap::from([
+            ("MANIFEST", PathValue::from(manifest.display().to_string())),
+            ("OUTPUT", PathValue::from(output.display().to_string())),
+            ("NEGKEY", PathValue::from("pn-encode-main".to_string())),
+            ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),
+            ("LOGFILE", PathValue::from(directory.join("log").join(format!("PNmpeg_Studio{}.log", job_id)).display().to_string())),
+        ]),
+        job_id,
+        proto,
+        |data| studio_progress(data, job_id, tx),
+    ).await;
+    match result {
+        ToolResult::Success => tx.send((job_id, MessagePayload::Static(ENCODE_DONE), Some(Stage::Encoded))).await.ok(),
+        ToolResult::Fail => tx.send((job_id, MessagePayload::Static(ENCODE_FAIL), Some(Stage::Failed))).await.ok(),
+        ToolResult::Cancel => tx.send((job_id, MessagePayload::Static(JOB_CANCELLED), Some(Stage::Cancelled))).await.ok(),
+    };
+}
+
+fn studio_progress(
+    data: &crate::lib::protocol::core::TypeC,
+    job_id: u64,
+    tx: &Sender<CommData>,
+) -> Option<ToolResult> {
+    let out = data.get(0).and_then(|v| v.parse::<u16>())?;
+    match out {
+        0 => {
+            let payload = data.get(1).and_then(|v| v.as_multi())?;
+            tx.try_send((job_id, MessagePayload::Progress(ENCODE_PROG, vec![
+                "1".to_string(),
+                payload.get(1).and_then(|v| v.as_str()).unwrap_or("0").to_string(),
+                payload.get(2).and_then(|v| v.as_str()).unwrap_or("0").to_string(),
+                payload.get(0).and_then(|v| v.as_str()).unwrap_or("0").to_string(),
+                payload.get(3).and_then(|v| v.as_str()).unwrap_or("0").to_string(),
+            ]), None)).ok();
+        }
+        1 => return Some(ToolResult::Success),
+        2 => return Some(ToolResult::Fail),
+        3 => return Some(ToolResult::Cancel),
+        4 => {
+            if let Some(warning) = data.get(1).and_then(|v| v.as_str()) {
+                tx.try_send((job_id, MessagePayload::Progress(ENCODE_WARNING, vec![warning.to_string()]), None)).ok();
+            }
+        }
+        _ => {}
+    }
+    None
 }
 
 fn keycode_progress(

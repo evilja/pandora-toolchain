@@ -29,6 +29,8 @@ pub trait Decode {
 
 pub enum FfmpegParams {
     Input(Cow<'static, str>),
+    Seek(Cow<'static, str>),
+    Duration(Cow<'static, str>),
     X264Params(Cow<'static, str>),
     BasicFilter(Cow<'static, str>),
     ComplexFilter(Cow<'static, str>),
@@ -66,6 +68,8 @@ impl Decode for FfmpegParams {
     fn decode(&self) -> Vec<String> {
         match self {
             Self::Input(a) => vec!["-i".to_string(), a.to_string()],
+            Self::Seek(a) => vec!["-ss".to_string(), a.to_string()],
+            Self::Duration(a) => vec!["-t".to_string(), a.to_string()],
             Self::X264Params(a) => vec!["-x264-params".to_string(), a.to_string()],
             Self::BasicFilter(a) => vec!["-vf".to_string(), a.to_string()],
             Self::ComplexFilter(a) => vec!["-filter_complex".to_string(), a.to_string()],

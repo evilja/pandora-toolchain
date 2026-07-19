@@ -452,6 +452,7 @@ const COMMAND_RANKS_PATH: &str = "DB/config/global/environment/command_ranks.pan
 
 const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("encode", 0),
+    ("studio", 0),
     ("probe", 0),
     ("backup", 0),
     ("backupall", 0),
@@ -643,6 +644,13 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Encode, locally keep, or join video outputs.",
             usage: "/encode do|pan|link|keep|key ... (preset and intro come from /edit)",
             details: "`do` encodes with an attached ASS; `pan` selects a file from `/probe`; `link` fetches the ASS from a URL; `keep` encodes an attachment and stores the output under a keyword; `key` joins kept keyword outputs.",
+        },
+        HelpCommand {
+            section: "encode",
+            name: "studio",
+            summary: "Edit kept videos with inserted or replacement audio tracks.",
+            usage: "/studio create|insert|override|move|remove|preview|timeline|done|disown|reown ...",
+            details: "Create a Studio from ordered comma-separated keep keywords. Insert overlays audio; override mutes source audio for that track's interval. Move accepts seconds, MM:SS, HH:MM:SS, or frame offsets ending in f. Share the Studio ID so guild collaborators can reown it. Active Studios expire after 24 hours of inactivity; a Studio with no collaborators expires after 30 minutes.",
         },
         HelpCommand {
             section: "encode",
@@ -1788,6 +1796,9 @@ impl EventHandler for Handler {
                 "encode" => {
                     handle_encode_command(&ctx, &command, &self.tx).await;
                 }
+                "studio" => {
+                    handle_studio(&ctx, &command, &self.tx).await;
+                }
                 "probe" => {
                     let torrent_url = match required_trimmed_option(&ctx, &command, "torrent", "Torrent URL").await {
                         Some(url) => url,
@@ -2159,11 +2170,47 @@ impl EventHandler for Handler {
                     )
             );
 
+        let studio_command = CreateCommand::new("studio")
+            .description("Edit kept videos with collaborative audio tracks")
+            .add_option(
+                CreateCommandOption::new(CommandOptionType::SubCommand, "create", "Create a Studio from ordered keep keywords")
+                    .add_sub_option(CreateCommandOption::new(CommandOptionType::String, "keywords", "Comma-separated keep keywords").required(true))
+            )
+            .add_option(CreateCommandOption::new(CommandOptionType::SubCommand, "disown", "Leave your current Studio"))
+            .add_option(
+                CreateCommandOption::new(CommandOptionType::SubCommand, "reown", "Reattach your last or a shared Studio")
+                    .add_sub_option(CreateCommandOption::new(CommandOptionType::String, "studio_id", "Optional shared Studio ID").required(false))
+            )
+            .add_option(
+                CreateCommandOption::new(CommandOptionType::SubCommand, "insert", "Overlay an audio track on the source audio")
+                    .add_sub_option(CreateCommandOption::new(CommandOptionType::Attachment, "audio", "Audio attachment").required(true))
+            )
+            .add_option(
+                CreateCommandOption::new(CommandOptionType::SubCommand, "override", "Replace source audio during an audio track")
+                    .add_sub_option(CreateCommandOption::new(CommandOptionType::Attachment, "audio", "Audio attachment").required(true))
+            )
+            .add_option(
+                CreateCommandOption::new(CommandOptionType::SubCommand, "move", "Move a Studio track to a frame or time offset")
+                    .add_sub_option(CreateCommandOption::new(CommandOptionType::Integer, "track", "Stable track number").required(true).min_int_value(1))
+                    .add_sub_option(CreateCommandOption::new(CommandOptionType::String, "offset", "Examples: 30s, 00:30, 720f").required(true))
+            )
+            .add_option(
+                CreateCommandOption::new(CommandOptionType::SubCommand, "remove", "Remove a Studio audio track")
+                    .add_sub_option(CreateCommandOption::new(CommandOptionType::Integer, "track", "Stable track number").required(true).min_int_value(1))
+            )
+            .add_option(
+                CreateCommandOption::new(CommandOptionType::SubCommand, "preview", "Upload a short Dummy MP4 around one track")
+                    .add_sub_option(CreateCommandOption::new(CommandOptionType::Integer, "track", "Stable track number").required(true).min_int_value(1))
+            )
+            .add_option(CreateCommandOption::new(CommandOptionType::SubCommand, "timeline", "Upload a visual Studio timeline"))
+            .add_option(CreateCommandOption::new(CommandOptionType::SubCommand, "done", "Render and upload the current Studio mix"));
+
         let commands = vec![
             help_command,
             CreateCommand::new("providers")
                 .description("Show attached provider APIs"),
             encode_command,
+            studio_command,
             CreateCommand::new("hearts")
                 .description("Check the health of all worker threads"),
             CreateCommand::new("workers")
