@@ -454,8 +454,8 @@ pub fn preset_label(preset_type: i64) -> &'static str {
     }
 }
 
-fn candidates_to_db(candidates: &Option<Vec<String>>) -> Option<String> {
-    candidates.as_ref().map(|v| v.join(","))
+fn candidates_to_db(candidates: &Option<String>) -> Option<String> {
+    candidates.clone()
 }
 
 fn stage_to_int(stage: Stage) -> i64 {

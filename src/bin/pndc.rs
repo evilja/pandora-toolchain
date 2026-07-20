@@ -924,7 +924,7 @@ fn help_catalog() -> &'static [HelpCommand] {
             name: "touchintro",
             summary: "Encode and register an intro group.",
             usage: "/touchintro name:<group> video:<attachment>",
-            details: "Encodes the uploaded video into 44100/23.976, 44100/24, 48000/23.976, and 48000/24 libx264 MP4 variants, stores them under DB/concat/<serverid>, and upserts the group in intros.toml.",
+            details: "Encodes the uploaded video into 44100/23.976, 44100/24, 48000/23.976, and 48000/24 libx264 MP4 variants, stores them in DB/concat/<serverid>/<group>, and points the intros.toml group at that folder. PNmpeg adds and reuses compatibility variants there when future encodes need another format.",
         },
         HelpCommand {
             section: "admin",
@@ -1420,6 +1420,12 @@ async fn migrate_pandora_files() {
     }
 
     migrate_env_format().await;
+
+    match pandora_toolchain::pnworker::util::migrate_intro_config() {
+        Ok(true) => println!("Migrated intro groups from file lists to folders"),
+        Ok(false) => {}
+        Err(e) => eprintln!("Warning: failed to migrate intros.toml: {}", e),
+    }
 }
 
 async fn migrate_env_format() {

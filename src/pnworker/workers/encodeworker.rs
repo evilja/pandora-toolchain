@@ -16,7 +16,7 @@ use crate::pnworker::util::PathValue;
 use crate::pnworker::core::CommData;
 pub type EncodeData = (PathBuf, Preset, u64, Option<u64>, Option<Vec<u8>>);
 pub type StudioData = (PathBuf, PathBuf, u64);
-pub type KeycodeData = (PathBuf, Vec<PathBuf>, KeepKind, u64, Option<u64>);
+pub type KeycodeData = (PathBuf, Vec<PathBuf>, Option<String>, KeepKind, u64, Option<u64>);
 
 
 #[cfg(target_os = "windows")]
@@ -43,7 +43,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 run_studio_job(&pnmpeg_path, directory, manifest, job_id, &mut proto, &tx).await;
                 continue 'll;
             }
-            if let WorkerMsg::Keycode((directory, inputs, kind, job_id, _server_id)) = msg {
+            if let WorkerMsg::Keycode((directory, inputs, intro_dir, kind, job_id, _server_id)) = msg {
                 let Some(first) = inputs.first() else {
                     tx.send((job_id, MessagePayload::Static(ENCODE_FAIL), Some(Stage::Failed))).await.unwrap();
                     continue 'll;
@@ -57,6 +57,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     ("INPUT", PathValue::from(path_to_ffmpeg(first))),
                     ("OUTPUT", PathValue::from(path_to_ffmpeg(directory.join("work").join("output.mp4").as_path()))),
                     ("CANDIDATES", PathValue::from(rest)),
+                    ("INTRO_DIR", PathValue::from(intro_dir.unwrap_or_default())),
                     ("MODE", PathValue::from(mode.to_string())),
                     ("NEGKEY", PathValue::from("pn-encode-main".to_string())),
                     ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),
@@ -94,14 +95,14 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             let WorkerMsg::Encode((directory, preset, job_id, server_id, watermark)) = msg else {
                 continue 'll;
             };
-            let (concat_value, insert) = match preset {
+            let (intro_dir, insert) = match preset {
                 Preset::PseudoLossless(cc) => (cc, "pseudolossless"),
                 Preset::Gpu(cc)            => (cc, "gpu"),
                 Preset::Standard(cc)       => (cc, "x264"),
                 Preset::Dummy(cc)          => (cc, "dummy"),
                 Preset::Copy               => (None, "copy"),
             };
-            let intro_q = if concat_value.is_some() { 2 } else { 1 };
+            let intro_q = if intro_dir.is_some() { 2 } else { 1 };
             let fontconfig_dir = PathBuf::from("DB").join("fontconfig").join(
                 server_id.map(|id| id.to_string()).unwrap_or_else(|| "global".to_string())
             );
@@ -194,7 +195,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 ToolResult::Success => {}
             }
 
-            if let Some(ref candidates) = concat_value {
+            if let Some(ref intro_dir) = intro_dir {
                 if job_cancelled(&directory) {
                     tx.send((job_id, MessagePayload::Static(JOB_CANCELLED), Some(Stage::Cancelled))).await.unwrap();
                     continue 'll;
@@ -205,7 +206,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     &HashMap::from([
                         ("INPUT",      PathValue::from(path_to_ffmpeg(directory.join("work").join("output_noconcat.mp4").as_path()))),
                         ("OUTPUT",     PathValue::from(path_to_ffmpeg(directory.join("work").join("output.mp4").as_path()))),
-                        ("CANDIDATES", PathValue::from(candidates.clone())),
+                        ("INTRO_DIR",  PathValue::from(path_to_ffmpeg(Path::new(intro_dir)))),
                         ("NEGKEY",     PathValue::from("pn-encode-main".to_string())),
                         ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),
                         ("LOGFILE",    PathValue::from(directory.join("log").join(format!("PNmpeg_Concat{}.log", job_id)).display().to_string())),

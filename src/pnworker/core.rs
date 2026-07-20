@@ -540,19 +540,14 @@ async fn dispatch_keycode_ready(
     if resolved.kind == KeepKind::Backup && job.attachment.is_empty() {
         return fail_keycode(db, job, "backup keywords require a subtitle").await;
     }
-    let mut inputs = resolved.paths;
-    let intro = match &job.preset {
-        Preset::PseudoLossless(candidates)
-        | Preset::Dummy(candidates)
-        | Preset::Standard(candidates)
-        | Preset::Gpu(candidates) => candidates
-            .as_ref()
-            .and_then(|c| select_keycode_intro(inputs.first(), c)),
+    let inputs = resolved.paths;
+    let intro_dir = match &job.preset {
+        Preset::PseudoLossless(intro_dir)
+        | Preset::Dummy(intro_dir)
+        | Preset::Standard(intro_dir)
+        | Preset::Gpu(intro_dir) => intro_dir.clone(),
         Preset::Copy => None,
     };
-    if let Some(intro) = intro {
-        inputs.insert(0, intro);
-    }
     if inputs.is_empty() {
         return fail_keycode(db, job, "no usable keyword outputs").await;
     }
@@ -564,6 +559,7 @@ async fn dispatch_keycode_ready(
         WorkerMsg::Keycode((
             job.directory.clone(),
             inputs,
+            intro_dir,
             resolved.kind,
             job.job_id,
             job.server_id,
@@ -692,42 +688,6 @@ fn preset_without_intro(preset: &Preset) -> Preset {
         Preset::Gpu(_) => Preset::Gpu(None),
         Preset::Copy => Preset::Copy,
     }
-}
-
-fn select_keycode_intro(first_input: Option<&PathBuf>, candidates: &[String]) -> Option<PathBuf> {
-    let first = first_input?.to_string_lossy().to_string();
-    let main_fps = crate::lib::mpeg::probe::ffprobe_framerate(&first);
-    let main_sr = crate::lib::mpeg::probe::ffprobe_samplerate(&first);
-    let mut best_match: Option<(usize, &String)> = None;
-    let mut highest_fps: Option<(&String, (u32, u32))> = None;
-    for candidate in candidates {
-        let cand_fps = crate::lib::mpeg::probe::ffprobe_framerate(candidate);
-        let cand_sr = crate::lib::mpeg::probe::ffprobe_samplerate(candidate);
-        if let Some(fps) = cand_fps {
-            match highest_fps {
-                None => highest_fps = Some((candidate, fps)),
-                Some((_, hfps)) => {
-                    if fps.0 * hfps.1 > hfps.0 * fps.1 {
-                        highest_fps = Some((candidate, fps));
-                    }
-                }
-            }
-        }
-        let mut score = 0usize;
-        if main_fps.is_some() && cand_fps == main_fps {
-            score += 1;
-        }
-        if main_sr.is_some() && cand_sr == main_sr {
-            score += 1;
-        }
-        if score > best_match.map(|(s, _)| s).unwrap_or(0) {
-            best_match = Some((score, candidate));
-        }
-    }
-    best_match
-        .filter(|(score, _)| *score >= 2)
-        .map(|(_, path)| PathBuf::from(path))
-        .or_else(|| highest_fps.map(|(path, _)| PathBuf::from(path)))
 }
 
 async fn queue_backup_all_job(
@@ -2040,10 +2000,10 @@ async fn dispatch_or_kill(
 
 #[derive(Clone, Debug)]
 pub enum Preset {
-    PseudoLossless(Option<Vec<String>>),
-    Dummy(Option<Vec<String>>),
-    Standard(Option<Vec<String>>),
-    Gpu(Option<Vec<String>>),
+    PseudoLossless(Option<String>),
+    Dummy(Option<String>),
+    Standard(Option<String>),
+    Gpu(Option<String>),
     Copy,
 }
 

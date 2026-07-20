@@ -1,7 +1,7 @@
 use crate::lib::protocol::core::{Protocol, TypeC};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -162,23 +162,186 @@ where
     }
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+pub const INTROS_PATH: &str = "DB/config/global/environment/intros.toml";
+
+#[derive(Deserialize, Serialize, Debug, Default)]
 pub struct IntrosConfig {
-    pub groups: HashMap<String, Vec<String>>,
+    pub groups: HashMap<String, String>,
+}
+
+#[derive(Deserialize)]
+struct LegacyIntrosConfig {
+    groups: HashMap<String, IntroGroupValue>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum IntroGroupValue {
+    Folder(String),
+    Files(Vec<String>),
 }
 
 impl IntrosConfig {
     pub fn load() -> Self {
-        std::fs::read_to_string("DB/config/global/environment/intros.toml")
-            .ok()
-            .and_then(|c| toml::from_str(&c).ok())
-            .unwrap_or(IntrosConfig {
-                groups: HashMap::new(),
-            })
+        let contents = match std::fs::read_to_string(INTROS_PATH) {
+            Ok(contents) => contents,
+            Err(_) => return IntrosConfig::default(),
+        };
+        if contents.trim().is_empty() {
+            return IntrosConfig::default();
+        }
+        if let Ok(config) = toml::from_str::<IntrosConfig>(&contents) {
+            return config;
+        }
+        match migrate_intro_config_contents(&contents) {
+            Ok((config, true)) => {
+                if let Err(e) = write_intro_config(&config) {
+                    eprintln!("Warning: failed to save migrated intro config: {}", e);
+                }
+                config
+            }
+            Ok((config, false)) => config,
+            Err(e) => {
+                eprintln!("Warning: failed to migrate intro config: {}", e);
+                IntrosConfig::default()
+            }
+        }
     }
 
-    pub fn resolve(&self, group: &str) -> Option<Vec<String>> {
-        self.groups.get(group).cloned()
+    pub fn resolve(&self, group: &str) -> Option<String> {
+        self.groups.get(group).filter(|folder| !folder.trim().is_empty()).cloned()
+    }
+}
+
+pub fn migrate_intro_config() -> Result<bool, String> {
+    let contents = match std::fs::read_to_string(INTROS_PATH) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e.to_string()),
+    };
+    if contents.trim().is_empty() {
+        return Ok(false);
+    }
+    let (config, migrated) = migrate_intro_config_contents(&contents)?;
+    if migrated {
+        write_intro_config(&config)?;
+    }
+    Ok(migrated)
+}
+
+fn migrate_intro_config_contents(contents: &str) -> Result<(IntrosConfig, bool), String> {
+    let raw: LegacyIntrosConfig = toml::from_str(contents).map_err(|e| e.to_string())?;
+    let mut config = IntrosConfig::default();
+    let mut migrated = false;
+    for (name, value) in raw.groups {
+        let folder = match value {
+            IntroGroupValue::Folder(folder) => folder,
+            IntroGroupValue::Files(files) => {
+                migrated = true;
+                migrate_intro_group(&name, &files)?
+            }
+        };
+        config.groups.insert(name, folder);
+    }
+    Ok((config, migrated))
+}
+
+fn migrate_intro_group(name: &str, files: &[String]) -> Result<String, String> {
+    let parent = files
+        .first()
+        .and_then(|file| Path::new(file).parent())
+        .filter(|first| files.iter().all(|file| Path::new(file).parent() == Some(*first)))
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("DB").join("concat").join("migrated"));
+    let folder = parent.join(intro_folder_name(name));
+    std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+    for (index, file) in files.iter().enumerate() {
+        let source = Path::new(file);
+        if !source.is_file() {
+            eprintln!("Warning: intro migration skipped missing file `{}`", source.display());
+            continue;
+        }
+        let file_name = source.file_name()
+            .and_then(|value| value.to_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("intro_{}.mp4", index));
+        let mut destination = folder.join(&file_name);
+        if destination.exists() && source.canonicalize().ok() != destination.canonicalize().ok() {
+            let stem = Path::new(&file_name).file_stem().and_then(|v| v.to_str()).unwrap_or("intro");
+            let ext = Path::new(&file_name).extension().and_then(|v| v.to_str()).unwrap_or("mp4");
+            destination = folder.join(format!("{}_{}.{}", stem, index, ext));
+        }
+        if source.canonicalize().ok() == destination.canonicalize().ok() {
+            continue;
+        }
+        if let Err(link_error) = std::fs::hard_link(source, &destination) {
+            std::fs::copy(source, &destination).map_err(|copy_error| {
+                format!(
+                    "failed to migrate `{}` (hard link: {}; copy: {})",
+                    source.display(), link_error, copy_error
+                )
+            })?;
+        }
+    }
+    Ok(folder.display().to_string())
+}
+
+fn intro_folder_name(name: &str) -> String {
+    if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return name.to_string();
+    }
+    format!("intro-{:x}", md5::compute(name.as_bytes()))
+}
+
+fn write_intro_config(config: &IntrosConfig) -> Result<(), String> {
+    if let Some(parent) = Path::new(INTROS_PATH).parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let body = toml::to_string_pretty(config).map_err(|e| e.to_string())?;
+    let temporary = format!("{}.tmp", INTROS_PATH);
+    std::fs::write(&temporary, body).map_err(|e| e.to_string())?;
+    match std::fs::rename(&temporary, INTROS_PATH) {
+        Ok(()) => Ok(()),
+        Err(first) if Path::new(INTROS_PATH).exists() => {
+            std::fs::remove_file(INTROS_PATH).map_err(|e| e.to_string())?;
+            std::fs::rename(&temporary, INTROS_PATH)
+                .map_err(|e| format!("{}; replacement failed: {}", first, e))
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod intro_tests {
+    use super::migrate_intro_config_contents;
+
+    #[test]
+    fn folder_intro_config_needs_no_migration() {
+        let (config, migrated) = migrate_intro_config_contents(
+            "[groups]\nopening = \"DB/concat/1/opening\"\n",
+        ).unwrap();
+        assert!(!migrated);
+        assert_eq!(config.groups.get("opening").map(String::as_str), Some("DB/concat/1/opening"));
+    }
+
+    #[test]
+    fn legacy_files_are_retained_in_a_group_folder() {
+        let root = std::env::temp_dir().join(format!(
+            "pandora-intro-migration-{}-{:x}",
+            std::process::id(),
+            md5::compute(format!("{:?}", std::time::SystemTime::now()).as_bytes())
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("opening_24.mp4");
+        std::fs::write(&source, b"intro").unwrap();
+        let escaped = source.display().to_string().replace('\\', "\\\\");
+        let contents = format!("[groups]\nopening = [\"{}\"]\n", escaped);
+        let (config, migrated) = migrate_intro_config_contents(&contents).unwrap();
+        let folder = std::path::PathBuf::from(config.groups.get("opening").unwrap());
+        assert!(migrated);
+        assert_eq!(std::fs::read(folder.join("opening_24.mp4")).unwrap(), b"intro");
+        assert_eq!(std::fs::read(&source).unwrap(), b"intro");
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
 

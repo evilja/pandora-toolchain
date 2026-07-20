@@ -116,6 +116,51 @@ pub fn ffprobe_samplerate(path: &str) -> Option<u32> {
     data.streams.into_iter().next()?.sample_rate.parse::<u32>().ok()
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConcatMedia {
+    pub video_codec: String,
+    pub width: u32,
+    pub height: u32,
+    pub pixel_format: String,
+    pub sample_aspect_ratio: String,
+    pub fps_num: u32,
+    pub fps_den: u32,
+    pub audio_codec: String,
+    pub sample_rate: u32,
+    pub channels: u32,
+}
+
+pub fn ffprobe_concat_media(path: &Path) -> Option<ConcatMedia> {
+    let output = Command::new(resolve_runtime_binary("ffprobe"))
+        .args([
+            "-v", "error",
+            "-show_entries", "stream=codec_type,codec_name,width,height,pix_fmt,sample_aspect_ratio,r_frame_rate,sample_rate,channels",
+            "-of", "json",
+            &path.to_string_lossy(),
+        ])
+        .output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let streams = value.get("streams")?.as_array()?;
+    let video = streams.iter().find(|stream| stream.get("codec_type").and_then(|v| v.as_str()) == Some("video"))?;
+    let audio = streams.iter().find(|stream| stream.get("codec_type").and_then(|v| v.as_str()) == Some("audio"))?;
+    let mut fps = video.get("r_frame_rate")?.as_str()?.splitn(2, '/');
+    Some(ConcatMedia {
+        video_codec: video.get("codec_name")?.as_str()?.to_string(),
+        width: video.get("width")?.as_u64()? as u32,
+        height: video.get("height")?.as_u64()? as u32,
+        pixel_format: video.get("pix_fmt")?.as_str()?.to_string(),
+        sample_aspect_ratio: video.get("sample_aspect_ratio").and_then(|v| v.as_str()).unwrap_or("1:1").to_string(),
+        fps_num: fps.next()?.parse().ok()?,
+        fps_den: fps.next()?.parse().ok()?,
+        audio_codec: audio.get("codec_name")?.as_str()?.to_string(),
+        sample_rate: audio.get("sample_rate")?.as_str()?.parse().ok()?,
+        channels: audio.get("channels")?.as_u64()? as u32,
+    })
+}
+
 pub fn ffprobe_duration_centiseconds(path: &str) -> Option<u64> {
     let output = Command::new(resolve_runtime_binary("ffprobe"))
         .args([
