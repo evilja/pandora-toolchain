@@ -58,14 +58,16 @@ pub async fn handle_addintro(
     };
 
     let out_dir = PathBuf::from("DB").join("concat").join(server_id.to_string());
+    let final_dir = out_dir.join(&name);
     let tmp_dir = PathBuf::from("DB")
         .join("work")
         .join(format!("addintro_{}_{}", server_id, command.id.get()));
+    let encoded_dir = tmp_dir.join("encoded");
     if let Err(e) = tokio::fs::create_dir_all(&out_dir).await {
         addintro_response(ctx, command, format!("Failed to create concat dir: {}", e)).await;
         return;
     }
-    if let Err(e) = tokio::fs::create_dir_all(&tmp_dir).await {
+    if let Err(e) = tokio::fs::create_dir_all(&encoded_dir).await {
         addintro_response(ctx, command, format!("Failed to create temp dir: {}", e)).await;
         return;
     }
@@ -77,11 +79,11 @@ pub async fn handle_addintro(
         return;
     }
 
-    let mut paths = Vec::new();
+    let mut file_names = Vec::new();
     for (idx, variant) in INTRO_VARIANTS.iter().enumerate() {
-        addintro_response(ctx, command, format!("Encoding variant {}/4 (`{}`)...", idx + 1, variant.label)).await;
-        let tmp_output = tmp_dir.join(format!("{}_{}.mp4", name, variant.label));
-        let final_output = out_dir.join(format!("{}_{}.mp4", name, variant.label));
+        addintro_response(ctx, command, format!("Encoding variant {}/{} (`{}`)...", idx + 1, INTRO_VARIANTS.len(), variant.label)).await;
+        let file_name = format!("{}_{}.mp4", name, variant.label);
+        let tmp_output = encoded_dir.join(&file_name);
         match encode_intro_variant(&input, &tmp_output, variant).await {
             Ok(()) => {}
             Err(e) => {
@@ -90,18 +92,36 @@ pub async fn handle_addintro(
                 return;
             }
         }
-        if let Err(e) = tokio::fs::rename(&tmp_output, &final_output).await {
-            addintro_response(ctx, command, format!("Failed to move `{}`: {}", final_output.display(), e)).await;
+        file_names.push(file_name);
+    }
+
+    let previous_dir = out_dir.join(format!(".{}_previous_{}", name, command.id.get()));
+    tokio::fs::remove_dir_all(&previous_dir).await.ok();
+    let had_previous = final_dir.exists();
+    if had_previous {
+        if let Err(e) = tokio::fs::rename(&final_dir, &previous_dir).await {
+            addintro_response(ctx, command, format!("Failed to stage replacement for `{}`: {}", final_dir.display(), e)).await;
             cleanup_addintro_tmp(&tmp_dir).await;
             return;
         }
-        paths.push(final_output.display().to_string());
+    }
+    if let Err(e) = tokio::fs::rename(&encoded_dir, &final_dir).await {
+        if had_previous {
+            tokio::fs::rename(&previous_dir, &final_dir).await.ok();
+        }
+        addintro_response(ctx, command, format!("Failed to install `{}`: {}", final_dir.display(), e)).await;
+        cleanup_addintro_tmp(&tmp_dir).await;
+        return;
+    }
+    if had_previous {
+        tokio::fs::remove_dir_all(&previous_dir).await.ok();
     }
 
-    match upsert_intro_group(&name, paths.clone()).await {
+    match upsert_intro_group(&name, final_dir.display().to_string()).await {
         Ok(()) => {
             cleanup_addintro_tmp(&tmp_dir).await;
-            addintro_response(ctx, command, format!("Added intro group `{}` with {} variants:\n{}", name, paths.len(), paths.iter().map(|p| format!("`{}`", p)).collect::<Vec<_>>().join("\n"))).await;
+            let paths = file_names.iter().map(|file| final_dir.join(file).display().to_string()).collect::<Vec<_>>();
+            addintro_response(ctx, command, format!("Added intro group `{}` with {} variants in `{}`:\n{}", name, paths.len(), final_dir.display(), paths.iter().map(|p| format!("`{}`", p)).collect::<Vec<_>>().join("\n"))).await;
         }
         Err(e) => {
             cleanup_addintro_tmp(&tmp_dir).await;
@@ -147,17 +167,12 @@ async fn encode_intro_variant(input: &Path, output: &Path, variant: &IntroVarian
     }
 }
 
-async fn upsert_intro_group(name: &str, paths: Vec<String>) -> Result<(), String> {
+async fn upsert_intro_group(name: &str, folder: String) -> Result<(), String> {
     if let Some(parent) = Path::new(INTROS_PATH).parent() {
         tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
     }
-    let contents = tokio::fs::read_to_string(INTROS_PATH).await.unwrap_or_default();
-    let mut config: IntrosConfig = if contents.trim().is_empty() {
-        IntrosConfig { groups: HashMap::new() }
-    } else {
-        toml::from_str(&contents).map_err(|e| e.to_string())?
-    };
-    config.groups.insert(name.to_string(), paths);
+    let mut config = IntrosConfig::load();
+    config.groups.insert(name.to_string(), folder);
     let body = toml::to_string_pretty(&config).map_err(|e| e.to_string())?;
     tokio::fs::write(INTROS_PATH, body).await.map_err(|e| e.to_string())
 }

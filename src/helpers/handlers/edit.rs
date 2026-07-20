@@ -8,7 +8,7 @@ const MAX_CONCAT_GROUP_CHOICES: usize = MAX_CONCAT_CHOICES - 1;
 const MAX_CONCAT_CHOICE_CHARS: usize = 100;
 
 fn filter_concat_choices(
-    groups: &std::collections::HashMap<String, Vec<String>>,
+    groups: &std::collections::HashMap<String, String>,
     partial: &str,
 ) -> Vec<(String, String)> {
     let partial = partial.to_lowercase();
@@ -206,10 +206,10 @@ mod tests {
     use super::{filter_concat_choices, CLEAR_SENTINEL, DISABLE_CONCAT_LABEL, MAX_CONCAT_CHOICES};
     use std::collections::HashMap;
 
-    fn groups(names: &[&str]) -> HashMap<String, Vec<String>> {
+    fn groups(names: &[&str]) -> HashMap<String, String> {
         names
             .iter()
-            .map(|name| ((*name).to_string(), Vec::new()))
+            .map(|name| ((*name).to_string(), format!("DB/concat/{}", name)))
             .collect()
     }
 
@@ -252,8 +252,8 @@ mod tests {
             .collect::<Vec<_>>();
         let groups = names
             .iter()
-            .map(|name| (name.clone(), Vec::new()))
-            .collect::<HashMap<_, Vec<String>>>();
+            .map(|name| (name.clone(), format!("DB/concat/{}", name)))
+            .collect::<HashMap<_, String>>();
         let choices = filter_concat_choices(&groups, "group");
         assert_eq!(choices.len(), MAX_CONCAT_CHOICES);
         assert_eq!(choices[0], (DISABLE_CONCAT_LABEL.to_string(), CLEAR_SENTINEL.to_string()));
@@ -265,11 +265,11 @@ mod tests {
         let long_name = "x".repeat(101);
         let choices = filter_concat_choices(&groups(&["", "   ", "Valid"]), "");
         let mut malformed = HashMap::new();
-        malformed.insert(long_name, Vec::new());
-        malformed.insert("Valid".to_string(), Vec::new());
-        malformed.insert("".to_string(), Vec::new());
-        malformed.insert("\t".to_string(), Vec::new());
-        malformed.insert(CLEAR_SENTINEL.to_string(), Vec::new());
+        malformed.insert(long_name, String::new());
+        malformed.insert("Valid".to_string(), String::new());
+        malformed.insert("".to_string(), String::new());
+        malformed.insert("\t".to_string(), String::new());
+        malformed.insert(CLEAR_SENTINEL.to_string(), String::new());
         assert_eq!(
             filter_concat_choices(&malformed, ""),
             vec![

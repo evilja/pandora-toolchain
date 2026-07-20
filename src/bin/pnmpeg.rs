@@ -3,7 +3,8 @@ use pandora_toolchain::lib::mpeg::{
         FFmpeg, FfmpegParams, do_comm_encode_ffmpeg}, preset::{
         CONCAT, CONCAT_LEGACY, CPU_DUMMY, CPU_PSEUDOLOSSLESS, CPU_SANE_DEFAULTS, GPU_SANE_DEFAULTS
     }, probe::{
-        ffprobe_frame, ffprobe_framerate, ffprobe_lang, ffprobe_samplerate
+        ConcatMedia, ffprobe_concat_media, ffprobe_frame, ffprobe_framerate, ffprobe_lang,
+        ffprobe_samplerate
     }
 };
 use tokio::{fs::File, io::AsyncWriteExt, time::{Duration, Instant}};
@@ -13,7 +14,7 @@ use pandora_toolchain::lib::mpeg::studio::{studio_ffmpeg_params, write_ffconcat,
 use pandora_toolchain::lib::protocol::core::{Protocol, Schema, ToolInfo};
 use std::str::FromStr;
 use clap::Parser;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use std::borrow::Cow;
 
@@ -77,10 +78,13 @@ struct Args {
     #[arg(short, long)]
     subinput: Option<String>,
 
-    /// Intro candidate - if any of these videos' properties are the same as main, it'll get selected.
-    /// Otherwise, highest framerate video will get reencoded into main's properties.
+    /// Additional inputs for join modes, or legacy individual intro candidates.
     #[arg(short, long, num_args = 0..)]
     candidate: Vec<String>,
+
+    /// Folder containing the retained variants for one intro group.
+    #[arg(long)]
+    intro_dir: Option<String>,
 
     #[arg(long)]
     negkey: Option<String>,
@@ -159,10 +163,26 @@ async fn main() {
         .canonicalize().unwrap()
         .join("PNmpeg_Concat.txt");
 
-    let selected_subinput = select_subinput(&args.input, &args.candidate, &args.subinput);
+    let intro_dir = args.intro_dir.as_deref().filter(|path| !path.trim().is_empty());
+    let selected_subinput = match intro_dir {
+        Some(intro_dir) => match prepare_compatible_intro(Path::new(&args.input), Path::new(intro_dir)) {
+            Ok(path) => Some(path.display().to_string()),
+            Err(e) => {
+                eprintln!("Intro preparation failed: {}", e);
+                std::process::exit(1);
+            }
+        },
+        None => select_subinput(&args.input, &args.candidate, &args.subinput),
+    };
 
     if args.joinconcat || args.joinass {
-        let mut join_inputs = vec![args.input.clone()];
+        let mut join_inputs = Vec::new();
+        if intro_dir.is_some() || args.subinput.is_some() {
+            if let Some(intro) = &selected_subinput {
+                join_inputs.push(intro.clone());
+            }
+        }
+        join_inputs.push(args.input.clone());
         join_inputs.extend(args.candidate.iter().cloned());
         let mut totalframe: u64 = 0;
         let parent = PathBuf::from_str(&args.input).unwrap()
@@ -220,7 +240,7 @@ async fn main() {
         return;
     }
 
-    let use_legacy = args.concat && !args.candidate.is_empty() && selected_subinput.as_ref().map(|p| {
+    let use_legacy = args.concat && intro_dir.is_none() && !args.candidate.is_empty() && selected_subinput.as_ref().map(|p| {
         ffprobe_framerate(p) != ffprobe_framerate(&args.input) ||
         ffprobe_samplerate(p) != ffprobe_samplerate(&args.input)
     }).unwrap_or(false);
@@ -393,6 +413,117 @@ async fn run_with_progress(
                 )
             }
         }
+    }
+}
+
+fn prepare_compatible_intro(main: &Path, intro_dir: &Path) -> Result<PathBuf, String> {
+    let target = ffprobe_concat_media(main)
+        .ok_or_else(|| format!("could not probe concat streams in `{}`", main.display()))?;
+    if target.video_codec != "h264" || target.audio_codec != "aac" {
+        return Err(format!(
+            "unsupported concat target codecs {}/{} (expected h264/aac)",
+            target.video_codec, target.audio_codec
+        ));
+    }
+    let mut files = std::fs::read_dir(intro_dir)
+        .map_err(|e| format!("could not read `{}`: {}", intro_dir.display(), e))?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            let temporary = path.file_name().and_then(|name| name.to_str())
+                .map(|name| name.contains(".tmp."))
+                .unwrap_or(false);
+            path.is_file() && !temporary && path.extension().and_then(|ext| ext.to_str()).map(|ext| {
+                matches!(ext.to_ascii_lowercase().as_str(), "mp4" | "mkv" | "mov" | "webm" | "m4v")
+            }).unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    files.sort();
+    if files.is_empty() {
+        return Err(format!("intro folder `{}` contains no videos", intro_dir.display()));
+    }
+
+    let mut source: Option<(PathBuf, ConcatMedia)> = None;
+    for path in &files {
+        let Some(media) = ffprobe_concat_media(path) else {
+            continue;
+        };
+        if media == target {
+            return Ok(path.clone());
+        }
+        let generated = path.file_name().and_then(|name| name.to_str())
+            .map(|name| name.starts_with("pnmpeg_compat_"))
+            .unwrap_or(false);
+        let replace = match &source {
+            None => true,
+            Some((current_path, current)) => {
+                let current_generated = current_path.file_name().and_then(|name| name.to_str())
+                    .map(|name| name.starts_with("pnmpeg_compat_"))
+                    .unwrap_or(false);
+                (current_generated && !generated)
+                    || (current_generated == generated
+                        && (media.fps_num as u64 * current.fps_den as u64
+                            > current.fps_num as u64 * media.fps_den as u64))
+            }
+        };
+        if replace {
+            source = Some((path.clone(), media));
+        }
+    }
+    let (source, _) = source.ok_or_else(|| {
+        format!("intro folder `{}` contains no probeable H.264/AAC video", intro_dir.display())
+    })?;
+    let signature = serde_json::to_vec(&target).map_err(|e| e.to_string())?;
+    let signature_hash = format!("{:x}", md5::compute(signature));
+    let cache = intro_dir.join(format!("pnmpeg_compat_{}.mp4", signature_hash));
+    let temporary = intro_dir.join(format!("pnmpeg_compat_{}.tmp.mp4", signature_hash));
+    std::fs::remove_file(&temporary).ok();
+    encode_compatible_intro(&source, &temporary, &target)?;
+    let encoded = ffprobe_concat_media(&temporary)
+        .ok_or_else(|| "could not probe generated intro variant".to_string())?;
+    if encoded != target {
+        std::fs::remove_file(&temporary).ok();
+        return Err(format!("generated intro is still incompatible: {:?} != {:?}", encoded, target));
+    }
+    if cache.exists() {
+        std::fs::remove_file(&cache).map_err(|e| e.to_string())?;
+    }
+    std::fs::rename(&temporary, &cache).map_err(|e| e.to_string())?;
+    Ok(cache)
+}
+
+fn encode_compatible_intro(source: &Path, output: &Path, target: &ConcatMedia) -> Result<(), String> {
+    use pandora_toolchain::lib::mpeg::core::run_ffmpeg_params;
+
+    let sar = target.sample_aspect_ratio.replace(':', "/");
+    let filter = format!(
+        "scale={}:{}:flags=lanczos,setsar={},format={}",
+        target.width, target.height, sar, target.pixel_format
+    );
+    let fps = format!("{}/{}", target.fps_num, target.fps_den);
+    let ok = run_ffmpeg_params(vec![
+        FfmpegParams::Overwrite,
+        FfmpegParams::Input(Cow::Owned(source.display().to_string())),
+        FfmpegParams::Map(Cow::Borrowed("0:v:0")),
+        FfmpegParams::Map(Cow::Borrowed("0:a:0")),
+        FfmpegParams::BasicFilter(Cow::Owned(filter)),
+        FfmpegParams::Cv(Cow::Borrowed("libx264")),
+        FfmpegParams::Profile(Cow::Borrowed("high")),
+        FfmpegParams::Level(Cow::Borrowed("4.1")),
+        FfmpegParams::Crf(17),
+        FfmpegParams::Preset(Cow::Borrowed("fast")),
+        FfmpegParams::R(Cow::Owned(fps)),
+        FfmpegParams::Ca(Cow::Borrowed("aac")),
+        FfmpegParams::Ba(Cow::Borrowed("192k")),
+        FfmpegParams::Ar(Cow::Owned(target.sample_rate.to_string())),
+        FfmpegParams::Ac(Cow::Owned(target.channels.to_string())),
+        FfmpegParams::Movflags,
+        FfmpegParams::Output(Cow::Owned(output.display().to_string())),
+    ]);
+    if ok {
+        Ok(())
+    } else {
+        std::fs::remove_file(output).ok();
+        Err(format!("ffmpeg could not convert intro `{}`", source.display()))
     }
 }
 

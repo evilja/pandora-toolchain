@@ -9,6 +9,12 @@ CLI tool flags and ASS parsing details.
 - `--drive --backup`: Drive-only upload with the same unlimited upload behavior.
 - `--gscrape`: Google Drive scraper. Parses the file id from the link, GETs the confirm page, extracts the `uuid` from the form, then GETs the final URL with `confirm=t&uuid=...` and streams chunks to `--opcode`. Client timeout 600s.
 
+## `pnmpeg` intro concat mode
+
+`pnmpeg --concat --input <episode.mp4> --intro-dir <group-folder> --output <video.mp4>` discovers the retained intro variants in the group folder. If one has the same H.264/AAC concat properties as the encoded episode (dimensions, pixel format, sample aspect ratio, frame rate, sample rate, and channel count), both files are joined with video/audio stream copy. Otherwise, only the best source intro is transcoded to those properties as `pnmpeg_compat_<signature>.mp4` in the group folder; that retained variant is then stream-copied and automatically reused by later compatible encodes. Existing `/touchintro` variants remain untouched.
+
+`intros.toml` maps group names directly to these folders. `pndc` startup migrates legacy file-array groups into per-group folders before workers start.
+
 ## `pnmpeg` Pandora Studio mode
 
 `pnmpeg --studio --input <manifest.json> --output <video.mp4>` renders a file-backed Pandora Studio snapshot through the normal pnprotocol progress/cancel/log path. The JSON manifest supplies ordered ffconcat video inputs, stable audio tracks, source kind, video preset, total FPS/duration, and an optional preview window.

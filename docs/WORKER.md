@@ -32,7 +32,7 @@ Worker runtime, tool orchestration, torrent routing, and cache/duplicate behavio
 
 ## Server-scoped encode effects
 
-`Job::new` / `Job::new_api` snapshot the server's line-11 preset, line-12 concat group, and optional `DB/config/<server_id>/watermark.ass`. Missing or invalid preset values fall back to Standard; missing intro groups disable concat. Encode forwarding keys include the watermark hash, so jobs with different server-effect snapshots never share an encode.
+`Job::new` / `Job::new_api` snapshot the server's line-11 preset, line-12 concat group folder, and optional `DB/config/<server_id>/watermark.ass`. Missing or invalid preset values fall back to Standard; missing intro groups disable concat. Encode forwarding keys include the watermark hash, so jobs with different server-effect snapshots never share an encode. The encode worker passes the intro folder to `pnmpeg`; `pnmpeg` stream-copies a matching retained variant or transcodes only the intro into a reusable compatibility variant in that folder before stream-copy concat.
 
 After an Encode/Pancode input reaches `Downloaded`, `pn_encdeworker` calls `server_effects` before pnmpeg. When a watermark exists, it probes the downloaded input duration, invokes pnass injection into a separate generated ASS, and passes that output to pnmpeg. Injection appends watermark events after main subtitle events, performs the normal PlayRes/aspect-ratio and colliding-style checks, and maps `[all]` to the full input duration. `[precise]` and any other/empty Effect preserve their own timings. Failure terminates the job with `SERVER_EFFECTS_FAIL`; cancellation remains cancellation. The untouched uploaded subtitle is retained so encoder reboot/retry cannot duplicate effects.
 
