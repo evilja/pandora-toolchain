@@ -88,15 +88,19 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
     let mut next_encode_dispatch_order = 1u64;
     let mut encode_reboot_epoch = shrine.reboot_epoch(&Worker::Encode);
     let mut gitquery: Option<HalfJob> = None;
+    let mut next_cache_cleanup = tokio::time::Instant::now() + Duration::from_secs(1);
     let mut next_studio_cleanup = tokio::time::Instant::now() + Duration::from_secs(60);
 
     loop {
-        sleep(Duration::from_millis(200)).await;
+        sleep(Duration::from_millis(50)).await;
 
         shrine.drain_heartbeats().await;
         check_encode_reboot_epoch(&shrine, &mut encode_reboot_epoch, &mut queue);
-        cleanup_expired_input_cache().await;
-        cleanup_expired_keeps().await;
+        if tokio::time::Instant::now() >= next_cache_cleanup {
+            cleanup_expired_input_cache().await;
+            cleanup_expired_keeps().await;
+            next_cache_cleanup = tokio::time::Instant::now() + Duration::from_secs(1);
+        }
         if tokio::time::Instant::now() >= next_studio_cleanup {
             cleanup_expired_studios().await;
             next_studio_cleanup = tokio::time::Instant::now() + Duration::from_secs(60);
@@ -1274,7 +1278,7 @@ async fn do_worker_message_things(
     queue: &mut Vec<Job>,
     shrine: &mut TypedShrine<WorkerMsg>,
 ) -> bool {
-    let Some((_, commdata)) = shrine.receive(500).await else {
+    let Some((_, commdata)) = shrine.receive(100).await else {
         return false;
     };
     let mut finished_fe: Option<Frontend> = None;

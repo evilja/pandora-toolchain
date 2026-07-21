@@ -42,7 +42,9 @@ impl Frontend {
                         }
                     }
                 }
-                let _ = msg.edit(&**ctx, EditMessage::new().content("").embed(create_job_embed(job, payload))).await;
+                if let Err(error) = msg.edit(&**ctx, EditMessage::new().content("").embed(create_job_embed(job, payload))).await {
+                    eprintln!("[Pandora Frontend] Discord update failed for job {}: {}", job.job_id, error);
+                }
             }
             Frontend::Web => {
                 if is_attachment_done(payload) {

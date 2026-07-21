@@ -38,8 +38,17 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
     let pnmpeg_path = env.get(PNMPEG).cloned().unwrap_or_default();
     let pnass_path = env.get(PNASS).cloned().unwrap_or_default();
     'll: loop {
-        if let Ok(msg) = rx.try_recv() {
-            if let WorkerMsg::Studio((directory, manifest, job_id)) = msg {
+        let msg = tokio::select! {
+            msg = rx.recv() => match msg {
+                Some(msg) => msg,
+                None => return,
+            },
+            _ = sleep(Duration::from_secs(5)) => {
+                pulse.try_send(()).ok();
+                continue;
+            }
+        };
+        if let WorkerMsg::Studio((directory, manifest, job_id)) = msg {
                 run_studio_job(&pnmpeg_path, directory, manifest, job_id, &mut proto, &tx).await;
                 continue 'll;
             }
@@ -70,7 +79,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     tx.send((job_id, MessagePayload::Static(JOB_CANCELLED), Some(Stage::Cancelled))).await.unwrap();
                     continue 'll;
                 }
-                tx.try_send((job_id, MessagePayload::Static(ENCODE_START), Some(Stage::Encoding))).ok();
+                tx.send((job_id, MessagePayload::Static(ENCODE_START), Some(Stage::Encoding))).await.ok();
                 let result = run_tool(
                     &pnmpeg_path,
                     spec,
@@ -131,7 +140,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             for warning in effects.warnings {
                 tx.try_send((job_id, MessagePayload::Progress(ENCODE_WARNING, vec![warning]), None)).ok();
             }
-            tx.try_send((job_id, MessagePayload::Static(ENCODE_START), Some(Stage::Encoding))).ok();
+            tx.send((job_id, MessagePayload::Static(ENCODE_START), Some(Stage::Encoding))).await.ok();
             let result = run_tool(
                 &pnmpeg_path,
                 PNMPEG_ENCODE,
@@ -266,11 +275,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 ).await.unwrap();
                 tx.send((job_id, MessagePayload::Static(ENCODE_DONE), Some(Stage::Encoded))).await.unwrap();
             }
-            println!("[Pandora Encoder] End of Session");
-            continue 'll;
-        }
-        sleep(Duration::from_secs(5)).await;
-        pulse.try_send(()).ok();
+        println!("[Pandora Encoder] End of Session");
     }
 }
 
@@ -287,7 +292,7 @@ async fn run_studio_job(
         tx.send((job_id, MessagePayload::Static(JOB_CANCELLED), Some(Stage::Cancelled))).await.ok();
         return;
     }
-    tx.try_send((job_id, MessagePayload::Static(ENCODE_START), Some(Stage::Encoding))).ok();
+    tx.send((job_id, MessagePayload::Static(ENCODE_START), Some(Stage::Encoding))).await.ok();
     let result = run_tool(
         pnmpeg_path,
         PNMPEG_STUDIO,

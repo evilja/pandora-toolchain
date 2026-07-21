@@ -610,49 +610,18 @@ async fn run_download_job(
                 None
             };
 
-            let final_source = match source_path {
-                Some(p) => p,
-                None => {
-                    let mkv_files = find_mkv_files(&torrent_dir).await;
-                    if mkv_files.is_empty() {
-                        tx.send((
-                            job_id,
-                            MessagePayload::Static(TORRENT_FAIL),
-                            Some(Stage::Failed),
-                        ))
-                        .await
-                        .unwrap();
-                        return;
-                    }
-                    let mut largest = mkv_files[0].clone();
-                    let mut max_sz = tokio::fs::metadata(&largest)
-                        .await
-                        .map(|m| m.len())
-                        .unwrap_or(0);
-                    for path in mkv_files {
-                        let sz = tokio::fs::metadata(&path)
-                            .await
-                            .map(|m| m.len())
-                            .unwrap_or(0);
-                        if sz > max_sz {
-                            max_sz = sz;
-                            largest = path;
-                        }
-                    }
-                    largest
-                }
-            };
+            let final_source = source_path.unwrap_or(largest_path);
+            let source_parent = final_source.parent().map(PathBuf::from);
 
             println!(
                 "[Pandora Downloader] Selected file: {}",
-                &final_source.to_string_lossy().to_string()
+                final_source.display()
             );
             rename(&final_source, &target).await.unwrap();
 
-            // Optionally clean up empty source directory
-            if let Some(parent) = largest_path.parent() {
+            if let Some(parent) = source_parent {
                 if parent != torrent_dir {
-                    let mut parent_entries = tokio::fs::read_dir(parent).await.unwrap();
+                    let mut parent_entries = tokio::fs::read_dir(&parent).await.unwrap();
                     if parent_entries.next_entry().await.unwrap().is_none() {
                         tokio::fs::remove_dir_all(parent).await.ok();
                     }

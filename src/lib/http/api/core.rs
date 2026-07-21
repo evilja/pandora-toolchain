@@ -30,16 +30,16 @@ use crate::lib::env::standard::{
 };
 
 #[derive(Clone)]
-struct AppState {
-    tx: Sender<JobClass>,
-    db: Arc<JobDb>,
-    api_author: u64,
+pub(super) struct AppState {
+    pub(super) tx: Sender<JobClass>,
+    pub(super) db: Arc<JobDb>,
+    pub(super) api_author: u64,
     rate_limiter: Arc<ApiRateLimiter>,
 }
 
 #[derive(Clone)]
-struct ApiAuth {
-    local_server_id: Option<u64>,
+pub(super) struct ApiAuth {
+    pub(super) local_server_id: Option<u64>,
     token_hash: String,
     label: Option<String>,
 }
@@ -129,6 +129,23 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/jobs/keycode", post(submit_keycode))
         .route("/jobs/:id/cancel", post(cancel_job))
         .route("/jobs/:id/acix/confirm", post(acix_confirm))
+        .route("/studios", get(super::studio::list).post(super::studio::create))
+        .route("/studios/current", get(super::studio::current))
+        .route("/studios/current/disown", post(super::studio::disown))
+        .route("/studios/current/keywords", post(super::studio::replace_keywords))
+        .route("/studios/current/tracks", post(super::studio::add_track))
+        .route("/studios/current/media/sources/:source_index", get(super::studio::source_media))
+        .route("/studios/current/media/tracks/:track_id", get(super::studio::track_media))
+        .route("/studios/current/tracks/:track_id/edit", post(super::studio::edit_track))
+        .route("/studios/current/tracks/:track_id/move", post(super::studio::move_track))
+        .route("/studios/current/tracks/:track_id/cut", post(super::studio::cut_track))
+        .route("/studios/current/tracks/:track_id/remove", post(super::studio::remove_track))
+        .route("/studios/current/timeline", post(super::studio::timeline))
+        .route("/studios/current/preview", post(super::studio::preview))
+        .route("/studios/current/render", post(super::studio::render))
+        .route("/studios/:id", get(super::studio::details))
+        .route("/studios/:id/switch", post(super::studio::switch))
+        .route("/studios/:id/reown", post(super::studio::reown))
         .route("/git/attachments", get(git_attachments))
         .route("/git/channels", get(git_channels))
         .route("/git/readmebase", get(git_readmebase).post(git_readmebase_set))
@@ -150,6 +167,8 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/", get(desktop))
         .route("/encode", get(index))
         .route("/git", get(git_console))
+        .route("/studio", get(studio_console))
+        .route("/studio-sw.js", get(studio_service_worker))
         .route("/favicon", get(favicon))
         .route("/favicon.ico", get(favicon))
         .route("/health", get(health))
@@ -165,6 +184,8 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
 
 const INDEX_HTML: &str = include_str!("../../../../web/index.html");
 const GIT_HTML: &str = include_str!("../../../../web/git.html");
+const STUDIO_HTML: &str = include_str!("../../../../web/studio.html");
+const STUDIO_SERVICE_WORKER: &str = include_str!("../../../../web/studio-sw.js");
 const DESKTOP_HTML: &str = include_str!("../../../../web/desktop.html");
 
 async fn desktop() -> axum::response::Html<&'static str> {
@@ -177,6 +198,20 @@ async fn index() -> axum::response::Html<&'static str> {
 
 async fn git_console() -> axum::response::Html<&'static str> {
     axum::response::Html(GIT_HTML)
+}
+
+async fn studio_console() -> axum::response::Html<&'static str> {
+    axum::response::Html(STUDIO_HTML)
+}
+
+async fn studio_service_worker() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        STUDIO_SERVICE_WORKER,
+    ).into_response()
 }
 
 const FAVICON_PNG: &[u8] = include_bytes!("../../../../web/favicon.png");
@@ -630,8 +665,11 @@ async fn cancel_job(State(st): State<AppState>, Extension(auth): Extension<ApiAu
         if row.server_id != Some(server_id as i64) {
             return (StatusCode::FORBIDDEN, "cannot cancel a job from another server").into_response();
         }
-        if row.job_type != JobType::Encode as u16 as i64 {
-            return (StatusCode::FORBIDDEN, "only encode jobs can be cancelled through this token").into_response();
+        let cancellable = [JobType::Encode, JobType::Studio, JobType::StudioPreview]
+            .iter()
+            .any(|job_type| row.job_type == *job_type as u16 as i64);
+        if !cancellable {
+            return (StatusCode::FORBIDDEN, "only encode and Studio jobs can be cancelled through this token").into_response();
         }
     }
     if row.archived != 0 || matches!(row.stage, 6 | 7 | 8 | 9) {
@@ -656,7 +694,7 @@ async fn gitsync(State(st): State<AppState>, Extension(auth): Extension<ApiAuth>
     (StatusCode::ACCEPTED, Json(json!({ "job_id": job_id, "status": "accepted" }))).into_response()
 }
 
-fn require_local(auth: &ApiAuth) -> Result<u64, Response> {
+pub(super) fn require_local(auth: &ApiAuth) -> Result<u64, Response> {
     match auth.local_server_id {
         Some(id) => Ok(id),
         None => Err((
@@ -920,13 +958,15 @@ async fn git_smartcode(State(st): State<AppState>, Extension(auth): Extension<Ap
     }))).into_response()
 }
 
-async fn submit(st: &AppState, job: Job) -> Response {
+pub(super) async fn submit(st: &AppState, job: Job) -> Response {
     submit_with_progress(st, job, None).await
 }
 
 async fn submit_with_progress(st: &AppState, job: Job, progress: Option<serde_json::Value>) -> Response {
     let job_id = job.job_id;
+    let directory = job.directory.clone();
     if let Err(e) = st.db.insert_job(&job).await {
+        tokio::fs::remove_dir_all(&directory).await.ok();
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
     if let Some(v) = progress {
@@ -937,6 +977,7 @@ async fn submit_with_progress(st: &AppState, job: Job, progress: Option<serde_js
     if st.tx.send(JobClass::Job(job)).await.is_err() {
         let _ = st.db.update_stage(job_id, Stage::Failed).await;
         let _ = st.db.archive_job(job_id).await;
+        tokio::fs::remove_dir_all(directory).await.ok();
         return (StatusCode::SERVICE_UNAVAILABLE, "worker channel closed").into_response();
     }
     (StatusCode::ACCEPTED, Json(json!({ "job_id": job_id.to_string() }))).into_response()
@@ -1029,7 +1070,7 @@ async fn acix_publish(Extension(auth): Extension<ApiAuth>, Json(req): Json<AcixP
     }
 }
 
-fn base64_decode_bytes(input: &str) -> Result<Vec<u8>, String> {
+pub(super) fn base64_decode_bytes(input: &str) -> Result<Vec<u8>, String> {
     const ALPH: [u8; 128] = {
         let mut a = [255u8; 128];
         let chars = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

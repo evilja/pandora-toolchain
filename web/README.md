@@ -1,11 +1,15 @@
 # Pandora web console
 
-Two self-contained pages (no build step, no dependencies) that drive the pndc HTTP API:
+Three self-contained pages (no build step, no dependencies) drive the pndc HTTP API:
 
 - **`index.html`** — the encode console: submit encode/backup/probe/pancode/gitcode jobs,
   list/inspect jobs, and cancel them.
 - **`git.html`** — the git console: repository operations (`/init`, `/attach`, `/source`,
   `/smartcode`, `/detach`, `/destruct`). These require a **local** token (see below).
+- **`studio.html`** — a purpose-built nonlinear editor with media pool, program monitor,
+  inspector, draggable audio clips, and multitrack timeline. It intentionally has its own
+  professional editor design rather than inheriting the console theme. `studio-sw.js` bridges
+  authenticated byte-range video requests; Web Audio performs preview mixing in the browser.
 
 Auth is the same bearer token as the API (mint one with `/gentoken`, stored in
 `DB/config/global/environment/api.pandora`), entered in the footer and saved in the browser
@@ -24,6 +28,8 @@ When `api_port` is set in `env.pandora`, the bot listens on that port and answer
 
 - `GET /`            → the encode console (`index.html`)
 - `GET /git`         → the git console (`git.html`)
+- `GET /studio`      → the Studio Cutroom (`studio.html`)
+- `GET /studio-sw.js` → Studio authenticated-stream service worker
 - `GET /api/v1/...`  → the JSON API (same origin, so no CORS)
 - `GET /health`      → liveness
 
@@ -36,6 +42,8 @@ the git endpoints (`GET /api/v1/git/{attachments,channels}`,
 `POST /api/v1/git/{init,attach,source}`) — a plain token gets `403` there. The server id comes
 from the token; the channel id is per request (sent as a string because Discord snowflakes exceed
 JS's safe-integer range).
+
+The Studio editor also requires a local token. Source video is streamed from the current Studio with HTTP byte ranges; audio assets are decoded and mixed locally for insert, override, and duck previews. Scrubbing, moving clips, and changing mix controls never queue preview encodes. The **Deliver** action is the only editor action that queues a server render.
 
 The git console never asks for a raw channel id:
 

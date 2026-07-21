@@ -1,9 +1,10 @@
 use super::*;
 use pandora_toolchain::lib::image::timeline::{render_timeline, TimelineSpec, TimelineTrack};
-use pandora_toolchain::lib::mpeg::studio::{PreviewWindow, StudioTrackMode, StudioVideoPreset};
-use pandora_toolchain::pnworker::core::{KeepKind, Preset, StudioJobRequest};
-use pandora_toolchain::pnworker::server_effects::load_server_settings;
-use pandora_toolchain::pnworker::studio::{StudioMeta, StudioStore};
+use pandora_toolchain::lib::mpeg::studio::StudioTrackMode;
+use pandora_toolchain::pnworker::core::StudioJobRequest;
+use pandora_toolchain::pnworker::studio::{
+    studio_job_display, studio_render_presets, StudioMeta, StudioStore,
+};
 use serenity::builder::CreateAttachment;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc::Sender;
@@ -52,6 +53,28 @@ pub async fn handle_studio(
                     removed_tracks,
                 )).await,
                 Err(e) => edit_text(ctx, &mut response, format!("Studio keyword replacement failed: {}", e)).await,
+            }
+        }
+        "details" => {
+            let requested = option_trimmed(command, "studio_id");
+            let Some(mut response) = working_response(ctx, command, "Reading Pandora Studio details...").await else {
+                return;
+            };
+            match store.details(guild_id, user_id, requested.as_deref()).await {
+                Ok(meta) => edit_text(ctx, &mut response, studio_details(&meta)).await,
+                Err(e) => edit_text(ctx, &mut response, format!("Studio details failed: {}", e)).await,
+            }
+        }
+        "switch" => {
+            let Some(studio_id) = required_trimmed_option(ctx, command, "studio_id", "studio_id").await else {
+                return;
+            };
+            let Some(mut response) = working_response(ctx, command, "Switching Pandora Studio...").await else {
+                return;
+            };
+            match store.switch(guild_id, user_id, &studio_id).await {
+                Ok(meta) => edit_text(ctx, &mut response, studio_summary(&meta, "Pandora Studio selected")).await,
+                Err(e) => edit_text(ctx, &mut response, format!("Studio switch failed: {}", e)).await,
             }
         }
         "disown" => {
@@ -363,13 +386,7 @@ async fn queue_studio_job(
             return;
         }
     };
-    let (job_preset, video_preset) = if preview {
-        (Preset::Dummy(None), StudioVideoPreset::Dummy)
-    } else if current.source_kind == KeepKind::Encode {
-        (Preset::Copy, StudioVideoPreset::Standard)
-    } else {
-        studio_server_preset(guild_id)
-    };
+    let (job_preset, video_preset) = studio_render_presets(current.source_kind, guild_id, preview);
     let job_id = response.id.get();
     let directory = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
         .join("DB").join("work").join(job_id.to_string());
@@ -404,33 +421,6 @@ async fn queue_studio_job(
     job.studio = Some(StudioJobRequest { manifest });
     if tx.send(JobClass::Job(job)).await.is_err() {
         tokio::fs::remove_dir_all(directory).await.ok();
-    }
-}
-
-fn studio_job_display(meta: &StudioMeta, preview_track: Option<u64>) -> String {
-    let Some(track_id) = preview_track else {
-        return format!("Pandora Studio `{}`", meta.studio_id);
-    };
-    let Some(track) = meta.tracks.iter().find(|track| track.id == track_id) else {
-        return format!("Pandora Studio `{}`", meta.studio_id);
-    };
-    let window = PreviewWindow::around_track_start(track.offset_ms, meta.total_duration_ms);
-    format!(
-        "Pandora Studio `{}`\nTrack `#{}` offset: `{}`\nPreview window: `{}` - `{}`",
-        meta.studio_id,
-        track.id,
-        format_timestamp(track.offset_ms),
-        format_timestamp(window.start_ms),
-        format_timestamp(window.start_ms.saturating_add(window.duration_ms)),
-    )
-}
-
-fn studio_server_preset(guild_id: u64) -> (Preset, StudioVideoPreset) {
-    match load_server_settings(Some(guild_id)).preset {
-        Preset::PseudoLossless(_) => (Preset::PseudoLossless(None), StudioVideoPreset::PseudoLossless),
-        Preset::Gpu(_) => (Preset::Gpu(None), StudioVideoPreset::Gpu),
-        Preset::Dummy(_) => (Preset::Dummy(None), StudioVideoPreset::Dummy),
-        Preset::Standard(_) | Preset::Copy => (Preset::Standard(None), StudioVideoPreset::Standard),
     }
 }
 
@@ -473,6 +463,50 @@ fn studio_summary(meta: &StudioMeta, heading: &str) -> String {
     )
 }
 
+fn studio_details(meta: &StudioMeta) -> String {
+    let keywords = meta.sources.iter().map(|source| source.keyword.as_str()).collect::<Vec<_>>().join(", ");
+    let dimensions = meta.sources.first()
+        .map(|source| format!("{}x{}", source.width, source.height))
+        .unwrap_or_else(|| "unknown".to_string());
+    let fps = if meta.fps_den == 0 {
+        "unknown".to_string()
+    } else {
+        format!("{:.3}", meta.fps_num as f64 / meta.fps_den as f64)
+    };
+    let mut details = format!(
+        "Pandora Studio details\nStudio ID: `{}`\nSources: {} {:?} keep(s) (`{}`)\nVideo: `{}`, `{}` FPS, duration `{}`\nTracks: {} | Collaborators: {}\nLast used: <t:{}:R> | Expires: <t:{}:R>",
+        meta.studio_id,
+        meta.sources.len(),
+        meta.source_kind,
+        keywords,
+        dimensions,
+        fps,
+        format_duration(meta.total_duration_ms),
+        meta.tracks.len(),
+        meta.collaborators.len(),
+        meta.last_command_at,
+        meta.expires_at,
+    );
+    for track in meta.tracks.iter().take(12) {
+        details.push_str(&format!(
+            "\n`#{}` {:?} `{}` — offset `{}`, duration `{}`, volume `{}%`",
+            track.id,
+            track.mode,
+            track.display_name,
+            format_duration_precise(track.offset_ms),
+            format_duration_precise(track.duration_ms),
+            track.volume_percent,
+        ));
+    }
+    if meta.tracks.len() > 12 {
+        details.push_str(&format!("\n…and {} more track(s).", meta.tracks.len() - 12));
+    }
+    if details.chars().count() > 1950 {
+        details = details.chars().take(1949).collect::<String>() + "…";
+    }
+    details
+}
+
 fn safe_attachment_extension(filename: &str) -> String {
     Path::new(filename).extension().and_then(|ext| ext.to_str())
         .map(str::to_ascii_lowercase)
@@ -497,18 +531,6 @@ fn format_duration_precise(ms: u64) -> String {
         format!("{}s", ms / 1000)
     } else {
         format!("{:.3}s", ms as f64 / 1000.0)
-    }
-}
-
-fn format_timestamp(ms: u64) -> String {
-    let hours = ms / 3_600_000;
-    let minutes = (ms % 3_600_000) / 60_000;
-    let seconds = (ms % 60_000) / 1000;
-    let millis = ms % 1000;
-    if hours > 0 {
-        format!("{}:{:02}:{:02}.{:03}", hours, minutes, seconds, millis)
-    } else {
-        format!("{}:{:02}.{:03}", minutes, seconds, millis)
     }
 }
 
