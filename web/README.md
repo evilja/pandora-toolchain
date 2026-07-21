@@ -43,7 +43,7 @@ the git endpoints (`GET /api/v1/git/{attachments,channels}`,
 from the token; the channel id is per request (sent as a string because Discord snowflakes exceed
 JS's safe-integer range).
 
-The Studio editor also requires a local token. Source video is streamed from the current Studio with HTTP byte ranges; audio assets are decoded and mixed locally for insert, override, and duck previews. Audio clips can be dragged along the timeline with frame snapping and a live frame/timecode readout; the inspector also accepts an exact start frame using the Studio source FPS. Adding, moving, trimming, removing, or changing an audio clip updates the browser mix without stopping video playback. Scrubbing, moving clips, and changing mix controls never queue preview encodes. The **Deliver** action is the only editor action that queues a server render.
+The Studio editor also requires a local token. Source video is streamed from the current Studio with HTTP byte ranges; audio assets are decoded and mixed locally for insert, override, and duck previews. Audio clips can be dragged along the timeline with frame snapping and a live frame/timecode readout; the inspector also accepts an exact start frame using the Studio source FPS. Adding, moving, trimming, removing, or changing an audio clip updates the browser mix without stopping video playback. Audio uploads are limited to 50 MiB per file, show a circular byte-progress notification, and remain visible while the server processes the uploaded media. Scrubbing, moving clips, and changing mix controls never queue preview encodes. The **Deliver** action is the only editor action that queues a server render.
 
 The git console never asks for a raw channel id:
 

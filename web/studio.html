@@ -31,6 +31,7 @@ button,input,select{font:inherit;color:inherit} button{cursor:pointer}
 .dragInfo{position:fixed;z-index:60;transform:translate(-50%,-100%);pointer-events:none;background:#080a0c;border:1px solid var(--cyan);border-radius:3px;box-shadow:0 5px 18px #000;padding:5px 8px;color:#e9ffff;font:10px ui-monospace,monospace;white-space:nowrap}
 .statusbar{display:flex;align-items:center;padding:0 9px;background:#0f1113;border-top:1px solid #2b3034;color:var(--muted);font-size:9px}.statusbar .light{width:6px;height:6px;border-radius:50%;background:var(--green);margin-right:6px}.statusbar.error .light{background:var(--red)}.statusbar .right{margin-left:auto}
 .toast{position:fixed;right:16px;top:56px;z-index:50;max-width:380px;background:#292e32;border-left:3px solid var(--cyan);box-shadow:0 12px 35px #000;padding:11px 14px;font-size:11px;line-height:1.45;display:none}.toast.bad{border-color:var(--red)}
+.uploadNotice{position:fixed;right:16px;bottom:38px;z-index:55;display:none;align-items:center;gap:11px;min-width:245px;max-width:360px;padding:10px 13px;background:#24292d;border:1px solid var(--line2);border-radius:4px;box-shadow:0 12px 35px #000}.uploadRing{--progress:0%;width:42px;height:42px;flex:0 0 auto;border-radius:50%;position:relative;display:grid;place-items:center;background:conic-gradient(var(--cyan) var(--progress),#111518 0)}.uploadRing:after{content:"";position:absolute;inset:5px;border-radius:50%;background:#24292d}.uploadRing span{position:relative;z-index:1;color:#e8ffff;font:8px ui-monospace,monospace}.uploadNotice.bad .uploadRing{background:var(--red)}.uploadText{min-width:0}.uploadText strong,.uploadText small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.uploadText strong{font-size:11px}.uploadText small{margin-top:3px;color:var(--muted);font-size:9px}
 @media(max-width:850px){.app{grid-template-rows:44px 1fr 250px 24px}.workspace{grid-template-columns:180px 1fr}.pane.inspectorPane{display:none}.topbar .optional{display:none}.select{min-width:120px}.token{width:120px}}
 </style>
 </head>
@@ -65,11 +66,11 @@ button,input,select{font:inherit;color:inherit} button{cursor:pointer}
       <div class="transport">
         <div class="left" id="timecode">00:00:00:00</div>
         <div class="controls">
-          <button class="transportBtn" id="prevBtn" title="Previous edit">◀|</button>
-          <button class="transportBtn" id="backBtn" title="Back five seconds">◀</button>
-          <button class="transportBtn play" id="playBtn" title="Play">▶</button>
-          <button class="transportBtn" id="forwardBtn" title="Forward five seconds">▶</button>
-          <button class="transportBtn" id="nextBtn" title="Next edit">|▶</button>
+          <button class="transportBtn" id="prevBtn" title="Previous edit">⏮︎</button>
+          <button class="transportBtn" id="backBtn" title="Back five seconds">⏪︎</button>
+          <button class="transportBtn play" id="playBtn" title="Play">▶︎</button>
+          <button class="transportBtn" id="forwardBtn" title="Forward five seconds">⏩︎</button>
+          <button class="transportBtn" id="nextBtn" title="Next edit">⏭︎</button>
         </div>
         <div class="right" id="durationText">00:00:00:00</div>
       </div>
@@ -95,6 +96,10 @@ button,input,select{font:inherit;color:inherit} button{cursor:pointer}
 
   <footer class="statusbar" id="statusbar"><i class="light"></i><span id="status">Ready</span><span class="right">LOCAL PREVIEW · SERVER DELIVERY</span></footer>
 </div>
+<div class="uploadNotice" id="uploadNotice" role="status" aria-live="polite">
+  <div class="uploadRing" id="uploadRing" role="progressbar" aria-label="Audio upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="uploadPercent">0%</span></div>
+  <div class="uploadText"><strong id="uploadName">Audio upload</strong><small id="uploadStatus">Preparing…</small></div>
+</div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -102,7 +107,7 @@ button,input,select{font:inherit;color:inherit} button{cursor:pointer}
 "use strict";
 var $=function(id){return document.getElementById(id)};
 var viewer=$("viewer"), state={studios:[],studio:null,selectedTrack:null,px:32,sourceIndex:-1,sourceStarts:[],globalMs:0,playing:false,switching:false};
-var audio={ctx:null,mediaNode:null,baseGain:null,buffers:new Map(),nodes:new Map(),loading:null};
+var audio={ctx:null,mediaNode:null,baseGain:null,buffers:new Map(),nodes:new Map(),loading:null},MAX_AUDIO_FILE_BYTES=50*1024*1024;
 var tokenInput=$("tokenInput"), token="";
 try{token=localStorage.getItem("pandora_token")||""}catch(e){} tokenInput.value=token;
 
@@ -115,9 +120,11 @@ function api(path,options){
     var ct=r.headers.get("content-type")||"";return ct.indexOf("json")>=0?r.json():r;
   });
 }
+function uploadApi(path,body,onProgress){return new Promise(function(resolve,reject){var xhr=new XMLHttpRequest();token=(tokenInput.value||"").trim();xhr.open("POST","/api/v1"+path,true);xhr.setRequestHeader("Content-Type","application/json");if(token)xhr.setRequestHeader("Authorization","Bearer "+token);xhr.upload.onprogress=function(e){if(e.lengthComputable&&onProgress)onProgress(Math.round(e.loaded/e.total*100))};xhr.onerror=function(){reject(new Error("Audio upload failed: network error"))};xhr.onabort=function(){reject(new Error("Audio upload was cancelled"))};xhr.onload=function(){if(xhr.status<200||xhr.status>=300){reject(new Error(xhr.responseText||("HTTP "+xhr.status)));return}try{resolve(JSON.parse(xhr.responseText))}catch(e){reject(new Error("Audio upload returned an invalid response"))}};xhr.send(JSON.stringify(body))})}
 function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"})[c]})}
 function status(text,bad){$("status").textContent=text;$("statusbar").classList.toggle("error",!!bad)}
 var toastTimer;function toast(text,bad){var el=$("toast");el.textContent=text;el.className="toast"+(bad?" bad":"");el.style.display="block";clearTimeout(toastTimer);toastTimer=setTimeout(function(){el.style.display="none"},4500);status(text,bad)}
+var uploadNoticeTimer;function audioUploadNotice(filename){var el=$("uploadNotice"),ring=$("uploadRing"),percent=$("uploadPercent");clearTimeout(uploadNoticeTimer);el.className="uploadNotice";el.style.display="flex";$("uploadName").textContent=filename||"Audio upload";function update(value,text){value=Math.max(0,Math.min(100,Math.round(value)));ring.style.setProperty("--progress",value+"%");ring.setAttribute("aria-valuenow",String(value));percent.textContent=value+"%";$("uploadStatus").textContent=text}update(0,"Preparing audio…");return{update:update,done:function(){update(100,"Upload complete");uploadNoticeTimer=setTimeout(function(){el.style.display="none"},1800)},fail:function(message){el.className="uploadNotice bad";$("uploadStatus").textContent=message;uploadNoticeTimer=setTimeout(function(){el.style.display="none"},4500)}}}
 function duration(ms){ms=Math.max(0,ms||0);var s=Math.floor(ms/1000),h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;return(h?String(h).padStart(2,"0")+":" : "")+String(m).padStart(2,"0")+":"+String(x).padStart(2,"0")}
 function fps(){return state.studio&&state.studio.fps_num&&state.studio.fps_den?state.studio.fps_num/state.studio.fps_den:24}
 function frameAt(ms){return Math.max(0,Math.round(Math.max(0,ms||0)*fps()/1000))}
@@ -177,11 +184,11 @@ function updateMix(){if(!state.studio||!audio.ctx)return;var at=state.globalMs,o
 async function play(){if(!state.studio)return;try{status("Preparing browser audio mix…");await prepareAudio();await viewer.play();state.playing=true;scheduleTracks(state.globalMs);status("Playing local preview");updateTransport()}catch(e){toast(e.message,true)}}
 function pause(){viewer.pause();state.playing=false;stopTrackNodes();status("Preview paused");updateTransport()}
 function stopPlayback(){state.playing=false;try{viewer.pause()}catch(e){}stopTrackNodes();updateTransport()}
-function updateTransport(){$("playBtn").textContent=state.playing?"❚❚":"▶";$("mixState").textContent=state.playing?"live browser mix":"browser mix idle";updatePlayhead()}
+function updateTransport(){$("playBtn").textContent=state.playing?"⏸︎":"▶︎";$("mixState").textContent=state.playing?"live browser mix":"browser mix idle";updatePlayhead()}
 viewer.addEventListener("timeupdate",function(){if(state.switching||state.sourceIndex<0)return;state.globalMs=(state.sourceStarts[state.sourceIndex]||0)+viewer.currentTime*1000;updatePlayhead()});viewer.addEventListener("ended",async function(){if(!state.studio)return;var next=state.sourceIndex+1;if(next<state.studio.sources.length){try{await setSourceForTime(state.sourceStarts[next],true);state.playing=true;await prepareAudio();scheduleTracks(state.globalMs);updateTransport()}catch(e){pause();toast(e.message,true)}}else pause()});viewer.addEventListener("pause",function(){if(!state.switching&&state.playing){state.playing=false;stopTrackNodes();updateTransport()}});viewer.addEventListener("play",function(){state.playing=true;updateTransport()});viewer.addEventListener("click",function(){state.playing?pause():play()});
 function frame(){if(state.playing)updateMix();requestAnimationFrame(frame)}requestAnimationFrame(frame);
 
-async function addAudio(file){if(!file||!state.studio)return;var mode=prompt("Mix mode: insert, override, or duck","insert");if(mode===null)return;mode=mode.toLowerCase();if(["insert","override","duck"].indexOf(mode)<0){toast("Invalid mix mode",true);return}try{status("Uploading "+file.name+"…");var b64=await fileBase64(file),body={audio_b64:b64,filename:file.name,mode:mode};if(mode==="duck"){body.duck_volume_percent=+(prompt("Duck target percentage","30")||30);body.fade_seconds=+(prompt("Fade seconds each way","0.5")||.5)}var track=await api("/studios/current/tracks",{method:"POST",body:JSON.stringify(body)});state.studio.tracks.push(track);state.studio.next_track_id=Math.max(state.studio.next_track_id,track.id+1);state.selectedTrack=track.id;renderAll();if(state.playing){await prepareAudio();if(!audio.buffers.has(bufferKey(track)))await prepareAudio();scheduleTracks(state.globalMs)}toast("Audio added as A"+track.id)}catch(e){toast(e.message,true)}}
+async function addAudio(file){if(!file||!state.studio)return;if(file.size>MAX_AUDIO_FILE_BYTES){toast("Audio files must not exceed 50 MB",true);return}var mode=prompt("Mix mode: insert, override, or duck","insert");if(mode===null)return;mode=mode.toLowerCase();if(["insert","override","duck"].indexOf(mode)<0){toast("Invalid mix mode",true);return}var notice=audioUploadNotice(file.name);try{status("Uploading "+file.name+"…");var b64=await fileBase64(file),body={audio_b64:b64,filename:file.name,mode:mode};if(mode==="duck"){body.duck_volume_percent=+(prompt("Duck target percentage","30")||30);body.fade_seconds=+(prompt("Fade seconds each way","0.5")||.5)}notice.update(0,"Uploading to server…");var track=await uploadApi("/studios/current/tracks",body,function(progress){notice.update(progress,progress<100?"Uploading to server…":"Processing audio…")});state.studio.tracks.push(track);state.studio.next_track_id=Math.max(state.studio.next_track_id,track.id+1);state.selectedTrack=track.id;renderAll();if(state.playing){await prepareAudio();if(!audio.buffers.has(bufferKey(track)))await prepareAudio();scheduleTracks(state.globalMs)}notice.done();toast("Audio added as A"+track.id)}catch(e){notice.fail(e.message);toast(e.message,true)}}
 function fileBase64(file){return new Promise(function(resolve,reject){var r=new FileReader();r.onerror=function(){reject(new Error("Could not read file"))};r.onload=function(){resolve(String(r.result).split(",")[1]||"")};r.readAsDataURL(file)})}
 async function switchStudio(id){if(!id||!state.studios.some(function(s){return s.studio_id===id}))return;try{await api("/studios/"+encodeURIComponent(id)+"/switch",{method:"POST"});await loadAll()}catch(e){toast(e.message,true)}}
 async function createStudio(){var raw=prompt("Comma-separated keep keywords:","");if(!raw)return;try{await api("/studios",{method:"POST",body:JSON.stringify({keywords:raw.split(",").map(function(x){return x.trim()}).filter(Boolean)})});await loadAll();toast("Studio created")}catch(e){toast(e.message,true)}}
