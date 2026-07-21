@@ -650,8 +650,8 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "encode",
             name: "studio",
             summary: "Edit kept videos with mixed, replacement, or ducking audio tracks.",
-            usage: "/studio create|keywords|insert|override|duck|edittrack|move|cut|remove|preview|timeline|done|disown|reown ...",
-            details: "Create a Studio from ordered comma-separated keep keywords. Insert overlays audio; override mutes source audio for that track's interval. Duck mixes its input while fading every other audio source to a target percentage and back. Move accepts absolute or +/- relative seconds, MM:SS, HH:MM:SS, and frame offsets ending in f. Keywords atomically replaces the Studio's ordered source keeps. Edittrack changes a track's own volume, type, and Duck settings. Cut cumulatively trims decimal seconds from the start, end, or both sides of a track. Share the Studio ID so guild collaborators can reown it. Active Studios expire after 24 hours of inactivity; a Studio with no collaborators expires after 30 minutes.",
+            usage: "/studio create|details|switch|keywords|insert|override|duck|edittrack|move|cut|remove|preview|timeline|done|disown|reown ...",
+            details: "Create and retain multiple Studios from ordered comma-separated keep keywords, then use switch to select which one commands edit. Details shows source, video, track, collaborator, and expiry information. Insert overlays audio; override mutes source audio for that track's interval. Duck mixes its input while fading every other audio source to a target percentage and back. Move accepts absolute or +/- relative seconds, MM:SS, HH:MM:SS, and frame offsets ending in f. Keywords atomically replaces the selected Studio's ordered source keeps. Edittrack changes a track's own volume, type, and Duck settings. Cut cumulatively trims decimal seconds from the start, end, or both sides of a track. Share the Studio ID so guild collaborators can reown it. Active Studios expire after 24 hours of inactivity; a Studio with no collaborators expires after 30 minutes.",
         },
         HelpCommand {
             section: "encode",
@@ -2210,6 +2210,14 @@ impl EventHandler for Handler {
             .add_option(
                 CreateCommandOption::new(CommandOptionType::SubCommand, "keywords", "Replace the Studio's ordered source keeps")
                     .add_sub_option(CreateCommandOption::new(CommandOptionType::String, "keywords", "Comma-separated keep keywords").required(true))
+            )
+            .add_option(
+                CreateCommandOption::new(CommandOptionType::SubCommand, "details", "Show a Studio's sources, tracks, and expiry")
+                    .add_sub_option(CreateCommandOption::new(CommandOptionType::String, "studio_id", "Optional owned Studio ID; defaults to current").required(false))
+            )
+            .add_option(
+                CreateCommandOption::new(CommandOptionType::SubCommand, "switch", "Switch to another Studio you own")
+                    .add_sub_option(CreateCommandOption::new(CommandOptionType::String, "studio_id", "Owned Studio ID").required(true))
             )
             .add_option(CreateCommandOption::new(CommandOptionType::SubCommand, "disown", "Leave your current Studio"))
             .add_option(

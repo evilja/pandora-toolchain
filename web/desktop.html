@@ -264,7 +264,8 @@
   <div class="mlaunch">
     <h1>pandora</h1>
     <p>The window-manager desktop is desktop-only. Open a console:</p>
-    <a href="/encode">Encode console →</a>
+    <a href="/studio">Studio Cutroom →</a>
+    <a class="alt" href="/encode">Encode console →</a>
     <a class="alt" href="/git">Git console →</a>
   </div>
 
@@ -274,9 +275,10 @@
 
   var APPS = {
     encode: { title: "encode console", src: "/encode?embed=1" },
-    git:    { title: "git console",    src: "/git?embed=1" }
+    git:    { title: "git console",    src: "/git?embed=1" },
+    studio: { title: "studio cutroom", src: "/studio?embed=1", w: 1180, h: 760 }
   };
-  var ORDER = ["encode", "git"];
+  var ORDER = ["encode", "git", "studio"];
   var STORE = "pandora_desktop_v1";
 
   var desktop = document.getElementById("desktop");
@@ -419,7 +421,7 @@
     Object.keys(wins).forEach(function (key) {
       var w = wins[key];
       if (!w.state.min) return;
-      if (key === "encode" || key === "git" || key === "jobs") return;
+      if (key === "encode" || key === "git" || key === "studio" || key === "jobs") return;
       var titleEl = w.el.querySelector(".dwin-title");
       var label = titleEl ? titleEl.textContent : key;
       var b = document.createElement("button");

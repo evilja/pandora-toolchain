@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pandora Cutroom</title>
+<link rel="icon" href="/favicon">
+<style>
+:root {
+  --shell:#121416; --top:#1b1e21; --panel:#202428; --panel2:#282d31; --well:#090b0d;
+  --line:#343a3f; --line2:#454d53; --text:#e4e8ea; --muted:#929ba1; --dim:#646d73;
+  --cyan:#2bc3c8; --cyan2:#167e84; --orange:#ef9d3d; --red:#e05d5d; --green:#64bf83;
+  --label:112px; --lane:38px; --radius:3px;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+*{box-sizing:border-box} html,body{height:100%;margin:0;background:var(--shell);color:var(--text);overflow:hidden}
+button,input,select{font:inherit;color:inherit} button{cursor:pointer}
+.app{height:100%;display:grid;grid-template-rows:44px minmax(280px,1fr) 286px 24px;background:var(--shell)}
+.topbar{display:flex;align-items:center;gap:8px;padding:0 10px;background:linear-gradient(#24282b,#191c1f);border-bottom:1px solid #050606;box-shadow:0 1px #303539 inset}
+.brand{display:flex;align-items:center;gap:9px;margin-right:9px}.brandmark{width:24px;height:24px;border:2px solid var(--cyan);border-radius:50%;position:relative}.brandmark:after{content:"";position:absolute;left:4px;right:4px;top:9px;height:2px;background:var(--orange);transform:rotate(-18deg)}
+.brand b{font-size:12px;letter-spacing:1.8px}.brand small{display:block;color:var(--muted);font-size:8px;letter-spacing:1px;margin-top:-1px}
+.separator{height:22px;width:1px;background:var(--line);margin:0 2px}.grow{flex:1}
+.btn,.select,.field{height:27px;border:1px solid var(--line2);border-radius:var(--radius);background:#272c30;padding:0 9px;font-size:11px;outline:none}.btn:hover{background:#343a3f;border-color:#596268}.btn.primary{background:var(--cyan2);border-color:var(--cyan);color:#f5ffff}.btn.render{background:#85551f;border-color:var(--orange)}.btn.danger{color:#ffb3b3}.btn.icon{width:29px;padding:0;font-size:15px}.select{min-width:210px}.token{width:170px;font-family:ui-monospace,monospace}
+.workspace{display:grid;grid-template-columns:236px minmax(360px,1fr) 292px;min-height:0;border-bottom:1px solid #080909}
+.pane{min-height:0;background:var(--panel);border-right:1px solid #0b0d0e;display:flex;flex-direction:column}.pane:last-child{border:0;border-left:1px solid #0b0d0e}
+.panehead{height:31px;flex:0 0 auto;display:flex;align-items:center;padding:0 10px;border-bottom:1px solid #111416;background:#262a2e;color:#c8cdd0;font-size:10px;font-weight:700;letter-spacing:.9px;text-transform:uppercase}.panehead span{color:var(--muted);font-weight:500;margin-left:auto;letter-spacing:0}
+.bin{overflow:auto;padding:7px}.binsection{margin-bottom:13px}.binlabel{font-size:9px;text-transform:uppercase;color:var(--dim);letter-spacing:1px;padding:3px 5px 6px}.asset{display:grid;grid-template-columns:42px 1fr;gap:8px;align-items:center;padding:5px;border:1px solid transparent;border-radius:3px;margin-bottom:3px;min-width:0}.asset:hover{background:#2a3034}.asset.selected{background:#173b3e;border-color:var(--cyan2)}.thumb{height:28px;background:linear-gradient(135deg,#30383d,#121619);border:1px solid #465057;display:flex;align-items:center;justify-content:center;color:var(--cyan);font-size:12px}.thumb.audio{color:var(--orange);background:linear-gradient(135deg,#3b3126,#171411)}.assetname{font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.assetmeta{font-size:9px;color:var(--muted);margin-top:2px}.empty{padding:18px 10px;color:var(--muted);font-size:11px;line-height:1.5;text-align:center}
+.viewerPane{min-width:0;background:#171a1d;display:grid;grid-template-rows:31px minmax(0,1fr) 45px}.viewerhead{display:flex;align-items:center;padding:0 10px;background:#24282b;border-bottom:1px solid #0c0e0f;font-size:10px;color:var(--muted)}.viewerhead b{color:var(--text);margin-right:8px}.viewerWrap{min-height:0;display:flex;align-items:center;justify-content:center;background:radial-gradient(circle at center,#171b1e 0,#080a0b 72%);padding:12px;position:relative}.viewerWrap video{display:block;max-width:100%;max-height:100%;aspect-ratio:16/9;background:#000;box-shadow:0 0 0 1px #30363a,0 18px 50px #000}.viewerMessage{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px;text-align:center;padding:20px;pointer-events:none}.transport{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;padding:0 12px;background:#202428;border-top:1px solid #343a3f}.transport .left,.transport .right{font-family:ui-monospace,monospace;font-size:11px;color:var(--muted)}.transport .right{text-align:right}.controls{display:flex;gap:4px;align-items:center}.transportBtn{border:0;background:transparent;color:#d6dcdf;font-size:17px;width:29px;height:29px;border-radius:3px}.transportBtn:hover{background:#343a3f}.transportBtn.play{color:var(--cyan);font-size:20px}
+.inspector{overflow:auto;padding:9px}.inspectTitle{font-size:13px;font-weight:650;padding:3px 2px 12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.group{border-top:1px solid var(--line);padding:10px 2px 7px}.groupTitle{font-size:9px;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:9px}.row{display:grid;grid-template-columns:92px 1fr;align-items:center;gap:8px;margin-bottom:7px}.row label{font-size:10px;color:#adb5ba}.row input,.row select{width:100%;height:26px;background:#171a1c;border:1px solid var(--line2);border-radius:2px;padding:0 7px;font-size:11px;outline:none}.row input:focus,.row select:focus{border-color:var(--cyan)}.inspectActions{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.hint{font-size:10px;line-height:1.5;color:var(--muted)}
+.timeline{display:grid;grid-template-rows:34px 1fr;background:#15181a;min-height:0}.timelinebar{display:flex;align-items:center;gap:7px;padding:0 9px;background:#24282b;border-bottom:1px solid #070808}.timelinebar b{font-size:10px;letter-spacing:.9px;text-transform:uppercase}.zoom{width:105px;accent-color:var(--cyan)}.timelineScroll{overflow:auto;position:relative;background:#111416}.timelineGrid{position:relative;min-height:100%;min-width:100%}.rulerLabel,.laneLabel{position:absolute;left:0;width:var(--label);z-index:5;background:#202428;border-right:1px solid #090b0c;color:var(--muted);font-size:9px;padding-left:10px;display:flex;align-items:center}.rulerLabel{top:0;height:25px}.laneLabel{height:var(--lane);border-top:1px solid #30363a}.laneLabel strong{color:#d2d7da;font-size:9px;margin-right:6px}.timeArea{position:absolute;left:var(--label);top:0;bottom:0;background:#15191c;overflow:hidden}.tick{position:absolute;top:0;height:25px;border-left:1px solid #485057;color:#7e878d;font:8px ui-monospace,monospace;padding:3px 0 0 3px}.tick.minor{height:8px;color:transparent;border-color:#2f3539}.laneLine{position:absolute;left:0;right:0;height:var(--lane);border-top:1px solid #30363a;background:rgba(255,255,255,.01)}.clip{position:absolute;height:28px;margin-top:5px;border-radius:2px;overflow:hidden;min-width:4px;user-select:none;box-shadow:0 1px 2px #000}.clip.video{background:linear-gradient(#227b80,#17565a);border:1px solid #35aeb4}.clip.insert{background:linear-gradient(#3d6f53,#294c39);border:1px solid #64bf83}.clip.override{background:linear-gradient(#84552a,#5d3b1d);border:1px solid var(--orange)}.clip.duck{background:linear-gradient(#71465d,#4f3041);border:1px solid #d37ca7}.clip.selected{box-shadow:0 0 0 2px #fff,0 2px 5px #000}.clip span{display:block;font-size:9px;padding:4px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.clip small{display:block;font-size:7px;color:rgba(255,255,255,.65);padding:0 6px}.playhead{position:absolute;top:0;bottom:0;width:1px;background:var(--red);z-index:10;pointer-events:none}.playhead:before{content:"";position:absolute;top:0;left:-5px;border-left:5px solid transparent;border-right:5px solid transparent;border-top:8px solid var(--red)}
+.statusbar{display:flex;align-items:center;padding:0 9px;background:#0f1113;border-top:1px solid #2b3034;color:var(--muted);font-size:9px}.statusbar .light{width:6px;height:6px;border-radius:50%;background:var(--green);margin-right:6px}.statusbar.error .light{background:var(--red)}.statusbar .right{margin-left:auto}
+.toast{position:fixed;right:16px;top:56px;z-index:50;max-width:380px;background:#292e32;border-left:3px solid var(--cyan);box-shadow:0 12px 35px #000;padding:11px 14px;font-size:11px;line-height:1.45;display:none}.toast.bad{border-color:var(--red)}
+@media(max-width:850px){.app{grid-template-rows:44px 1fr 250px 24px}.workspace{grid-template-columns:180px 1fr}.pane.inspectorPane{display:none}.topbar .optional{display:none}.select{min-width:120px}.token{width:120px}}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand"><i class="brandmark"></i><div><b>CUTROOM</b><small>PANDORA STUDIO</small></div></div>
+    <div class="separator"></div>
+    <select class="select" id="studioSelect" aria-label="Current Studio"><option>no Studio loaded</option></select>
+    <button class="btn icon" id="reloadBtn" title="Reload">↻</button>
+    <button class="btn optional" id="newBtn">New Studio</button>
+    <button class="btn optional" id="sourcesBtn">Replace Sources</button>
+    <button class="btn" id="audioBtn">＋ Audio</button>
+    <input type="file" id="audioFile" accept="audio/*,video/*" hidden>
+    <div class="grow"></div>
+    <input class="field token" id="tokenInput" type="password" placeholder="local API token" autocomplete="off">
+    <button class="btn render" id="renderBtn">Deliver</button>
+  </header>
+
+  <main class="workspace">
+    <section class="pane">
+      <div class="panehead">Media Pool <span id="assetCount">0 items</span></div>
+      <div class="bin" id="mediaBin"></div>
+    </section>
+
+    <section class="viewerPane">
+      <div class="viewerhead"><b>Program</b><span id="viewerLabel">No source</span></div>
+      <div class="viewerWrap">
+        <video id="viewer" playsinline preload="metadata"></video>
+        <div class="viewerMessage" id="viewerMessage">Enter a local API token, then load a Studio.</div>
+      </div>
+      <div class="transport">
+        <div class="left" id="timecode">00:00:00:00</div>
+        <div class="controls">
+          <button class="transportBtn" id="prevBtn" title="Previous edit">◀|</button>
+          <button class="transportBtn" id="backBtn" title="Back five seconds">◀</button>
+          <button class="transportBtn play" id="playBtn" title="Play">▶</button>
+          <button class="transportBtn" id="forwardBtn" title="Forward five seconds">▶</button>
+          <button class="transportBtn" id="nextBtn" title="Next edit">|▶</button>
+        </div>
+        <div class="right" id="durationText">00:00:00:00</div>
+      </div>
+    </section>
+
+    <aside class="pane inspectorPane">
+      <div class="panehead">Inspector <span id="inspectKind">nothing selected</span></div>
+      <div class="inspector" id="inspector"><div class="empty">Select an audio clip to edit its timing and mix.</div></div>
+    </aside>
+  </main>
+
+  <section class="timeline">
+    <div class="timelinebar">
+      <b>Edit Timeline</b>
+      <div class="separator"></div>
+      <button class="btn icon" id="fitBtn" title="Fit timeline">⌗</button>
+      <span style="font-size:9px;color:var(--muted)">Zoom</span><input class="zoom" id="zoom" type="range" min="8" max="120" value="32">
+      <div class="grow"></div>
+      <span class="hint" id="mixState">browser mix idle</span>
+    </div>
+    <div class="timelineScroll" id="timelineScroll"><div class="timelineGrid" id="timelineGrid"></div></div>
+  </section>
+
+  <footer class="statusbar" id="statusbar"><i class="light"></i><span id="status">Ready</span><span class="right">LOCAL PREVIEW · SERVER DELIVERY</span></footer>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+"use strict";
+var $=function(id){return document.getElementById(id)};
+var viewer=$("viewer"), state={studios:[],studio:null,selectedTrack:null,px:32,sourceIndex:-1,sourceStarts:[],globalMs:0,playing:false,switching:false};
+var audio={ctx:null,mediaNode:null,baseGain:null,buffers:new Map(),nodes:new Map(),loading:null};
+var tokenInput=$("tokenInput"), token="";
+try{token=localStorage.getItem("pandora_token")||""}catch(e){} tokenInput.value=token;
+
+function api(path,options){
+  options=options||{}; var headers=new Headers(options.headers||{}); token=(tokenInput.value||"").trim();
+  if(token)headers.set("Authorization","Bearer "+token);
+  if(options.body&&!headers.has("Content-Type"))headers.set("Content-Type","application/json");
+  return fetch("/api/v1"+path,Object.assign({},options,{headers:headers})).then(async function(r){
+    if(!r.ok){var t=await r.text();throw new Error(t||("HTTP "+r.status))}
+    var ct=r.headers.get("content-type")||"";return ct.indexOf("json")>=0?r.json():r;
+  });
+}
+function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"})[c]})}
+function status(text,bad){$("status").textContent=text;$("statusbar").classList.toggle("error",!!bad)}
+var toastTimer;function toast(text,bad){var el=$("toast");el.textContent=text;el.className="toast"+(bad?" bad":"");el.style.display="block";clearTimeout(toastTimer);toastTimer=setTimeout(function(){el.style.display="none"},4500);status(text,bad)}
+function duration(ms){ms=Math.max(0,ms||0);var s=Math.floor(ms/1000),h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;return(h?String(h).padStart(2,"0")+":" : "")+String(m).padStart(2,"0")+":"+String(x).padStart(2,"0")}
+function tc(ms){var fps=state.studio&&state.studio.fps_den?state.studio.fps_num/state.studio.fps_den:24;var total=Math.max(0,ms||0)/1000,h=Math.floor(total/3600),m=Math.floor(total%3600/60),s=Math.floor(total%60),f=Math.floor((total-Math.floor(total))*fps);return[h,m,s,f].map(function(v){return String(v).padStart(2,"0")}).join(":")}
+function sourceUrl(index){return "/studio-media/source/"+index+"?k="+encodeURIComponent(token)}
+function trackUrl(id){return "/api/v1/studios/current/media/tracks/"+id}
+
+async function readyServiceWorker(){
+  if(!("serviceWorker" in navigator))throw new Error("This browser cannot stream authenticated Studio media.");
+  await navigator.serviceWorker.register("/studio-sw.js",{scope:"/"});await navigator.serviceWorker.ready;
+  if(!navigator.serviceWorker.controller)await new Promise(function(resolve){var timer=setTimeout(resolve,1500);navigator.serviceWorker.addEventListener("controllerchange",function(){clearTimeout(timer);resolve()},{once:true})});
+}
+
+async function loadAll(){
+  token=(tokenInput.value||"").trim();if(!token){state.studio=null;renderAll();status("A local API token is required",true);return}
+  try{
+    status("Loading Studio index…");state.studios=await api("/studios");renderStudioSelect();
+    var current=state.studios.find(function(s){return s.current});
+    if(!current){state.studio=null;renderAll();status("No current Studio. Create or reown one.",true);return}
+    await loadCurrent();
+  }catch(e){state.studio=null;renderAll();toast(e.message,true)}
+}
+async function loadCurrent(){
+  stopPlayback();status("Loading Studio…");state.studio=await api("/studios/current");state.selectedTrack=null;audio.buffers.clear();buildSourceStarts();renderAll();await setSourceForTime(Math.min(state.globalMs,state.studio.total_duration_ms-1),false);status("Studio "+state.studio.studio_id.slice(0,8)+" ready")
+}
+function buildSourceStarts(){var sum=0;state.sourceStarts=(state.studio?state.studio.sources:[]).map(function(s){var at=sum;sum+=s.duration_ms;return at})}
+function renderStudioSelect(){var sel=$("studioSelect");if(!state.studios.length){sel.innerHTML="<option>no owned Studios</option>";return}sel.innerHTML=state.studios.map(function(s){return '<option value="'+esc(s.studio_id)+'"'+(s.current?" selected":"")+'>'+(s.current?"● ":"")+s.studio_id.slice(0,8)+" · "+s.sources.map(function(x){return x.keyword}).join(", ")+"</option>"}).join("")}
+function renderAll(){renderStudioSelect();renderBin();renderTimeline();renderInspector();var has=!!state.studio;if(!has&&viewer.getAttribute("src")){viewer.removeAttribute("src");viewer.load();state.sourceIndex=-1}$("viewerMessage").style.display=has?"none":"flex";$("viewerMessage").textContent=token?"No current Studio selected.":"Enter a local API token, then load a Studio.";$("durationText").textContent=tc(has?state.studio.total_duration_ms:0);updateTransport()}
+function renderBin(){var bin=$("mediaBin");if(!state.studio){bin.innerHTML='<div class="empty">No Studio media is available.</div>';$("assetCount").textContent="0 items";return}var html='<div class="binsection"><div class="binlabel">Video sources</div>';state.studio.sources.forEach(function(s,i){html+='<div class="asset" data-source="'+i+'"><div class="thumb">V'+(i+1)+'</div><div><div class="assetname">'+esc(s.keyword)+'</div><div class="assetmeta">'+s.width+'×'+s.height+' · '+duration(s.duration_ms)+'</div></div></div>'});html+='</div><div class="binsection"><div class="binlabel">Audio assets</div>';state.studio.tracks.forEach(function(t){html+='<div class="asset '+(state.selectedTrack===t.id?"selected":"")+'" data-track="'+t.id+'"><div class="thumb audio">A'+t.id+'</div><div><div class="assetname">'+esc(t.display_name)+'</div><div class="assetmeta">'+esc(t.mode)+' · '+duration(t.duration_ms)+'</div></div></div>'});html+='</div>';bin.innerHTML=html;$("assetCount").textContent=(state.studio.sources.length+state.studio.tracks.length)+" items";bin.querySelectorAll("[data-source]").forEach(function(el){el.onclick=function(){var i=+el.dataset.source;seekGlobal(state.sourceStarts[i]||0,false)}});bin.querySelectorAll("[data-track]").forEach(function(el){el.onclick=function(){selectTrack(+el.dataset.track)}})}
+function selectTrack(id){state.selectedTrack=id;renderBin();renderTimeline();renderInspector()}
+function selectedTrack(){return state.studio&&state.studio.tracks.find(function(t){return t.id===state.selectedTrack})}
+
+function renderInspector(){var box=$("inspector"),t=selectedTrack();$("inspectKind").textContent=t?(t.mode+" audio"):"nothing selected";if(!t){box.innerHTML='<div class="empty">Select an audio clip in the media pool or timeline.<br><br>Preview mixing happens entirely in this browser. Only Deliver creates a server job.</div>';return}box.innerHTML='<div class="inspectTitle">A'+t.id+' · '+esc(t.display_name)+'</div><div class="group"><div class="groupTitle">Transform</div><div class="row"><label>Start (sec)</label><input id="iOffset" type="number" min="0" step="0.001" value="'+(t.offset_ms/1000).toFixed(3)+'"></div><div class="row"><label>Duration</label><input disabled value="'+duration(t.duration_ms)+'"></div><div class="row"><label>Trim in</label><input disabled value="'+(t.trim_start_ms/1000).toFixed(3)+' s"></div><div class="row"><label>Trim out</label><input disabled value="'+(t.trim_end_ms/1000).toFixed(3)+' s"></div></div><div class="group"><div class="groupTitle">Audio</div><div class="row"><label>Mix mode</label><select id="iMode"><option value="insert">Insert</option><option value="override">Override</option><option value="duck">Duck</option></select></div><div class="row"><label>Clip level</label><input id="iVolume" type="number" min="0" max="200" value="'+t.volume_percent+'"></div><div class="row duckOnly"><label>Duck target</label><input id="iDuck" type="number" min="0" max="100" value="'+t.duck_volume_percent+'"></div><div class="row duckOnly"><label>Fade (sec)</label><input id="iFade" type="number" min="0" max="3600" step="0.001" value="'+(t.fade_ms/1000).toFixed(3)+'"></div><div class="inspectActions"><button class="btn primary" id="saveTrack">Apply</button><button class="btn" id="cutStart">Trim In</button><button class="btn" id="cutEnd">Trim Out</button><button class="btn danger" id="removeTrack">Remove</button></div></div><div class="group"><div class="groupTitle">Browser preview</div><div class="hint">Insert overlays the source. Override mutes source audio for this interval. Duck applies its fade envelope to every other audible source in real time.</div></div>';$("iMode").value=t.mode;function duckVisibility(){box.querySelectorAll(".duckOnly").forEach(function(el){el.style.display=$("iMode").value==="duck"?"grid":"none"})}duckVisibility();$("iMode").onchange=duckVisibility;$("saveTrack").onclick=saveTrack;$("cutStart").onclick=function(){cutTrack("start")};$("cutEnd").onclick=function(){cutTrack("end")};$("removeTrack").onclick=removeTrack}
+async function saveTrack(){var t=selectedTrack();if(!t)return;try{var mode=$("iMode").value,body={mode:mode,volume_percent:+$("iVolume").value};if(mode==="duck"){body.duck_volume_percent=+$("iDuck").value;body.fade_seconds=+$("iFade").value}else if(t.mode==="duck"){body.duck_volume_percent=undefined;body.fade_seconds=undefined}await api("/studios/current/tracks/"+t.id+"/edit",{method:"POST",body:JSON.stringify(body)});var off=Math.max(0,+$("iOffset").value||0);if(Math.round(off*1000)!==t.offset_ms)await api("/studios/current/tracks/"+t.id+"/move",{method:"POST",body:JSON.stringify({offset:off+"s"})});await loadCurrent();state.selectedTrack=t.id;renderAll();toast("Audio clip updated") }catch(e){toast(e.message,true)}}
+async function cutTrack(side){var t=selectedTrack();if(!t)return;var seconds=prompt("Seconds to trim from the "+side+":","0.5");if(seconds===null)return;try{await api("/studios/current/tracks/"+t.id+"/cut",{method:"POST",body:JSON.stringify({side:side,seconds:+seconds})});await loadCurrent();state.selectedTrack=t.id;renderAll();toast("Trim applied")}catch(e){toast(e.message,true)}}
+async function removeTrack(){var t=selectedTrack();if(!t||!confirm("Remove audio clip A"+t.id+"?"))return;try{await api("/studios/current/tracks/"+t.id+"/remove",{method:"POST"});await loadCurrent();toast("Audio clip removed")}catch(e){toast(e.message,true)}}
+
+function timelineWidth(){if(!state.studio)return 900;return Math.max(900,state.studio.total_duration_ms/1000*state.px)}
+function renderTimeline(){var grid=$("timelineGrid");if(!state.studio){grid.innerHTML='<div class="empty">Timeline unavailable</div>';return}var width=timelineWidth(),lanes=1+state.studio.tracks.length,height=25+lanes*38;grid.style.width=(112+width)+"px";grid.style.height=height+"px";var h='<div class="rulerLabel">TIMECODE</div><div class="timeArea" id="timeArea" style="width:'+width+'px;height:'+height+'px">';var step=state.px>=70?1:state.px>=25?5:10;for(var sec=0;sec<=state.studio.total_duration_ms/1000;sec+=step){var major=sec%(step*2)===0;h+='<i class="tick '+(major?"":"minor")+'" style="left:'+(sec*state.px)+'px">'+(major?duration(sec*1000):"")+'</i>'}for(var l=0;l<lanes;l++)h+='<div class="laneLine" style="top:'+(25+l*38)+'px"></div>';var cursor=0;state.studio.sources.forEach(function(s,i){var left=cursor/1000*state.px,w=s.duration_ms/1000*state.px;h+='<div class="clip video" data-source="'+i+'" style="top:25px;left:'+left+'px;width:'+w+'px"><span>'+esc(s.keyword)+'</span><small>V'+(i+1)+'</small></div>';cursor+=s.duration_ms});state.studio.tracks.forEach(function(t,i){var left=t.offset_ms/1000*state.px,w=t.duration_ms/1000*state.px;h+='<div class="clip '+t.mode+(state.selectedTrack===t.id?" selected":"")+'" data-track="'+t.id+'" style="top:'+(25+(i+1)*38)+'px;left:'+left+'px;width:'+w+'px"><span>'+esc(t.display_name)+'</span><small>A'+t.id+' · '+t.volume_percent+'%</small></div>'});h+='<div class="playhead" id="playhead" style="left:'+(state.globalMs/1000*state.px)+'px"></div></div>';h+='<div class="laneLabel" style="top:25px"><strong>V1</strong> Video</div>';state.studio.tracks.forEach(function(t,i){h+='<div class="laneLabel" style="top:'+(25+(i+1)*38)+'px"><strong>A'+t.id+'</strong>'+esc(t.mode)+'</div>'});grid.innerHTML=h;var area=$("timeArea");area.addEventListener("pointerdown",function(e){if(e.target.closest(".clip"))return;var r=area.getBoundingClientRect();seekGlobal(Math.max(0,Math.min(state.studio.total_duration_ms,(e.clientX-r.left)/state.px*1000)),false)});grid.querySelectorAll(".clip.video").forEach(function(el){el.onpointerdown=function(e){e.stopPropagation();seekGlobal(state.sourceStarts[+el.dataset.source]||0,false)}});grid.querySelectorAll(".clip[data-track]").forEach(enableClipDrag)}
+function enableClipDrag(el){el.onpointerdown=function(e){e.stopPropagation();var id=+el.dataset.track,t=state.studio.tracks.find(function(x){return x.id===id});selectTrack(id);var sx=e.clientX,start=t.offset_ms,moved=false;el.setPointerCapture(e.pointerId);function move(ev){var next=Math.max(0,Math.min(state.studio.total_duration_ms-1,start+(ev.clientX-sx)/state.px*1000));el.style.left=(next/1000*state.px)+"px";el.dataset.next=String(next);moved=true}async function up(ev){el.removeEventListener("pointermove",move);el.removeEventListener("pointerup",up);if(!moved)return;var next=+el.dataset.next;try{await api("/studios/current/tracks/"+id+"/move",{method:"POST",body:JSON.stringify({offset:(next/1000).toFixed(3)+"s"})});await loadCurrent();state.selectedTrack=id;renderAll()}catch(err){toast(err.message,true);renderTimeline()}}el.addEventListener("pointermove",move);el.addEventListener("pointerup",up)}}
+function updatePlayhead(){var p=$("playhead");if(p)p.style.left=(state.globalMs/1000*state.px)+"px";$("timecode").textContent=tc(state.globalMs)}
+
+function sourceAt(ms){if(!state.studio||!state.studio.sources.length)return null;for(var i=0;i<state.studio.sources.length;i++){var start=state.sourceStarts[i],end=start+state.studio.sources[i].duration_ms;if(ms<end||i===state.studio.sources.length-1)return{index:i,start:start,local:Math.max(0,ms-start)}}return null}
+async function setSourceForTime(ms,play){var loc=sourceAt(ms);if(!loc)return;state.globalMs=Math.max(0,Math.min(ms,state.studio.total_duration_ms));if(state.sourceIndex===loc.index&&viewer.src){viewer.currentTime=loc.local/1000;if(play)await viewer.play();updateTransport();return}state.switching=true;state.sourceIndex=loc.index;$("viewerLabel").textContent=state.studio.sources[loc.index].keyword;viewer.src=sourceUrl(loc.index);viewer.load();await new Promise(function(resolve,reject){var done=function(){cleanup();resolve()},bad=function(){cleanup();reject(new Error("Browser cannot decode this source format"))},cleanup=function(){viewer.removeEventListener("loadedmetadata",done);viewer.removeEventListener("error",bad)};viewer.addEventListener("loadedmetadata",done);viewer.addEventListener("error",bad)});viewer.currentTime=Math.min(loc.local/1000,Math.max(0,(viewer.duration||0)-.02));state.switching=false;if(play)await viewer.play();updateTransport()}
+async function seekGlobal(ms,keepPlaying){var was=keepPlaying||state.playing;stopTrackNodes();try{await setSourceForTime(ms,was);if(was){state.playing=true;await prepareAudio();scheduleTracks(state.globalMs)}}catch(e){toast(e.message,true)}updateTransport();updatePlayhead()}
+async function initAudio(){if(audio.ctx)return;var AC=window.AudioContext||window.webkitAudioContext;if(!AC)throw new Error("Web Audio is unavailable in this browser");audio.ctx=new AC();audio.mediaNode=audio.ctx.createMediaElementSource(viewer);audio.baseGain=audio.ctx.createGain();audio.mediaNode.connect(audio.baseGain).connect(audio.ctx.destination)}
+function bufferKey(t){return state.studio.studio_id+":"+t.id}
+async function prepareAudio(){await initAudio();await audio.ctx.resume();if(audio.loading)return audio.loading;var studioId=state.studio.studio_id;audio.loading=Promise.all(state.studio.tracks.map(async function(t){var key=studioId+":"+t.id;if(audio.buffers.has(key))return;try{var r=await api("/studios/current/media/tracks/"+t.id);var data=await r.arrayBuffer();audio.buffers.set(key,await audio.ctx.decodeAudioData(data))}catch(e){toast("A"+t.id+" preview unavailable: "+e.message,true)}})).finally(function(){audio.loading=null});return audio.loading}
+function stopTrackNodes(){audio.nodes.forEach(function(n){try{n.source.stop()}catch(e){}});audio.nodes.clear()}
+function scheduleTracks(atMs){if(!audio.ctx)return;stopTrackNodes();state.studio.tracks.forEach(function(t){var buffer=audio.buffers.get(bufferKey(t)),end=t.offset_ms+t.duration_ms;if(!buffer||atMs>=end)return;var delay=Math.max(0,t.offset_ms-atMs)/1000,inside=Math.max(0,atMs-t.offset_ms),offset=(t.trim_start_ms+inside)/1000,dur=(t.duration_ms-inside)/1000;if(dur<=0||offset>=buffer.duration)return;var source=audio.ctx.createBufferSource(),gain=audio.ctx.createGain();source.buffer=buffer;gain.gain.value=t.volume_percent/100;source.connect(gain).connect(audio.ctx.destination);source.start(audio.ctx.currentTime+delay,offset,Math.min(dur,buffer.duration-offset));audio.nodes.set(t.id,{source:source,gain:gain,track:t})})}
+function active(t,at){return at>=t.offset_ms&&at<t.offset_ms+t.duration_ms}
+function duckEnvelope(t,at){if(!active(t,at))return 1;var local=at-t.offset_ms,dur=t.duration_ms,fade=Math.min(t.fade_ms,dur/2),target=t.duck_volume_percent/100;if(fade>0&&local<fade)return 1-(1-target)*(local/fade);if(fade>0&&local>dur-fade)return target+(1-target)*((local-(dur-fade))/fade);return target}
+function duckFactor(targetId,at){var f=1;state.studio.tracks.forEach(function(t){if(t.mode==="duck"&&t.id!==targetId&&audio.buffers.has(bufferKey(t)))f*=duckEnvelope(t,at)});return f}
+function updateMix(){if(!state.studio||!audio.ctx)return;var at=state.globalMs,override=state.studio.tracks.some(function(t){return t.mode==="override"&&audio.buffers.has(bufferKey(t))&&active(t,at)});audio.baseGain.gain.setTargetAtTime((override?0:1)*duckFactor(null,at),audio.ctx.currentTime,.012);audio.nodes.forEach(function(n,id){n.gain.gain.setTargetAtTime((n.track.volume_percent/100)*duckFactor(id,at),audio.ctx.currentTime,.012)})}
+async function play(){if(!state.studio)return;try{status("Preparing browser audio mix…");await prepareAudio();await viewer.play();state.playing=true;scheduleTracks(state.globalMs);status("Playing local preview");updateTransport()}catch(e){toast(e.message,true)}}
+function pause(){viewer.pause();state.playing=false;stopTrackNodes();status("Preview paused");updateTransport()}
+function stopPlayback(){state.playing=false;try{viewer.pause()}catch(e){}stopTrackNodes();updateTransport()}
+function updateTransport(){$("playBtn").textContent=state.playing?"❚❚":"▶";$("mixState").textContent=state.playing?"live browser mix":"browser mix idle";updatePlayhead()}
+viewer.addEventListener("timeupdate",function(){if(state.switching||state.sourceIndex<0)return;state.globalMs=(state.sourceStarts[state.sourceIndex]||0)+viewer.currentTime*1000;updatePlayhead()});viewer.addEventListener("ended",async function(){if(!state.studio)return;var next=state.sourceIndex+1;if(next<state.studio.sources.length){try{await setSourceForTime(state.sourceStarts[next],true);state.playing=true;await prepareAudio();scheduleTracks(state.globalMs);updateTransport()}catch(e){pause();toast(e.message,true)}}else pause()});viewer.addEventListener("pause",function(){if(!state.switching&&state.playing){state.playing=false;stopTrackNodes();updateTransport()}});viewer.addEventListener("play",function(){state.playing=true;updateTransport()});viewer.addEventListener("click",function(){state.playing?pause():play()});
+function frame(){if(state.playing)updateMix();requestAnimationFrame(frame)}requestAnimationFrame(frame);
+
+async function addAudio(file){if(!file||!state.studio)return;var mode=prompt("Mix mode: insert, override, or duck","insert");if(mode===null)return;mode=mode.toLowerCase();if(["insert","override","duck"].indexOf(mode)<0){toast("Invalid mix mode",true);return}try{status("Uploading "+file.name+"…");var b64=await fileBase64(file),body={audio_b64:b64,filename:file.name,mode:mode};if(mode==="duck"){body.duck_volume_percent=+(prompt("Duck target percentage","30")||30);body.fade_seconds=+(prompt("Fade seconds each way","0.5")||.5)}var track=await api("/studios/current/tracks",{method:"POST",body:JSON.stringify(body)});await loadCurrent();state.selectedTrack=track.id;renderAll();toast("Audio added as A"+track.id)}catch(e){toast(e.message,true)}}
+function fileBase64(file){return new Promise(function(resolve,reject){var r=new FileReader();r.onerror=function(){reject(new Error("Could not read file"))};r.onload=function(){resolve(String(r.result).split(",")[1]||"")};r.readAsDataURL(file)})}
+async function switchStudio(id){if(!id||!state.studios.some(function(s){return s.studio_id===id}))return;try{await api("/studios/"+encodeURIComponent(id)+"/switch",{method:"POST"});await loadAll()}catch(e){toast(e.message,true)}}
+async function createStudio(){var raw=prompt("Comma-separated keep keywords:","");if(!raw)return;try{await api("/studios",{method:"POST",body:JSON.stringify({keywords:raw.split(",").map(function(x){return x.trim()}).filter(Boolean)})});await loadAll();toast("Studio created")}catch(e){toast(e.message,true)}}
+async function replaceSources(){if(!state.studio)return;var raw=prompt("Replacement keep keywords:",state.studio.sources.map(function(s){return s.keyword}).join(", "));if(!raw)return;try{await api("/studios/current/keywords",{method:"POST",body:JSON.stringify({keywords:raw.split(",").map(function(x){return x.trim()}).filter(Boolean)})});await loadCurrent();toast("Sources replaced")}catch(e){toast(e.message,true)}}
+async function deliver(){if(!state.studio)return;try{var out=await api("/studios/current/render",{method:"POST",body:"{}"});toast("Delivery queued as job #"+out.job_id);if(window.parent!==window)window.parent.postMessage({type:"pandora:openJob",jobId:out.job_id},"*")}catch(e){toast(e.message,true)}}
+
+$("reloadBtn").onclick=loadAll;$("newBtn").onclick=createStudio;$("sourcesBtn").onclick=replaceSources;$("audioBtn").onclick=function(){$("audioFile").click()};$("audioFile").onchange=function(){addAudio(this.files[0]);this.value=""};$("renderBtn").onclick=deliver;$("studioSelect").onchange=function(){switchStudio(this.value)};tokenInput.addEventListener("change",function(){try{localStorage.setItem("pandora_token",this.value)}catch(e){}loadAll()});window.addEventListener("storage",function(e){if(e.key==="pandora_token"){tokenInput.value=e.newValue||"";loadAll()}});
+$("playBtn").onclick=function(){state.playing?pause():play()};$("backBtn").onclick=function(){seekGlobal(state.globalMs-5000,state.playing)};$("forwardBtn").onclick=function(){seekGlobal(state.globalMs+5000,state.playing)};$("prevBtn").onclick=function(){var prev=0;state.sourceStarts.forEach(function(x){if(x<state.globalMs-10)prev=x});seekGlobal(prev,state.playing)};$("nextBtn").onclick=function(){var next=state.studio?state.studio.total_duration_ms:0;state.sourceStarts.some(function(x){if(x>state.globalMs+10){next=x;return true}});seekGlobal(next,state.playing)};$("zoom").oninput=function(){state.px=+this.value;renderTimeline()};$("fitBtn").onclick=function(){if(!state.studio)return;var available=Math.max(8,$("timelineScroll").clientWidth-130),px=Math.max(8,Math.min(120,available/(state.studio.total_duration_ms/1000)));state.px=px;$("zoom").value=px;renderTimeline()};
+window.addEventListener("message",function(e){if(e.data&&e.data.type==="pandora:theme")return});
+readyServiceWorker().then(loadAll).catch(function(e){toast(e.message,true);loadAll()});
+})();
+</script>
+</body>
+</html>

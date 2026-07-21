@@ -501,7 +501,7 @@ async fn run_studio_preview_job(
         return;
     }
     let output = directory.join("work").join("studio-preview.mp4");
-    tx.try_send((job_id, MessagePayload::Static(ENCODE_START), Some(Stage::Encoding))).ok();
+    tx.send((job_id, MessagePayload::Static(ENCODE_START), Some(Stage::Encoding))).await.ok();
     let mut proto = Protocol::new(vec![1]);
     let result = run_tool(
         pnmpeg_path,

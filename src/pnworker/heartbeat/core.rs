@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use std::future::Future;
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::task::JoinHandle;
-use tokio::time::{Duration, Instant};
+use tokio::time::{Duration, Instant, sleep};
 use crate::pnworker::core::Stage;
 use crate::pnworker::messages::MessagePayload;
 
@@ -123,9 +123,8 @@ impl<M: Send + 'static> TypedLayer<M> {
     }
 }
 
-// TypedShrine is the low cortisol supervisor.
-// M is your WorkerMsg enum wrapping all worker-specific message types.
-// M must be Clone so the last message can be stored and replayed after reboot.
+// TypedShrine supervises worker layers and deliberately does not replay interrupted work.
+// M is the WorkerMsg enum shared by every typed worker layer.
 //
 // Usage:
 //   let mut shrine: TypedShrine<WorkerMsg> = TypedShrine::new();
@@ -134,15 +133,12 @@ impl<M: Send + 'static> TypedLayer<M> {
 //   while let Some((worker, comm)) = shrine.receive(500).await { ... }
 pub struct TypedShrine<M: Send + 'static> {
     layers: HashMap<Worker, TypedLayer<M>>,
-    // Last message sent per worker — replayed after reboot so job resumes transparently.
-    last_messages: HashMap<Worker, M>,
 }
 
 impl<M: Send + Clone + 'static> TypedShrine<M> {
     pub fn new() -> Self {
         TypedShrine {
             layers: HashMap::new(),
-            last_messages: HashMap::new(),
         }
     }
 
@@ -199,7 +195,6 @@ impl<M: Send + Clone + 'static> TypedShrine<M> {
                             eprintln!("[Shrine] {:?} send recovered after auto-reboot", worker);
                         }
                         println!("[Shrine] Message sent to: {worker:?}");
-                        self.last_messages.insert(worker.clone(), msg);
                         return Ok(());
                     }
                     Err(_) if attempt == 0 => {
@@ -217,10 +212,8 @@ impl<M: Send + Clone + 'static> TypedShrine<M> {
         Err(format!("[Shrine] {:?} send exhausted retries", worker))
     }
 
-    // Poll all layers for any heartbeat message.
-    // Waits up to timeout_ms milliseconds before returning None.
-    // Detects dead/expired threads and reboots them automatically,
-    // replaying the last message so the job resumes transparently.
+    // Poll all layers for a worker message, waiting up to timeout_ms.
+    // A short sleep prevents the empty poll path from busy-spinning a runtime thread.
     pub async fn receive(&mut self, timeout_ms: u64) -> Option<(Worker, CommData)> {
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
 
@@ -250,8 +243,7 @@ impl<M: Send + Clone + 'static> TypedShrine<M> {
                 return None;
             }
 
-            // Yield to runtime — also serves as abort() cancellation point
-            tokio::task::yield_now().await;
+            sleep(Duration::from_millis(1)).await;
         }
     }
     pub async fn force_reboot(&mut self, worker: &Worker) {
@@ -269,7 +261,7 @@ impl<M: Send + Clone + 'static> TypedShrine<M> {
             .map(|layer| layer.reboot_count)
             .unwrap_or(0)
     }
-    // Reboot a layer and replay the last message if available.
+    // Rebooting intentionally starts an empty layer; interrupted jobs are not replayed.
     async fn reboot(&mut self, worker: &Worker) {
         if let Some(layer) = self.layers.get_mut(worker) {
             eprintln!(
@@ -280,12 +272,6 @@ impl<M: Send + Clone + 'static> TypedShrine<M> {
             layer.reboot().await;
         }
 
-        // Replay last message so the job resumes transparently
-        /*if let Some(msg) = self.last_messages.get(worker).cloned() {
-            if let Some(layer) = self.layers.get(worker) {
-                let _ = layer.sender.send(msg).await;
-            }
-        }*/
     }
     pub async fn kill(&mut self) {
         let workers: Vec<Worker> = self.layers.keys().cloned().collect();

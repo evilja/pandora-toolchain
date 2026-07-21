@@ -1,7 +1,8 @@
 use crate::lib::mpeg::probe::{probe_media, MediaProbe};
 use crate::lib::mpeg::studio::{PreviewWindow, StudioInput, StudioRenderManifest, StudioRenderTrack, StudioSourceKind, StudioTrackMode, StudioVideoPreset};
-use crate::pnworker::core::KeepKind;
+use crate::pnworker::core::{KeepKind, Preset};
 use crate::pnworker::keep::{now_secs, resolve_studio_keywords, sanitize_keyword};
+use crate::pnworker::server_effects::load_server_settings;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -100,6 +101,8 @@ pub struct StudioMeta {
 struct UserPointers {
     current: Option<String>,
     last: Option<String>,
+    #[serde(default)]
+    studios: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -189,11 +192,7 @@ impl StudioStore {
         }
 
         let mut pointers = read_pointers(guild_id, user_id).await?;
-        if let Some(previous) = pointers.current.clone() {
-            if previous != studio_id {
-                detach_user_locked(guild_id, user_id, &previous).await?;
-            }
-        }
+        remember_studio(&mut pointers, &studio_id);
         pointers.current = Some(studio_id.clone());
         pointers.last = Some(studio_id.clone());
         write_pointers(guild_id, user_id, &pointers).await?;
@@ -295,6 +294,77 @@ impl StudioStore {
         Ok(meta)
     }
 
+    pub async fn list_owned(&self, guild_id: u64, user_id: u64) -> Result<Vec<(StudioMeta, bool)>, String> {
+        let _guard = studio_lock().lock().await;
+        let mut pointers = read_pointers(guild_id, user_id).await?;
+        let original_pointers = pointers.clone();
+        if let Some(current) = pointers.current.clone() {
+            remember_studio(&mut pointers, &current);
+        }
+        let mut studios = Vec::with_capacity(pointers.studios.len());
+        let mut valid_ids = Vec::with_capacity(pointers.studios.len());
+        for studio_id in &pointers.studios {
+            let Some(meta) = read_json::<StudioMeta>(&meta_path(guild_id, studio_id)).await? else {
+                continue;
+            };
+            if meta.guild_id == guild_id
+                && meta.expires_at > now_secs()
+                && meta.collaborators.contains(&user_id)
+            {
+                let current = pointers.current.as_deref() == Some(meta.studio_id.as_str());
+                valid_ids.push(meta.studio_id.clone());
+                studios.push((meta, current));
+            }
+        }
+        if pointers.current.as_ref().is_some_and(|id| !valid_ids.contains(id)) {
+            pointers.current = None;
+        }
+        pointers.studios = valid_ids;
+        if pointers != original_pointers {
+            write_pointers(guild_id, user_id, &pointers).await?;
+        }
+        studios.sort_by(|(a, _), (b, _)| b.last_command_at.cmp(&a.last_command_at));
+        Ok(studios)
+    }
+
+    pub async fn details(
+        &self,
+        guild_id: u64,
+        user_id: u64,
+        requested_id: Option<&str>,
+    ) -> Result<StudioMeta, String> {
+        let _guard = studio_lock().lock().await;
+        let pointers = read_pointers(guild_id, user_id).await?;
+        let id = requested_id.map(str::trim).filter(|id| !id.is_empty())
+            .map(str::to_string).or(pointers.current)
+            .ok_or_else(|| "you do not have a current Studio".to_string())?;
+        validate_studio_id(&id)?;
+        let mut meta = self.authorized_meta_locked(guild_id, user_id, &id).await?;
+        refresh_meta(&mut meta)?;
+        write_json_atomic(&meta_path(guild_id, &id), &meta).await?;
+        Ok(meta)
+    }
+
+    pub async fn switch(
+        &self,
+        guild_id: u64,
+        user_id: u64,
+        studio_id: &str,
+    ) -> Result<StudioMeta, String> {
+        let _guard = studio_lock().lock().await;
+        let id = studio_id.trim();
+        validate_studio_id(id)?;
+        let mut meta = self.authorized_meta_locked(guild_id, user_id, id).await?;
+        refresh_meta(&mut meta)?;
+        write_json_atomic(&meta_path(guild_id, id), &meta).await?;
+        let mut pointers = read_pointers(guild_id, user_id).await?;
+        remember_studio(&mut pointers, id);
+        pointers.current = Some(id.to_string());
+        pointers.last = Some(id.to_string());
+        write_pointers(guild_id, user_id, &pointers).await?;
+        Ok(meta)
+    }
+
     pub async fn reown(
         &self,
         guild_id: u64,
@@ -316,11 +386,6 @@ impl StudioStore {
             write_pointers(guild_id, user_id, &pointers).await.ok();
             return Err(format!("Studio `{}` has expired", id));
         }
-        if let Some(previous) = pointers.current.clone() {
-            if previous != id {
-                detach_user_locked(guild_id, user_id, &previous).await?;
-            }
-        }
         if !meta.collaborators.contains(&user_id) {
             meta.collaborators.push(user_id);
         }
@@ -328,6 +393,7 @@ impl StudioStore {
         meta.expires_at = now + STUDIO_ACTIVE_TTL_SECS;
         meta.disowned_at = None;
         write_json_atomic(&meta_path(guild_id, &id), &meta).await?;
+        remember_studio(&mut pointers, &id);
         pointers.current = Some(id.clone());
         pointers.last = Some(id);
         write_pointers(guild_id, user_id, &pointers).await?;
@@ -349,6 +415,7 @@ impl StudioStore {
             meta.expires_at = now + STUDIO_ACTIVE_TTL_SECS;
         }
         write_json_atomic(&meta_path(guild_id, &id), &meta).await?;
+        pointers.studios.retain(|studio_id| studio_id != &id);
         pointers.current = None;
         pointers.last = Some(id);
         write_pointers(guild_id, user_id, &pointers).await?;
@@ -589,6 +656,55 @@ pub async fn cleanup_studios_startup() {
 
 pub async fn cleanup_expired_studios() {
     cleanup_studios_startup().await;
+}
+
+pub fn studio_render_presets(
+    source_kind: KeepKind,
+    guild_id: u64,
+    preview: bool,
+) -> (Preset, StudioVideoPreset) {
+    if preview {
+        return (Preset::Dummy(None), StudioVideoPreset::Dummy);
+    }
+    if source_kind == KeepKind::Encode {
+        return (Preset::Copy, StudioVideoPreset::Standard);
+    }
+    match load_server_settings(Some(guild_id)).preset {
+        Preset::PseudoLossless(_) => (Preset::PseudoLossless(None), StudioVideoPreset::PseudoLossless),
+        Preset::Gpu(_) => (Preset::Gpu(None), StudioVideoPreset::Gpu),
+        Preset::Dummy(_) => (Preset::Dummy(None), StudioVideoPreset::Dummy),
+        Preset::Standard(_) | Preset::Copy => (Preset::Standard(None), StudioVideoPreset::Standard),
+    }
+}
+
+pub fn studio_job_display(meta: &StudioMeta, preview_track: Option<u64>) -> String {
+    let Some(track_id) = preview_track else {
+        return format!("Pandora Studio `{}`", meta.studio_id);
+    };
+    let Some(track) = meta.tracks.iter().find(|track| track.id == track_id) else {
+        return format!("Pandora Studio `{}`", meta.studio_id);
+    };
+    let window = PreviewWindow::around_track_start(track.offset_ms, meta.total_duration_ms);
+    format!(
+        "Pandora Studio `{}`\nTrack `#{}` offset: `{}`\nPreview window: `{}` - `{}`",
+        meta.studio_id,
+        track.id,
+        format_timestamp(track.offset_ms),
+        format_timestamp(window.start_ms),
+        format_timestamp(window.start_ms.saturating_add(window.duration_ms)),
+    )
+}
+
+fn format_timestamp(ms: u64) -> String {
+    let hours = ms / 3_600_000;
+    let minutes = (ms % 3_600_000) / 60_000;
+    let seconds = (ms % 60_000) / 1000;
+    let millis = ms % 1000;
+    if hours > 0 {
+        format!("{}:{:02}:{:02}.{:03}", hours, minutes, seconds, millis)
+    } else {
+        format!("{}:{:02}.{:03}", minutes, seconds, millis)
+    }
 }
 
 fn remove_out_of_range_tracks(tracks: &mut Vec<StudioTrack>, total_duration_ms: u64) -> Vec<PathBuf> {
@@ -841,19 +957,10 @@ fn refresh_meta(meta: &mut StudioMeta) -> Result<(), String> {
     Ok(())
 }
 
-async fn detach_user_locked(guild_id: u64, user_id: u64, studio_id: &str) -> Result<(), String> {
-    let path = meta_path(guild_id, studio_id);
-    let Some(mut meta) = read_json::<StudioMeta>(&path).await? else { return Ok(()); };
-    meta.collaborators.retain(|id| *id != user_id);
-    if meta.collaborators.is_empty() {
-        let now = now_secs();
-        meta.expires_at = now + STUDIO_DISOWNED_TTL_SECS;
-        meta.disowned_at = Some(now);
-        meta.last_command_at = now;
-    } else {
-        meta.expires_at = now_secs() + STUDIO_ACTIVE_TTL_SECS;
+fn remember_studio(pointers: &mut UserPointers, studio_id: &str) {
+    if !pointers.studios.iter().any(|id| id == studio_id) {
+        pointers.studios.push(studio_id.to_string());
     }
-    write_json_atomic(&path, &meta).await
 }
 
 async fn read_pointers(guild_id: u64, user_id: u64) -> Result<UserPointers, String> {
@@ -929,12 +1036,16 @@ async fn cleanup_stale_pointers() -> Result<(), String> {
         let mut users = fs::read_dir(guild.path()).await.map_err(|e| e.to_string())?;
         while let Some(user) = users.next_entry().await.map_err(|e| e.to_string())? {
             let Some(mut pointer) = read_json::<UserPointers>(&user.path()).await? else { continue; };
+            pointer.studios.retain(|id| meta_path(guild_id, id).exists());
             let current_valid = pointer.current.as_ref().map(|id| meta_path(guild_id, id).exists()).unwrap_or(false);
             let last_valid = pointer.last.as_ref().map(|id| meta_path(guild_id, id).exists()).unwrap_or(false);
             if !current_valid { pointer.current = None; }
             if !last_valid { pointer.last = None; }
-            if pointer.current.is_none() && pointer.last.is_none() { fs::remove_file(user.path()).await.ok(); }
-            else { write_json_atomic(&user.path(), &pointer).await?; }
+            if pointer.current.is_none() && pointer.last.is_none() && pointer.studios.is_empty() {
+                fs::remove_file(user.path()).await.ok();
+            } else {
+                write_json_atomic(&user.path(), &pointer).await?;
+            }
         }
     }
     Ok(())
@@ -962,6 +1073,15 @@ fn to_manifest(meta: &StudioMeta, preview: Option<PreviewWindow>, video_preset: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn studio_pointer_index_keeps_multiple_unique_studios() {
+        let mut pointers = UserPointers::default();
+        remember_studio(&mut pointers, "aaaaaaaaaaaaaaaa");
+        remember_studio(&mut pointers, "bbbbbbbbbbbbbbbb");
+        remember_studio(&mut pointers, "aaaaaaaaaaaaaaaa");
+        assert_eq!(pointers.studios, vec!["aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"]);
+    }
 
     fn test_track(duration_ms: u64) -> StudioTrack {
         StudioTrack {
