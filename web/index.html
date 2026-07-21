@@ -1302,6 +1302,14 @@
     // Cancelled/Failed/Declined keep whatever progress they died with; don't render it as
     // if still running (a cancelled upload would otherwise show a live "0%" host list).
     if (stage === "Cancelled" || stage === "Failed" || stage === "Declined") return "";
+    if (p.type === "keep") {
+      var title = p.ready ? "Keep ready" : "Keep keyword reserved";
+      var rows = '<div class="link-row"><span class="link-host mono">Keyword</span><span class="mono">' + esc(p.keyword) + "</span></div>";
+      if (p.parent_keyword) rows += '<div class="link-row"><span class="link-host mono">Parent</span><span class="mono">' + esc(p.parent_keyword) + "</span></div>";
+      if (p.kind) rows += '<div class="link-row"><span class="link-host mono">Type</span><span>' + esc(p.kind) + "</span></div>";
+      if (p.expires_at) rows += '<div class="link-row"><span class="link-host mono">Expires</span><span>' + esc(new Date(Number(p.expires_at) * 1000).toLocaleString()) + "</span></div>";
+      return '<div class="prog-label">' + title + "</div>" + rows;
+    }
     if (p.type === "forward") {
       var parent = p.parent_job_id ? (" job #" + esc(p.parent_job_id)) : " another job";
       return progMeta("Shared with" + parent + " — same source, preset and subtitle, so this reuses that encode instead of downloading and encoding again.");
@@ -1442,10 +1450,11 @@
   function renderJobs(res) {
     if (!res.ok || !Array.isArray(res.data)) { renderResult(res); return; }
     if (!res.data.length) { outputEl.innerHTML = pill(res) + '<p class="muted">Nothing in the queue right now.</p>'; return; }
-    var html = pill(res) + "<table><thead><tr><th>Job</th><th>Type</th><th>Stage</th><th>Worker</th><th>Source</th><th></th></tr></thead><tbody>";
+    var html = pill(res) + "<table><thead><tr><th>Job</th><th>Type</th><th>Stage</th><th>Worker</th><th>Keep</th><th>Source</th><th></th></tr></thead><tbody>";
     res.data.forEach(function (j) {
+      var keep = j.progress && j.progress.type === "keep" ? j.progress.keyword : "";
       html += "<tr class='jobrow' data-job='" + esc(j.job_id) + "' title='Open in a window'><td class='mono'>" + esc(j.job_id) + "</td><td>" + esc(j.job_type) +
-              "</td><td>" + chip(j.stage) + "</td><td class='mono'>" + esc(j.worker || "") + "</td><td class='mono trunc' title='" + esc(j.link) + "'>" + esc(j.link) +
+              "</td><td>" + chip(j.stage) + "</td><td class='mono'>" + esc(j.worker || "") + "</td><td class='mono'>" + esc(keep) + "</td><td class='mono trunc' title='" + esc(j.link) + "'>" + esc(j.link) +
               "</td><td><button class='popout' type='button' data-job='" + esc(j.job_id) + "' title='Open in a window'>⤢</button></td></tr>";
     });
     html += "</tbody></table>";
