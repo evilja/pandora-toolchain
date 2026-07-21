@@ -29,6 +29,10 @@ use crate::lib::env::standard::{
     API_AUTHOR_ID, API_HOST, API_RATE_LIMIT, API_RATE_WINDOW_SECS, API_TOKENS_PATH,
 };
 
+pub(super) const STUDIO_AUDIO_FILE_LIMIT: usize = 50 * 1024 * 1024;
+const STUDIO_AUDIO_REQUEST_LIMIT: usize = 70 * 1024 * 1024;
+const API_REQUEST_LIMIT: usize = 8 * 1024 * 1024;
+
 #[derive(Clone)]
 pub(super) struct AppState {
     pub(super) tx: Sender<JobClass>,
@@ -133,7 +137,11 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/studios/current", get(super::studio::current))
         .route("/studios/current/disown", post(super::studio::disown))
         .route("/studios/current/keywords", post(super::studio::replace_keywords))
-        .route("/studios/current/tracks", post(super::studio::add_track))
+        .route(
+            "/studios/current/tracks",
+            post(super::studio::add_track)
+                .layer(DefaultBodyLimit::max(STUDIO_AUDIO_REQUEST_LIMIT)),
+        )
         .route("/studios/current/media/sources/:source_index", get(super::studio::source_media))
         .route("/studios/current/media/tracks/:track_id", get(super::studio::track_media))
         .route("/studios/current/tracks/:track_id/edit", post(super::studio::edit_track))
@@ -160,7 +168,7 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/acix/tmdb", post(acix_tmdb))
         .route("/acix/translators", get(acix_translators))
         .route("/acix/publish", post(acix_publish))
-        .layer(DefaultBodyLimit::max(8 * 1024 * 1024))
+        .layer(DefaultBodyLimit::max(API_REQUEST_LIMIT))
         .layer(middleware::from_fn_with_state(state.clone(), auth));
 
     let app = Router::new()

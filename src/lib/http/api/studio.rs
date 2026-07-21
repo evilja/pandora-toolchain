@@ -1,4 +1,6 @@
-use super::core::{base64_decode_bytes, require_local, submit, ApiAuth, AppState};
+use super::core::{
+    base64_decode_bytes, require_local, submit, ApiAuth, AppState, STUDIO_AUDIO_FILE_LIMIT,
+};
 use axum::{
     Json,
     body::Body,
@@ -283,10 +285,17 @@ pub(super) async fn add_track(
     {
         return (StatusCode::BAD_REQUEST, "duck settings require mode=duck").into_response();
     }
+    let max_base64_len = STUDIO_AUDIO_FILE_LIMIT.div_ceil(3) * 4;
+    if req.audio_b64.len() > max_base64_len {
+        return (StatusCode::PAYLOAD_TOO_LARGE, "audio file must not exceed 50 MB").into_response();
+    }
     let bytes = match base64_decode_bytes(&req.audio_b64) {
         Ok(bytes) => bytes,
         Err(error) => return (StatusCode::BAD_REQUEST, format!("audio_b64: {}", error)).into_response(),
     };
+    if bytes.len() > STUDIO_AUDIO_FILE_LIMIT {
+        return (StatusCode::PAYLOAD_TOO_LARGE, "audio file must not exceed 50 MB").into_response();
+    }
     let ext = safe_extension(&req.filename);
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
