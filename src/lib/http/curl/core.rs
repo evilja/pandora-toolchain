@@ -15,7 +15,6 @@ use reqwest::{Client, multipart};
 use serde::Deserialize;
 use std::io::{Error, ErrorKind};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::{collections::HashMap, path::PathBuf, time::Duration};
 use tokio::fs::File;
@@ -25,20 +24,8 @@ use tokio::time::Instant;
 use tokio_util::io::ReaderStream;
 
 const DRIVE_FOLDER_MIME: &str = "application/vnd.google-apps.folder";
-
-struct UploadProgress {
-    sent: u64,
-    extensions: u64,
-}
-
-impl UploadProgress {
-    fn new(_total: u64) -> Arc<Mutex<Self>> {
-        Arc::new(Mutex::new(Self {
-            sent: 0,
-            extensions: 0,
-        }))
-    }
-}
+const UPLOAD_STREAM_CAPACITY: usize = 256 * 1024;
+const UPLOAD_PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
 
 struct ProgressReader<R> {
     inner: R,
@@ -46,7 +33,7 @@ struct ProgressReader<R> {
     total: u64,
     tx: UnboundedSender<RpbData>,
     host: Host,
-    progress: Arc<Mutex<UploadProgress>>,
+    last_emit: Option<Instant>,
     cfile: Option<PathBuf>,
 }
 
@@ -56,7 +43,6 @@ impl<R> ProgressReader<R> {
         total: u64,
         tx: UnboundedSender<RpbData>,
         host: Host,
-        progress: Arc<Mutex<UploadProgress>>,
         cfile: Option<PathBuf>,
     ) -> Self {
         Self {
@@ -65,7 +51,7 @@ impl<R> ProgressReader<R> {
             total,
             tx,
             host,
-            progress,
+            last_emit: None,
             cfile,
         }
     }
@@ -88,21 +74,21 @@ impl<R: AsyncRead + Unpin> AsyncRead for ProgressReader<R> {
         let n = (after - before) as u64;
         if n > 0 {
             self.sent += n;
-            if let Ok(mut progress) = self.progress.lock() {
-                progress.sent = self.sent;
+            let should_emit = self.last_emit
+                .map(|last| last.elapsed() >= UPLOAD_PROGRESS_INTERVAL)
+                .unwrap_or(true)
+                || self.sent >= self.total;
+            if should_emit {
+                self.tx
+                    .send(RpbData::Progress(
+                        self.sent,
+                        self.total,
+                        0,
+                        self.host.clone(),
+                    ))
+                    .ok();
+                self.last_emit = Some(Instant::now());
             }
-            let extensions = match self.progress.lock() {
-                Ok(progress) => progress.extensions,
-                Err(_) => 0,
-            };
-            self.tx
-                .send(RpbData::Progress(
-                    self.sent,
-                    self.total,
-                    extensions,
-                    self.host.clone(),
-                ))
-                .ok();
         }
 
         result
@@ -383,10 +369,14 @@ impl Req {
             total_size as f64 / 1_048_576.0
         );
 
-        let progress = UploadProgress::new(total_size);
-        let reader =
-            ProgressReader::new(file, total_size, tx.clone(), host.clone(), progress.clone(), self.cfile.clone());
-        let stream = ReaderStream::new(reader);
+        let reader = ProgressReader::new(
+            file,
+            total_size,
+            tx.clone(),
+            host.clone(),
+            self.cfile.clone(),
+        );
+        let stream = ReaderStream::with_capacity(reader, UPLOAD_STREAM_CAPACITY);
         let body = reqwest::Body::wrap_stream(stream);
 
         let file_part = multipart::Part::stream_with_length(body, total_size)
@@ -510,10 +500,14 @@ impl Req {
             total_size as f64 / 1_048_576.0
         );
 
-        let progress = UploadProgress::new(total_size);
-        let reader =
-            ProgressReader::new(file, total_size, tx.clone(), Host::Abyss, progress.clone(), self.cfile.clone());
-        let stream = ReaderStream::new(reader);
+        let reader = ProgressReader::new(
+            file,
+            total_size,
+            tx.clone(),
+            Host::Abyss,
+            self.cfile.clone(),
+        );
+        let stream = ReaderStream::with_capacity(reader, UPLOAD_STREAM_CAPACITY);
         let body = reqwest::Body::wrap_stream(stream);
 
         let file_part = multipart::Part::stream_with_length(body, total_size)
@@ -785,12 +779,16 @@ impl Req {
 
         let upload_name = outfile.clone().unwrap_or(self.target.clone());
 
-        let progress = UploadProgress::new(total_size);
-        let reader =
-            ProgressReader::new(file, total_size, tx.clone(), Host::Drive, progress.clone(), self.cfile.clone());
+        let reader = ProgressReader::new(
+            file,
+            total_size,
+            tx.clone(),
+            Host::Drive,
+            self.cfile.clone(),
+        );
         drive_log(&mut handle, "progress reader attached").await;
 
-        let stream = ReaderStream::new(reader);
+        let stream = ReaderStream::with_capacity(reader, UPLOAD_STREAM_CAPACITY);
         let body = reqwest::Body::wrap_stream(stream);
 
         let upload_mime = if upload_name.to_ascii_lowercase().ends_with(".zip") {
@@ -800,7 +798,7 @@ impl Req {
         };
         drive_log(&mut handle, format!("upload MIME type: {upload_mime}")).await;
 
-        let part = multipart::Part::stream(body)
+        let part = multipart::Part::stream_with_length(body, total_size)
             .file_name(upload_name.clone())
             .mime_str(upload_mime)
             .unwrap();
@@ -1009,4 +1007,37 @@ async fn ensure_drive_folder(
 
 fn drive_query_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncReadExt;
+
+    #[tokio::test]
+    async fn progress_reader_emits_first_and_final_updates() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let source: &[u8] = b"abcdefgh";
+        let mut reader = ProgressReader::new(
+            source,
+            source.len() as u64,
+            tx,
+            Host::Drive,
+            None,
+        );
+        let mut chunk = [0u8; 4];
+
+        reader.read_exact(&mut chunk).await.unwrap();
+        match rx.recv().await.unwrap() {
+            RpbData::Progress(4, 8, 0, Host::Drive) => {}
+            _ => panic!("unexpected first progress update"),
+        }
+
+        reader.read_exact(&mut chunk).await.unwrap();
+        match rx.recv().await.unwrap() {
+            RpbData::Progress(8, 8, 0, Host::Drive) => {}
+            _ => panic!("unexpected final progress update"),
+        }
+        assert!(rx.try_recv().is_err());
+    }
 }

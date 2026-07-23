@@ -12,22 +12,54 @@ pub async fn handle_acixconfirm(
         }
     };
 
+    if command
+        .create_response(
+            ctx,
+            CreateInteractionResponse::Defer(
+                CreateInteractionResponseMessage::new().ephemeral(true),
+            ),
+        )
+        .await
+        .is_err()
+    {
+        return;
+    }
+
     let db = match pandora_toolchain::lib::db::core::JobDb::new().await {
         Ok(d) => d,
         Err(e) => {
-            command_error(ctx, command, format!("Database error: {}", e)).await;
+            acixconfirm_response(ctx, command, format!("Database error: {}", e)).await;
             return;
         }
     };
 
     match pandora_toolchain::pnworker::acix::confirm_acix(&db, job_id).await {
         Ok(_) => {
-            command.create_response(ctx, CreateInteractionResponse::Message(
-                CreateInteractionResponseMessage::new()
-                    .content(format!("Published job `{}` to AnimeciX.", job_id))
-                    .ephemeral(true)
-            )).await.ok();
+            acixconfirm_response(
+                ctx,
+                command,
+                format!("Published job `{}` to AnimeciX.", job_id),
+            )
+            .await;
         }
-        Err(e) => command_error(ctx, command, format!("AnimeciX publish failed: {}", e)).await,
+        Err(e) => {
+            acixconfirm_response(
+                ctx,
+                command,
+                format!("AnimeciX publish failed: {}", e),
+            )
+            .await;
+        }
     }
+}
+
+async fn acixconfirm_response(
+    ctx: &Context,
+    command: &serenity::all::CommandInteraction,
+    content: impl Into<String>,
+) {
+    command
+        .edit_response(ctx, EditInteractionResponse::new().content(content.into()))
+        .await
+        .ok();
 }
