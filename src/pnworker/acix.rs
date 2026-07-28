@@ -24,6 +24,32 @@ pub struct CreditOverrides {
     qc: Option<Option<String>>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AcixResetScope {
+    Multiple,
+    Multishare,
+    Both,
+}
+
+impl AcixResetScope {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "multiple" => Some(Self::Multiple),
+            "multishare" => Some(Self::Multishare),
+            "both" => Some(Self::Both),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Multiple => "multiple",
+            Self::Multishare => "multishare",
+            Self::Both => "both",
+        }
+    }
+}
+
 impl CreditOverrides {
     pub fn from_values(
         extra: Option<String>,
@@ -115,6 +141,18 @@ impl AcixPending {
     fn fully_published(&self) -> bool {
         self.multishare_status == Some(PublishState::Published)
             && self.multiple_status == Some(PublishState::Published)
+    }
+
+    fn reset_publish_state(&mut self, scope: AcixResetScope) {
+        if matches!(scope, AcixResetScope::Multishare | AcixResetScope::Both) {
+            self.multishare_status = Some(PublishState::Pending);
+            self.multishare_error = None;
+        }
+        if matches!(scope, AcixResetScope::Multiple | AcixResetScope::Both) {
+            self.multiple_status = Some(PublishState::Pending);
+            self.multiple_error = None;
+        }
+        self.refresh_status();
     }
 
     fn apply_credit_overrides(&mut self, overrides: &CreditOverrides) -> Result<(), String> {
@@ -251,6 +289,29 @@ fn mark_shared_failure(pending: &mut AcixPending, error: &str) {
     }
 }
 
+pub async fn unpublish_acix(
+    db: &JobDb,
+    job_id: u64,
+    scope: AcixResetScope,
+) -> Result<Value, String> {
+    let row = db
+        .get_job(job_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "no such job".to_string())?;
+    let pending_json = row.acix_pending.as_deref()
+        .ok_or_else(|| "no AnimeciX publish state for this job".to_string())?;
+    let mut pending: AcixPending = serde_json::from_str(pending_json).map_err(|e| e.to_string())?;
+    pending.upgrade_legacy_state();
+    pending.reset_publish_state(scope);
+    persist_pending(db, job_id, &mut pending).await?;
+    Ok(serde_json::json!({
+        "status": pending.status,
+        "scope": scope.as_str(),
+        "remote_deleted": false,
+    }))
+}
+
 pub async fn confirm_acix(db: &JobDb, job_id: u64) -> Result<Value, String> {
     confirm_acix_with_overrides(db, job_id, CreditOverrides::default()).await
 }
@@ -375,7 +436,7 @@ pub async fn confirm_acix_with_overrides(
 
 #[cfg(test)]
 mod tests {
-    use super::{public_uploaded_links, AcixPending, CreditOverrides, PublishState};
+    use super::{public_uploaded_links, AcixPending, AcixResetScope, CreditOverrides, PublishState};
     use crate::pnworker::core::{AcixCredits, AcixPublish};
 
     fn acix() -> AcixPublish {
@@ -479,6 +540,28 @@ mod tests {
         ).unwrap();
         pending.apply_credit_overrides(&overrides).unwrap();
         assert_eq!(pending.acix.extra, "New Translator & Editor & Typesetter");
+    }
+
+    #[test]
+    fn reset_scope_only_reopens_selected_publish_half() {
+        let mut pending = AcixPending::new(acix(), "https://drive.example/video".to_string());
+        pending.multishare_status = Some(PublishState::Published);
+        pending.multiple_status = Some(PublishState::Published);
+        pending.multishare_error = Some("old multishare error".to_string());
+        pending.multiple_error = Some("old multiple error".to_string());
+
+        pending.reset_publish_state(AcixResetScope::Multiple);
+        assert_eq!(pending.multishare_status, Some(PublishState::Published));
+        assert_eq!(pending.multiple_status, Some(PublishState::Pending));
+        assert!(pending.multishare_error.is_some());
+        assert!(pending.multiple_error.is_none());
+        assert_eq!(pending.status, "partial");
+
+        pending.reset_publish_state(AcixResetScope::Both);
+        assert_eq!(pending.multishare_status, Some(PublishState::Pending));
+        assert_eq!(pending.multiple_status, Some(PublishState::Pending));
+        assert!(pending.multishare_error.is_none());
+        assert_eq!(pending.status, "pending");
     }
 
     #[test]

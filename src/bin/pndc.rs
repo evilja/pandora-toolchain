@@ -503,6 +503,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("rmworker", 4),
     ("lsauth", 3),
     ("acixconfirm", 4),
+    ("acixunpublish", 4),
     ("akiraconfirm", 4),
     ("acixtemplate", 4),
     ("touchintro", 4),
@@ -897,6 +898,13 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Publish a finished encode to AnimeciX.",
             usage: "/acixconfirm job_id:<id> [tl] [tlc] [ts] [qc] [extra]",
             details: "Publishes Drive through multishare and all completed host links through multiple. Role overrides keep omitted credits and use `-` to clear; `extra` replaces the full field and cannot be combined with role fields. Default credits are joined with ` & `. Retries skip whichever publish half already succeeded.",
+        },
+        HelpCommand {
+            section: "publish",
+            name: "acixunpublish",
+            summary: "Reset local AnimeciX publication state.",
+            usage: "/acixunpublish job_id:<id> scope:<multiple|multishare|both>",
+            details: "Reopens the selected local publish half so `/acixconfirm` can send it again. It preserves credits and uploaded links and does not delete any existing AnimeciX videos, so republishing may create duplicates.",
         },
         HelpCommand {
             section: "publish",
@@ -1349,7 +1357,7 @@ mod tests {
         for command in ["configure", "edit", "touchwatermark", "readmebase", "font", "cfont", "acixtemplate"] {
             assert!(requires_server_admin(command), "{} should require Server Administrator", command);
         }
-        for command in ["touchapi", "touchtranslation", "touchintro", "acixconfirm"] {
+        for command in ["touchapi", "touchtranslation", "touchintro", "acixconfirm", "acixunpublish"] {
             assert!(!requires_server_admin(command), "{} should remain rank-only", command);
         }
     }
@@ -1996,6 +2004,9 @@ impl EventHandler for Handler {
                 }
                 "acixconfirm" => {
                     handle_acixconfirm(&ctx, &command).await;
+                }
+                "acixunpublish" => {
+                    handle_acixunpublish(&ctx, &command).await;
                 }
                 "akiraconfirm" => {
                     handle_akiraconfirm(&ctx, &command).await;
@@ -2856,6 +2867,19 @@ impl EventHandler for Handler {
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "qc", "Quality checker override; omit to keep, `-` to clear")
+                ),
+            CreateCommand::new("acixunpublish")
+                .description("Reset local AnimeciX publish state; does not delete remote videos")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "job_id", "The job id whose local publish state should be reset")
+                        .required(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "scope", "Which local AnimeciX publish state to reset")
+                        .required(true)
+                        .add_string_choice("Multiple", "multiple")
+                        .add_string_choice("Multishare", "multishare")
+                        .add_string_choice("Both", "both")
                 ),
             CreateCommand::new("akiraconfirm")
                 .description("[BETA-TESTING] Create/update an Akira episode from uploaded job links")
