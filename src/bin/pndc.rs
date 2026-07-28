@@ -1,6 +1,6 @@
 use serenity::{
     Client,
-    all::{ActivityData, ChannelType, CommandOptionType, ComponentInteraction, ComponentInteractionDataKind, Context, CreateEmbed, CreateMessage, EditInteractionResponse, EditMessage, GatewayIntents, Interaction, Message, OnlineStatus, Ready},
+    all::{ActivityData, ChannelType, CommandOptionType, ComponentInteraction, ComponentInteractionDataKind, Context, CreateEmbed, CreateMessage, EditInteractionResponse, EditMessage, GatewayIntents, Interaction, Message, OnlineStatus, Permissions, Ready},
     builder::{CreateActionRow, CreateCommand, CreateCommandOption, CreateInteractionResponse, CreateInteractionResponseMessage, CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, EditChannel},
     prelude::*,
 };
@@ -598,6 +598,27 @@ fn is_authorized(part: &str, id: u64) -> bool {
     has_level_at_least(id, min_rank)
 }
 
+const SERVER_ADMIN_COMMANDS: &[&str] = &[
+    "configure",
+    "edit",
+    "touchwatermark",
+    "readmebase",
+    "font",
+    "cfont",
+    "acixtemplate",
+];
+
+fn requires_server_admin(part: &str) -> bool {
+    SERVER_ADMIN_COMMANDS.contains(&part)
+}
+
+fn has_server_admin_access(command: &serenity::all::CommandInteraction) -> bool {
+    has_level_at_least(command.user.id.get(), 4)
+        || command.member.as_ref()
+            .and_then(|member| member.permissions)
+            .is_some_and(|permissions| permissions.contains(Permissions::ADMINISTRATOR))
+}
+
 struct HelpCommand {
     section: &'static str,
     name: &'static str,
@@ -887,9 +908,9 @@ fn help_catalog() -> &'static [HelpCommand] {
         HelpCommand {
             section: "publish",
             name: "acixtemplate",
-            summary: "Set this channel's AnimeciX fansub id.",
-            usage: "/acixtemplate template:<id>",
-            details: "Stores the AnimeciX fansub template id (e.g. AkiraSubs=50, SomeSubs=218) on this channel so smartcode publishes are attributed correctly.",
+            summary: "Set this server's AnimeciX fansub template.",
+            usage: "/acixtemplate template:<search>",
+            details: "Searches AnimeciX's live fansub directory and stores the selected template for every smartcode publish in this server.",
         },
         HelpCommand {
             section: "fonts",
@@ -1322,6 +1343,16 @@ mod tests {
         assert_eq!(parse_help_component_id("pnhelp:42:0"), None);
         assert_eq!(parse_help_component_id("pnhelp:cmd:42:encode:0:extra"), None);
     }
+
+    #[test]
+    fn server_admin_gate_covers_only_server_scoped_configuration() {
+        for command in ["configure", "edit", "touchwatermark", "readmebase", "font", "cfont", "acixtemplate"] {
+            assert!(requires_server_admin(command), "{} should require Server Administrator", command);
+        }
+        for command in ["touchapi", "touchtranslation", "touchintro", "acixconfirm"] {
+            assert!(!requires_server_admin(command), "{} should remain rank-only", command);
+        }
+    }
 }
 
 fn server_wrap_style(server_id: u64) -> String {
@@ -1383,8 +1414,6 @@ struct ChannelMeta {
     ts: String,
     #[serde(default = "default_credit")]
     qc: String,
-    #[serde(default)]
-    acix_template: Option<i64>,
 }
 
 fn default_season() -> u16 { 1 }
@@ -1491,9 +1520,6 @@ fn meta_to_toml(m: &ChannelMeta) -> String {
             }
             if let Some(c) = m.episode_count_at_git {
                 out.push_str(&format!("episode_count_at_git = {}\n", c));
-            }
-            if let Some(t) = m.acix_template {
-                out.push_str(&format!("acix_template = {}\n", t));
             }
             out
         }
@@ -1816,6 +1842,15 @@ impl EventHandler for Handler {
                 )).await.ok();
                 return;
             }
+            if requires_server_admin(command.data.name.as_str()) && !has_server_admin_access(&command) {
+                println!("[gate] BLOCKED_NON_ADMIN user={} cmd={}", command.user.id.get(), command.data.name.as_str());
+                command.create_response(&ctx, CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content("This server-scoped command requires the Discord Server Administrator permission.")
+                        .ephemeral(true)
+                )).await.ok();
+                return;
+            }
             println!("[gate] ALLOWED user={} cmd={}", command.user.id.get(), command.data.name.as_str());
             match command.data.name.as_str() {
                 "help" => {
@@ -2094,9 +2129,22 @@ impl EventHandler for Handler {
                 _ => {}
             }
         } else if let Interaction::Autocomplete(autocomplete) = interaction {
-            match autocomplete.data.name.as_str() {
+            let command_name = autocomplete.data.name.as_str();
+            let allowed = is_authorized(command_name, autocomplete.user.id.get())
+                && (!requires_server_admin(command_name) || has_server_admin_access(&autocomplete));
+            if !allowed {
+                autocomplete.create_response(
+                    &ctx,
+                    CreateInteractionResponse::Autocomplete(
+                        serenity::builder::CreateAutocompleteResponse::new()
+                    ),
+                ).await.ok();
+                return;
+            }
+            match command_name {
                 "cfont" => handle_cfont_autocomplete(&ctx, &autocomplete).await,
                 "edit" => handle_edit_autocomplete(&ctx, &autocomplete).await,
+                "acixtemplate" => handle_acixtemplate_autocomplete(&ctx, &autocomplete).await,
                 _ => {}
             }
         } else if let Interaction::Component(component) = interaction {
@@ -2816,10 +2864,11 @@ impl EventHandler for Handler {
                     CreateCommandOption::new(CommandOptionType::String, "folder", "Akira index folder; defaults to slug")
                 ),
             CreateCommand::new("acixtemplate")
-                .description("[BETA-TESTING] Set channel AnimeciX fansub template id")
+                .description("Set this server's AnimeciX fansub template")
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::Integer, "template", "Fansub id (e.g. AkiraSubs=50, SomeSubs=218)")
+                    CreateCommandOption::new(CommandOptionType::String, "template", "Type a fansub name to search AnimeciX")
                         .required(true)
+                        .set_autocomplete(true)
                 ),
             CreateCommand::new("font")
                 .description("Download a font zip and install it for this server")

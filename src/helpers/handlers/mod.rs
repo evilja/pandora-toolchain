@@ -61,7 +61,7 @@ pub use self::addapi::handle_addapi;
 pub use self::gentoken::handle_gentoken;
 pub use self::acixconfirm::handle_acixconfirm;
 pub use self::akiraconfirm::handle_akiraconfirm;
-pub use self::acixtemplate::handle_acixtemplate;
+pub use self::acixtemplate::{handle_acixtemplate, handle_acixtemplate_autocomplete};
 pub use self::font::{handle_font, install_persisted_pandora_fonts};
 pub use self::fontcheck::handle_fontcheck;
 pub use self::readmebase::handle_readmebase;
@@ -83,6 +83,41 @@ use pandora_toolchain::lib::env::standard::{
     CLIENT_ID, CLIENT_SECRET, ENV_PATH, ENV_SEP, PARENTID, REFRESH_TOKEN,
 };
 use pandora_toolchain::lib::http::curl::core::{Host, Req, RpbData};
+
+const SERVER_ACIX_TEMPLATE_LINE: usize = 13;
+
+fn read_server_acix_template(server_id: u64) -> Option<i64> {
+    std::fs::read_to_string(format!("DB/config/{}/meta.pandora", server_id))
+        .ok()?
+        .lines()
+        .nth(SERVER_ACIX_TEMPLATE_LINE)?
+        .trim()
+        .parse::<i64>()
+        .ok()
+        .filter(|template| *template > 0)
+}
+
+fn server_meta_with_acix_template(text: &str, template: i64) -> String {
+    let mut lines = text.lines().map(str::to_string).collect::<Vec<_>>();
+    while lines.len() <= SERVER_ACIX_TEMPLATE_LINE {
+        lines.push(String::new());
+    }
+    lines[SERVER_ACIX_TEMPLATE_LINE] = template.to_string();
+    format!("{}\n", lines.join("\n"))
+}
+
+async fn write_server_acix_template(server_id: u64, template: i64) -> Result<(), String> {
+    let path = PathBuf::from("DB")
+        .join("config")
+        .join(server_id.to_string())
+        .join("meta.pandora");
+    let text = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|_| "this server has no config yet. Run /configure first.".to_string())?;
+    tokio::fs::write(path, server_meta_with_acix_template(&text, template))
+        .await
+        .map_err(|e| e.to_string())
+}
 
 struct SmartMergeResult {
     link: String,
@@ -620,7 +655,6 @@ async fn run_attach_or_init(
         tlc: tlc.clone(),
         ts: ts.clone(),
         qc: qc.clone(),
-        acix_template: existing.acix_template,
     };
     if let Err(e) = write_channel_meta(server_id, channel_id, &new_meta).await {
         let _ = response_msg.edit(ctx, EditMessage::new().content(format!("Failed to save channel meta: {}", e))).await;

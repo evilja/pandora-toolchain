@@ -2,7 +2,7 @@ use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, COOKIE, ORIGIN, REFER
 use reqwest::redirect::Policy;
 use reqwest::Client;
 use serde_json::Value;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
@@ -14,11 +14,10 @@ const BOOTSTRAP_PATH: &str = "/secure/translators";
 const LOGIN_PATH: &str = "/secure/auth/login";
 const SESSION_PATH: &str = "DB/config/global/environment/animecix.session";
 const SESSION_FALLBACK_TTL_SECS: u64 = 30 * 24 * 60 * 60;
+const FANSUB_CACHE_TTL_SECS: u64 = 5 * 60;
 
 static SESSION_ACCESS: Mutex<()> = Mutex::const_new(());
-
-pub const FANSUB_AKIRASUBS: i64 = 50; //deconst
-pub const FANSUB_SOMESUBS: i64 = 218;
+static FANSUB_CACHE: Mutex<Option<(Instant, Vec<FansubTemplate>)>> = Mutex::const_new(None);
 
 #[derive(Clone, Copy)]
 pub enum MediaType {
@@ -52,6 +51,23 @@ pub struct TmdbResolve {
     pub status: u16,
     pub acix_id: Option<i64>,
     pub body: Value,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FansubTemplate {
+    pub id: i64,
+    pub name: String,
+    pub translator: String,
+}
+
+impl FansubTemplate {
+    pub fn display_name(&self) -> String {
+        if self.translator.is_empty() || self.translator.eq_ignore_ascii_case(&self.name) {
+            self.name.clone()
+        } else {
+            format!("{} — {}", self.name, self.translator)
+        }
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -108,6 +124,42 @@ pub struct AnimeCix {
     client: Client,
     credentials: Option<Credentials>,
     session: Mutex<Option<Session>>,
+}
+
+// The translator directory is public. Cache it briefly because Discord sends an
+// autocomplete request after nearly every keystroke.
+pub async fn fetch_fansub_templates() -> Result<Vec<FansubTemplate>, String> {
+    let mut cache = FANSUB_CACHE.lock().await;
+    if let Some((fetched_at, templates)) = cache.as_ref() {
+        if fetched_at.elapsed() < Duration::from_secs(FANSUB_CACHE_TTL_SECS) {
+            return Ok(templates.clone());
+        }
+    }
+
+    let client = Client::builder()
+        .user_agent("pandora-toolchain")
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let url = format!("{}{}", ACIX_BASE, BOOTSTRAP_PATH);
+    let resp = client.get(&url)
+        .header(ACCEPT, "application/json, text/plain, */*")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let text = resp.text().await.map_err(|e| e.to_string())?;
+    let body: Value = serde_json::from_str(&text)
+        .map_err(|e| format!("AnimeciX fansub directory returned invalid JSON: {}", e))?;
+    if !status.is_success() {
+        return Err(format!("AnimeciX fansub directory -> {} {}", status, body));
+    }
+    let templates = parse_fansub_templates(&body);
+    if templates.is_empty() {
+        return Err("AnimeciX fansub directory returned no templates".to_string());
+    }
+    *cache = Some((Instant::now(), templates.clone()));
+    Ok(templates)
 }
 
 impl AnimeCix {
@@ -490,6 +542,39 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
+fn parse_fansub_templates(v: &Value) -> Vec<FansubTemplate> {
+    let mut templates = result_array(v)
+        .into_iter()
+        .filter_map(|item| {
+            let id = item.get("id").and_then(|value| value.as_i64())?;
+            if id <= 0 {
+                return None;
+            }
+            let name = item.get("name").and_then(|value| value.as_str())
+                .or_else(|| item.get("translator").and_then(|value| value.as_str()))
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if name.is_empty() {
+                return None;
+            }
+            let translator = item.get("translator").and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            Some(FansubTemplate { id, name, translator })
+        })
+        .collect::<Vec<_>>();
+    templates.sort_by_key(|template| template.id);
+    templates.dedup_by_key(|template| template.id);
+    templates.sort_by(|left, right| {
+        left.display_name().to_lowercase()
+            .cmp(&right.display_name().to_lowercase())
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    templates
+}
+
 fn result_array(v: &Value) -> Vec<Value> {
     if let Some(a) = v.as_array() {
         return a.clone();
@@ -533,7 +618,31 @@ fn extract_id(v: &Value) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{percent_decode, session_reusable, Session};
+    use super::{parse_fansub_templates, percent_decode, session_reusable, FansubTemplate, Session};
+
+    #[test]
+    fn parses_and_sorts_fansub_templates() {
+        let body = serde_json::json!([
+            { "id": 218, "name": "SomeSub", "translator": "SomeSub" },
+            { "id": 50, "name": "Akira Fansub", "translator": "AkiraSubs" },
+            { "id": 0, "name": "Invalid" }
+        ]);
+        assert_eq!(
+            parse_fansub_templates(&body),
+            vec![
+                FansubTemplate {
+                    id: 50,
+                    name: "Akira Fansub".to_string(),
+                    translator: "AkiraSubs".to_string(),
+                },
+                FansubTemplate {
+                    id: 218,
+                    name: "SomeSub".to_string(),
+                    translator: "SomeSub".to_string(),
+                },
+            ]
+        );
+    }
 
     #[test]
     fn decodes_percent_encoded_xsrf_tokens() {

@@ -102,6 +102,7 @@ pub async fn handle_edit(
     let existing_gdrive_anon_folder_id = existing_lines.get(10).copied().unwrap_or("");
     let existing_preset = existing_lines.get(11).copied().unwrap_or("standard");
     let existing_concat = existing_lines.get(12).copied().unwrap_or("");
+    let existing_acix_template = existing_lines.get(SERVER_ACIX_TEMPLATE_LINE).copied().unwrap_or("");
 
     let language = match option_str(command, "language") {
         Some(l) if matches!(l, "EN" | "TR" | "JP") => l.to_string(),
@@ -175,7 +176,7 @@ pub async fn handle_edit(
         return;
     }
 
-    let body = format!("{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n", language, forgejo, channel, new_api_key, gdrive_client_id, gdrive_client_secret, gdrive_refresh_token, gdrive_folder_id, wrap_style, local_gdrive, gdrive_anon_folder_id, preset, concat);
+    let body = format!("{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n", language, forgejo, channel, new_api_key, gdrive_client_id, gdrive_client_secret, gdrive_refresh_token, gdrive_folder_id, wrap_style, local_gdrive, gdrive_anon_folder_id, preset, concat, existing_acix_template);
     let path = dir.join("meta.pandora");
     if let Err(e) = tokio::fs::write(&path, body).await {
         command.create_response(ctx, CreateInteractionResponse::Message(

@@ -192,7 +192,7 @@ async fn build_acix_publish(
     let server_id = command.guild_id?.get();
     let channel_id = command.channel_id.get();
     let meta = read_channel_meta(server_id, channel_id);
-    let template = meta.acix_template?;
+    let template = read_server_acix_template(server_id)?;
     let name = meta.name.clone()?;
     let mal_id = meta.mal_id? as i64;
     let episode = positive_u32_option(ctx, command, "episode").await? as i64;

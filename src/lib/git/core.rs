@@ -206,7 +206,6 @@ async fn attach_or_init(
         tlc: credits.tlc.clone(),
         ts: credits.ts.clone(),
         qc: credits.qc.clone(),
-        acix_template: existing.acix_template,
     };
     write_channel_meta(server_id, channel_id, &new_meta).await
         .map_err(|e| format!("Failed to save channel meta: {}", e))?;
@@ -578,8 +577,6 @@ struct ChannelMeta {
     ts: String,
     #[serde(default = "default_credit")]
     qc: String,
-    #[serde(default)]
-    acix_template: Option<i64>,
 }
 
 fn default_season() -> u16 { 1 }
@@ -625,9 +622,6 @@ fn meta_to_toml(m: &ChannelMeta) -> String {
             }
             if let Some(c) = m.episode_count_at_git {
                 out.push_str(&format!("episode_count_at_git = {}\n", c));
-            }
-            if let Some(t) = m.acix_template {
-                out.push_str(&format!("acix_template = {}\n", t));
             }
             out
         }
