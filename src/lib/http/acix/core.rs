@@ -375,22 +375,18 @@ impl AnimeCix {
     }
 
     pub async fn multishare_mixed(&self, up: &MixedUpload) -> Result<Value, String> {
-        let body = serde_json::json!({
-            "extra": up.extra,
-            "url": up.url,
-            "quality": up.quality,
-            "type": "multishare",
-            "template": up.template,
-            "category": up.category,
-            "title_id": up.title_id,
-            "season_num": up.season_num,
-            "episode_num": up.episode_num,
-            "language": up.language,
-            "order": up.order,
-            "machine_translate": up.machine_translate,
-            "hardcode": up.hardcode,
-        });
+        let body = mixed_upload_payload(up, "multishare", &up.url);
         let url = format!("{}/secure/multishare/mixed", ACIX_BASE);
+        let (_status, val) = self.post_json(&url, &body).await?;
+        Ok(val)
+    }
+
+    pub async fn multiple(&self, up: &MixedUpload, links: &[String]) -> Result<Value, String> {
+        if links.is_empty() {
+            return Err("AnimeciX multiple upload requires at least one URL".to_string());
+        }
+        let body = mixed_upload_payload(up, "multiple", &links.join("\n"));
+        let url = format!("{}/secure/videos/multiple", ACIX_BASE);
         let (_status, val) = self.post_json(&url, &body).await?;
         Ok(val)
     }
@@ -542,6 +538,24 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
+fn mixed_upload_payload(up: &MixedUpload, upload_type: &str, url: &str) -> Value {
+    serde_json::json!({
+        "extra": up.extra,
+        "url": url,
+        "quality": up.quality,
+        "type": upload_type,
+        "template": up.template,
+        "category": up.category,
+        "title_id": up.title_id,
+        "season_num": up.season_num,
+        "episode_num": up.episode_num,
+        "language": up.language,
+        "order": up.order,
+        "machine_translate": up.machine_translate,
+        "hardcode": up.hardcode,
+    })
+}
+
 fn parse_fansub_templates(v: &Value) -> Vec<FansubTemplate> {
     let mut templates = result_array(v)
         .into_iter()
@@ -618,7 +632,28 @@ fn extract_id(v: &Value) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_fansub_templates, percent_decode, session_reusable, FansubTemplate, Session};
+    use super::{mixed_upload_payload, parse_fansub_templates, percent_decode, session_reusable, FansubTemplate, MixedUpload, Session};
+
+    #[test]
+    fn multiple_payload_uses_newline_separated_urls() {
+        let up = MixedUpload::new(
+            "Credits".to_string(),
+            "https://drive.example/video".to_string(),
+            50,
+            123,
+            Some(1),
+            Some(2),
+        );
+        let links = [
+            "https://drive.example/video".to_string(),
+            "https://voe.example/video".to_string(),
+        ];
+        let body = mixed_upload_payload(&up, "multiple", &links.join("\n"));
+        assert_eq!(body["type"], "multiple");
+        assert_eq!(body["url"], "https://drive.example/video\nhttps://voe.example/video");
+        assert_eq!(body["template"], 50);
+        assert_eq!(body["title_id"], 123);
+    }
 
     #[test]
     fn parses_and_sorts_fansub_templates() {

@@ -1378,11 +1378,7 @@ async fn do_worker_message_things(
                 if let Some(acix) = i.acix.clone() {
                     if let Some(drive) = drive_link_from_payload(&payload) {
                         if drive.starts_with("http") {
-                            let pending = crate::pnworker::acix::AcixPending {
-                                status: "pending".to_string(),
-                                acix,
-                                drive,
-                            };
+                            let pending = crate::pnworker::acix::AcixPending::new(acix, drive);
                             if let Ok(j) = serde_json::to_string(&pending) {
                                 db.set_acix_pending(i.job_id, &j).await.ok();
                             }
@@ -2213,6 +2209,26 @@ impl HalfJob {
     }
 }
 
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct AcixCredits {
+    pub tl: Option<String>,
+    pub tlc: Option<String>,
+    pub ts: Option<String>,
+    pub qc: Option<String>,
+}
+
+impl AcixCredits {
+    pub fn extra(&self) -> String {
+        [&self.tl, &self.tlc, &self.ts, &self.qc]
+            .into_iter()
+            .filter_map(|credit| credit.as_deref())
+            .map(str::trim)
+            .filter(|credit| !credit.is_empty() && *credit != "---")
+            .collect::<Vec<_>>()
+            .join(" & ")
+    }
+}
+
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct AcixPublish {
     pub name: String,
@@ -2221,6 +2237,8 @@ pub struct AcixPublish {
     pub episode_num: Option<i64>,
     pub template: i64,
     pub extra: String,
+    #[serde(default)]
+    pub credits: Option<AcixCredits>,
 }
 
 #[derive(Clone, Debug)]

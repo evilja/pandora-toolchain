@@ -895,8 +895,8 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "publish",
             name: "acixconfirm",
             summary: "Publish a finished encode to AnimeciX.",
-            usage: "/acixconfirm job_id:<id>",
-            details: "Confirms the pending AnimeciX publish for an uploaded job and pushes it to AnimeciX (the multishare upload).",
+            usage: "/acixconfirm job_id:<id> [tl] [tlc] [ts] [qc] [extra]",
+            details: "Publishes Drive through multishare and all completed host links through multiple. Role overrides keep omitted credits and use `-` to clear; `extra` replaces the full field and cannot be combined with role fields. Default credits are joined with ` & `. Retries skip whichever publish half already succeeded.",
         },
         HelpCommand {
             section: "publish",
@@ -2837,10 +2837,25 @@ impl EventHandler for Handler {
                         .max_int_value(4)
                 ),
             CreateCommand::new("acixconfirm")
-                .description("[BETA-TESTING] Confirm and publish an encode to AnimeciX")
+                .description("Confirm and publish an encode to AnimeciX")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "job_id", "The job id (from the upload message)")
                         .required(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "extra", "Replace the full Extra field; `-` clears it. Cannot combine with role overrides.")
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "tl", "Translator override; omit to keep, `-` to clear")
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "tlc", "Translation checker override; omit to keep, `-` to clear")
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "ts", "Typesetter override; omit to keep, `-` to clear")
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "qc", "Quality checker override; omit to keep, `-` to clear")
                 ),
             CreateCommand::new("akiraconfirm")
                 .description("[BETA-TESTING] Create/update an Akira episode from uploaded job links")

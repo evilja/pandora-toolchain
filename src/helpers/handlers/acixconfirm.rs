@@ -12,6 +12,20 @@ pub async fn handle_acixconfirm(
         }
     };
 
+    let credit_overrides = match pandora_toolchain::pnworker::acix::CreditOverrides::from_values(
+        option_str(command, "extra").map(str::to_string),
+        option_str(command, "tl").map(str::to_string),
+        option_str(command, "tlc").map(str::to_string),
+        option_str(command, "ts").map(str::to_string),
+        option_str(command, "qc").map(str::to_string),
+    ) {
+        Ok(overrides) => overrides,
+        Err(e) => {
+            command_error(ctx, command, format!("Error: {}", e)).await;
+            return;
+        }
+    };
+
     if command
         .create_response(
             ctx,
@@ -33,12 +47,12 @@ pub async fn handle_acixconfirm(
         }
     };
 
-    match pandora_toolchain::pnworker::acix::confirm_acix(&db, job_id).await {
+    match pandora_toolchain::pnworker::acix::confirm_acix_with_overrides(&db, job_id, credit_overrides).await {
         Ok(_) => {
             acixconfirm_response(
                 ctx,
                 command,
-                format!("Published job `{}` to AnimeciX.", job_id),
+                format!("Published job `{}` to AnimeciX multishare and multiple.", job_id),
             )
             .await;
         }

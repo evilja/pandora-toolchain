@@ -201,21 +201,28 @@ async fn build_acix_publish(
     } else {
         (Some(meta.season as i64), Some(episode))
     };
+    let credits = pandora_toolchain::pnworker::core::AcixCredits {
+        tl: acix_credit(&meta.tl),
+        tlc: acix_credit(&meta.tlc),
+        ts: acix_credit(&meta.ts),
+        qc: acix_credit(&meta.qc),
+    };
     Some(pandora_toolchain::pnworker::core::AcixPublish {
         name,
         mal_id,
         season_num,
         episode_num,
         template,
-        extra: build_extra(&meta),
+        extra: credits.extra(),
+        credits: Some(credits),
     })
 }
 
-fn build_extra(meta: &ChannelMeta) -> String {
-    let mut parts = Vec::new();
-    if meta.tl != "---" { parts.push(format!("Çeviri: {}", meta.tl)); }
-    if meta.tlc != "---" { parts.push(format!("Redaktör: {}", meta.tlc)); }
-    if meta.ts != "---" { parts.push(format!("Tipset: {}", meta.ts)); }
-    if meta.qc != "---" { parts.push(format!("Kalite Kontrol: {}", meta.qc)); }
-    parts.join(" ")
+fn acix_credit(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() || value == "---" {
+        None
+    } else {
+        Some(value.to_string())
+    }
 }
