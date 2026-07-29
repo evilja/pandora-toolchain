@@ -1008,7 +1008,7 @@ struct AcixSearchQuery {
 }
 
 async fn acix_search(Json(q): Json<AcixSearchQuery>) -> Response {
-    let client = match AnimeCix::from_env() {
+    let client = match AnimeCix::from_token_env() {
         Ok(c) => c,
         Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, e).into_response(),
     };
@@ -1041,7 +1041,7 @@ async fn acix_tmdb(Json(req): Json<AcixTmdbReq>) -> Response {
 }
 
 async fn acix_translators() -> Response {
-    let client = match AnimeCix::from_env() {
+    let client = match AnimeCix::from_token_env() {
         Ok(c) => c,
         Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, e).into_response(),
     };

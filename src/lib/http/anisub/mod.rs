@@ -1,3 +1,1 @@
-pub mod core;
-
-pub use core::{AniSub, AnimeMatch, UploadResult, DEFAULT_FPS};
+pub use capella::anisub::{AniSub, AniSubBuilder, AnimeMatch, DEFAULT_FPS, Error, UploadResult};

@@ -1,4 +1,7 @@
 use super::*;
+use pandora_toolchain::lib::env::standard::{
+    AKIRA_API, AKIRA_TOKEN, ANIZM_EMAIL, ANIZM_PASSWORD, OPENANIME_EMAIL, OPENANIME_PASSWORD,
+};
 
 pub async fn handle_providers(ctx: &Context, command: &serenity::all::CommandInteraction) {
     let env = get_pandora_env();
@@ -43,8 +46,20 @@ pub async fn handle_providers(ctx: &Context, command: &serenity::all::CommandInt
     ].join("\n");
 
     let distribution_lines = vec![
-        attached_line("AnimeciX", env_set(&env, ANIMECIX)),
-        attached_line("AniSub", env_set(&env, ANISUB)),
+        attached_line(
+            "OpenAnime (via Capella)",
+            env_set(&env, OPENANIME_EMAIL) && env_set(&env, OPENANIME_PASSWORD),
+        ),
+        attached_line(
+            "Anizm (via Capella)",
+            env_set(&env, ANIZM_EMAIL) && env_set(&env, ANIZM_PASSWORD),
+        ),
+        attached_line(
+            "Akira (via Capella)",
+            env_set(&env, AKIRA_API) && env_set(&env, AKIRA_TOKEN),
+        ),
+        attached_line("AnimeciX (via Capella)", env_set(&env, ANIMECIX)),
+        attached_line("AniSub (via Capella)", env_set(&env, ANISUB)),
     ].join("\n");
 
     let persistence_lines = vec![
