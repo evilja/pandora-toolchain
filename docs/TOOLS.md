@@ -2,6 +2,47 @@
 
 CLI tool flags and ASS parsing details.
 
+## `pntrace`
+
+The image tracer has a Pandora-side development server that uses libkagami but does not start or connect to PNdc:
+
+```text
+cargo run --bin pntrace
+```
+
+The same lab is available from Pandora at `/trace`; it shares the browser's `pandora_token` and calls the bearer-protected `/api/v1/trace` and `/api/v1/trace/ass` endpoints. The desktop includes it as a Trace app. Standalone `pntrace` remains intentionally loopback-oriented and unauthenticated for development.
+
+It binds `127.0.0.1:8788` by default (`--host` / `--port` override it), serves the drag-and-drop trace lab at `/`, accepts raw encoded image bodies at `POST /api/trace`, and converts a trace model at `POST /api/ass`. The ASS route accepts `{ trace, filename?, duration_centiseconds?, seam_overlap? }` (five seconds and a 0.5px overlap by default) and always returns `application/zip` with exactly one sanitized `.ass` entry; there is no raw-ASS page endpoint. Query fields accept `preset` (`logo_ui`, `illustration`, `photo`, or `gradient`) plus `TraceOptions` overrides: `color_count` (1–512), `preserve_gradients`, `color_smoothing`, `path_simplify`, `curve_fit`, `corner_threshold`, `min_area`, `alpha_threshold`, `max_dimension`, and SVG-only `svg_seam_overlap`. The trace response contains `{ trace, svg, elapsed_ms }`; the page previews both source and SVG, toggles palette layers, downloads SVG or versioned trace JSON, and offers `Get as ASS (.zip)` through the real libkagami adapter. The Gradient preset uses higher palette density, exact low-complexity histogram colors, source-space palette reconstruction, boundary-preserving curve fitting, and a restrained 0.25px SVG underlap for subtle ramps. SVG overlap is independently adjustable so cracks can be closed without unnecessarily swelling small artwork. The page's ASS seam-overlap control sends `0`–`4` pixels to the ZIP endpoint; `0.5` is the default. See `kagami-trace/README.md` for the portable model and limits.
+
+Libkagami's `libkagami::tracing::{parse_trace_json, trace_to_ass, trace_json_to_ass}` adapter turns this model into one ASS drawing event per color layer. It maps RGBA to ASS BGR + inverted alpha, emits fitted cubic curves as ASS `b` commands, retains contour winding for holes, and uses `TraceAssOptions` for timing/layer/style fields. Libkagami compacts consecutive line and cubic coordinates under ASS's persistent `l` / `b` modes instead of repeating a mode before every segment. `seam_overlap` defaults to `0.5`, drawing a same-color ASS outline under each fill so independently antialiased regions cannot expose background gaps at shared edges; set it to `0.0` to disable the underlap:
+
+```rust,no_run
+use pandora_toolchain::{
+    kagami_trace::{TraceOptions, TracePreset, trace_image},
+    libkagami::{
+        complex::types::AssTime,
+        tracing::{TraceAssOptions, trace_to_ass},
+    },
+};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let image = std::fs::read("logo.png")?;
+    let trace = trace_image(
+        &image,
+        &TraceOptions::for_preset(TracePreset::LogoUi),
+    )?;
+    let ass = trace_to_ass(&trace, &TraceAssOptions {
+        end: AssTime::from_centiseconds(1_000),
+        ..TraceAssOptions::default()
+    })
+    .map_err(std::io::Error::other)?;
+    std::fs::write("logo.ass", ass.stringify())?;
+    Ok(())
+}
+```
+
+For JSON downloaded from the trace lab, call `trace_json_to_ass(&json, &options)` instead. Defaults produce source-sized PlayRes, one event per color, and a five-second `0:00:00.00`–`0:00:05.00` duration.
+
 ## `pncurl` flags
 
 - default: simple GET to `--opcode` path. Client built with `.timeout(Duration::from_secs(600))` — `Req::download` in `lib::http::curl/core.rs`.

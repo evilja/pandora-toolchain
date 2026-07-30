@@ -17,8 +17,8 @@ API bearer tokens live one-per-line in `DB/config/global/environment/api.pandora
 
 ## Auth
 
-- `Authorization: Bearer <token>` checked against the lines of `api.pandora` (blanks and `;` comments ignored) by an axum middleware layered on the `/api/v1` routes. The page routes (`GET /`, `/encode`, `/git`, `/favicon`, `/favicon.ico`) and `/health` are unauthenticated.
-- **Rate limit**: the same `auth` middleware rate-limits **write** requests only (any method that isn't `GET`/`HEAD`, so status polling is never throttled), keyed by an md5 of the token (`ApiRateLimiter` in `core.rs`). Default `30` requests per `60`s sliding window, configurable via `api_rate_limit` / `api_rate_window_secs`. On exceed it returns `429` with a `Retry-After` header (seconds until the window resets) and body `"rate limit exceeded"`. Both web consoles read `Retry-After` and render a friendly "rate limit hit — try again in Ns" notice on `429`.
+- `Authorization: Bearer <token>` checked against the lines of `api.pandora` (blanks and `;` comments ignored) by an axum middleware layered on the `/api/v1` routes. The page routes (`GET /`, `/encode`, `/git`, `/studio`, `/trace`, `/favicon`, `/favicon.ico`) and `/health` are unauthenticated; every operation they submit, including tracing and ASS export, is protected.
+- **Rate limit**: the same `auth` middleware rate-limits **write** requests only (any method that isn't `GET`/`HEAD`, so status polling is never throttled), keyed by an md5 of the token (`ApiRateLimiter` in `core.rs`). Default `30` requests per `60`s sliding window, configurable via `api_rate_limit` / `api_rate_window_secs`. On exceed it returns `429` with a `Retry-After` header (seconds until the window resets) and body `"rate limit exceeded"`. The web consoles read `Retry-After` and render a friendly "rate limit hit — try again in Ns" notice on `429`.
 - **Local tokens**: a token line in `api.pandora` may be `<token>|local|<server_id>` (mint with `/gentoken local`). `api_auth_for_token` parses it into `ApiAuth { local_server_id }`; `effective_server_id` makes a local token force its `server_id` onto job submits. The **git endpoints require a local token** — `require_local(&auth)` returns `403` for a plain token, since repo ops need a server to resolve the Forgejo org config and per-channel meta. API cancel also requires a local token and only allows cancelling non-terminal `Encode` jobs whose persisted DB `server_id` equals the token's `local_server_id`.
 
 ## Git routes
@@ -51,6 +51,10 @@ All Studio routes require a local token. The token supplies the guild and `api_a
 
 Audio files are limited to 50 MiB each. Because uploads are base64 inside JSON, the add-track route accepts request bodies up to 70 MiB to carry a 50 MiB file plus base64 expansion; the decoded file size is checked separately, while all other protected routes retain the 8 MiB request-body limit. The webpage streams the base video through a same-origin service worker that supplies bearer auth, decodes audio assets with Web Audio, and performs insert/override/duck preview mixing locally—seeking or editing does not create server jobs. Only Deliver calls the final render route. Explicit API preview/final jobs use `Frontend::Web`, the same worker pools, server preset rules, immutable render snapshots, progress DB, and job-status endpoints as their Discord equivalents.
 
+## Trace routes
+
+Any API token may use the tracing routes; a local token is not required. `POST /api/v1/trace` accepts an encoded image as its raw request body and the same `preset`, tracing-option, and `svg_seam_overlap` query fields as standalone `pntrace`, returning `{ trace, svg, elapsed_ms }`. `POST /api/v1/trace/ass` accepts `{ trace, filename?, duration_centiseconds?, seam_overlap? }` and returns a ZIP containing exactly one libkagami-generated ASS file. Both routes run through the standard bearer-auth and write-rate-limit middleware. The static lab lives at `GET /trace`, stores `pandora_token` with the other consoles, and sends it as a bearer token; standalone `pntrace` retains its unauthenticated loopback `/api/trace` and `/api/ass` routes.
+
 ## Routes
 
 - `GET /api/v1/jobs` (all non-archived; `?status=ongoing` filters to non-terminal — used by the console's job dropdowns)
@@ -80,6 +84,7 @@ All dependency-free, `include_str!`/`include_bytes!`-baked into `pndc`, same ori
 - `GET /encode` → encode console (`web/index.html`)
 - `GET /git` → git console (`web/git.html`)
 - `GET /studio` → browser-native nonlinear Studio editor (`web/studio.html`)
+- `GET /trace` → Kagami raster-to-vector lab (`kagami-trace/web/index.html`)
 - `GET /studio-sw.js` → the Studio editor's authenticated media-stream bridge
 - `GET /favicon` (+ `/favicon.ico`) → site icon
 
@@ -87,11 +92,11 @@ The consoles fetch relative `/api/v1` paths. Details in `web/README.md`.
 
 ## Desktop shell
 
-`web/desktop.html` (`GET /`): a small window manager over the consoles. A bottom **taskbar** has Encode/Git/Studio/**Jobs** launchers, a clock, an **API-token toggle button** (a popover whose password input writes the shared `localStorage` `pandora_token`), and the **☾/☀ theme toggle**. Each app opens as a draggable/**resizable** window whose body is an `<iframe>` to `/encode?embed=1` or `/git?embed=1`; windows have **traffic-light controls** (red = close, yellow = maximize, green = minimize), z-stacking on focus, and their open state + geometry persist in `localStorage` (`pandora_desktop_v1`). On mobile (≤760px) the WM is replaced by a launcher card linking to the standalone consoles. The desktop keeps its **own** copy of the `:root` theme vars for its chrome (a third place to retheme, alongside the two consoles).
+`web/desktop.html` (`GET /`): a small window manager over the consoles. A bottom **taskbar** has Encode/Git/Studio/Trace/**Jobs** launchers, a clock, an **API-token toggle button** (a popover whose password input writes the shared `localStorage` `pandora_token`), and the **☾/☀ theme toggle**. Each app opens as a draggable/**resizable** window whose body is an `<iframe>` to its `?embed=1` page; windows have **traffic-light controls** (red = close, yellow = maximize, green = minimize), z-stacking on focus, and their open state + geometry persist in `localStorage` (`pandora_desktop_v1`). On mobile (≤760px) the WM is replaced by a launcher card linking to the standalone consoles. The desktop keeps its **own** copy of the `:root` theme vars for its chrome (a third place to retheme, alongside the two consoles).
 
 ## Embed & job-only modes
 
-Consoles support:
+Consoles, including the Trace lab, support:
 
 - `?embed=1` adds `html.embed`, which drops the outer titlebar/border/shadow, fills the iframe (the command grid flex-grows so the footer pins to the bottom), and hides the footer token field — the desktop taskbar owns the token, and the consoles **live-sync** it via the `storage` event.
 - `?job=<id>` adds `html.jobonly` and renders only that job's live pipeline (no command UI), used by desktop job windows.

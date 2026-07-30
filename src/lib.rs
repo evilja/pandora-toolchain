@@ -3,6 +3,8 @@ pub mod lib;
 pub mod pnworker;
 pub mod libkagami;
 
+pub use kagami_trace;
+
 #[macro_export]
 macro_rules! pn_schema {
 

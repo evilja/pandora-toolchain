@@ -168,6 +168,16 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/acix/tmdb", post(acix_tmdb))
         .route("/acix/translators", get(acix_translators))
         .route("/acix/publish", post(acix_publish))
+        .route(
+            "/trace",
+            post(super::trace::run_trace)
+                .layer(DefaultBodyLimit::max(crate::kagami_trace::MAX_ENCODED_BYTES)),
+        )
+        .route(
+            "/trace/ass",
+            post(super::trace::export_ass)
+                .layer(DefaultBodyLimit::max(super::trace::ASS_REQUEST_LIMIT)),
+        )
         .layer(DefaultBodyLimit::max(API_REQUEST_LIMIT))
         .layer(middleware::from_fn_with_state(state.clone(), auth));
 
@@ -176,6 +186,7 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/encode", get(index))
         .route("/git", get(git_console))
         .route("/studio", get(studio_console))
+        .route("/trace", get(super::trace::index))
         .route("/studio-sw.js", get(studio_service_worker))
         .route("/favicon", get(favicon))
         .route("/favicon.ico", get(favicon))

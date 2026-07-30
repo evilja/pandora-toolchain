@@ -112,11 +112,52 @@ impl Drawing {
         }
     }
     pub fn stringify(&self) -> String {
-        self.commands.iter()
-            .map(|c| c.stringify())
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ")
+        let mut parts = Vec::new();
+        let mut index = 0usize;
+        while index < self.commands.len() {
+            match &self.commands[index] {
+                DrawingCommand::Line(_, _) => {
+                    let mut run = "l".to_string();
+                    while let Some(DrawingCommand::Line(x, y)) = self.commands.get(index) {
+                        run.push_str(&format!(" {} {}", format_drawing_num(*x), format_drawing_num(*y)));
+                        index += 1;
+                    }
+                    parts.push(run);
+                }
+                DrawingCommand::CubicBezier(_, _, _, _, _, _) => {
+                    let mut run = "b".to_string();
+                    while let Some(DrawingCommand::CubicBezier(x0, y0, x1, y1, x2, y2)) = self.commands.get(index) {
+                        run.push_str(&format!(
+                            " {} {} {} {} {} {}",
+                            format_drawing_num(*x0),
+                            format_drawing_num(*y0),
+                            format_drawing_num(*x1),
+                            format_drawing_num(*y1),
+                            format_drawing_num(*x2),
+                            format_drawing_num(*y2)
+                        ));
+                        index += 1;
+                    }
+                    parts.push(run);
+                }
+                DrawingCommand::ExtendBSpline(_, _) => {
+                    let mut run = "p".to_string();
+                    while let Some(DrawingCommand::ExtendBSpline(x, y)) = self.commands.get(index) {
+                        run.push_str(&format!(" {} {}", format_drawing_num(*x), format_drawing_num(*y)));
+                        index += 1;
+                    }
+                    parts.push(run);
+                }
+                command => {
+                    let value = command.stringify();
+                    if !value.is_empty() {
+                        parts.push(value);
+                    }
+                    index += 1;
+                }
+            }
+        }
+        parts.join(" ")
     }
 }
 
@@ -205,6 +246,14 @@ mod tests {
     }
 
     #[test]
+    fn test_stringify_compacts_persistent_line_mode() {
+        let drawing = Drawing::from_str("m 0 0 l 10 10 20 20 30 30").unwrap();
+
+        assert_eq!(drawing.stringify(), "m 0 0 l 10 10 20 20 30 30");
+        assert_eq!(Drawing::from_str(&drawing.stringify()).unwrap().commands, drawing.commands);
+    }
+
+    #[test]
     fn test_cubic_bezier_single() {
         let d = Drawing::from_str("m 0 0 b 1055 694 665 431 470 300").unwrap();
         assert!(matches!(
@@ -225,6 +274,14 @@ mod tests {
             d.commands[2],
             DrawingCommand::CubicBezier(558.0, 278.0, 869.0, 564.0, 824.0, 212.0)
         ));
+    }
+
+    #[test]
+    fn test_stringify_compacts_persistent_bezier_mode() {
+        let drawing = Drawing::from_str("m 0 0 b 10 0 20 10 30 10 40 10 50 20 60 20").unwrap();
+
+        assert_eq!(drawing.stringify(), "m 0 0 b 10 0 20 10 30 10 40 10 50 20 60 20");
+        assert_eq!(Drawing::from_str(&drawing.stringify()).unwrap().commands, drawing.commands);
     }
 
     #[test]

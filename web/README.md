@@ -1,6 +1,6 @@
 # Pandora web console
 
-Three self-contained pages (no build step, no dependencies) drive the pndc HTTP API:
+Four self-contained pages (no build step, no dependencies) drive the pndc HTTP API:
 
 - **`index.html`** — the encode console: submit encode/backup/probe/pancode/gitcode jobs,
   list/inspect jobs, and cancel them.
@@ -10,10 +10,11 @@ Three self-contained pages (no build step, no dependencies) drive the pndc HTTP 
   inspector, draggable audio clips, and multitrack timeline. It intentionally has its own
   professional editor design rather than inheriting the console theme. `studio-sw.js` bridges
   authenticated byte-range video requests; Web Audio performs preview mixing in the browser.
+- **`../kagami-trace/web/index.html`** — the Kagami raster-to-vector lab served at `/trace`, with bearer-protected tracing and zipped libkagami ASS export.
 
 Auth is the same bearer token as the API (mint one with `/gentoken`, stored in
-`DB/config/global/environment/api.pandora`), entered in the footer and saved in the browser
-(shared across both pages). The two pages cross-link in the titlebar.
+`DB/config/global/environment/api.pandora`), entered in the page token control and saved in the browser
+(shared across the consoles through `pandora_token`). The two pages cross-link in the titlebar.
 
 The theme is **Pandora (Re:Zero)** — silver-white / cobalt-blue / navy with violet accents — and
 the titlebar **☾/☀ button** toggles light/dark (saved under `pandora_theme`, shared by both
@@ -29,8 +30,9 @@ When `api_port` is set in `env.pandora`, the bot listens on that port and answer
 - `GET /`            → the encode console (`index.html`)
 - `GET /git`         → the git console (`git.html`)
 - `GET /studio`      → the Studio Cutroom (`studio.html`)
+- `GET /trace`       → the Kagami Trace lab (`../kagami-trace/web/index.html`)
 - `GET /studio-sw.js` → Studio authenticated-stream service worker
-- `GET /api/v1/...`  → the JSON API (same origin, so no CORS)
+- `GET/POST /api/v1/...` → the bearer-protected API (same origin, so no CORS)
 - `GET /health`      → liveness
 
 ### Local tokens & the git console
