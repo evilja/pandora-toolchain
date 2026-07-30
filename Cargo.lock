@@ -2008,7 +2008,7 @@ dependencies = [
 
 [[package]]
 name = "pandora-toolchain"
-version = "3.2.0-owari"
+version = "3.3.0-capella"
 dependencies = [
  "ab_glyph",
  "async_zip",
