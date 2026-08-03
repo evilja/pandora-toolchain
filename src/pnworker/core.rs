@@ -1,5 +1,5 @@
 use crate::lib::db::core::JobDb;
-use crate::lib::p2p::core::cleanup_pandora_qbit;
+use crate::lib::p2p::core::cleanup_torrent_runtime;
 use crate::lib::p2p::nyaaise::TorrentType;
 use crate::pnworker::cache::{
     cache_encode_input, cleanup_expired_input_cache, cleanup_input_cache_startup,
@@ -73,7 +73,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
     db.init_schema().await.unwrap();
     db.migrate().await.unwrap();
     db.fail_stale_active().await.unwrap();
-    cleanup_pandora_qbit().await;
+    cleanup_torrent_runtime().await;
     cleanup_input_cache_startup().await;
     cleanup_keep_startup().await;
     cleanup_studios_startup().await;

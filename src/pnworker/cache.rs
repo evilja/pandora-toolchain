@@ -1,12 +1,11 @@
-use std::env;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
 use tokio::fs::{create_dir_all, remove_dir_all, write};
 
 use crate::lib::db::core::JobDb;
-use crate::lib::p2p::core::{magnet_info_hash, torrent_info_hash};
 use crate::lib::p2p::nyaaise::TorrentType;
+use crate::lib::torrent::{magnet_info_hash, torrent_info_hash};
 use crate::pnworker::core::{Job, Stage};
 use crate::pnworker::lifecycle::render;
 use crate::pnworker::messages::{MessagePayload, TORRENT_DUPLICATE_WAIT};
@@ -212,23 +211,7 @@ pub(crate) async fn use_cache_or_wait(db: &JobDb, job: &mut Job, queue: &[Job]) 
 }
 
 pub(crate) fn duplicate_path_to_container(raw: &str) -> PathBuf {
-    let mut path = raw.replace('\\', "/");
-    if let Ok(host_prefix) = env::var("PNP2P_QBIT_SAVE_HOST") {
-        let host_prefix = host_prefix
-            .replace('\\', "/")
-            .trim_end_matches('/')
-            .to_string();
-        if !host_prefix.is_empty() && path.starts_with(&host_prefix) {
-            let container_prefix =
-                env::var("PNP2P_QBIT_SAVE_CONTAINER").unwrap_or_else(|_| "/app/DB".to_string());
-            path = format!(
-                "{}{}",
-                container_prefix.trim_end_matches('/'),
-                &path[host_prefix.len()..]
-            );
-        }
-    }
-    PathBuf::from(path)
+    PathBuf::from(raw.replace('\\', "/"))
 }
 
 pub(crate) fn duplicate_input_path(source: &PathBuf) -> PathBuf {

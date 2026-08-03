@@ -110,44 +110,40 @@ Cloudflare.
 persist across redeploys. The runtime image bundles `ffmpeg` for the encode pipeline. The image
 builds **Linux** containers, so the host must run Docker's Linux engine.
 
-### qBittorrent (torrent/magnet jobs)
+### Native torrent client (torrent/magnet jobs)
 
-Torrent and magnet downloads go through `pnp2p`, which drives a **qBittorrent WebUI**. Google
-Drive jobs use `pncurl --gscrape` and do **not** need qBittorrent, but anything that resolves to a
-torrent does. The container talks to the **host's** qBittorrent (the provider-managed instance),
-not a bundled one:
+Torrent and magnet downloads go through Pandora's in-process BitTorrent v1 client. It supports
+HTTP and UDP trackers, TCP peers, BEP 9 magnet metadata, pipelined concurrent piece downloads,
+and per-file selection. No separate torrent daemon or host/container save-path mapping is needed;
+files are written directly under the bind-mounted `DB/work/...` directory. Google Drive and direct
+HTTP video jobs continue to use `pncurl` instead.
 
-- `pnp2p` connects to `PNP2P_QBIT_HOST` (default `http://localhost:8089`), with
-  `PNP2P_QBIT_USER` / `PNP2P_QBIT_PASS` (defaults `admin` / `adminadmin`).
-- The compose file sets `PNP2P_QBIT_HOST=http://host.docker.internal:8089` and maps
-  `host.docker.internal` to the host gateway, so the container reaches the host's WebUI. This
-  requires the host's qBittorrent WebUI to listen on the host's bridge/LAN IP (not loopback-only).
-- In qBittorrent **WebUI settings**, either disable *"Enable Host header validation"* or add
-  `host.docker.internal` to the allowed host list — otherwise the cross-host request is rejected
-  with `403`.
+The native client intentionally does not implement DHT, uTP, or BitTorrent v2. A magnet therefore
+needs at least one working `tr=` HTTP/UDP tracker, and v2-only torrents are rejected.
 
-If qBittorrent is unreachable, torrent jobs fail at the download stage (Drive jobs are
-unaffected).
+#### Optional torrent proxy
 
-#### Save-path mapping (critical for a host qBittorrent)
+Set `PNP2P_PROXY` in `.env` to route tracker and peer traffic through one proxy:
 
-The host qBittorrent writes downloaded files to the **host** filesystem, but the container reads
-them from the bind-mounted `./DB`. If you hand qBittorrent the container path
-(`/app/DB/work/...`), it writes to the wrong place on the host and the container reports
-`No .mkv file found in downloaded torrent`.
+```dotenv
+# Remote DNS through SOCKS5
+PNP2P_PROXY=socks5h://user:password@proxy.example:1080
 
-Set **`PNP2P_QBIT_SAVE_HOST`** (in `.env`) to the host's absolute path to `./DB`. `pnp2p` swaps
-the container's `/app/DB` prefix for it when telling qBittorrent where to save, so files land in
-the bind-mounted directory the container can read. Example on a Windows host where the repo is at
-`C:\Users\you\pandora-toolchain`:
-
-```
-PNP2P_QBIT_SAVE_HOST=C:\Users\you\pandora-toolchain\DB
+# Or an HTTP CONNECT proxy
+PNP2P_PROXY=http://user:password@proxy.example:8080
 ```
 
-Backslashes vs forward slashes are detected automatically. Leave it empty when qBittorrent runs
-on the **same** machine as `pndc` (non-Docker), where the paths already match. The container's
-prefix defaults to `/app/DB` and can be overridden with `PNP2P_QBIT_SAVE_CONTAINER`.
+Supported schemes are `http`, `socks5`, and `socks5h`. HTTP(S) trackers use the configured proxy;
+TCP peer connections use SOCKS5 or HTTP CONNECT; SOCKS5 also supports UDP tracker datagrams. An
+HTTP proxy cannot carry UDP tracker traffic, so torrents used through one should include an HTTP
+or HTTPS tracker. If `PNP2P_PROXY` is unset, `ALL_PROXY` / `all_proxy` is honored before falling
+back to direct connections.
+
+Optional tuning variables are `PNP2P_MAX_CONNECTIONS` (default `24`),
+`PNP2P_MAX_PEER_CANDIDATES` (default `256`), `PNP2P_PIPELINE` (default `32`),
+`PNP2P_BLOCK_SIZE` (default `16384`), `PNP2P_PORT` (default `6881`),
+`PNP2P_METADATA_LIMIT` (default `8388608`), `PNP2P_MEMORY_BUFFER` (default
+`134217728`), and `PNP2P_TRACKER_ROUNDS` (default `3`).
 
 If instead you run `cloudflared` directly on the host, publish the port (`-p 8787:8787`) and the
 dashboard service becomes `http://localhost:8787`.

@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use crate::lib::db::core::JobDb;
-use crate::lib::p2p::core::{magnet_info_hash, torrent_info_hash};
 use crate::lib::p2p::nyaaise::TorrentType;
+use crate::lib::torrent::{magnet_info_hash, torrent_info_hash};
 use crate::pnworker::core::{Job, JobType, Preset, Stage};
 use crate::pnworker::lifecycle::{cleanup_job, render};
 use crate::pnworker::messages::{

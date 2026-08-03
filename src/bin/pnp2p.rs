@@ -101,11 +101,14 @@ async fn main() {
         },
     );
 
-    let qbit_host =
-        std::env::var("PNP2P_QBIT_HOST").unwrap_or_else(|_| "http://localhost:8089".to_string());
-    let qbit_user = std::env::var("PNP2P_QBIT_USER").unwrap_or_else(|_| "admin".to_string());
-    let qbit_pass = std::env::var("PNP2P_QBIT_PASS").unwrap_or_else(|_| "adminadmin".to_string());
-    let p2pcp = P2p::new(&qbit_host, &qbit_user, &qbit_pass, args.cancelfile).await;
+    let p2pcp = match P2p::new(args.cancelfile).await {
+        Ok(client) => client,
+        Err(error) => {
+            emit_error(&proto, &neg, &error.to_string());
+            eprintln!("[pnp2p] initialization failed: {error}");
+            std::process::exit(1);
+        }
+    };
 
     if args.probe {
         // probe mode: list mkv files, emit them as protocol output
