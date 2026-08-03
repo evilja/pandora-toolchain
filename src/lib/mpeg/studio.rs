@@ -263,7 +263,7 @@ pub fn build_studio_audio_filter(manifest: &StudioRenderManifest) -> String {
 
     let mix_inputs = inputs.concat();
     graph.push(format!(
-        "{}amix=inputs={}:duration=longest:dropout_transition=0,alimiter=limit=0.95,atrim=duration={},asetpts=PTS-STARTPTS[studio-aout]",
+        "{}amix=inputs={}:duration=longest:dropout_transition=0:normalize=0,alimiter=limit=0.95,atrim=duration={},asetpts=PTS-STARTPTS[studio-aout]",
         mix_inputs, inputs.len(), seconds(render_duration)
     ));
     graph.join(";")
@@ -406,6 +406,7 @@ mod tests {
         assert!(graph.contains("adelay=10000|10000"));
         assert!(graph.contains("adelay=12000|12000"));
         assert!(graph.contains("amix=inputs=3"));
+        assert!(graph.contains("dropout_transition=0:normalize=0"));
     }
 
     #[test]
