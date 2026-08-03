@@ -320,6 +320,9 @@ pub fn format_payload(payload: &MessagePayload, lang: &str) -> String {
     match payload {
         MessagePayload::Static(id) => get_message(id, lang),
         MessagePayload::Progress(id, args) => {
+            if *id == UPLOAD_DONE {
+                return format_completed_upload(args, lang);
+            }
             if let Some(expected) = get_arg_count(id, lang) {
                 if args.len() < expected {
                     eprintln!(
@@ -332,6 +335,21 @@ pub fn format_payload(payload: &MessagePayload, lang: &str) -> String {
             }
             format_message(id, lang, args)
         }
+    }
+}
+
+fn format_completed_upload(args: &[String], lang: &str) -> String {
+    let links = args
+        .iter()
+        .take(5)
+        .map(|value| value.trim())
+        .filter(|value| value.starts_with("http://") || value.starts_with("https://"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if links.is_empty() {
+        get_message(UPLOAD_FAIL, lang)
+    } else {
+        links
     }
 }
 
@@ -683,6 +701,33 @@ mod tests {
         assert!(format_payload(&MessagePayload::Static(ENCODE_START), "en").is_empty());
         assert!(format_payload(&MessagePayload::Static(TORRENT_DONE), "tr").is_empty());
         assert!(format_payload(&MessagePayload::Static(ENCODE_DONE), "jp").is_empty());
+    }
+
+    #[test]
+    fn completed_upload_only_renders_successful_links() {
+        let payload = MessagePayload::Progress(
+            UPLOAD_DONE,
+            vec![
+                "https://drive.example/file".to_string(),
+                "Doodstream Başarısız".to_string(),
+                "https://lulu.example/e/file".to_string(),
+                "Voe Başarısız".to_string(),
+                "Abyss Başarısız".to_string(),
+            ],
+        );
+        assert_eq!(
+            format_payload(&payload, "en"),
+            "https://drive.example/file\nhttps://lulu.example/e/file",
+        );
+    }
+
+    #[test]
+    fn completed_upload_without_links_renders_upload_failure() {
+        let payload = MessagePayload::Progress(
+            UPLOAD_DONE,
+            vec!["Google Başarısız".to_string(), "Voe Başarısız".to_string()],
+        );
+        assert_eq!(format_payload(&payload, "en"), get_message(UPLOAD_FAIL, "en"));
     }
 
     #[test]

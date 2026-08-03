@@ -181,6 +181,15 @@ async fn main() {
 
         while let Some(val) = rx.recv().await {
             match val {
+                RpbData::Initializing(message, host) => {
+                    let host_id = upload_host_id(&host);
+                    println!("{}", pn_emit!(
+                        protocol = proto,
+                        negkey = &neg,
+                        schema = [leaf, leaf, leaf],
+                        data = ["4", host_id, message]
+                    ).unwrap());
+                }
                 RpbData::Progress(done, total, extensions, Host::Drive) => {
                     if total != 0 { total_size = total; }
                     gd_done = done; gd_ext = extensions;
@@ -277,11 +286,22 @@ async fn main() {
                     println!("{}", pn_emit!(protocol = proto, negkey = &neg,
                         schema = [leaf, leaf, leaf], data = ["1", "6", url]).unwrap());
                 }
-                RpbData::Fail(Host::Drive) => { gd_result = Some(Err(())); }
-                RpbData::Fail(Host::Doodstream) => { dood_result = Some(Err(())); }
-                RpbData::Fail(Host::Lulu) => { lulu_result = Some(Err(())); }
-                RpbData::Fail(Host::VoeSx) => { voesx_result = Some(Err(())); }
-                RpbData::Fail(Host::Abyss) => { abyss_result = Some(Err(())); }
+                RpbData::Fail(host) => {
+                    match &host {
+                        Host::Drive => gd_result = Some(Err(())),
+                        Host::Doodstream => dood_result = Some(Err(())),
+                        Host::Lulu => lulu_result = Some(Err(())),
+                        Host::VoeSx => voesx_result = Some(Err(())),
+                        Host::Abyss => abyss_result = Some(Err(())),
+                    }
+                    let host_id = upload_host_id(&host);
+                    println!("{}", pn_emit!(
+                        protocol = proto,
+                        negkey = &neg,
+                        schema = [leaf, leaf],
+                        data = ["2", host_id]
+                    ).unwrap());
+                }
                 RpbData::Cancel(_) => {
                     println!("{}", pn_emit!(protocol = proto, negkey = &neg,
                         schema = [leaf, leaf], data = ["3", "CANCELLED"]).unwrap());
@@ -293,5 +313,15 @@ async fn main() {
                 break;
             }
         }
+    }
+}
+
+fn upload_host_id(host: &Host) -> &'static str {
+    match host {
+        Host::Drive => "1",
+        Host::Doodstream => "2",
+        Host::Lulu => "4",
+        Host::VoeSx => "5",
+        Host::Abyss => "6",
     }
 }

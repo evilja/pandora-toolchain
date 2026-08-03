@@ -4,9 +4,10 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::sleep;
 use crate::lib::env::core::get_pandora_env;
 use crate::lib::env::standard::{PNASS, PNMPEG};
+use crate::lib::mpeg::probe::ffprobe_video_height;
 use crate::lib::protocol::core::Protocol;
 use crate::pnworker::messages::{ENCODE_CONCAT_PROG, ENCODE_DONE, ENCODE_FAIL, ENCODE_PROG, ENCODE_START, ENCODE_WARNING, JOB_CANCELLED, MessagePayload, SERVER_EFFECTS_FAIL};
-use crate::pnworker::util::{ToolResult, job_cancelled, run_tool};
+use crate::pnworker::util::{OUTPUT_RESOLUTION_FILE, ToolResult, job_cancelled, run_tool};
 use crate::pnworker::tools::{PNMPEG_CONCAT, PNMPEG_ENCODE, PNMPEG_JOIN, PNMPEG_JOIN_ASS, PNMPEG_STUDIO};
 use tokio::fs::rename;
 use std::path::PathBuf;
@@ -14,7 +15,7 @@ use std::collections::HashMap;
 use crate::pnworker::core::{KeepKind, Preset, Stage, WorkerMsg};
 use crate::pnworker::util::PathValue;
 use crate::pnworker::core::CommData;
-pub type EncodeData = (PathBuf, Preset, u64, Option<u64>, Option<Vec<u8>>);
+pub type EncodeData = (PathBuf, Preset, u64, Option<u64>, Option<Vec<u8>>, bool);
 pub type StudioData = (PathBuf, PathBuf, u64);
 pub type KeycodeData = (PathBuf, Vec<PathBuf>, Option<String>, KeepKind, u64, Option<u64>);
 
@@ -101,8 +102,19 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 }
                 continue 'll;
             }
-            let WorkerMsg::Encode((directory, preset, job_id, server_id, watermark)) = msg else {
+            let WorkerMsg::Encode((directory, preset, job_id, server_id, watermark, cache_resolution)) = msg else {
                 continue 'll;
+            };
+            let mut resolution_probe = if cache_resolution {
+                let input = directory
+                    .join("contents")
+                    .join("torrent")
+                    .join("input.mkv")
+                    .display()
+                    .to_string();
+                Some(tokio::task::spawn_blocking(move || ffprobe_video_height(&input)))
+            } else {
+                None
             };
             let (intro_dir, insert) = match preset {
                 Preset::PseudoLossless(cc) => (cc, "pseudolossless"),
@@ -259,6 +271,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
 
                 match result {
                     ToolResult::Success => {
+                        persist_output_resolution(&directory, resolution_probe.take()).await;
                         tx.send((job_id, MessagePayload::Static(ENCODE_DONE), Some(Stage::Encoded))).await.unwrap();
                     }
                     ToolResult::Fail => {
@@ -273,9 +286,30 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     directory.join("work").join("output_noconcat.mp4"),
                     directory.join("work").join("output.mp4"),
                 ).await.unwrap();
+                persist_output_resolution(&directory, resolution_probe.take()).await;
                 tx.send((job_id, MessagePayload::Static(ENCODE_DONE), Some(Stage::Encoded))).await.unwrap();
             }
         println!("[Pandora Encoder] End of Session");
+    }
+}
+
+async fn persist_output_resolution(
+    directory: &Path,
+    probe: Option<tokio::task::JoinHandle<Option<u32>>>,
+) {
+    let Some(probe) = probe else {
+        return;
+    };
+    let Ok(Ok(Some(height))) = tokio::time::timeout(Duration::from_secs(5), probe).await else {
+        return;
+    };
+    let path = directory.join("work").join(OUTPUT_RESOLUTION_FILE);
+    if let Err(e) = tokio::fs::write(&path, format!("{}p", height)).await {
+        eprintln!(
+            "[Pandora Encoder] failed to cache output resolution at {}: {}",
+            path.display(),
+            e,
+        );
     }
 }
 

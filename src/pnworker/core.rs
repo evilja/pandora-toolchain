@@ -1808,6 +1808,7 @@ async fn do_job_progression_things(
                         job.job_id,
                         job.server_id,
                         job.server_watermark.clone(),
+                        job.smartcode_drive_name.is_some(),
                     )),
                     job,
                     db,

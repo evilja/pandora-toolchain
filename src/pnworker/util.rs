@@ -6,6 +6,8 @@ use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
+pub const OUTPUT_RESOLUTION_FILE: &str = "output_resolution.pandora";
+
 #[derive(Debug)]
 pub enum CliParam {
     Literal(&'static str),

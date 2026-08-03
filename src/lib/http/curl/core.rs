@@ -12,7 +12,7 @@ use crate::{
     log,
 };
 use reqwest::{Client, multipart};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::io::{Error, ErrorKind};
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -24,6 +24,7 @@ use tokio::time::Instant;
 use tokio_util::io::ReaderStream;
 
 const DRIVE_FOLDER_MIME: &str = "application/vnd.google-apps.folder";
+const DRIVE_FOLDER_CACHE_DIR: &str = "DB/cache/drive-folders";
 const UPLOAD_STREAM_CAPACITY: usize = 256 * 1024;
 const UPLOAD_PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -154,6 +155,7 @@ pub enum Host {
     Abyss,
 }
 pub enum RpbData {
+    Initializing(String, Host),
     Progress(u64, u64, u64, Host),
     Done(String, Host, Option<String>),
     Fail(Host),
@@ -305,6 +307,10 @@ impl Req {
         }
         println!("HOST {:?}", host);
         // Step 1: get upload server
+        tx.send(RpbData::Initializing(
+            format!("Discovering {} upload server", upload_host_name(&host)),
+            host.clone(),
+        )).ok();
         let server_url = {
             let resp = match reqwest::get(format!("{server_endpoint}?key={api_key}")).await {
                 Ok(r) => r,
@@ -389,6 +395,10 @@ impl Req {
             .part("file", file_part);
 
         println!("[upload] sending to {server_url}...");
+        tx.send(RpbData::Initializing(
+            format!("Connecting to {}", upload_host_name(&host)),
+            host.clone(),
+        )).ok();
         let resp = match send_upload_unlimited(client.post(&server_url).multipart(form)).await {
             Ok(r) => {
                 println!("[upload] response status: {}", r.status());
@@ -462,6 +472,10 @@ impl Req {
             return false;
         }
         println!("[abyss] abyssupload started");
+        tx.send(RpbData::Initializing(
+            "Connecting to Abyss".to_string(),
+            Host::Abyss,
+        )).ok();
         let env = get_env(&envpath);
         println!(
             "[abyss] env len: {}, ABYSS key: {}, value: {:?}",
@@ -684,6 +698,10 @@ impl Req {
             ),
         ).await;
         drive_log(&mut handle, "requesting OAuth access token").await;
+        tx.send(RpbData::Initializing(
+            "Connecting to Google OAuth".to_string(),
+            Host::Drive,
+        )).ok();
         let access_token = match get_access_token(&env).await {
             Ok(token) => {
                 drive_log(&mut handle, "OAuth access token acquired").await;
@@ -694,6 +712,7 @@ impl Req {
                 if let Some(mut h) = handle {
                     h.flush().await;
                 }
+                tx.send(RpbData::Fail(Host::Drive)).ok();
                 return false;
             }
         };
@@ -710,6 +729,7 @@ impl Req {
                 if let Some(mut h) = handle {
                     h.flush().await;
                 }
+                tx.send(RpbData::Fail(Host::Drive)).ok();
                 return false;
             }
         };
@@ -722,20 +742,43 @@ impl Req {
                 if parent_id.is_empty() { "is empty" } else { "is set" }
             ),
         ).await;
-        if let Some(folder_path) = drive_folder.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
-            drive_log(&mut handle, format!("ensuring Drive folder path: {folder_path}")).await;
-            match ensure_drive_folder_path(&client, &access_token, &parent_id, folder_path, &mut handle).await {
-                Ok(id) => {
-                    drive_log(&mut handle, format!("resolved Drive upload parent id: {id}")).await;
-                    parent_id = id;
-                }
-                Err(e) => {
-                    drive_log(&mut handle, format!("Drive folder path resolution failed: {e}")).await;
-                    if let Some(mut h) = handle {
-                        h.flush().await;
+        if let Some(folder_path) = drive_folder
+            .as_deref()
+            .map(normalize_drive_folder_path)
+            .filter(|s| !s.is_empty())
+        {
+            if let Some(id) = cached_drive_folder_id(&parent_id, &folder_path).await {
+                drive_log(
+                    &mut handle,
+                    format!("Drive folder cache hit for `{folder_path}`: {id}"),
+                ).await;
+                parent_id = id;
+            } else {
+                drive_log(&mut handle, format!("Drive folder cache miss for `{folder_path}`")).await;
+                tx.send(RpbData::Initializing(
+                    "Resolving Google Drive folder".to_string(),
+                    Host::Drive,
+                )).ok();
+                match ensure_drive_folder_path(
+                    &client,
+                    &access_token,
+                    &parent_id,
+                    &folder_path,
+                    &mut handle,
+                ).await {
+                    Ok(id) => {
+                        drive_log(&mut handle, format!("resolved Drive upload parent id: {id}")).await;
+                        cache_drive_folder_id(&parent_id, &folder_path, &id).await;
+                        parent_id = id;
                     }
-                    tx.send(RpbData::Fail(Host::Drive)).ok();
-                    return false;
+                    Err(e) => {
+                        drive_log(&mut handle, format!("Drive folder path resolution failed: {e}")).await;
+                        if let Some(mut h) = handle {
+                            h.flush().await;
+                        }
+                        tx.send(RpbData::Fail(Host::Drive)).ok();
+                        return false;
+                    }
                 }
             }
         } else {
@@ -761,6 +804,7 @@ impl Req {
                 if let Some(mut h) = handle {
                     h.flush().await;
                 }
+                tx.send(RpbData::Fail(Host::Drive)).ok();
                 return false;
             }
         };
@@ -772,6 +816,7 @@ impl Req {
                 if let Some(mut h) = handle {
                     h.flush().await;
                 }
+                tx.send(RpbData::Fail(Host::Drive)).ok();
                 return false;
             }
         };
@@ -812,6 +857,10 @@ impl Req {
             .part("file", part);
 
         drive_log(&mut handle, "sending multipart upload request to Google Drive").await;
+        tx.send(RpbData::Initializing(
+            "Connecting to Google Drive".to_string(),
+            Host::Drive,
+        )).ok();
         let resp = match send_upload_unlimited(
             client
                 .post("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true")
@@ -901,6 +950,72 @@ impl Req {
         }
         tx.send(RpbData::Done(link.clone(), Host::Drive, Some(parent_id))).ok();
         true
+    }
+}
+
+fn upload_host_name(host: &Host) -> &'static str {
+    match host {
+        Host::Drive => "Google Drive",
+        Host::Doodstream => "Doodstream",
+        Host::Lulu => "Lulustream",
+        Host::VoeSx => "Voe",
+        Host::Abyss => "Abyss",
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct DriveFolderCacheEntry {
+    root_parent_id: String,
+    folder_path: String,
+    folder_id: String,
+}
+
+fn normalize_drive_folder_path(path: &str) -> String {
+    path.split('/')
+        .map(str::trim)
+        .filter(|component| !component.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn drive_folder_cache_path(root_parent_id: &str, folder_path: &str) -> PathBuf {
+    let key = format!("{}\0{}", root_parent_id.trim(), normalize_drive_folder_path(folder_path));
+    PathBuf::from(DRIVE_FOLDER_CACHE_DIR).join(format!("{:x}.json", md5::compute(key)))
+}
+
+async fn cached_drive_folder_id(root_parent_id: &str, folder_path: &str) -> Option<String> {
+    let raw = tokio::fs::read_to_string(drive_folder_cache_path(root_parent_id, folder_path))
+        .await
+        .ok()?;
+    let entry: DriveFolderCacheEntry = serde_json::from_str(&raw).ok()?;
+    let normalized = normalize_drive_folder_path(folder_path);
+    if entry.root_parent_id != root_parent_id.trim()
+        || entry.folder_path != normalized
+        || entry.folder_id.trim().is_empty()
+    {
+        return None;
+    }
+    Some(entry.folder_id)
+}
+
+async fn cache_drive_folder_id(root_parent_id: &str, folder_path: &str, folder_id: &str) {
+    let entry = DriveFolderCacheEntry {
+        root_parent_id: root_parent_id.trim().to_string(),
+        folder_path: normalize_drive_folder_path(folder_path),
+        folder_id: folder_id.trim().to_string(),
+    };
+    let path = drive_folder_cache_path(root_parent_id, folder_path);
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if tokio::fs::create_dir_all(parent).await.is_err() {
+        return;
+    }
+    let Ok(raw) = serde_json::to_vec(&entry) else {
+        return;
+    };
+    if let Err(e) = tokio::fs::write(&path, raw).await {
+        eprintln!("[drive] failed to cache folder id at {}: {}", path.display(), e);
     }
 }
 
@@ -1013,6 +1128,23 @@ fn drive_query_escape(s: &str) -> String {
 mod tests {
     use super::*;
     use tokio::io::AsyncReadExt;
+
+    #[test]
+    fn drive_folder_cache_normalizes_equivalent_paths() {
+        assert_eq!(normalize_drive_folder_path(" /123// Anime / "), "123/Anime");
+        assert_eq!(
+            drive_folder_cache_path("root", "123/Anime"),
+            drive_folder_cache_path(" root ", "/123//Anime/"),
+        );
+    }
+
+    #[test]
+    fn drive_folder_cache_is_scoped_to_root_parent() {
+        assert_ne!(
+            drive_folder_cache_path("root-a", "Anime"),
+            drive_folder_cache_path("root-b", "Anime"),
+        );
+    }
 
     #[tokio::test]
     async fn progress_reader_emits_first_and_final_updates() {

@@ -2,7 +2,6 @@ use crate::lib::env::core::get_pandora_env;
 use crate::lib::env::standard::{
     CLIENT_ID, CLIENT_SECRET, ENV_PATH, ENV_SEP, PARENTID, PNCURL, REFRESH_TOKEN,
 };
-use crate::lib::mpeg::probe::ffprobe_video_height;
 use crate::lib::protocol::core::Protocol;
 use crate::pnworker::core::{CommData, SmartcodeDriveName};
 use crate::pnworker::core::{Stage, WorkerMsg};
@@ -13,7 +12,7 @@ use crate::pnworker::messages::{
 use crate::pnworker::tools::{PNCURL_BACKUP, PNCURL_BACKUP_FOLDER, PNCURL_UPLOAD, PNCURL_UPLOAD_FOLDER};
 use crate::pnworker::util::PathValue;
 use crate::pnworker::util::string_byte_to_mb;
-use crate::pnworker::util::{ToolResult, WorkerNamePool, job_cancelled, run_tool};
+use crate::pnworker::util::{OUTPUT_RESOLUTION_FILE, ToolResult, WorkerNamePool, job_cancelled, run_tool};
 use crate::pnworker::worker_slots::upload_worker_slots;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -125,17 +124,17 @@ async fn run_upload_job(
                 .display()
                 .to_string();
             let mut completed = 0u8;
-            let mut gd_link = "Google Bekleniyor".to_string();
+            let mut gd_link = "Connecting to Google OAuth".to_string();
             let mut gd_done = false;
             let mut gd_file_id: Option<String> = None;
             let mut gd_folder_id: Option<String> = None;
-            let mut dood_link = "Doodstream Bekleniyor".to_string();
+            let mut dood_link = "Discovering Doodstream upload server".to_string();
             let mut dood_done = false;
-            let mut lulu_link = "Lulustream Bekleniyor".to_string();
+            let mut lulu_link = "Discovering Lulustream upload server".to_string();
             let mut lulu_done = false;
-            let mut voesx_link = "Voe Bekleniyor".to_string();
+            let mut voesx_link = "Discovering Voe upload server".to_string();
             let mut voesx_done = false;
-            let mut abyss_link = "Abyss Bekleniyor".to_string();
+            let mut abyss_link = "Connecting to Abyss".to_string();
             let mut abyss_done = false;
             let expected_hosts = if release { 5 } else { 1 };
 
@@ -154,10 +153,11 @@ async fn run_upload_job(
             let named_drive_upload = smartcode_drive_name.is_some()
                 && drive_env.local_drive
                 && drive_env.smartcode_root_set;
-            let drive_out_name = smartcode_drive_name
-                .filter(|_| named_drive_upload)
-                .map(|name| name.filename(&resolution_label(&output_path)))
-                .unwrap_or_else(|| out_name.clone());
+            let drive_out_name = match smartcode_drive_name.filter(|_| named_drive_upload) {
+                Some(name) => name
+                    .filename(&cached_output_resolution(&directory).await),
+                None => out_name.clone(),
+            };
             let logfile = directory
                 .join("log")
                 .join(format!("PNcurl_Upload{}.log", job_id))
@@ -181,6 +181,20 @@ async fn run_upload_job(
             } else {
                 PNCURL_BACKUP
             };
+
+            tx.try_send(upload_payload(
+                job_id,
+                release,
+                UPLOAD_PROG,
+                &gd_link,
+                &dood_link,
+                &lulu_link,
+                &voesx_link,
+                &abyss_link,
+                None,
+                None,
+            )).ok();
+            let mut last_initializing_emit = Instant::now();
 
             let result = run_tool(
                 &pncurl_path,
@@ -369,10 +383,15 @@ async fn run_upload_job(
                             } else {
                                 None
                             };
+                            let message_id = if stage.is_some() {
+                                UPLOAD_DONE
+                            } else {
+                                UPLOAD_PROG
+                            };
                             tx.try_send(upload_payload(
                                 job_id,
                                 release,
-                                UPLOAD_PROG,
+                                message_id,
                                 &gd_link,
                                 &dood_link,
                                 &lulu_link,
@@ -417,10 +436,15 @@ async fn run_upload_job(
                             } else {
                                 None
                             };
+                            let message_id = if stage.is_some() {
+                                UPLOAD_DONE
+                            } else {
+                                UPLOAD_PROG
+                            };
                             tx.try_send(upload_payload(
                                 job_id,
                                 release,
-                                UPLOAD_PROG,
+                                message_id,
                                 &gd_link,
                                 &dood_link,
                                 &lulu_link,
@@ -435,6 +459,37 @@ async fn run_upload_job(
                             }
                         }
                         3 => return Some(ToolResult::Cancel),
+                        4 => {
+                            let host_id = data.get(1).and_then(|v| v.as_str()).unwrap_or("0");
+                            let message = data
+                                .get(2)
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("Initializing upload")
+                                .to_string();
+                            match host_id {
+                                "1" if !gd_done => gd_link = message,
+                                "2" if release && !dood_done => dood_link = message,
+                                "4" if release && !lulu_done => lulu_link = message,
+                                "5" if release && !voesx_done => voesx_link = message,
+                                "6" if release && !abyss_done => abyss_link = message,
+                                _ => return None,
+                            }
+                            if last_initializing_emit.elapsed() >= Duration::from_secs(1) {
+                                tx.try_send(upload_payload(
+                                    job_id,
+                                    release,
+                                    UPLOAD_PROG,
+                                    &gd_link,
+                                    &dood_link,
+                                    &lulu_link,
+                                    &voesx_link,
+                                    &abyss_link,
+                                    None,
+                                    None,
+                                )).ok();
+                                last_initializing_emit = Instant::now();
+                            }
+                        }
                         _ => {}
                     }
                     None
@@ -802,10 +857,21 @@ fn smartcode_root_configured(meta: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn resolution_label(path: &str) -> String {
-    ffprobe_video_height(path)
-        .map(|height| format!("{}p", height))
+async fn cached_output_resolution(directory: &std::path::Path) -> String {
+    tokio::fs::read_to_string(directory.join("work").join(OUTPUT_RESOLUTION_FILE))
+        .await
+        .ok()
+        .and_then(|value| valid_resolution_label(&value))
         .unwrap_or_else(|| "1080p".to_string())
+}
+
+fn valid_resolution_label(value: &str) -> Option<String> {
+    let value = value.trim();
+    value
+        .strip_suffix('p')
+        .and_then(|height| height.parse::<u32>().ok())
+        .filter(|height| *height > 0)
+        .map(|height| format!("{}p", height))
 }
 
 fn resolve_local_drive_root(lines: &[&str], is_smartcode: bool) -> Option<String> {
@@ -1138,6 +1204,13 @@ mod tests {
             drive_folder_path(false, true, Some(123), Some("Anime Name".to_string())),
             "123/Anime Name",
         );
+    }
+
+    #[test]
+    fn cached_resolution_labels_are_validated() {
+        assert_eq!(valid_resolution_label(" 1080p\n"), Some("1080p".to_string()));
+        assert_eq!(valid_resolution_label("0p"), None);
+        assert_eq!(valid_resolution_label("fullhd"), None);
     }
 }
 
