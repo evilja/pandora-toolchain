@@ -48,7 +48,8 @@ pub async fn handle_auth(
     if add_env(&path, &mut to_add) {
         command.create_response(ctx, CreateInteractionResponse::Message(
             CreateInteractionResponseMessage::new()
-                .content(format!("Authorized <@{}> at `{}`.", user_id, level))
+                .embed(success_embed(command, COMMAND_UPDATED)
+                    .description(format!("Authorized <@{}> at `{}`.", user_id, level)))
                 .ephemeral(true)
         )).await.ok();
     } else {

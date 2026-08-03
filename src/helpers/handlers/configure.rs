@@ -120,15 +120,29 @@ pub async fn handle_configure(
         return;
     }
 
-    let forgejo_display = if forgejo.is_empty() { "(unset)".to_string() } else { format!("`{}`", forgejo) };
-    let api_key_display = if new_api_key.is_empty() { "(unset)".to_string() } else { "(set)".to_string() };
-    let gdrive_display = if gdrive_client_id.is_empty() && gdrive_client_secret.is_empty() && gdrive_refresh_token.is_empty() && gdrive_folder_id.is_empty() && gdrive_anon_folder_id.is_empty() { "(unset)".to_string() } else { "(set)".to_string() };
-    let gdrive_anon_display = if gdrive_anon_folder_id.is_empty() { "(unset)".to_string() } else { "(set)".to_string() };
+    let set = command_message(command, VALUE_SET);
+    let unset = command_message(command, VALUE_UNSET);
+    let forgejo_display = if forgejo.is_empty() { unset.clone() } else { forgejo.clone() };
+    let api_key_display = if new_api_key.is_empty() { unset.clone() } else { set.clone() };
+    let gdrive_display = if gdrive_client_id.is_empty() && gdrive_client_secret.is_empty() && gdrive_refresh_token.is_empty() && gdrive_folder_id.is_empty() && gdrive_anon_folder_id.is_empty() { unset.clone() } else { set.clone() };
+    let gdrive_anon_display = if gdrive_anon_folder_id.is_empty() { unset } else { set };
     let wrap_display = if wrap_style.is_empty() { "dont_touch".to_string() } else { wrap_style.clone() };
+    let embed = success_embed(command, COMMAND_SERVER_CONFIGURED)
+        .description(format!("Server `{}`", server_id))
+        .field(command_message(command, FIELD_LANGUAGE), language, true)
+        .field(command_message(command, FIELD_REPO), forgejo_display, true)
+        .field(command_message(command, FIELD_API_KEY), api_key_display, true)
+        .field(command_message(command, FIELD_GDRIVE), gdrive_display, true)
+        .field(command_message(command, FIELD_GDRIVE_ANONYMOUS), gdrive_anon_display, true)
+        .field(command_message(command, FIELD_WRAPSTYLE), wrap_display, true)
+        .field(
+            command_message(command, FIELD_ANNOUNCEMENT),
+            format!("<#{}>", command.channel_id.get()),
+            false,
+        );
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
-            .content(format!("Configured server `{}` — language: {}, forgejo: {}, forgejo api_key: {}, gdrive: {}, gdrive_anon_folder_id: {}, wrapstyle: {}, announcement channel: <#{}>",
-                server_id, language, forgejo_display, api_key_display, gdrive_display, gdrive_anon_display, wrap_display, command.channel_id.get()))
+            .embed(embed)
             .ephemeral(true)
     )).await.ok();
 }

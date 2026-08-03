@@ -1,0 +1,579 @@
+[QUEUE_TOO_LONG]
+text = "現在ジョブキューが満杯です。しばらくしてからもう一度お試しください。"
+args = 0
+
+[QUEUED]
+text = ""
+args = 0
+
+[JOB_SETUP_FAIL]
+text = "準備に失敗しました: `{}`"
+args = 1
+
+[JOB_CANCELLED]
+text = ""
+args = 0
+
+[PROBE_TIMEOUT]
+text = "選択期限の3分を過ぎました。もう一度 `/probe` を実行してください。"
+args = 0
+
+[GITSYNC_PROGRESS]
+text = "実行中の処理を停止しています…"
+args = 0
+
+[GITSYNC_SUCCESS]
+text = "ソースを更新しました。Pandoraを再起動します。"
+args = 0
+
+[GITSYNC_FAIL]
+text = "ソースを更新できませんでした。Pandoraは再起動します。"
+args = 0
+
+[GITQUERY_BLOCKED]
+text = "ソース更新は現在のエンコード完了を待っています。新しいエンコードは一時停止中です。"
+args = 0
+
+[CTORRENT_DONE]
+text = "Torrentメタデータの準備ができました。"
+args = 0
+
+[CTORRENT_FAIL]
+text = "Torrentメタデータを取得できませんでした。"
+args = 0
+
+[TORRENT_PROG]
+text = "`{}%` • `{} / {} MiB`"
+args = 3
+
+[TORRENT_PROG_SELECT]
+text = "`{}%` • `{} MiB`"
+args = 2
+
+[TORRENT_DONE]
+text = ""
+args = 0
+
+[TORRENT_FAIL]
+text = "ソースをダウンロードできませんでした。"
+args = 0
+
+[TORRENT_DUPLICATE_WAIT]
+text = "このソースはすでに使用中です。既存のダウンロード完了を待っています。"
+args = 1
+
+[ENCODE_PROG]
+text = "パス `1/{}`\nフレーム `{} / {}` • `{} FPS` • `{} kbit/s`"
+args = 5
+
+[ENCODE_START]
+text = ""
+args = 0
+
+[ENCODE_CONCAT_PROG]
+text = "イントロパス `2/2`\nフレーム `{} / {}` • `{} FPS` • `{} kbit/s`"
+args = 4
+
+[QUEUE_POSITION]
+text = "待機位置 `#{}` • 推定待ち時間 `{}`"
+args = 2
+
+[ENCODE_DONE]
+text = ""
+args = 0
+
+[ENCODE_FAIL]
+text = "動画をエンコードできませんでした。"
+args = 0
+
+[SERVER_EFFECTS_FAIL]
+text = "サーバー字幕エフェクトに失敗しました: {}"
+args = 1
+
+[KEEP_READY]
+text = "`{}` → `{}` を予約しました"
+args = 2
+
+[KEEP_DONE]
+text = "5時間保存します。\nキーワード `{}` • 親 `{}` • 種類 `{}`"
+args = 3
+
+[KEEP_FAIL]
+text = "保存に失敗しました: {}"
+args = 1
+
+[KEYCODE_WAIT]
+text = "保存済み出力を待っています: {}"
+args = 1
+
+[KEYCODE_FAIL]
+text = "結合に失敗しました: {}"
+args = 1
+
+[UPLOAD_PROG]
+text = "{}\n{}\n{}\n{}\n{}"
+args = 5
+
+[UPLOAD_DONE]
+text = "{}\n{}\n{}\n{}\n{}"
+args = 5
+
+[UPLOAD_FAIL]
+text = "出力をアップロードできませんでした。管理者にワーカーの確認を依頼してください。"
+args = 0
+
+[UPLOAD_BACKUP_PROG]
+text = "{}"
+args = 1
+
+[BACKUPALL_PROG]
+text = "{}"
+args = 1
+
+[PROBE_DONE]
+text = "3分以内にファイルを選択してください。"
+args = 0
+
+[PROBE_FAIL]
+text = "Torrentを検査できませんでした。"
+args = 0
+
+[PROBE_ROW]
+text = "{}"
+args = 1
+
+[PREVIEW_DONE]
+text = "{}枚のフレームを添付しました。"
+args = 1
+
+[PREVIEW_FAIL]
+text = "プレビューに失敗しました: {}"
+args = 1
+
+[STUDIO_PREVIEW_DONE]
+text = "プレビューを添付しました。"
+args = 1
+
+[STUDIO_PREVIEW_FAIL]
+text = "Studioプレビューに失敗しました: {}"
+args = 1
+
+[PREVIEW_ATTACHMENT_REJECTED]
+text = "プレビューは完成しましたが、Discordが添付ファイルを拒否しました。サーバーのアップロード上限を確認して再試行してください。"
+args = 0
+
+[PREVIEW_ATTACHMENT_MISSING]
+text = "プレビューは完成しましたが、添付ファイルを準備できませんでした。"
+args = 0
+
+[STUDIO_PREVIEW_ATTACHMENT_MISSING]
+text = "Studioプレビューは完成しましたが、MP4添付ファイルを準備できませんでした。"
+args = 0
+
+[EMBED_TITLE]
+text = "{}"
+args = 1
+
+[EMBED_FOOTER]
+text = "Pandora Toolchain • v{}"
+args = 1
+
+[FIELD_JOBID]
+text = "ジョブID"
+args = 0
+
+[FIELD_AUTHOR]
+text = "依頼者"
+args = 0
+
+[FIELD_WORKER]
+text = "ワーカー"
+args = 0
+
+[FIELD_STATUS]
+text = "状態"
+args = 0
+
+[FIELD_PRESET]
+text = "エンコードプリセット"
+args = 0
+
+[FIELD_TORRENT]
+text = "Torrent"
+args = 0
+
+[FIELD_SOURCE]
+text = "ソース"
+args = 0
+
+[FIELD_PROGRESS]
+text = "詳細"
+args = 0
+
+[FIELD_WARNINGS]
+text = "警告"
+args = 0
+
+[FIELD_REPO]
+text = "リポジトリ"
+args = 0
+
+[FIELD_FILE]
+text = "ファイル"
+args = 0
+
+[FIELD_COMMIT]
+text = "コミットメッセージ"
+args = 0
+
+[FIELD_RELEASE]
+text = "リリース"
+args = 0
+
+[FIELD_FONTS]
+text = "フォント"
+args = 0
+
+[FIELD_REQUESTED]
+text = "要求数"
+args = 0
+
+[FIELD_EPISODE]
+text = "話数"
+args = 0
+
+[FIELD_PATH]
+text = "パス"
+args = 0
+
+[FIELD_ANIME]
+text = "アニメ"
+args = 0
+
+[FIELD_CHANNEL]
+text = "チャンネル"
+args = 0
+
+[FIELD_CREATED]
+text = "作成 / 更新"
+args = 0
+
+[FIELD_GLOBAL]
+text = "グローバル"
+args = 0
+
+[FIELD_SERVER]
+text = "サーバー"
+args = 0
+
+[FIELD_TOTAL]
+text = "合計"
+args = 0
+
+[FIELD_FILES]
+text = "ファイル"
+args = 0
+
+[FIELD_LOCATION]
+text = "場所"
+args = 0
+
+[FIELD_SLUG]
+text = "スラッグ"
+args = 0
+
+[FIELD_KIND]
+text = "種類"
+args = 0
+
+[FIELD_EPISODES]
+text = "話数"
+args = 0
+
+[FIELD_LANGUAGE]
+text = "言語"
+args = 0
+
+[FIELD_API_KEY]
+text = "Forgejo APIキー"
+args = 0
+
+[FIELD_GDRIVE]
+text = "Google Drive"
+args = 0
+
+[FIELD_GDRIVE_ANONYMOUS]
+text = "匿名Driveフォルダー"
+args = 0
+
+[FIELD_WRAPSTYLE]
+text = "WrapStyle"
+args = 0
+
+[FIELD_ANNOUNCEMENT]
+text = "告知チャンネル"
+args = 0
+
+[FIELD_CONCAT]
+text = "結合 / イントロ"
+args = 0
+
+[FIELD_LOCAL_GDRIVE]
+text = "ローカルGoogle Drive"
+args = 0
+
+[LABEL_ETA]
+text = "残り時間"
+args = 0
+
+[WARNINGS_MORE]
+text = "…ほか{}件"
+args = 1
+
+[STAGE_QUEUED]
+text = "待機中"
+args = 0
+
+[STAGE_PROBING]
+text = "検査中"
+args = 0
+
+[STAGE_PROBED]
+text = "選択待ち"
+args = 0
+
+[STAGE_DOWNLOADING]
+text = "ダウンロード中"
+args = 0
+
+[STAGE_DOWNLOADED]
+text = "ダウンロード済み"
+args = 0
+
+[STAGE_ENCODING]
+text = "エンコード中"
+args = 0
+
+[STAGE_ENCODED]
+text = "エンコード済み"
+args = 0
+
+[STAGE_UPLOADING]
+text = "アップロード中"
+args = 0
+
+[STAGE_UPLOADED]
+text = "完了"
+args = 0
+
+[STAGE_FAILED]
+text = "失敗"
+args = 0
+
+[STAGE_DECLINED]
+text = "拒否"
+args = 0
+
+[STAGE_CANCELLED]
+text = "キャンセル済み"
+args = 0
+
+[PRESET_PSEUDOLOSSLESS_INTRO]
+text = "疑似ロスレス CPU • イントロあり"
+args = 0
+
+[PRESET_PSEUDOLOSSLESS_NOINTRO]
+text = "疑似ロスレス CPU • イントロなし"
+args = 0
+
+[PRESET_GPU_INTRO]
+text = "標準 GPU • イントロあり"
+args = 0
+
+[PRESET_GPU_NOINTRO]
+text = "標準 GPU • イントロなし"
+args = 0
+
+[PRESET_STANDARD_INTRO]
+text = "標準 CPU • イントロあり"
+args = 0
+
+[PRESET_STANDARD_NOINTRO]
+text = "標準 CPU • イントロなし"
+args = 0
+
+[PRESET_DUMMY]
+text = "開発用"
+args = 0
+
+[PRESET_COPY]
+text = "映像コピー + AACミックス音声"
+args = 0
+
+[JOB_TYPE_ENCODE]
+text = "🎬 エンコードジョブ"
+args = 0
+
+[JOB_TYPE_PANCODE]
+text = "🎞️ 選択ファイルのエンコード"
+args = 0
+
+[JOB_TYPE_PROBE]
+text = "🔎 検査ジョブ"
+args = 0
+
+[JOB_TYPE_BACKUP]
+text = "💾 バックアップジョブ"
+args = 0
+
+[JOB_TYPE_BACKUP_ALL]
+text = "🗄️ 一括バックアップ"
+args = 0
+
+[JOB_TYPE_KEYCODE]
+text = "🧩 結合ジョブ"
+args = 0
+
+[JOB_TYPE_PREVIEW]
+text = "🖼️ プレビュージョブ"
+args = 0
+
+[JOB_TYPE_STUDIO]
+text = "🎚️ Studioレンダー"
+args = 0
+
+[JOB_TYPE_STUDIO_PREVIEW]
+text = "🎧 Studioプレビュー"
+args = 0
+
+[JOB_TYPE_UNKNOWN]
+text = "⚙️ Pandoraジョブ"
+args = 0
+
+[VALUE_NONE]
+text = "なし"
+args = 0
+
+[VALUE_NOT_AVAILABLE]
+text = "利用できません"
+args = 0
+
+[VALUE_SET]
+text = "設定済み"
+args = 0
+
+[VALUE_UNSET]
+text = "未設定"
+args = 0
+
+[VALUE_ENABLED]
+text = "有効"
+args = 0
+
+[VALUE_DISABLED]
+text = "無効"
+args = 0
+
+[VALUE_MAGNET_HIDDEN]
+text = "Magnetリンクは非表示です"
+args = 0
+
+[SOURCE_PROBE_FILE]
+text = "検査ジョブ `{}` • ファイル `#{}`"
+args = 2
+
+[SOURCE_PROBE]
+text = "検査ジョブ `{}`"
+args = 1
+
+[SOURCE_KEYWORDS]
+text = "保存済み出力: {}"
+args = 1
+
+[COMMAND_WORKING]
+text = "処理中…"
+args = 0
+
+[COMMAND_JOB_COMPLETE]
+text = "字幕をアップロードしました"
+args = 0
+
+[COMMAND_MERGE_COMPLETE]
+text = "結合完了"
+args = 0
+
+[COMMAND_RELEASE_COMPLETE]
+text = "リリース完了"
+args = 0
+
+[COMMAND_SOURCE_UPDATED]
+text = "ソースを更新しました"
+args = 0
+
+[COMMAND_FILE_READY]
+text = "ファイルの準備ができました"
+args = 0
+
+[COMMAND_CHANNEL_DETACHED]
+text = "チャンネルの関連付けを解除しました"
+args = 0
+
+[COMMAND_REPO_DELETED]
+text = "リポジトリを削除しました"
+args = 0
+
+[COMMAND_REPO_ATTACHED]
+text = "アニメを関連付けました"
+args = 0
+
+[COMMAND_SERVER_CONFIGURED]
+text = "サーバーを設定しました"
+args = 0
+
+[COMMAND_SERVER_UPDATED]
+text = "サーバー設定を更新しました"
+args = 0
+
+[COMMAND_FONT_CHECK]
+text = "フォント確認"
+args = 0
+
+[COMMAND_LOGS_READY]
+text = "ジョブログの準備ができました"
+args = 0
+
+[COMMAND_UPDATED]
+text = "更新しました"
+args = 0
+
+[COMMAND_LIST]
+text = "Pandora詳細"
+args = 0
+
+[COMMAND_REPO_PRESERVED]
+text = "リポジトリは変更していません。"
+args = 0
+
+[LINK_DOWNLOAD]
+text = "ダウンロード"
+args = 0
+
+[CATLOGS_DESCRIPTION]
+text = "{}個のログファイルを{}ジョブディレクトリからまとめました。"
+args = 2
+
+[CATLOGS_NO_LOGS]
+text = "ジョブ `{}` のログは見つかりませんでした。"
+args = 1
+
+[CATLOGS_BUILD_FAIL]
+text = "ジョブ `{}` のログをまとめられませんでした: {}"
+args = 2
+
+[CATLOGS_ACTIVE]
+text = "実行中"
+args = 0
+
+[CATLOGS_ARCHIVED]
+text = "アーカイブ済み"
+args = 0

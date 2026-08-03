@@ -66,7 +66,7 @@ pub async fn handle_gettranslation(
     ));
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
-            .content(body)
+            .embed(info_embed(command, COMMAND_LIST).description(body))
             .ephemeral(true)
     )).await.ok();
 }
@@ -137,7 +137,10 @@ pub async fn handle_addtranslation(
     let verb = if existed { "Updated" } else { "Added" };
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
-            .content(format!("{} translation `{}` / `{}` with args `{}`.", verb, lang, key, args))
+            .embed(success_embed(command, COMMAND_UPDATED).description(format!(
+                "{} translation `{}` / `{}` with args `{}`.",
+                verb, lang, key, args
+            )))
             .ephemeral(true)
     )).await.ok();
 }
@@ -165,7 +168,8 @@ pub async fn handle_gettranslationall(
     let file = CreateAttachment::bytes(content.into_bytes(), format!("{}.toml", lang));
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
-            .content(format!("Current `{}` translations.", lang))
+            .embed(info_embed(command, COMMAND_LIST)
+                .description(format!("Current `{}` translations.", lang)))
             .add_file(file)
             .ephemeral(true)
     )).await.ok();
@@ -239,7 +243,12 @@ pub async fn handle_addtranslationall(
     }
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
-            .content(format!("Replaced `{}` translations with {} entries from `{}`.", lang, map.len(), attachment.filename))
+            .embed(success_embed(command, COMMAND_UPDATED).description(format!(
+                "Replaced `{}` translations with {} entries from `{}`.",
+                lang,
+                map.len(),
+                attachment.filename
+            )))
             .ephemeral(true)
     )).await.ok();
 }

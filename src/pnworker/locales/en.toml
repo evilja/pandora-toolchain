@@ -1,0 +1,579 @@
+[QUEUE_TOO_LONG]
+text = "The queue is full right now. Please try again later."
+args = 0
+
+[QUEUED]
+text = ""
+args = 0
+
+[JOB_SETUP_FAIL]
+text = "Setup failed: `{}`"
+args = 1
+
+[JOB_CANCELLED]
+text = ""
+args = 0
+
+[PROBE_TIMEOUT]
+text = "The selection expired after 3 minutes. Run `/probe` again."
+args = 0
+
+[GITSYNC_PROGRESS]
+text = "Stopping active work…"
+args = 0
+
+[GITSYNC_SUCCESS]
+text = "Source updated successfully. Pandora is restarting."
+args = 0
+
+[GITSYNC_FAIL]
+text = "The source update failed. Pandora is restarting anyway."
+args = 0
+
+[GITQUERY_BLOCKED]
+text = "A source update is waiting for current encodes to finish. New encode jobs are paused."
+args = 0
+
+[CTORRENT_DONE]
+text = "Torrent metadata is ready."
+args = 0
+
+[CTORRENT_FAIL]
+text = "Torrent metadata could not be fetched."
+args = 0
+
+[TORRENT_PROG]
+text = "`{}%` • `{} / {} MiB`"
+args = 3
+
+[TORRENT_PROG_SELECT]
+text = "`{}%` • `{} MiB`"
+args = 2
+
+[TORRENT_DONE]
+text = ""
+args = 0
+
+[TORRENT_FAIL]
+text = "The source could not be downloaded."
+args = 0
+
+[TORRENT_DUPLICATE_WAIT]
+text = "This source is already in use. Waiting for the existing download to finish."
+args = 1
+
+[ENCODE_PROG]
+text = "Pass `1/{}`\nFrames `{} / {}` • `{} FPS` • `{} kbit/s`"
+args = 5
+
+[ENCODE_START]
+text = ""
+args = 0
+
+[ENCODE_CONCAT_PROG]
+text = "Intro pass `2/2`\nFrames `{} / {}` • `{} FPS` • `{} kbit/s`"
+args = 4
+
+[QUEUE_POSITION]
+text = "Queue position `#{}` • estimated wait `{}`"
+args = 2
+
+[ENCODE_DONE]
+text = ""
+args = 0
+
+[ENCODE_FAIL]
+text = "The video could not be encoded."
+args = 0
+
+[SERVER_EFFECTS_FAIL]
+text = "Server subtitle effects failed: {}"
+args = 1
+
+[KEEP_READY]
+text = "Reserved `{}` → `{}`"
+args = 2
+
+[KEEP_DONE]
+text = "Saved for 5 hours.\nKeyword `{}` • parent `{}` • type `{}`"
+args = 3
+
+[KEEP_FAIL]
+text = "Keep failed: {}"
+args = 1
+
+[KEYCODE_WAIT]
+text = "Waiting for keep output(s): {}"
+args = 1
+
+[KEYCODE_FAIL]
+text = "Join failed: {}"
+args = 1
+
+[UPLOAD_PROG]
+text = "{}\n{}\n{}\n{}\n{}"
+args = 5
+
+[UPLOAD_DONE]
+text = "{}\n{}\n{}\n{}\n{}"
+args = 5
+
+[UPLOAD_FAIL]
+text = "The output could not be uploaded. Please ask an administrator to check the workers."
+args = 0
+
+[UPLOAD_BACKUP_PROG]
+text = "{}"
+args = 1
+
+[BACKUPALL_PROG]
+text = "{}"
+args = 1
+
+[PROBE_DONE]
+text = "Choose a file within 3 minutes."
+args = 0
+
+[PROBE_FAIL]
+text = "The torrent could not be inspected."
+args = 0
+
+[PROBE_ROW]
+text = "{}"
+args = 1
+
+[PREVIEW_DONE]
+text = "{} frame(s) attached."
+args = 1
+
+[PREVIEW_FAIL]
+text = "Preview failed: {}"
+args = 1
+
+[STUDIO_PREVIEW_DONE]
+text = "Preview attached."
+args = 1
+
+[STUDIO_PREVIEW_FAIL]
+text = "Studio preview failed: {}"
+args = 1
+
+[PREVIEW_ATTACHMENT_REJECTED]
+text = "The preview rendered, but Discord rejected the attachment. Check the server upload limit and try again."
+args = 0
+
+[PREVIEW_ATTACHMENT_MISSING]
+text = "The preview rendered, but its attachment could not be prepared."
+args = 0
+
+[STUDIO_PREVIEW_ATTACHMENT_MISSING]
+text = "The Studio preview rendered, but its MP4 attachment could not be prepared."
+args = 0
+
+[EMBED_TITLE]
+text = "{}"
+args = 1
+
+[EMBED_FOOTER]
+text = "Pandora Toolchain • v{}"
+args = 1
+
+[FIELD_JOBID]
+text = "Job ID"
+args = 0
+
+[FIELD_AUTHOR]
+text = "Requested by"
+args = 0
+
+[FIELD_WORKER]
+text = "Worker"
+args = 0
+
+[FIELD_STATUS]
+text = "Status"
+args = 0
+
+[FIELD_PRESET]
+text = "Encode preset"
+args = 0
+
+[FIELD_TORRENT]
+text = "Torrent"
+args = 0
+
+[FIELD_SOURCE]
+text = "Source"
+args = 0
+
+[FIELD_PROGRESS]
+text = "Details"
+args = 0
+
+[FIELD_WARNINGS]
+text = "Warnings"
+args = 0
+
+[FIELD_REPO]
+text = "Repository"
+args = 0
+
+[FIELD_FILE]
+text = "File"
+args = 0
+
+[FIELD_COMMIT]
+text = "Commit message"
+args = 0
+
+[FIELD_RELEASE]
+text = "Release"
+args = 0
+
+[FIELD_FONTS]
+text = "Fonts"
+args = 0
+
+[FIELD_REQUESTED]
+text = "Requested"
+args = 0
+
+[FIELD_EPISODE]
+text = "Episode"
+args = 0
+
+[FIELD_PATH]
+text = "Path"
+args = 0
+
+[FIELD_ANIME]
+text = "Anime"
+args = 0
+
+[FIELD_CHANNEL]
+text = "Channel"
+args = 0
+
+[FIELD_CREATED]
+text = "Created / updated"
+args = 0
+
+[FIELD_GLOBAL]
+text = "Global"
+args = 0
+
+[FIELD_SERVER]
+text = "Server"
+args = 0
+
+[FIELD_TOTAL]
+text = "Total"
+args = 0
+
+[FIELD_FILES]
+text = "Files"
+args = 0
+
+[FIELD_LOCATION]
+text = "Location"
+args = 0
+
+[FIELD_SLUG]
+text = "Slug"
+args = 0
+
+[FIELD_KIND]
+text = "Type"
+args = 0
+
+[FIELD_EPISODES]
+text = "Episodes"
+args = 0
+
+[FIELD_LANGUAGE]
+text = "Language"
+args = 0
+
+[FIELD_API_KEY]
+text = "Forgejo API key"
+args = 0
+
+[FIELD_GDRIVE]
+text = "Google Drive"
+args = 0
+
+[FIELD_GDRIVE_ANONYMOUS]
+text = "Anonymous Drive folder"
+args = 0
+
+[FIELD_WRAPSTYLE]
+text = "WrapStyle"
+args = 0
+
+[FIELD_ANNOUNCEMENT]
+text = "Announcement channel"
+args = 0
+
+[FIELD_CONCAT]
+text = "Concat / intro"
+args = 0
+
+[FIELD_LOCAL_GDRIVE]
+text = "Local Google Drive"
+args = 0
+
+[LABEL_ETA]
+text = "ETA"
+args = 0
+
+[WARNINGS_MORE]
+text = "…and {} more"
+args = 1
+
+[STAGE_QUEUED]
+text = "Queued"
+args = 0
+
+[STAGE_PROBING]
+text = "Inspecting"
+args = 0
+
+[STAGE_PROBED]
+text = "Ready for selection"
+args = 0
+
+[STAGE_DOWNLOADING]
+text = "Downloading"
+args = 0
+
+[STAGE_DOWNLOADED]
+text = "Downloaded"
+args = 0
+
+[STAGE_ENCODING]
+text = "Encoding"
+args = 0
+
+[STAGE_ENCODED]
+text = "Encoded"
+args = 0
+
+[STAGE_UPLOADING]
+text = "Uploading"
+args = 0
+
+[STAGE_UPLOADED]
+text = "Complete"
+args = 0
+
+[STAGE_FAILED]
+text = "Failed"
+args = 0
+
+[STAGE_DECLINED]
+text = "Declined"
+args = 0
+
+[STAGE_CANCELLED]
+text = "Cancelled"
+args = 0
+
+[PRESET_PSEUDOLOSSLESS_INTRO]
+text = "Pseudo-lossless CPU • intro"
+args = 0
+
+[PRESET_PSEUDOLOSSLESS_NOINTRO]
+text = "Pseudo-lossless CPU • no intro"
+args = 0
+
+[PRESET_GPU_INTRO]
+text = "Standard GPU • intro"
+args = 0
+
+[PRESET_GPU_NOINTRO]
+text = "Standard GPU • no intro"
+args = 0
+
+[PRESET_STANDARD_INTRO]
+text = "Standard CPU • intro"
+args = 0
+
+[PRESET_STANDARD_NOINTRO]
+text = "Standard CPU • no intro"
+args = 0
+
+[PRESET_DUMMY]
+text = "Developer"
+args = 0
+
+[PRESET_COPY]
+text = "Video copy with mixed AAC audio"
+args = 0
+
+[JOB_TYPE_ENCODE]
+text = "🎬 Encode job"
+args = 0
+
+[JOB_TYPE_PANCODE]
+text = "🎞️ Selected-file encode"
+args = 0
+
+[JOB_TYPE_PROBE]
+text = "🔎 Probe job"
+args = 0
+
+[JOB_TYPE_BACKUP]
+text = "💾 Backup job"
+args = 0
+
+[JOB_TYPE_BACKUP_ALL]
+text = "🗄️ Batch backup"
+args = 0
+
+[JOB_TYPE_KEYCODE]
+text = "🧩 Join job"
+args = 0
+
+[JOB_TYPE_PREVIEW]
+text = "🖼️ Preview job"
+args = 0
+
+[JOB_TYPE_STUDIO]
+text = "🎚️ Studio render"
+args = 0
+
+[JOB_TYPE_STUDIO_PREVIEW]
+text = "🎧 Studio preview"
+args = 0
+
+[JOB_TYPE_UNKNOWN]
+text = "⚙️ Pandora job"
+args = 0
+
+[VALUE_NONE]
+text = "None"
+args = 0
+
+[VALUE_NOT_AVAILABLE]
+text = "Not available"
+args = 0
+
+[VALUE_SET]
+text = "Set"
+args = 0
+
+[VALUE_UNSET]
+text = "Not set"
+args = 0
+
+[VALUE_ENABLED]
+text = "Enabled"
+args = 0
+
+[VALUE_DISABLED]
+text = "Disabled"
+args = 0
+
+[VALUE_MAGNET_HIDDEN]
+text = "Magnet link hidden"
+args = 0
+
+[SOURCE_PROBE_FILE]
+text = "Probe job `{}` • file `#{}`"
+args = 2
+
+[SOURCE_PROBE]
+text = "Probe job `{}`"
+args = 1
+
+[SOURCE_KEYWORDS]
+text = "Keep outputs: {}"
+args = 1
+
+[COMMAND_WORKING]
+text = "Working…"
+args = 0
+
+[COMMAND_JOB_COMPLETE]
+text = "Subtitle uploaded"
+args = 0
+
+[COMMAND_MERGE_COMPLETE]
+text = "Merge complete"
+args = 0
+
+[COMMAND_RELEASE_COMPLETE]
+text = "Release complete"
+args = 0
+
+[COMMAND_SOURCE_UPDATED]
+text = "Source updated"
+args = 0
+
+[COMMAND_FILE_READY]
+text = "File ready"
+args = 0
+
+[COMMAND_CHANNEL_DETACHED]
+text = "Channel detached"
+args = 0
+
+[COMMAND_REPO_DELETED]
+text = "Repository deleted"
+args = 0
+
+[COMMAND_REPO_ATTACHED]
+text = "Anime attached"
+args = 0
+
+[COMMAND_SERVER_CONFIGURED]
+text = "Server configured"
+args = 0
+
+[COMMAND_SERVER_UPDATED]
+text = "Server settings updated"
+args = 0
+
+[COMMAND_FONT_CHECK]
+text = "Font check"
+args = 0
+
+[COMMAND_LOGS_READY]
+text = "Job logs ready"
+args = 0
+
+[COMMAND_UPDATED]
+text = "Updated"
+args = 0
+
+[COMMAND_LIST]
+text = "Pandora details"
+args = 0
+
+[COMMAND_REPO_PRESERVED]
+text = "The repository was left untouched."
+args = 0
+
+[LINK_DOWNLOAD]
+text = "Download"
+args = 0
+
+[CATLOGS_DESCRIPTION]
+text = "Packed {} log file(s) from the {} job directory."
+args = 2
+
+[CATLOGS_NO_LOGS]
+text = "No logs were found for job `{}`."
+args = 1
+
+[CATLOGS_BUILD_FAIL]
+text = "The logs for job `{}` could not be packed: {}"
+args = 2
+
+[CATLOGS_ACTIVE]
+text = "active"
+args = 0
+
+[CATLOGS_ARCHIVED]
+text = "archived"
+args = 0

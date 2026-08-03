@@ -80,10 +80,10 @@ pub async fn handle_touchwatermark(ctx: &Context, command: &serenity::all::Comma
     }
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
-            .content(format!(
+            .embed(success_embed(command, COMMAND_UPDATED).description(format!(
                 "Saved server watermark: {} `[all]`, {} `[precise]`, {} default-precise Dialogue event(s).",
                 all, precise, default_precise
-            ))
+            )))
             .ephemeral(true)
     )).await.ok();
 }

@@ -10,7 +10,7 @@ Authorization is managed in `bin/pndc.rs` (one Discord user-id per line):
 - `upper.pandora` — `/attach`, `/init`, `/gentoken`, `/destruct`, `/detach` (privileged workflow)
 - `fansubber.pandora` — `/job` (subtitle-uploader workflow, kept separate from repo-`/init` so a translator/typesetter can be granted the lighter tier without repo-creation rights)
 - `admin.pandora` — `/hearts`, `/gitsync`, `/gitquery`, `/configure`, `/edit`, `/touchwatermark`, `/touchapi`, `/gettranslation`, `/touchtranslation`, `/gettranslationall`, `/touchtranslationall`, `!auth`, `!ban`
-- `witch.pandora` — `/acixconfirm`, `/acixunpublish`, `/akiraconfirm`, `/acixtemplate`, `/touchflavor`, `/lsflavor`, `/rmflavor`, `/touchpool`, `/lspool`, `/rmpool`, `/changerank`, `/fontcheck`, `/touchintro`
+- `witch.pandora` — `/acixconfirm`, `/acixunpublish`, `/akiraconfirm`, `/acixtemplate`, `/touchflavor`, `/lsflavor`, `/rmflavor`, `/touchpool`, `/lspool`, `/rmpool`, `/changerank`, `/fontcheck`, `/touchintro`, `/catlogs`
 
 The level hierarchy is `witch > upper > admin > fansubber > authorize` (rank 4/3/2/1/0). A user is considered to be at "rank R" if they appear in any of `witch.pandora` (R=4), `upper.pandora` (R=3), `admin.pandora` (R=2), `fansubber.pandora` (R=1), or `authorize.pandora` (R=0). `is_authorized(part, id)` consults `min_rank_for_command(part)` and `has_level_at_least(id, min_rank)` — so a higher-ranked user can run any command whose minimum rank is ≤ their own (e.g. an `upper`-tier user can run `/gitsync` because `3 >= 2`). `/help` and `/providers` bypass the allowlists and are visible to everyone. `/auth` and `/rm` additionally verify `has_level_at_least(caller_id, level_rank(target_level))` inside the handler, so a user can only grant/revoke tiers they outrank or equal — an admin can auth `authorize`/`fansubber`/`admin` but not `upper`, and a fansubber-tier user cannot run `/auth` at all.
 
@@ -50,6 +50,7 @@ Server-scoped configuration commands require both their normal Pandora rank and 
 - `/destruct` — **upper-tier**; deletes the channel's Forgejo repo (`delete_repo`) **and** removes the attachment. Irreversible. In-handler, no worker.
 - `/hearts` — admin; reports each shrine layer's `alive` / `last_beat_secs` / `reboot_count`.
 - `/workers` — admin; shows a Discord embed diagram with download, core (configured `prw-*` slots plus `enc-main`), and upload columns, plus active-job details and queued/cache-forward waiting work.
+- `/catlogs <job_id>` — **rank 4 (Witch tier)**; finds `DB/work/<job_id>/log` for an active job or `DB/saved_data/<job_id>/log` for an archived job, packs its log files into `pandora-logs-<job_id>.zip`, and returns the archive privately. Empty/missing log directories are reported without an attachment; archives over the Discord-safe 24 MiB limit are rejected.
 - `/touchworker <type> <name>` / `/lsworker` / `/rmworker <type> <name-or-index>` — witch; add/list/remove configurable download, preview, or upload worker slots. `/rmworker` accepts either the slot name or the 1-based number shown by `/lsworker`. Running pools refresh this config automatically; removed active slots finish their current job first. Legacy `probe`/`prb` type input remains accepted.
 - `/gitsync` — admin; `git fetch` + fast-forward, kills the shrine, archives `DB/work`, `std::process::exit(0)` to restart.
 - `/gitquery` — admin; disables new encode jobs, waits for current encode jobs to finish, then runs the same sync/restart path as `/gitsync`.
@@ -73,6 +74,8 @@ Server-scoped configuration commands require both their normal Pandora rank and 
 - ❌ reaction on a job's response message — emits a `HalfJob(Cancel)` that touches a `CANCEL` sentinel file in the job's working directory; the worker process picks it up via `cancelfile` polling. (`/job` does not participate — it's in-handler, atomic.)
 
 Torrent classification, duplicate handling, and cache behavior are covered in [WORKER.md](WORKER.md).
+
+Worker jobs use localized embeds whose title reflects the real job type (Encode, Probe, Backup, Preview, Studio, and so on). Status appears once in the status field; the details field only carries metrics, links, warnings, or actionable context. Encode presets are intentionally omitted. The source field never renders blank, and Nyaa download endpoints are displayed as their corresponding `/view/<id>` page while the worker continues fetching the canonical `.torrent` endpoint internally.
 
 ## Discord presence
 
@@ -109,12 +112,12 @@ Flow:
    - Default by type: `TL` → `"Translation"`, `TLC` → `"Edit"`, `TS` → `"Typeset"`.
    - If the user supplied a non-empty `commit`, the prefix `[TL]` / `[TLC]` / `[TS]` is prepended (`"[TLC] review pass"`).
 5. Upload via `fg.upsert_file(&owner_repo, &repo_path, &b64, &commit_msg)`. The upsert transparently handles "file already exists" by reading the existing sha and PUTting.
-6. Edit the response with an embed (`EditMessage::new().content("").embed(...)`):
-   - **Repo** (inline) — `owner_repo`.
-   - **File** (inline) — `repo_path`.
-   - **Job** (inline) — `job_id` (the response message id).
-   - **Commit Message** (block) — `commit_msg`.
-   - **Warnings** (block) — `format_warnings_field(&warnings)`: `"None"` if empty, otherwise a bullet list of `<event_number>: <visible line>` and `<N> more similar warnings` entries, truncated to the 1024-char Discord embed field limit with a `…and N more` tail.
+6. Edit the response with a localized success embed (`EditMessage::new().content("").embed(...)`):
+   - **Repository** (inline, linked) — `owner_repo`.
+   - **Job ID** (inline) — `job_id` (the response message id).
+   - **File** (block) — `repo_path`.
+   - **Commit message** (block) — `commit_msg`.
+   - **Warnings** (block) — a localized `None` value when empty, otherwise a bullet list truncated to the Discord embed-field limit with a localized remaining-count tail.
 
 `/job` intentionally does not run `PNASS_LAYER`; it is a repository upload/header-standardisation path only. The Warnings embed field is currently normally `None`.
 

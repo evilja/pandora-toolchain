@@ -2025,7 +2025,7 @@ dependencies = [
 
 [[package]]
 name = "pandora-toolchain"
-version = "3.3.0-capella"
+version = "3.4.0-free"
 dependencies = [
  "ab_glyph",
  "async_zip",

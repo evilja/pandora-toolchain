@@ -53,8 +53,12 @@ pub async fn handle_readmebase(
 
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
-            .content(format!("Set `base.md` for server `{}` ({} bytes, from `{}`).",
-                server_id, attachment_bytes.len(), attachment.filename))
+            .embed(success_embed(command, COMMAND_UPDATED).description(format!(
+                "Set `base.md` for server `{}` ({} bytes, from `{}`).",
+                server_id,
+                attachment_bytes.len(),
+                attachment.filename
+            )))
             .ephemeral(true)
     )).await.ok();
 }

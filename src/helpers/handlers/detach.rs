@@ -22,11 +22,18 @@ pub async fn handle_detach(ctx: &Context, command: &serenity::all::CommandIntera
 
     let _ = tokio::fs::remove_file(meta_path(server_id, channel_id)).await;
 
-    let name_line = if anime_name.is_empty() {
-        String::new()
+    let anime = if anime_name.is_empty() {
+        command_message(command, VALUE_NOT_AVAILABLE)
     } else {
-        format!(" (`{}`)", anime_name)
+        anime_name
     };
-    let _ = response_msg.edit(ctx, EditMessage::new()
-        .content(format!("Detached channel from{}.\nRepo `{}` is left untouched.", name_line, repo_url))).await;
+    let embed = success_embed(command, COMMAND_CHANNEL_DETACHED)
+        .description(command_message(command, COMMAND_REPO_PRESERVED))
+        .field(command_message(command, FIELD_ANIME), anime, true)
+        .field(
+            command_message(command, FIELD_REPO),
+            format!("[{}]({})", repo_url, repo_url),
+            false,
+        );
+    edit_response_embed(ctx, &mut response_msg, embed).await;
 }

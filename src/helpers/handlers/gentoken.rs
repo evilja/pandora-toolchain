@@ -72,12 +72,16 @@ pub async fn handle_gentoken(
     let scope = local_server_id
         .map(|id| format!(" It's bound to this server (`{}`): it uses this server's Google Drive credentials when available, and unlocks the git console (`/init`, `/attach`, `/source`) at `/git`.", id))
         .unwrap_or_default();
+    let embed = success_embed(command, COMMAND_UPDATED)
+        .description(format!(
+            "Created an API bearer token{}.{} It is stored in `{}` and shown only here.",
+            labelled, scope, TOKENS_PATH
+        ))
+        .field("Bearer token", format!("```\n{}\n```", token), false)
+        .field("Usage", "`Authorization: Bearer <token>`", false);
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
-            .content(format!(
-                "Created an API bearer token{}.{} It's stored in `{}` and shown only here:\n```\n{}\n```\nSend it as `Authorization: Bearer <token>`.",
-                labelled, scope, TOKENS_PATH, token
-            ))
+            .embed(embed)
             .ephemeral(true)
     )).await.ok();
 }

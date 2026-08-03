@@ -1,9 +1,15 @@
 use serenity::{
-    all::{CommandDataOption, CommandDataOptionValue, Context, Message},
-    builder::{CreateInteractionResponse, CreateInteractionResponseMessage},
+    all::{Colour, CommandDataOption, CommandDataOptionValue, Context, CreateEmbed, EditMessage, Message},
+    builder::{CreateEmbedFooter, CreateInteractionResponse, CreateInteractionResponseMessage},
+};
+
+use pandora_toolchain::pnworker::messages::{
+    format_message, get_message, COMMAND_WORKING, EMBED_FOOTER,
 };
 
 use super::{parse_repo_url, read_channel_meta, read_server_meta, ChannelMeta};
+
+const PKGVER: &str = env!("CARGO_PKG_VERSION");
 
 pub(super) fn read_credit_option(command: &serenity::all::CommandInteraction, name: &str) -> String {
     option_str(command, name)
@@ -129,10 +135,83 @@ pub(super) async fn working_response(
     command: &serenity::all::CommandInteraction,
     content: &str,
 ) -> Option<Message> {
+    let trimmed = content.trim();
+    let content = if trimmed.ends_with("...") || trimmed.ends_with('…') {
+        command_message(command, COMMAND_WORKING)
+    } else {
+        content.to_string()
+    };
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new().content(content)
     )).await.ok();
     command.get_response(&ctx.http).await.ok()
+}
+
+pub(super) fn command_language(command: &serenity::all::CommandInteraction) -> String {
+    let Some(guild_id) = command.guild_id else {
+        return "tr".to_string();
+    };
+    std::fs::read_to_string(format!("DB/config/{}/meta.pandora", guild_id.get()))
+        .ok()
+        .and_then(|content| content.lines().next().map(str::to_string))
+        .filter(|lang| !lang.trim().is_empty())
+        .unwrap_or_else(|| "tr".to_string())
+}
+
+pub(super) fn command_message(
+    command: &serenity::all::CommandInteraction,
+    id: &str,
+) -> String {
+    get_message(id, &command_language(command))
+}
+
+pub(super) fn command_format(
+    command: &serenity::all::CommandInteraction,
+    id: &str,
+    args: &[String],
+) -> String {
+    format_message(id, &command_language(command), args)
+}
+
+pub(super) fn success_embed(
+    command: &serenity::all::CommandInteraction,
+    title_id: &str,
+) -> CreateEmbed {
+    command_embed(command, title_id, Colour::DARK_GREEN)
+}
+
+pub(super) fn info_embed(
+    command: &serenity::all::CommandInteraction,
+    title_id: &str,
+) -> CreateEmbed {
+    command_embed(command, title_id, Colour::BLUE)
+}
+
+fn command_embed(
+    command: &serenity::all::CommandInteraction,
+    title_id: &str,
+    colour: Colour,
+) -> CreateEmbed {
+    let lang = command_language(command);
+    CreateEmbed::new()
+        .title(get_message(title_id, &lang))
+        .colour(colour)
+        .footer(CreateEmbedFooter::new(format_message(
+            EMBED_FOOTER,
+            &lang,
+            &[PKGVER.to_string()],
+        )))
+        .timestamp(serenity::model::Timestamp::now())
+}
+
+pub(super) async fn edit_response_embed(
+    ctx: &Context,
+    response: &mut Message,
+    embed: CreateEmbed,
+) {
+    let _ = response
+        .edit(ctx, EditMessage::new().content("").embed(embed))
+        .await;
 }
 
 pub(super) async fn attached_repo(

@@ -16,7 +16,7 @@ pub async fn handle_source(ctx: &Context, command: &serenity::all::CommandIntera
         Some(id) => id,
         None => return,
     };
-    let (_meta, owner_repo, _repo_url) = match attached_repo(ctx, command, server_id, Some(episode)).await {
+    let (_meta, owner_repo, repo_url) = match attached_repo(ctx, command, server_id, Some(episode)).await {
         Some(t) => t,
         None => return,
     };
@@ -45,8 +45,33 @@ pub async fn handle_source(ctx: &Context, command: &serenity::all::CommandIntera
     match fg.upsert_file(&owner_repo, &source_path, &source_b64, "Set source link").await {
         Ok(()) => {
             remove_gitkeep_for_path(&fg, &owner_repo, &source_path).await;
-            let _ = response_msg.edit(ctx, EditMessage::new()
-                .content(format!("Wrote `{}` with:\n```\n{}\n```", source_path, source_content.trim_end()))).await;
+            let source_display = if link.starts_with("magnet:") {
+                command_message(command, VALUE_MAGNET_HIDDEN)
+            } else {
+                source_link(&link)
+            };
+            let embed = success_embed(command, COMMAND_SOURCE_UPDATED)
+                .field(
+                    command_message(command, FIELD_REPO),
+                    format!("[{}]({})", owner_repo, repo_url),
+                    true,
+                )
+                .field(
+                    command_message(command, FIELD_EPISODE),
+                    format!("`{}`", episode),
+                    true,
+                )
+                .field(
+                    command_message(command, FIELD_PATH),
+                    format!("`{}`", source_path),
+                    false,
+                )
+                .field(
+                    command_message(command, FIELD_SOURCE),
+                    source_display,
+                    false,
+                );
+            edit_response_embed(ctx, &mut response_msg, embed).await;
         }
         Err(e) => {
             let _ = response_msg.edit(ctx, EditMessage::new()

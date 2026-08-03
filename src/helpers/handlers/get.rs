@@ -17,7 +17,7 @@ pub async fn handle_get(ctx: &Context, command: &serenity::all::CommandInteracti
         Some(id) => id,
         None => return,
     };
-    let (meta, owner_repo, _repo_url) = match attached_repo(ctx, command, server_id, Some(episode)).await {
+    let (meta, owner_repo, repo_url) = match attached_repo(ctx, command, server_id, Some(episode)).await {
         Some(t) => t,
         None => return,
     };
@@ -69,6 +69,27 @@ pub async fn handle_get(ctx: &Context, command: &serenity::all::CommandInteracti
         "TL" => "Translation",
         _ => "Typeset",
     };
-    let _ = response_msg.edit(ctx, EditMessage::new()
-        .content(format!("{} file for episode {}:\n{}\n`{}`", label, episode, download_url, path))).await;
+    let embed = success_embed(command, COMMAND_FILE_READY)
+        .description(format!("**{}**", label))
+        .field(
+            command_message(command, FIELD_REPO),
+            format!("[{}]({})", owner_repo, repo_url),
+            true,
+        )
+        .field(
+            command_message(command, FIELD_EPISODE),
+            format!("`{}`", episode),
+            true,
+        )
+        .field(
+            command_message(command, FIELD_PATH),
+            format!("`{}`", path),
+            false,
+        )
+        .field(
+            command_message(command, FIELD_FILE),
+            format!("[{}]({})", command_message(command, LINK_DOWNLOAD), download_url),
+            false,
+        );
+    edit_response_embed(ctx, &mut response_msg, embed).await;
 }

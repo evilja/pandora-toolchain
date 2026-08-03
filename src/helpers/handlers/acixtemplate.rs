@@ -111,12 +111,12 @@ pub async fn handle_acixtemplate(
 
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
-            .content(format!(
+            .embed(success_embed(command, COMMAND_UPDATED).description(format!(
                 "AnimeciX fansub template for server `{}` set to **{}** (`{}`).",
                 server_id,
                 template.display_name(),
                 template.id,
-            ))
+            )))
             .ephemeral(true)
     )).await.ok();
 }

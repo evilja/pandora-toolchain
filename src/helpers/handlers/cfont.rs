@@ -95,10 +95,20 @@ pub async fn handle_cfont(ctx: &Context, command: &serenity::all::CommandInterac
 }
 
 async fn respond(ctx: &Context, command: &serenity::all::CommandInteraction, content: String) {
-    command
-        .edit_response(ctx, EditInteractionResponse::new().content(content))
-        .await
-        .ok();
+    let lower = content.to_ascii_lowercase();
+    let edit = if lower.starts_with("failed") || lower.contains(" was not found") {
+        EditInteractionResponse::new().content(content)
+    } else {
+        let embed = if lower.contains(" set to ") {
+            success_embed(command, COMMAND_UPDATED)
+        } else {
+            info_embed(command, COMMAND_LIST)
+        };
+        EditInteractionResponse::new()
+            .content("")
+            .embed(embed.description(content))
+    };
+    command.edit_response(ctx, edit).await.ok();
 }
 
 pub async fn handle_cfont_autocomplete(

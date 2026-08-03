@@ -4,8 +4,9 @@ use serenity::{
     builder::{CreateActionRow, CreateCommand, CreateCommandOption, CreateInteractionResponse, CreateInteractionResponseMessage, CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, EditChannel},
     prelude::*,
 };
-use pandora_toolchain::lib::p2p::nyaaise::{nyaaise, TorrentType};
+use pandora_toolchain::lib::p2p::nyaaise::{display_source_link, nyaaise, TorrentType};
 use pandora_toolchain::pnworker::core::{HalfJob, Job, JobClass, JobType, KeepRequest, KeycodeRequest};
+use pandora_toolchain::pnworker::messages::{COMMAND_LIST, COMMAND_UPDATED};
 use pandora_toolchain::pnworker::util::{CliParam, PathValue, ToolResult, run_tool};
 use pandora_toolchain::pnworker::tools::PNASS_JOB;
 use pandora_toolchain::pnworker::tools::PNASS_MERGE;
@@ -154,7 +155,11 @@ async fn handle_encode_command(
             if let Some(mut job) = handle_interaction(ctx, command, String::new()).await {
                 job.job_type = JobType::Pancode;
                 job.torrent = nyaaise(&probe_source);
-                job.display_link = Some(format!("{} : {}", probe_source, file_index));
+                job.display_link = Some(format!(
+                    "{} • file #{}",
+                    display_source_link(&probe_source),
+                    file_index
+                ));
                 job.probe_job_id = Some(probe_job_id);
                 job.probe_file_index = Some(file_index);
                 tx.send(JobClass::Job(job)).await.unwrap();
@@ -242,7 +247,7 @@ async fn handle_lspool(ctx: &Context, command: &serenity::all::CommandInteractio
             ctx,
             CreateInteractionResponse::Message(
                 CreateInteractionResponseMessage::new()
-                    .content(body)
+                    .embed(info_embed(command, COMMAND_LIST).description(body))
                     .ephemeral(true),
             ),
         )
@@ -273,7 +278,8 @@ async fn handle_touchpool(ctx: &Context, command: &serenity::all::CommandInterac
             ctx,
             CreateInteractionResponse::Message(
                 CreateInteractionResponseMessage::new()
-                    .content(format!("Added keyword pool entry `{}`.", keyword))
+                    .embed(success_embed(command, COMMAND_UPDATED)
+                        .description(format!("Added keyword pool entry `{}`.", keyword)))
                     .ephemeral(true),
             ),
         )
@@ -305,7 +311,8 @@ async fn handle_rmpool(ctx: &Context, command: &serenity::all::CommandInteractio
             ctx,
             CreateInteractionResponse::Message(
                 CreateInteractionResponseMessage::new()
-                    .content(format!("Removed keyword pool entry `{}`.", keyword))
+                    .embed(success_embed(command, COMMAND_UPDATED)
+                        .description(format!("Removed keyword pool entry `{}`.", keyword)))
                     .ephemeral(true),
             ),
         )
@@ -355,7 +362,7 @@ async fn handle_lsworker(ctx: &Context, command: &serenity::all::CommandInteract
             ctx,
             CreateInteractionResponse::Message(
                 CreateInteractionResponseMessage::new()
-                    .content(lines.join("\n"))
+                    .embed(info_embed(command, COMMAND_LIST).description(lines.join("\n")))
                     .ephemeral(true),
             ),
         )
@@ -387,12 +394,12 @@ async fn handle_touchworker(ctx: &Context, command: &serenity::all::CommandInter
                     ctx,
                     CreateInteractionResponse::Message(
                         CreateInteractionResponseMessage::new()
-                            .content(format!(
+                            .embed(success_embed(command, COMMAND_UPDATED).description(format!(
                                 "Added {} worker `{}`. {} slot(s) configured.",
                                 kind.label(),
                                 name,
                                 count
-                            ))
+                            )))
                             .ephemeral(true),
                     ),
                 )
@@ -421,7 +428,8 @@ async fn handle_rmworker(ctx: &Context, command: &serenity::all::CommandInteract
                     ctx,
                     CreateInteractionResponse::Message(
                         CreateInteractionResponseMessage::new()
-                            .content(format!("Removed {} worker `{}`.", kind.label(), name))
+                            .embed(success_embed(command, COMMAND_UPDATED)
+                                .description(format!("Removed {} worker `{}`.", kind.label(), name)))
                             .ephemeral(true),
                     ),
                 )
@@ -501,6 +509,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("touchworker", 4),
     ("lsworker", 4),
     ("rmworker", 4),
+    ("catlogs", 4),
     ("lsauth", 3),
     ("acixconfirm", 4),
     ("acixunpublish", 4),
@@ -793,6 +802,13 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Show worker slots and active jobs.",
             usage: "/workers",
             details: "Reports the current download, encode, probe, and upload worker slots from the live orchestrator queue.",
+        },
+        HelpCommand {
+            section: "workers",
+            name: "catlogs",
+            summary: "Download a job's worker logs.",
+            usage: "/catlogs job_id:<id>",
+            details: "Packs the job's active or archived log directory into one private ZIP attachment. Witch tier only.",
         },
         HelpCommand {
             section: "workers",
@@ -1996,6 +2012,9 @@ impl EventHandler for Handler {
                 "rmworker" => {
                     handle_rmworker(&ctx, &command).await;
                 }
+                "catlogs" => {
+                    handle_catlogs(&ctx, &command).await;
+                }
                 "lsauth" => {
                     handle_lsauth(&ctx, &command).await;
                 }
@@ -2822,6 +2841,12 @@ impl EventHandler for Handler {
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "name", "Worker slot name or /lsworker index")
+                        .required(true)
+                ),
+            CreateCommand::new("catlogs")
+                .description("Download a job's logs as a ZIP (Witch only)")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "job_id", "Job ID from a Pandora job message")
                         .required(true)
                 ),
             CreateCommand::new("lsauth")

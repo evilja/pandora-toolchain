@@ -34,16 +34,32 @@ pub async fn handle_fontcheck(
     all_names.extend(global.names.iter().cloned());
     all_names.extend(server.names.iter().cloned());
 
-    let body = format!(
-        "**Font check**\nGlobal (`DB/fontconfig/global`): {} file(s), {} unique name(s)\nServer (`DB/fontconfig/{}`): {} file(s), {} unique name(s)\nTotal unique usable fonts: {}",
-        global.files,
-        global.names.len(),
-        server_id,
-        server.files,
-        server.names.len(),
-        all_names.len()
-    );
-    let _ = response_msg.edit(ctx, EditMessage::new().content(body)).await;
+    let embed = info_embed(command, COMMAND_FONT_CHECK)
+        .field(
+            command_message(command, FIELD_GLOBAL),
+            format!(
+                "`DB/fontconfig/global`\n{} file(s) • {} unique name(s)",
+                global.files,
+                global.names.len()
+            ),
+            true,
+        )
+        .field(
+            command_message(command, FIELD_SERVER),
+            format!(
+                "`DB/fontconfig/{}`\n{} file(s) • {} unique name(s)",
+                server_id,
+                server.files,
+                server.names.len()
+            ),
+            true,
+        )
+        .field(
+            command_message(command, FIELD_TOTAL),
+            format!("`{}` unique usable font(s)", all_names.len()),
+            false,
+        );
+    edit_response_embed(ctx, &mut response_msg, embed).await;
 }
 
 struct FontCount {

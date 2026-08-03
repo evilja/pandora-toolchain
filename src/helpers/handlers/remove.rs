@@ -32,14 +32,16 @@ pub async fn handle_remove(
         Ok(true) => {
             command.create_response(ctx, CreateInteractionResponse::Message(
                 CreateInteractionResponseMessage::new()
-                    .content(format!("Removed <@{}> from `{}`.", user_id, level))
+                    .embed(success_embed(command, COMMAND_UPDATED)
+                        .description(format!("Removed <@{}> from `{}`.", user_id, level)))
                     .ephemeral(true)
             )).await.ok();
         }
         Ok(false) => {
             command.create_response(ctx, CreateInteractionResponse::Message(
                 CreateInteractionResponseMessage::new()
-                    .content(format!("<@{}> was not in `{}`.", user_id, level))
+                    .embed(info_embed(command, COMMAND_LIST)
+                        .description(format!("<@{}> was not in `{}`.", user_id, level)))
                     .ephemeral(true)
             )).await.ok();
         }

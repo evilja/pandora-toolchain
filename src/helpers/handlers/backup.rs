@@ -5,14 +5,7 @@ pub async fn handle_backup(
     command: &serenity::all::CommandInteraction,
     torrent_url: String,
 ) -> Option<Job> {
-    command.create_response(ctx, CreateInteractionResponse::Message(
-        CreateInteractionResponseMessage::new().content("Backup process will begin shortly after...")
-    )).await.ok();
-
-    let response_msg = match command.get_response(&ctx.http).await {
-        Ok(m) => m,
-        Err(_) => return None,
-    };
+    let response_msg = working_response(ctx, command, "...").await?;
 
     Some(Job::new(
         command.user.id.get(),

@@ -39,6 +39,7 @@ mod translation;
 mod addintro;
 mod watermark;
 mod studio;
+mod catlogs;
 #[allow(unused_imports)]
 pub use self::message::handle_message;
 pub use self::probe::handle_probe;
@@ -79,7 +80,9 @@ pub use self::translation::{handle_addtranslation, handle_addtranslationall, han
 pub use self::addintro::handle_addintro;
 pub use self::watermark::handle_touchwatermark;
 pub use self::studio::handle_studio;
+pub use self::catlogs::handle_catlogs;
 
+use pandora_toolchain::pnworker::messages::*;
 use pandora_toolchain::pnworker::util::IntrosConfig;
 use pandora_toolchain::lib::env::standard::{
     CLIENT_ID, CLIENT_SECRET, ENV_PATH, ENV_SEP, PARENTID, REFRESH_TOKEN,
@@ -664,20 +667,47 @@ async fn run_attach_or_init(
     }
 
     let created_list = if created.is_empty() {
-        "_none — repo already had all folders and README_".to_string()
+        command_message(command, VALUE_NONE)
     } else {
-        created.join(", ")
+        let shown = created.iter().take(20).cloned().collect::<Vec<_>>().join(", ");
+        if created.len() > 20 {
+            format!("{}\n{}", shown, command_format(command, WARNINGS_MORE, &[(created.len() - 20).to_string()]))
+        } else {
+            shown
+        }
     };
     let renamed = try_rename_channel_to_anime(ctx, command.channel_id, &meta.name).await;
-    let rename_line = match &renamed {
-        Some(n) => format!("\nChannel renamed: `{}`", n),
-        None => String::new(),
-    };
-    let body = format!(
-        "**{}** — attached to this channel.\nName: `{}`\nSlug: `{}`\nKind: `{}`\nEpisodes: `{}`\nRepo: <{}>\nCreated/updated: {}{}",
-        label, meta.name, meta.slug, kind_label(&meta.kind), meta.episode_count, repo_url, created_list, rename_line,
-    );
-    let _ = response_msg.edit(ctx, EditMessage::new().content(body)).await;
+    let mut embed = success_embed(command, COMMAND_REPO_ATTACHED)
+        .description(format!("**{}**", meta.name))
+        .field(command_message(command, FIELD_SLUG), format!("`{}`", meta.slug), true)
+        .field(
+            command_message(command, FIELD_KIND),
+            format!("`{}`", kind_label(&meta.kind)),
+            true,
+        )
+        .field(
+            command_message(command, FIELD_EPISODES),
+            format!("`{}`", meta.episode_count),
+            true,
+        )
+        .field(
+            command_message(command, FIELD_REPO),
+            format!("[{}]({})", owner_repo, repo_url),
+            false,
+        )
+        .field(
+            command_message(command, FIELD_CREATED),
+            created_list,
+            false,
+        );
+    if let Some(name) = renamed {
+        embed = embed.field(
+            command_message(command, FIELD_CHANNEL),
+            format!("<#{}> • `{}`", command.channel_id.get(), name),
+            false,
+        );
+    }
+    edit_response_embed(ctx, &mut response_msg, embed).await;
 }
 
 enum JobKind { TL, TLC, TS }
@@ -1111,35 +1141,33 @@ fn base64_decode_bytes(input: &str) -> Result<Vec<u8>, String> {
 }
 
 fn source_link(link: &str) -> String {
-    let trimmed = link.trim();
-    let re = Regex::new(r"^(https://nyaa\.(?:si|land))/(?:download|view)/([0-9]+)(?:\.torrent|/torrent)?/?$").unwrap();
-    match re.captures(trimmed) {
-        Some(caps) => format!("{}/view/{}", caps.get(1).unwrap().as_str(), caps.get(2).unwrap().as_str()),
-        None => trimmed.to_string(),
-    }
+    display_source_link(link)
 }
 
-fn format_warnings_field(warnings: &[String]) -> String {
+fn format_warnings_field(
+    warnings: &[String],
+    command: &serenity::all::CommandInteraction,
+) -> String {
     if warnings.is_empty() {
-        return "None".to_string();
+        return command_message(command, VALUE_NONE);
     }
-    const LIMIT: usize = 1000;
+    const LIMIT: usize = 980;
     let mut out = String::new();
     let mut count = 0usize;
-    for w in warnings {
-        let piece = format!("- {}\n", w);
+    for warning in warnings {
+        let piece = format!("• {}\n", warning);
         if out.len() + piece.len() > LIMIT {
-            out.push_str(&format!("…and {} more", warnings.len() - count));
+            out.push_str(&command_format(
+                command,
+                WARNINGS_MORE,
+                &[(warnings.len() - count).to_string()],
+            ));
             return out;
         }
         out.push_str(&piece);
         count += 1;
     }
-    if out.len() > 1024 {
-        out.truncate(1021);
-        out.push_str("…");
-    }
-    out
+    out.trim_end().to_string()
 }
 
 fn github_blob_to_raw(url: &str) -> String {

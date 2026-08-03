@@ -121,7 +121,16 @@ pub async fn handle_addintro(
         Ok(()) => {
             cleanup_addintro_tmp(&tmp_dir).await;
             let paths = file_names.iter().map(|file| final_dir.join(file).display().to_string()).collect::<Vec<_>>();
-            addintro_response(ctx, command, format!("Added intro group `{}` with {} variants in `{}`:\n{}", name, paths.len(), final_dir.display(), paths.iter().map(|p| format!("`{}`", p)).collect::<Vec<_>>().join("\n"))).await;
+            let content = format!("Added intro group `{}` with {} variants in `{}`:\n{}", name, paths.len(), final_dir.display(), paths.iter().map(|p| format!("`{}`", p)).collect::<Vec<_>>().join("\n"));
+            command
+                .edit_response(
+                    ctx,
+                    EditInteractionResponse::new()
+                        .content("")
+                        .embed(success_embed(command, COMMAND_UPDATED).description(content)),
+                )
+                .await
+                .ok();
         }
         Err(e) => {
             cleanup_addintro_tmp(&tmp_dir).await;

@@ -936,19 +936,25 @@ async fn handle_half_job(
         JobType::Hearts => {
             let mut frontend = halfjob.frontend;
             let statuses = shrine.hearts();
-            let mut embed_text = String::new();
+            let all_alive = statuses.iter().all(|status| status.alive);
+            let mut details = String::new();
             for status in statuses {
                 let beat = if status.alive {
-                    format!("✅ Last beat {}s ago", status.last_beat_secs)
+                    format!("✅ Last beat `{}s` ago", status.last_beat_secs)
                 } else {
-                    format!("❌ Dead")
+                    "❌ No heartbeat".to_string()
                 };
-                embed_text.push_str(&format!(
-                    "**{:?}** — {} | Reboots: {}\n",
+                details.push_str(&format!(
+                    "**{:?}** — {} • reboots `{}`\n",
                     status.worker, beat, status.reboot_count
                 ));
             }
-            frontend.set_text(&embed_text).await;
+            let embed = CreateEmbed::new()
+                .title("💗 Pandora shrine health")
+                .description(details)
+                .colour(if all_alive { serenity::all::Colour::DARK_GREEN } else { serenity::all::Colour::RED })
+                .timestamp(serenity::model::Timestamp::now());
+            frontend.set_embed(embed).await;
         }
         JobType::Workers => {
             let mut frontend = halfjob.frontend;

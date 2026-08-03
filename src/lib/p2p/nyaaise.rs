@@ -1,10 +1,3 @@
-
-// magnet:?xt=urn:btih:109c9fc9ffbc4c320296d0569db67c451f49c069&dn=%5BErai-raws%5D%20Hell%20Mode%3A%20Yarikomizuki%20no%20Gamer%20wa%20Hai%20Settei%20no%20Isekai%20de%20Musou%20suru%20-%2007%20%5B720p%20ADN%20WEB-DL%20AVC%20AAC%5D%5BMultiSub%5D%5BA31978B8%5D&tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce
-// https://nyaa.si/download/2075946.torrent
-// https://nyaa.si/view/2075111/torrent
-// https://nyaa.si/view/2070406
-// https://nyaa.si/download/2070406
-
 #[derive(Clone)]
 pub enum TorrentType {
     Magnet(String),
@@ -12,83 +5,73 @@ pub enum TorrentType {
     GDrive(String),
     Direct(String),
 }
+
 impl TorrentType {
     pub fn get(&self) -> String {
         match self {
-            TorrentType::Link(a) => a.clone(),
-            TorrentType::Magnet(a) => a.clone(),
-            TorrentType::GDrive(a) => a.clone(),
-            TorrentType::Direct(a) => a.clone(),
+            TorrentType::Link(value)
+            | TorrentType::Magnet(value)
+            | TorrentType::GDrive(value)
+            | TorrentType::Direct(value) => value.clone(),
         }
     }
+
     pub fn get_arg(&self) -> String {
         match self {
             TorrentType::Magnet(_) => "magnet".to_string(),
             TorrentType::GDrive(_) => "gdrive".to_string(),
             TorrentType::Direct(_) => "direct".to_string(),
-            _ => "nomagnet".to_string()
+            TorrentType::Link(_) => "nomagnet".to_string(),
         }
     }
+
     pub fn display(&self) -> String {
         match self {
-            TorrentType::Link(a) => a.clone(),
-            TorrentType::GDrive(a) => a.clone(),
-            TorrentType::Direct(a) => a.clone(),
-            TorrentType::Magnet(_) => String::from("Magnet linki gösterilmiyor.")
-        }
-    }
-}
-#[derive(Clone)]
-enum Method {
-    Eliminate,
-    DoNothing,
-}
-#[derive(Clone)]
-pub struct Pattern {
-    startswith: Option<&'static str>,
-    endswith: Option<&'static str>,
-    method: Method,
-}
-impl Pattern {
-    pub fn is_match(&self, string: &str) -> Result<String, ()> {
-        let mut sw:Option<usize> = None;
-        let mut ew:Option<usize> = None;
-        if let Some(a) = self.startswith {
-            if !string.starts_with(a) { return Err(()); }
-            sw = Some(a.len());
-        }
-        if let Some(a) = self.endswith {
-            if !string.ends_with(a) { return Err(()); }
-            ew = Some(a.len());
-        }
-        match self.method {
-            Method::DoNothing => {
-                return Ok(string.to_string());
-            }
-            Method::Eliminate => {
-                let mut mystring = string.to_string();
-                if let Some(a) = sw {
-                    mystring = mystring[a..].into();
-                }
-                if let Some(b) = ew {
-                    mystring = mystring[..=mystring.len()-(b+1)].into()
-                }
-                return Ok(format!("https://nyaa.si/download/{}.torrent", mystring));
-            }
+            TorrentType::Link(value)
+            | TorrentType::GDrive(value)
+            | TorrentType::Direct(value) => display_source_link(value),
+            TorrentType::Magnet(_) => "Magnet link hidden".to_string(),
         }
     }
 }
 
-const PATTERNS: [Pattern; 8] = [
-    Pattern { startswith: Some("https://nyaa.si/download/"), endswith: Some(".torrent"), method: Method::DoNothing },
-    Pattern { startswith: Some("https://nyaa.si/view/"), endswith: Some("/torrent"), method: Method::Eliminate },
-    Pattern { startswith: Some("https://nyaa.si/download/"), endswith: None, method: Method::Eliminate },
-    Pattern { startswith: Some("https://nyaa.si/view/"), endswith: None, method: Method::Eliminate },
-    Pattern { startswith: Some("https://nyaa.land/download/"), endswith: Some(".torrent"), method: Method::DoNothing },
-    Pattern { startswith: Some("https://nyaa.land/view/"), endswith: Some("/torrent"), method: Method::Eliminate },
-    Pattern { startswith: Some("https://nyaa.land/download/"), endswith: None, method: Method::Eliminate },
-    Pattern { startswith: Some("https://nyaa.land/view/"), endswith: None, method: Method::Eliminate },
-];
+// Nyaa links are downloaded through the canonical .torrent endpoint, while user-facing messages
+// and SOURCE.md use the corresponding view page on the same Nyaa host.
+pub fn display_source_link(input: &str) -> String {
+    nyaa_link_parts(input)
+        .map(|(origin, id)| format!("{}/view/{}", origin, id))
+        .unwrap_or_else(|| input.trim().to_string())
+}
+
+fn nyaa_download_link(input: &str) -> Option<String> {
+    nyaa_link_parts(input).map(|(origin, id)| format!("{}/download/{}.torrent", origin, id))
+}
+
+fn nyaa_link_parts(input: &str) -> Option<(String, String)> {
+    let url = reqwest::Url::parse(input.trim()).ok()?;
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return None;
+    }
+    let host = url.host_str()?;
+    if host != "nyaa.si" && host != "nyaa.land" {
+        return None;
+    }
+    let segments = url
+        .path_segments()?
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    let raw_id = match segments.as_slice() {
+        ["download", id] => *id,
+        ["view", id] => *id,
+        ["view", id, "torrent"] => *id,
+        _ => return None,
+    };
+    let id = raw_id.strip_suffix(".torrent").unwrap_or(raw_id);
+    if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    Some((format!("{}://{}", url.scheme(), host), id.to_string()))
+}
 
 fn is_direct_video_url(input: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(input) else {
@@ -97,158 +80,112 @@ fn is_direct_video_url(input: &str) -> bool {
     if url.scheme() != "http" && url.scheme() != "https" {
         return false;
     }
-    let Some(segment) = url.path_segments().and_then(|mut s| s.next_back()) else {
+    let Some(segment) = url.path_segments().and_then(|mut segments| segments.next_back()) else {
         return false;
     };
     let lower = segment.to_ascii_lowercase();
     ["mkv", "mp4", "m4v", "mov", "avi", "webm", "ts", "m2ts"]
         .iter()
-        .any(|ext| lower.ends_with(&format!(".{}", ext)))
+        .any(|extension| lower.ends_with(&format!(".{}", extension)))
 }
 
-pub fn nyaaise(str: &str) -> TorrentType {
-
-    if str.starts_with("https://nyaa") {
-
-        for patt in PATTERNS {
-            match patt.is_match(str) {
-                Ok(a) => {println!("{}", a);
-                    return TorrentType::Link(a)}
-                Err(_) => {}
-            }
-        }
-        return TorrentType::Link(String::new())
-    } else if str.starts_with("magnet:") {
-        return TorrentType::Magnet(str.to_string())
-    } else if str.starts_with("https://drive.google.com/")
-        || str.starts_with("https://drive.usercontent.google.com/")
+pub fn nyaaise(input: &str) -> TorrentType {
+    let input = input.trim();
+    if let Some(download) = nyaa_download_link(input) {
+        println!("{}", download);
+        TorrentType::Link(download)
+    } else if input.starts_with("magnet:") {
+        TorrentType::Magnet(input.to_string())
+    } else if input.starts_with("https://drive.google.com/")
+        || input.starts_with("https://drive.usercontent.google.com/")
     {
-        return TorrentType::GDrive(str.to_string())
-    } else if is_direct_video_url(str) {
-        return TorrentType::Direct(str.to_string())
+        TorrentType::GDrive(input.to_string())
+    } else if is_direct_video_url(input) {
+        TorrentType::Direct(input.to_string())
+    } else {
+        TorrentType::Link(input.to_string())
     }
-    TorrentType::Link(str.to_string())
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::lib::p2p::nyaaise::nyaaise;
-    use crate::lib::p2p::nyaaise::TorrentType;
+    use super::{display_source_link, nyaaise, TorrentType};
 
-    #[test]
-    fn nyaa_true() {
-        let link = "https://nyaa.si/download/2075946.torrent";
-        let expected = "https://nyaa.si/download/2075946.torrent";
-        let ab = nyaaise(link);
-        match ab {
-            TorrentType::Link(a) => {
-                assert_eq!(expected, a);
-            }
-            TorrentType::Magnet(_) => {
-                panic!("Magnet not expected")
-            }
-            TorrentType::GDrive(_) => {
-                panic!("GDrive not expected")
-            }
-            TorrentType::Direct(_) => {
-                panic!("Direct not expected")
-            }
-        }
-    }
-    #[test]
-    fn nyaa_view_torrent() {
-        let link = "https://nyaa.si/view/2075946/torrent";
-        let expected = "https://nyaa.si/download/2075946.torrent";
-        let ab = nyaaise(link);
-        match ab {
-            TorrentType::Link(a) => {
-                assert_eq!(expected, a);
-            }
-            TorrentType::Magnet(_) => {
-                panic!("Magnet not expected")
-            }
-            TorrentType::GDrive(_) => {
-                panic!("GDrive not expected")
-            }
-            TorrentType::Direct(_) => {
-                panic!("Direct not expected")
-            }
-        }
-    }
-    #[test]
-    fn nyaa_download() {
-        let link = "https://nyaa.si/view/2075946";
-        let expected = "https://nyaa.si/download/2075946.torrent";
-        let ab = nyaaise(link);
-        match ab {
-            TorrentType::Link(a) => {
-                assert_eq!(expected, a);
-            }
-            TorrentType::Magnet(_) => {
-                panic!("Magnet not expected")
-            }
-            TorrentType::GDrive(_) => {
-                panic!("GDrive not expected")
-            }
-            TorrentType::Direct(_) => {
-                panic!("Direct not expected")
-            }
-        }
-    }
-    #[test]
-    fn nyaa_view() {
-        let link = "https://nyaa.si/download/2075946";
-        let expected = "https://nyaa.si/download/2075946.torrent";
-        let ab = nyaaise(link);
-        match ab {
-            TorrentType::Link(a) => {
-                assert_eq!(expected, a);
-            }
-            TorrentType::Magnet(_) => {
-                panic!("Magnet not expected")
-            }
-            TorrentType::GDrive(_) => {
-                panic!("GDrive not expected")
-            }
-            TorrentType::Direct(_) => {
-                panic!("Direct not expected")
-            }
-        }
-    }
-    #[test]
-    fn magnet() {
-        let link = "magnet:?xt=urn:btih:109c9fc9ffbc4c320296d0569db67c451f49c069&dn=%5BErai-raws%5D%20Hell%20Mode%3A%20Yarikomizuki%20no%20Gamer%20wa%20Hai%20Settei%20no%20Isekai%20de%20Musou%20suru%20-%2007%20%5B720p%20ADN%20WEB-DL%20AVC%20AAC%5D%5BMultiSub%5D%5BA31978B8%5D&tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce";
-        let expected = "magnet:?xt=urn:btih:109c9fc9ffbc4c320296d0569db67c451f49c069&dn=%5BErai-raws%5D%20Hell%20Mode%3A%20Yarikomizuki%20no%20Gamer%20wa%20Hai%20Settei%20no%20Isekai%20de%20Musou%20suru%20-%2007%20%5B720p%20ADN%20WEB-DL%20AVC%20AAC%5D%5BMultiSub%5D%5BA31978B8%5D&tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce";
-        let ab = nyaaise(link);
-        match ab {
-            TorrentType::Link(_) => {
-                panic!("Magnet not expected");
-            }
-            TorrentType::Magnet(a) => {
-                assert_eq!(expected, a);
-            }
-            TorrentType::GDrive(_) => {
-                panic!("GDrive not expected")
-            }
-            TorrentType::Direct(_) => {
-                panic!("Direct not expected")
-            }
+    fn link_value(value: TorrentType) -> String {
+        match value {
+            TorrentType::Link(link) => link,
+            _ => panic!("link not detected"),
         }
     }
 
     #[test]
-    fn direct_video() {
-        let link = "https://pub9.animeout.com/series/00RAPIDBOT/Snack%20Basue/[AnimeOut]%20Snack%20Basue%20-%2008%201080pp%20[4EE8E501][1080pp][SubsPlease][RapidBot].mkv";
-        let ab = nyaaise(link);
-        match ab {
-            TorrentType::Direct(a) => {
-                assert_eq!(link, a);
-            }
-            _ => {
-                panic!("Direct not detected")
-            }
+    fn nyaa_download_torrent_is_canonicalized_for_fetching() {
+        assert_eq!(
+            link_value(nyaaise("https://nyaa.si/download/2075946.torrent")),
+            "https://nyaa.si/download/2075946.torrent"
+        );
+    }
+
+    #[test]
+    fn nyaa_view_variants_are_canonicalized_for_fetching() {
+        for link in [
+            "https://nyaa.si/view/2075946/torrent",
+            "https://nyaa.si/view/2075946",
+            "https://nyaa.si/download/2075946",
+            "https://nyaa.si/view/2075946/",
+        ] {
+            assert_eq!(
+                link_value(nyaaise(link)),
+                "https://nyaa.si/download/2075946.torrent"
+            );
         }
     }
 
-    // magnet:?xt=urn:btih:109c9fc9ffbc4c320296d0569db67c451f49c069&dn=%5BErai-raws%5D%20Hell%20Mode%3A%20Yarikomizuki%20no%20Gamer%20wa%20Hai%20Settei%20no%20Isekai%20de%20Musou%20suru%20-%2007%20%5B720p%20ADN%20WEB-DL%20AVC%20AAC%5D%5BMultiSub%5D%5BA31978B8%5D&tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce
+    #[test]
+    fn nyaa_land_keeps_its_host() {
+        assert_eq!(
+            link_value(nyaaise("https://nyaa.land/view/1234")),
+            "https://nyaa.land/download/1234.torrent"
+        );
+        assert_eq!(
+            display_source_link("https://nyaa.land/download/1234.torrent"),
+            "https://nyaa.land/view/1234"
+        );
+    }
+
+    #[test]
+    fn nyaa_displays_as_view_page() {
+        assert_eq!(
+            display_source_link("https://nyaa.si/download/2075946.torrent"),
+            "https://nyaa.si/view/2075946"
+        );
+        let torrent = nyaaise("https://nyaa.si/view/2075946");
+        assert_eq!(torrent.display(), "https://nyaa.si/view/2075946");
+    }
+
+    #[test]
+    fn malformed_nyaa_link_is_not_replaced_with_a_blank_source() {
+        assert_eq!(
+            link_value(nyaaise("https://nyaa.si/view/not-a-number")),
+            "https://nyaa.si/view/not-a-number"
+        );
+    }
+
+    #[test]
+    fn magnet_is_detected() {
+        let link = "magnet:?xt=urn:btih:109c9fc9ffbc4c320296d0569db67c451f49c069";
+        match nyaaise(link) {
+            TorrentType::Magnet(value) => assert_eq!(value, link),
+            _ => panic!("magnet not detected"),
+        }
+    }
+
+    #[test]
+    fn direct_video_is_detected() {
+        let link = "https://example.com/video/input.mkv";
+        match nyaaise(link) {
+            TorrentType::Direct(value) => assert_eq!(value, link),
+            _ => panic!("direct video not detected"),
+        }
+    }
 }

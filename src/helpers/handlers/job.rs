@@ -28,7 +28,7 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
         Some(id) => id,
         None => return,
     };
-    let (meta, owner_repo, _repo_url) = match attached_repo(ctx, command, server_id, Some(episode)).await {
+    let (meta, owner_repo, repo_url) = match attached_repo(ctx, command, server_id, Some(episode)).await {
         Some(t) => t,
         None => return,
     };
@@ -184,14 +184,39 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
     match upsert_repo_ass(&fg, &owner_repo, &repo_path, &output_bytes, &commit_msg).await {
         Ok(uploaded_path) => {
             println!("[job] id={} uploaded_path={} raw_bytes={}", job_id, uploaded_path, output_bytes.len());
-            let embed = CreateEmbed::new()
-                .title("Job complete")
-                .field("Repo", format!("`{}`", owner_repo), true)
-                .field("File", format!("`{}`", uploaded_path), true)
-                .field("Job", format!("`{}`", job_id), true)
-                .field("Commit Message", format!("`{}`", commit_msg), false)
-                .field("Warnings", format_warnings_field(&warnings), false);
-            let _ = response_msg.edit(ctx, EditMessage::new().content("").embed(embed)).await;
+            let kind = match job_kind {
+                JobKind::TL => "TL",
+                JobKind::TLC => "TLC",
+                JobKind::TS => "TS",
+            };
+            let embed = success_embed(command, COMMAND_JOB_COMPLETE)
+                .description(format!("**{}** • {} `{:02}`", kind, command_message(command, FIELD_EPISODE), episode))
+                .field(
+                    command_message(command, FIELD_REPO),
+                    format!("[{}]({})", owner_repo, repo_url),
+                    true,
+                )
+                .field(
+                    command_message(command, FIELD_JOBID),
+                    format!("`{}`", job_id),
+                    true,
+                )
+                .field(
+                    command_message(command, FIELD_FILE),
+                    format!("`{}`", uploaded_path),
+                    false,
+                )
+                .field(
+                    command_message(command, FIELD_COMMIT),
+                    format!("`{}`", commit_msg),
+                    false,
+                )
+                .field(
+                    command_message(command, FIELD_WARNINGS),
+                    format_warnings_field(&warnings, command),
+                    false,
+                );
+            edit_response_embed(ctx, &mut response_msg, embed).await;
         }
         Err(e) => {
             let _ = response_msg.edit(ctx, EditMessage::new()

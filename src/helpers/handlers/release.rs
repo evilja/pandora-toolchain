@@ -107,14 +107,25 @@ pub async fn handle_release(ctx: &Context, command: &serenity::all::CommandInter
     let anisub_field = anisub_release_upload(&meta, &owner_repo, &safe_name, episode, &release_bytes).await;
     let _ = tokio::fs::remove_dir_all(&work_dir).await;
 
-    let embed = CreateEmbed::new()
-        .title("Release fonts uploaded")
-        .field("Repo", format!("`{}`", owner_repo), true)
-        .field("Release", format!("`{}`", release_path), true)
-        .field("Fonts", fonts_field, false)
-        .field("Requested", format!("`{}`", font_names.len()), true)
+    let embed = success_embed(command, COMMAND_RELEASE_COMPLETE)
+        .field(
+            command_message(command, FIELD_REPO),
+            format!("`{}`", owner_repo),
+            true,
+        )
+        .field(
+            command_message(command, FIELD_RELEASE),
+            format!("`{}`", release_path),
+            true,
+        )
+        .field(command_message(command, FIELD_FONTS), fonts_field, false)
+        .field(
+            command_message(command, FIELD_REQUESTED),
+            format!("`{}`", font_names.len()),
+            true,
+        )
         .field("AniSub", anisub_field, false);
-    let _ = response_msg.edit(ctx, EditMessage::new().content("").embed(embed)).await;
+    edit_response_embed(ctx, &mut response_msg, embed).await;
 }
 
 async fn anisub_release_upload(

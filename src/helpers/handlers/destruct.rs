@@ -34,13 +34,19 @@ pub async fn handle_destruct(ctx: &Context, command: &serenity::all::CommandInte
     match fg.delete_repo(&owner_repo).await {
         Ok(()) => {
             let _ = tokio::fs::remove_file(meta_path(server_id, channel_id)).await;
-            let name_line = if anime_name.is_empty() {
-                String::new()
+            let anime = if anime_name.is_empty() {
+                command_message(command, VALUE_NOT_AVAILABLE)
             } else {
-                format!(" (`{}`)", anime_name)
+                anime_name
             };
-            let _ = response_msg.edit(ctx, EditMessage::new()
-                .content(format!("Deleted repo `{}`{}.\nChannel detached from this anime.", owner_repo, name_line))).await;
+            let embed = success_embed(command, COMMAND_REPO_DELETED)
+                .field(command_message(command, FIELD_ANIME), anime, true)
+                .field(
+                    command_message(command, FIELD_REPO),
+                    format!("`{}`", owner_repo),
+                    true,
+                );
+            edit_response_embed(ctx, &mut response_msg, embed).await;
         }
         Err(e) => {
             let _ = response_msg.edit(ctx, EditMessage::new()

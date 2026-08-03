@@ -54,7 +54,8 @@ pub async fn handle_addapi(
     let action = if existed { "Updated" } else { "Added" };
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
-            .content(format!("{} `{}` in `{}`.", action, key_name, ENV_PATH))
+            .embed(success_embed(command, COMMAND_UPDATED)
+                .description(format!("{} `{}` in `{}`.", action, key_name, ENV_PATH)))
             .ephemeral(true)
     )).await.ok();
 }

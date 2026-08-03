@@ -24,7 +24,8 @@ pub async fn handle_lstoken(
     if tokens.is_empty() {
         command.create_response(ctx, CreateInteractionResponse::Message(
             CreateInteractionResponseMessage::new()
-                .content("No API tokens are stored.")
+                .embed(info_embed(command, COMMAND_LIST)
+                    .description("No API tokens are stored."))
                 .ephemeral(true)
         )).await.ok();
         return;
@@ -50,7 +51,12 @@ pub async fn handle_lstoken(
     }
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
-            .content(format!("API tokens page {}/{}:\n{}", page, total_pages, lines.join("\n")))
+            .embed(info_embed(command, COMMAND_LIST).description(format!(
+                "API tokens page {}/{}:\n{}",
+                page,
+                total_pages,
+                lines.join("\n")
+            )))
             .ephemeral(true)
     )).await.ok();
 }
@@ -92,7 +98,8 @@ pub async fn handle_rmtoken(
     if removed == 0 {
         command.create_response(ctx, CreateInteractionResponse::Message(
             CreateInteractionResponseMessage::new()
-                .content(format!("No tokens matched {}.", matched))
+                .embed(info_embed(command, COMMAND_LIST)
+                    .description(format!("No tokens matched {}.", matched)))
                 .ephemeral(true)
         )).await.ok();
         return;
@@ -103,7 +110,8 @@ pub async fn handle_rmtoken(
     }
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
-            .content(format!("Removed {} token(s) matching {}.", removed, matched))
+            .embed(success_embed(command, COMMAND_UPDATED)
+                .description(format!("Removed {} token(s) matching {}.", removed, matched)))
             .ephemeral(true)
     )).await.ok();
 }

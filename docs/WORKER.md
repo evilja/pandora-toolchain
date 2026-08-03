@@ -22,7 +22,7 @@ Worker runtime, tool orchestration, torrent routing, and cache/duplicate behavio
 
 ## Torrent routing
 
-- `nyaaise()` classifies the URL into `TorrentType::{Link, Magnet, GDrive, Direct}`.
+- `nyaaise()` classifies the URL into `TorrentType::{Link, Magnet, GDrive, Direct}`. Nyaa inputs are canonicalized to `/download/<id>.torrent` for the worker, while `display_source_link()` and Discord job embeds expose `/view/<id>` on the same Nyaa host.
 - `TorrentType::GDrive` short-circuits `pn_dloadworker` to `pncurl --gscrape` (writes straight to `contents/torrent/input.mkv`) and skips the BitTorrent step.
 - `TorrentType::Direct` handles direct HTTP(S) video file URLs (`.mkv`, `.mp4`, etc.) through `pncurl`, streams straight to `contents/torrent/input.mkv`, and skips the BitTorrent step.
 - Torrent-backed `pnp2p` worker calls retain `--tag pandora-job-<job_id>` for protocol compatibility. `pnp2p` atomically locks each magnet BTIH or `.torrent` info-hash while downloading; a second process emits opcode `5` as `["5", "DUPLICATE_TORRENT", save_path]`. The download worker then announces `TORRENT_DUPLICATE_WAIT`, stores `Job.duplicate_source`, and waits until `DB/cache/inputs` has the matching input or the owning job's `contents/torrent/input.mkv` is ready and the owner has left active download/encode (`Encoded`/uploading/uploaded/terminal), then copies `input.mkv` into the requester and marks it `Downloaded`.

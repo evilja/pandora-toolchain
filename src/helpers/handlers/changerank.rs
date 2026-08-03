@@ -26,7 +26,12 @@ pub async fn handle_changerank(
         Ok(()) => {
             command.create_response(ctx, CreateInteractionResponse::Message(
                 CreateInteractionResponseMessage::new()
-                    .content(format!("Set `{}` to rank {} ({}).", name, rank, help_rank_label(rank)))
+                    .embed(success_embed(command, COMMAND_UPDATED).description(format!(
+                        "Set `{}` to rank {} ({}).",
+                        name,
+                        rank,
+                        help_rank_label(rank)
+                    )))
                     .ephemeral(true)
             )).await.ok();
         }

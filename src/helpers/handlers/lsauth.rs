@@ -45,7 +45,7 @@ pub async fn handle_lsauth(
     }
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
-            .content(body)
+            .embed(info_embed(command, COMMAND_LIST).description(body))
             .ephemeral(true)
     )).await.ok();
 }

@@ -1,0 +1,271 @@
+[QUEUE_TOO_LONG]
+text = "\n\nŞu anda Pandora Toolchain'de biraz sıra var. \nLütfen daha sonra tekrar deneyin."
+args = 0
+
+[QUEUED]
+text = "\n\nİsteğiniz alındı."
+args = 0
+
+[JOB_SETUP_FAIL]
+text = "\n\nİşlem hazırlanamadı: {}"
+args = 1
+
+[JOB_CANCELLED]
+text = "\nİşlem iptal edildi."
+args = 0
+
+[PROBE_TIMEOUT]
+text = "Probe timed out. use /encode pan or /backup within 3 minutes next time."
+args = 0
+
+[GITSYNC_PROGRESS]
+text = "Tüm işlemler kapatılıyor."
+args = 0
+
+[GITSYNC_SUCCESS]
+text = "Kaynak kodlar git ile güncellendi.\nBot yeniden başlatılıyor."
+args = 0
+
+[GITSYNC_FAIL]
+text = "Git güncellemesi başarısız oldu.\nBot yine de yeniden başlatılıyor."
+args = 0
+
+[GITQUERY_BLOCKED]
+text = "Git query mevcut encode işlemlerinin bitmesini bekliyor. Git sync tamamlanana kadar yeni encode işleri kapalı."
+args = 0
+
+[CTORRENT_DONE]
+text = "\n\nTorrent kısa süre içinde indirilmeye başlanacak."
+args = 0
+
+[CTORRENT_FAIL]
+text = "\n\nTorrent metadatası indirilemedi."
+args = 0
+
+[TORRENT_PROG]
+text = "\n\nTorrent ilerlemesi: {}% {}MB/{}MB"
+args = 3
+
+[TORRENT_PROG_SELECT]
+text = "\n\nTorrent ilerlemesi: {}% {}MB"
+args = 2
+
+[TORRENT_DONE]
+text = "\n\nEncode kısa süre içinde başlayacak."
+args = 0
+
+[TORRENT_FAIL]
+text = "\n\nTorrent indirilemedi."
+args = 0
+
+[TORRENT_DUPLICATE_WAIT]
+text = "\n\nİstediğiniz dosya mevcut olduğundan indirilmeyecek. \nDosyayı kullanan işlemin bitmesi bekleniyor."
+args = 1
+
+[ENCODE_PROG]
+text = "\n\nDosya encode ediliyor.\nAşama: 1/{}\nİşlenen kare: {}/{}\nSaniye başına işlenen kare: {}\nSaniye başına ortalama veri: {}kbit/s"
+args = 5
+
+[ENCODE_START]
+text = "\n\nDosya encode ediliyor."
+args = 0
+
+[ENCODE_CONCAT_PROG]
+text = "\n\nDosyaya intro ekleniyor.\nAşama: 2/2\nİşlenen kare: {}/{}\nSaniye başına işlenen kare: {}\nSaniye başına ortalama veri: {}kbit/s"
+args = 4
+
+[QUEUE_POSITION]
+text = "\n\nİşlem encode sırasında #{} konumunda.\nTahmini bekleme: {}"
+args = 2
+
+[ENCODE_DONE]
+text = "\n\nÇıktı sunuculara yükleniyor."
+args = 0
+
+[ENCODE_FAIL]
+text = "\n\nDosya encode edilemedi."
+args = 0
+
+[SERVER_EFFECTS_FAIL]
+text = "\n\nSunucu subtitle efektleri uygulanamadı: {}"
+args = 1
+
+[KEEP_READY]
+text = "\n\nKeep keyword ayrıldı.\nParent keyword: `{}`\nKeyword: `{}`"
+args = 2
+
+[KEEP_DONE]
+text = "\n\nÇıktı 5 saatliğine saklandı.\nKeyword: `{}`\nParent keyword: `{}`\nTip: {}"
+args = 3
+
+[KEEP_FAIL]
+text = "\n\nKeep işlemi başarısız oldu: {}"
+args = 1
+
+[KEYCODE_WAIT]
+text = "\n\nKeycode keyword bekliyor: {}"
+args = 1
+
+[KEYCODE_FAIL]
+text = "\n\nKeycode işlemi başarısız oldu: {}"
+args = 1
+
+[UPLOAD_PROG]
+text = "\n\nYükleme ilerlemesi:\n{}\n{}\n{}\n{}\n{}"
+args = 5
+
+[UPLOAD_DONE]
+text = "\n\nDosya yüklendi.\n{}\n{}\n{}\n{}\n{}"
+args = 5
+
+[UPLOAD_FAIL]
+text = "\n\nDosya yüklenemedi. \nBir yetkiliden botu yeniden başlatmasını isteyebilirsiniz."
+args = 0
+
+[UPLOAD_BACKUP_PROG]
+text = "\n\n{}"
+args = 1
+
+[BACKUPALL_PROG]
+text = "\n\n{}"
+args = 1
+
+[PROBE_DONE]
+text = "\n\nBatch torrent incelendi."
+args = 0
+
+[PROBE_FAIL]
+text = "\n\nBatch torrent incelenemedi."
+args = 0
+
+[PROBE_ROW]
+text = "\n\nDosya numaraları:\n{}"
+args = 1
+
+[PREVIEW_DONE]
+text = "\n\nÖnizleme hazır: {} kare."
+args = 1
+
+[PREVIEW_FAIL]
+text = "\n\nÖnizleme oluşturulamadı: {}"
+args = 1
+
+[STUDIO_PREVIEW_DONE]
+text = "\n\nStudio preview hazır."
+args = 1
+
+[STUDIO_PREVIEW_FAIL]
+text = "\n\nStudio preview oluşturulamadı: {}"
+args = 1
+
+[EMBED_TITLE]
+text = "Encode İşlemi ({})"
+args = 1
+
+[FIELD_JOBID]
+text = "İşlem Numarası"
+args = 0
+
+[FIELD_AUTHOR]
+text = "İşlem Sahibi"
+args = 0
+
+[FIELD_WORKER]
+text = "Worker"
+args = 0
+
+[FIELD_STATUS]
+text = "Durum"
+args = 0
+
+[FIELD_PRESET]
+text = "Encode Preset"
+args = 0
+
+[FIELD_TORRENT]
+text = "Torrent Linki"
+args = 0
+
+[FIELD_PROGRESS]
+text = "İlerleme"
+args = 0
+
+[STAGE_QUEUED]
+text = "Sırada"
+args = 0
+
+[STAGE_PROBING]
+text = "İnceleniyor"
+args = 0
+
+[STAGE_PROBED]
+text = "İncelendi"
+args = 0
+
+[STAGE_DOWNLOADING]
+text = "İndiriliyor"
+args = 0
+
+[STAGE_DOWNLOADED]
+text = "İndirildi"
+args = 0
+
+[STAGE_ENCODING]
+text = "Encode Ediliyor"
+args = 0
+
+[STAGE_ENCODED]
+text = "Encode Edildi"
+args = 0
+
+[STAGE_UPLOADING]
+text = "Yükleniyor"
+args = 0
+
+[STAGE_UPLOADED]
+text = "Tamamlandı"
+args = 0
+
+[STAGE_FAILED]
+text = "Başarısız"
+args = 0
+
+[STAGE_DECLINED]
+text = "Reddedildi"
+args = 0
+
+[STAGE_CANCELLED]
+text = "İptal Edildi"
+args = 0
+
+[PRESET_PSEUDOLOSSLESS_INTRO]
+text = "Kayıpsız - İşlemci | İntrolu"
+args = 0
+
+[PRESET_PSEUDOLOSSLESS_NOINTRO]
+text = "Kayıpsız - İşlemci | İntrosuz"
+args = 0
+
+[PRESET_GPU_INTRO]
+text = "Standart - Ekran kartı | İntrolu"
+args = 0
+
+[PRESET_GPU_NOINTRO]
+text = "Standart - Ekran kartı | İntrosuz"
+args = 0
+
+[PRESET_STANDARD_INTRO]
+text = "Standart - İşlemci | İntrolu"
+args = 0
+
+[PRESET_STANDARD_NOINTRO]
+text = "Standart - İşlemci | İntrosuz"
+args = 0
+
+[PRESET_DUMMY]
+text = "DEVELOPER"
+args = 0
+
+[PRESET_COPY]
+text = "Video copy with mixed AAC audio"
+args = 0

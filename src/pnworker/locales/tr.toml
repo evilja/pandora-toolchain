@@ -1,0 +1,579 @@
+[QUEUE_TOO_LONG]
+text = "İş sırası şu anda dolu. Lütfen daha sonra tekrar deneyin."
+args = 0
+
+[QUEUED]
+text = ""
+args = 0
+
+[JOB_SETUP_FAIL]
+text = "Hazırlık başarısız: `{}`"
+args = 1
+
+[JOB_CANCELLED]
+text = ""
+args = 0
+
+[PROBE_TIMEOUT]
+text = "Seçim 3 dakika sonra zaman aşımına uğradı. `/probe` komutunu yeniden çalıştırın."
+args = 0
+
+[GITSYNC_PROGRESS]
+text = "Aktif işler durduruluyor…"
+args = 0
+
+[GITSYNC_SUCCESS]
+text = "Kaynak kod güncellendi. Pandora yeniden başlatılıyor."
+args = 0
+
+[GITSYNC_FAIL]
+text = "Kaynak kod güncellenemedi. Pandora yine de yeniden başlatılıyor."
+args = 0
+
+[GITQUERY_BLOCKED]
+text = "Kaynak güncellemesi mevcut encode işlerinin bitmesini bekliyor. Yeni encode işleri duraklatıldı."
+args = 0
+
+[CTORRENT_DONE]
+text = "Torrent metadatası hazır."
+args = 0
+
+[CTORRENT_FAIL]
+text = "Torrent metadatası alınamadı."
+args = 0
+
+[TORRENT_PROG]
+text = "`{}%` • `{} / {} MiB`"
+args = 3
+
+[TORRENT_PROG_SELECT]
+text = "`{}%` • `{} MiB`"
+args = 2
+
+[TORRENT_DONE]
+text = ""
+args = 0
+
+[TORRENT_FAIL]
+text = "Kaynak indirilemedi."
+args = 0
+
+[TORRENT_DUPLICATE_WAIT]
+text = "Bu kaynak zaten kullanılıyor. Mevcut indirmenin bitmesi bekleniyor."
+args = 1
+
+[ENCODE_PROG]
+text = "Geçiş `1/{}`\nKare `{} / {}` • `{} FPS` • `{} kbit/s`"
+args = 5
+
+[ENCODE_START]
+text = ""
+args = 0
+
+[ENCODE_CONCAT_PROG]
+text = "İntro geçişi `2/2`\nKare `{} / {}` • `{} FPS` • `{} kbit/s`"
+args = 4
+
+[QUEUE_POSITION]
+text = "Sıra `#{}` • tahmini bekleme `{}`"
+args = 2
+
+[ENCODE_DONE]
+text = ""
+args = 0
+
+[ENCODE_FAIL]
+text = "Video encode edilemedi."
+args = 0
+
+[SERVER_EFFECTS_FAIL]
+text = "Sunucu altyazı efektleri uygulanamadı: {}"
+args = 1
+
+[KEEP_READY]
+text = "`{}` → `{}` ayrıldı"
+args = 2
+
+[KEEP_DONE]
+text = "5 saat boyunca saklanacak.\nAnahtar `{}` • üst anahtar `{}` • tür `{}`"
+args = 3
+
+[KEEP_FAIL]
+text = "Saklama başarısız: {}"
+args = 1
+
+[KEYCODE_WAIT]
+text = "Şu saklanan çıktılar bekleniyor: {}"
+args = 1
+
+[KEYCODE_FAIL]
+text = "Birleştirme başarısız: {}"
+args = 1
+
+[UPLOAD_PROG]
+text = "{}\n{}\n{}\n{}\n{}"
+args = 5
+
+[UPLOAD_DONE]
+text = "{}\n{}\n{}\n{}\n{}"
+args = 5
+
+[UPLOAD_FAIL]
+text = "Çıktı yüklenemedi. Bir yöneticiden worker'ları kontrol etmesini isteyin."
+args = 0
+
+[UPLOAD_BACKUP_PROG]
+text = "{}"
+args = 1
+
+[BACKUPALL_PROG]
+text = "{}"
+args = 1
+
+[PROBE_DONE]
+text = "3 dakika içinde bir dosya seçin."
+args = 0
+
+[PROBE_FAIL]
+text = "Torrent incelenemedi."
+args = 0
+
+[PROBE_ROW]
+text = "{}"
+args = 1
+
+[PREVIEW_DONE]
+text = "{} kare eklendi."
+args = 1
+
+[PREVIEW_FAIL]
+text = "Önizleme başarısız: {}"
+args = 1
+
+[STUDIO_PREVIEW_DONE]
+text = "Önizleme eklendi."
+args = 1
+
+[STUDIO_PREVIEW_FAIL]
+text = "Studio önizlemesi başarısız: {}"
+args = 1
+
+[PREVIEW_ATTACHMENT_REJECTED]
+text = "Önizleme hazırlandı ancak Discord eki reddetti. Sunucunun yükleme sınırını kontrol edip tekrar deneyin."
+args = 0
+
+[PREVIEW_ATTACHMENT_MISSING]
+text = "Önizleme hazırlandı ancak eki hazırlanamadı."
+args = 0
+
+[STUDIO_PREVIEW_ATTACHMENT_MISSING]
+text = "Studio önizlemesi hazırlandı ancak MP4 eki hazırlanamadı."
+args = 0
+
+[EMBED_TITLE]
+text = "{}"
+args = 1
+
+[EMBED_FOOTER]
+text = "Pandora Toolchain • v{}"
+args = 1
+
+[FIELD_JOBID]
+text = "İş numarası"
+args = 0
+
+[FIELD_AUTHOR]
+text = "İsteyen"
+args = 0
+
+[FIELD_WORKER]
+text = "Worker"
+args = 0
+
+[FIELD_STATUS]
+text = "Durum"
+args = 0
+
+[FIELD_PRESET]
+text = "Encode ayarı"
+args = 0
+
+[FIELD_TORRENT]
+text = "Torrent"
+args = 0
+
+[FIELD_SOURCE]
+text = "Kaynak"
+args = 0
+
+[FIELD_PROGRESS]
+text = "Ayrıntılar"
+args = 0
+
+[FIELD_WARNINGS]
+text = "Uyarılar"
+args = 0
+
+[FIELD_REPO]
+text = "Depo"
+args = 0
+
+[FIELD_FILE]
+text = "Dosya"
+args = 0
+
+[FIELD_COMMIT]
+text = "Commit mesajı"
+args = 0
+
+[FIELD_RELEASE]
+text = "Sürüm"
+args = 0
+
+[FIELD_FONTS]
+text = "Fontlar"
+args = 0
+
+[FIELD_REQUESTED]
+text = "İstenen"
+args = 0
+
+[FIELD_EPISODE]
+text = "Bölüm"
+args = 0
+
+[FIELD_PATH]
+text = "Yol"
+args = 0
+
+[FIELD_ANIME]
+text = "Anime"
+args = 0
+
+[FIELD_CHANNEL]
+text = "Kanal"
+args = 0
+
+[FIELD_CREATED]
+text = "Oluşturulan / güncellenen"
+args = 0
+
+[FIELD_GLOBAL]
+text = "Genel"
+args = 0
+
+[FIELD_SERVER]
+text = "Sunucu"
+args = 0
+
+[FIELD_TOTAL]
+text = "Toplam"
+args = 0
+
+[FIELD_FILES]
+text = "Dosyalar"
+args = 0
+
+[FIELD_LOCATION]
+text = "Konum"
+args = 0
+
+[FIELD_SLUG]
+text = "Kısa ad"
+args = 0
+
+[FIELD_KIND]
+text = "Tür"
+args = 0
+
+[FIELD_EPISODES]
+text = "Bölümler"
+args = 0
+
+[FIELD_LANGUAGE]
+text = "Dil"
+args = 0
+
+[FIELD_API_KEY]
+text = "Forgejo API anahtarı"
+args = 0
+
+[FIELD_GDRIVE]
+text = "Google Drive"
+args = 0
+
+[FIELD_GDRIVE_ANONYMOUS]
+text = "Anonim Drive klasörü"
+args = 0
+
+[FIELD_WRAPSTYLE]
+text = "WrapStyle"
+args = 0
+
+[FIELD_ANNOUNCEMENT]
+text = "Duyuru kanalı"
+args = 0
+
+[FIELD_CONCAT]
+text = "Birleştirme / intro"
+args = 0
+
+[FIELD_LOCAL_GDRIVE]
+text = "Yerel Google Drive"
+args = 0
+
+[LABEL_ETA]
+text = "Tahmini süre"
+args = 0
+
+[WARNINGS_MORE]
+text = "…ve {} tane daha"
+args = 1
+
+[STAGE_QUEUED]
+text = "Sırada"
+args = 0
+
+[STAGE_PROBING]
+text = "İnceleniyor"
+args = 0
+
+[STAGE_PROBED]
+text = "Seçime hazır"
+args = 0
+
+[STAGE_DOWNLOADING]
+text = "İndiriliyor"
+args = 0
+
+[STAGE_DOWNLOADED]
+text = "İndirildi"
+args = 0
+
+[STAGE_ENCODING]
+text = "Encode ediliyor"
+args = 0
+
+[STAGE_ENCODED]
+text = "Encode edildi"
+args = 0
+
+[STAGE_UPLOADING]
+text = "Yükleniyor"
+args = 0
+
+[STAGE_UPLOADED]
+text = "Tamamlandı"
+args = 0
+
+[STAGE_FAILED]
+text = "Başarısız"
+args = 0
+
+[STAGE_DECLINED]
+text = "Reddedildi"
+args = 0
+
+[STAGE_CANCELLED]
+text = "İptal edildi"
+args = 0
+
+[PRESET_PSEUDOLOSSLESS_INTRO]
+text = "Kayıpsıza yakın CPU • introlu"
+args = 0
+
+[PRESET_PSEUDOLOSSLESS_NOINTRO]
+text = "Kayıpsıza yakın CPU • introsuz"
+args = 0
+
+[PRESET_GPU_INTRO]
+text = "Standart GPU • introlu"
+args = 0
+
+[PRESET_GPU_NOINTRO]
+text = "Standart GPU • introsuz"
+args = 0
+
+[PRESET_STANDARD_INTRO]
+text = "Standart CPU • introlu"
+args = 0
+
+[PRESET_STANDARD_NOINTRO]
+text = "Standart CPU • introsuz"
+args = 0
+
+[PRESET_DUMMY]
+text = "Geliştirici"
+args = 0
+
+[PRESET_COPY]
+text = "Video kopyası ve karıştırılmış AAC ses"
+args = 0
+
+[JOB_TYPE_ENCODE]
+text = "🎬 Encode işi"
+args = 0
+
+[JOB_TYPE_PANCODE]
+text = "🎞️ Seçili dosya encode işi"
+args = 0
+
+[JOB_TYPE_PROBE]
+text = "🔎 İnceleme işi"
+args = 0
+
+[JOB_TYPE_BACKUP]
+text = "💾 Yedekleme işi"
+args = 0
+
+[JOB_TYPE_BACKUP_ALL]
+text = "🗄️ Toplu yedekleme"
+args = 0
+
+[JOB_TYPE_KEYCODE]
+text = "🧩 Birleştirme işi"
+args = 0
+
+[JOB_TYPE_PREVIEW]
+text = "🖼️ Önizleme işi"
+args = 0
+
+[JOB_TYPE_STUDIO]
+text = "🎚️ Studio çıktısı"
+args = 0
+
+[JOB_TYPE_STUDIO_PREVIEW]
+text = "🎧 Studio önizlemesi"
+args = 0
+
+[JOB_TYPE_UNKNOWN]
+text = "⚙️ Pandora işi"
+args = 0
+
+[VALUE_NONE]
+text = "Yok"
+args = 0
+
+[VALUE_NOT_AVAILABLE]
+text = "Mevcut değil"
+args = 0
+
+[VALUE_SET]
+text = "Ayarlı"
+args = 0
+
+[VALUE_UNSET]
+text = "Ayarlı değil"
+args = 0
+
+[VALUE_ENABLED]
+text = "Etkin"
+args = 0
+
+[VALUE_DISABLED]
+text = "Devre dışı"
+args = 0
+
+[VALUE_MAGNET_HIDDEN]
+text = "Magnet bağlantısı gizlendi"
+args = 0
+
+[SOURCE_PROBE_FILE]
+text = "İnceleme işi `{}` • dosya `#{}`"
+args = 2
+
+[SOURCE_PROBE]
+text = "İnceleme işi `{}`"
+args = 1
+
+[SOURCE_KEYWORDS]
+text = "Saklanan çıktılar: {}"
+args = 1
+
+[COMMAND_WORKING]
+text = "İşleniyor…"
+args = 0
+
+[COMMAND_JOB_COMPLETE]
+text = "Altyazı yüklendi"
+args = 0
+
+[COMMAND_MERGE_COMPLETE]
+text = "Birleştirme tamamlandı"
+args = 0
+
+[COMMAND_RELEASE_COMPLETE]
+text = "Sürüm tamamlandı"
+args = 0
+
+[COMMAND_SOURCE_UPDATED]
+text = "Kaynak güncellendi"
+args = 0
+
+[COMMAND_FILE_READY]
+text = "Dosya hazır"
+args = 0
+
+[COMMAND_CHANNEL_DETACHED]
+text = "Kanal bağlantısı kaldırıldı"
+args = 0
+
+[COMMAND_REPO_DELETED]
+text = "Depo silindi"
+args = 0
+
+[COMMAND_REPO_ATTACHED]
+text = "Anime bağlandı"
+args = 0
+
+[COMMAND_SERVER_CONFIGURED]
+text = "Sunucu yapılandırıldı"
+args = 0
+
+[COMMAND_SERVER_UPDATED]
+text = "Sunucu ayarları güncellendi"
+args = 0
+
+[COMMAND_FONT_CHECK]
+text = "Font kontrolü"
+args = 0
+
+[COMMAND_LOGS_READY]
+text = "İş logları hazır"
+args = 0
+
+[COMMAND_UPDATED]
+text = "Güncellendi"
+args = 0
+
+[COMMAND_LIST]
+text = "Pandora ayrıntıları"
+args = 0
+
+[COMMAND_REPO_PRESERVED]
+text = "Depoya dokunulmadı."
+args = 0
+
+[LINK_DOWNLOAD]
+text = "İndir"
+args = 0
+
+[CATLOGS_DESCRIPTION]
+text = "{} log dosyası {} iş dizininden paketlendi."
+args = 2
+
+[CATLOGS_NO_LOGS]
+text = "`{}` numaralı iş için log bulunamadı."
+args = 1
+
+[CATLOGS_BUILD_FAIL]
+text = "`{}` numaralı işin logları paketlenemedi: {}"
+args = 2
+
+[CATLOGS_ACTIVE]
+text = "aktif"
+args = 0
+
+[CATLOGS_ARCHIVED]
+text = "arşivlenmiş"
+args = 0

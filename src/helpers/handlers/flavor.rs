@@ -49,7 +49,11 @@ pub async fn handle_touchflavor(
 
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
-            .content(format!("Added idle flavor #{}: `{}`", idle_flavors().await.len(), inline(&text)))
+            .embed(success_embed(command, COMMAND_UPDATED).description(format!(
+                "Added idle flavor #{}: `{}`",
+                idle_flavors().await.len(),
+                inline(&text)
+            )))
             .ephemeral(true)
     )).await.ok();
 }
@@ -62,7 +66,8 @@ pub async fn handle_lsflavor(
     if flavors.is_empty() {
         command.create_response(ctx, CreateInteractionResponse::Message(
             CreateInteractionResponseMessage::new()
-                .content("No idle flavors are stored.")
+                .embed(info_embed(command, COMMAND_LIST)
+                    .description("No idle flavors are stored."))
                 .ephemeral(true)
         )).await.ok();
         return;
@@ -82,7 +87,12 @@ pub async fn handle_lsflavor(
 
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
-            .content(format!("Idle flavors page {}/{}:\n{}", page, total_pages, lines.join("\n")))
+            .embed(info_embed(command, COMMAND_LIST).description(format!(
+                "Idle flavors page {}/{}:\n{}",
+                page,
+                total_pages,
+                lines.join("\n")
+            )))
             .ephemeral(true)
     )).await.ok();
 }
@@ -118,7 +128,11 @@ pub async fn handle_rmflavor(
 
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
-            .content(format!("Removed idle flavor #{}: `{}`", index, inline(&removed)))
+            .embed(success_embed(command, COMMAND_UPDATED).description(format!(
+                "Removed idle flavor #{}: `{}`",
+                index,
+                inline(&removed)
+            )))
             .ephemeral(true)
     )).await.ok();
 }

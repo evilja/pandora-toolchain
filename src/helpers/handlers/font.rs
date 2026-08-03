@@ -90,7 +90,15 @@ pub async fn handle_font(
         Err(e) => message.push_str(&format!(" Linux font install failed: {}", e)),
     }
     refresh_font_name_choices(server_id).await;
-    font_response(ctx, command, message).await;
+    command
+        .edit_response(
+            ctx,
+            EditInteractionResponse::new()
+                .content("")
+                .embed(success_embed(command, COMMAND_UPDATED).description(message)),
+        )
+        .await
+        .ok();
 }
 
 pub struct PersistedFontInstall {

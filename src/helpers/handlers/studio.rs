@@ -338,8 +338,13 @@ pub async fn handle_studio(
                     match tokio::task::spawn_blocking(move || render_timeline(&spec)).await {
                         Ok(Ok(png)) => {
                             let attachment = CreateAttachment::bytes(png, "pandora-studio-timeline.png");
+                            let embed = info_embed(command, COMMAND_LIST)
+                                .title("Pandora Studio")
+                                .description(format!("Studio `{}` timeline", meta.studio_id))
+                                .image("attachment://pandora-studio-timeline.png");
                             let _ = response.edit(ctx, EditMessage::new()
-                                .content(format!("Pandora Studio `{}` timeline", meta.studio_id))
+                                .content("")
+                                .embed(embed)
                                 .new_attachment(attachment)).await;
                         }
                         Ok(Err(e)) => edit_text(ctx, &mut response, format!("Timeline render failed: {}", e)).await,
@@ -534,6 +539,21 @@ fn format_duration_precise(ms: u64) -> String {
     }
 }
 
+// Successful Studio operations use a compact embed; short failures remain plain text so they are
+// easy to copy and do not leave a stale “working” presentation behind.
 async fn edit_text(ctx: &Context, response: &mut Message, text: impl Into<String>) {
-    let _ = response.edit(ctx, EditMessage::new().content(text.into())).await;
+    let text = text.into();
+    let lower = text.to_ascii_lowercase();
+    if lower.starts_with("error:") || lower.contains(" failed:") || lower.starts_with("unknown ") {
+        let _ = response.edit(ctx, EditMessage::new().content(text)).await;
+        return;
+    }
+    let embed = CreateEmbed::new()
+        .title("Pandora Studio")
+        .description(text)
+        .colour(serenity::all::Colour::BLUE)
+        .timestamp(serenity::model::Timestamp::now());
+    let _ = response
+        .edit(ctx, EditMessage::new().content("").embed(embed))
+        .await;
 }

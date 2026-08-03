@@ -3,7 +3,11 @@ use serenity::builder::CreateAttachment;
 use serenity::all::{ActivityData, Context, CreateEmbed, EditMessage, Message, OnlineStatus};
 use tokio::time::{sleep, Duration};
 use crate::pnworker::core::Job;
-use crate::pnworker::messages::{MessagePayload, create_job_embed, PREVIEW_DONE, STUDIO_PREVIEW_DONE};
+use crate::pnworker::messages::{
+    get_message, MessagePayload, create_job_embed, PREVIEW_ATTACHMENT_MISSING,
+    PREVIEW_ATTACHMENT_REJECTED, PREVIEW_DONE, STUDIO_PREVIEW_ATTACHMENT_MISSING,
+    STUDIO_PREVIEW_DONE,
+};
 use crate::pnworker::presence::{change_presence_job, global_context, Presence};
 
 #[derive(Clone)]
@@ -28,16 +32,27 @@ impl Frontend {
                                 return;
                             }
                             eprintln!("[Pandora Preview] Discord preview attachment edit failed for {}", job.job_id);
-                            let _ = msg.edit(&**ctx, EditMessage::new().content("Preview was rendered, but Discord rejected the attachment. Check the guild upload-size limit and retry.").embed(create_job_embed(job, payload))).await;
+                            let mut display_job = job.clone();
+                            display_job.encode_warnings.push(get_message(
+                                PREVIEW_ATTACHMENT_REJECTED,
+                                &job.lang,
+                            ));
+                            let embed = create_job_embed(&display_job, payload);
+                            let _ = msg.edit(&**ctx, EditMessage::new().content("").embed(embed)).await;
                             return;
                         }
                         None => {
-                            let text = if is_studio_preview_done(payload) {
-                                "Studio preview was rendered, but its MP4 attachment could not be prepared."
+                            let id = if is_studio_preview_done(payload) {
+                                STUDIO_PREVIEW_ATTACHMENT_MISSING
                             } else {
-                                "Preview was rendered, but its attachment could not be prepared."
+                                PREVIEW_ATTACHMENT_MISSING
                             };
-                            let _ = msg.edit(&**ctx, EditMessage::new().content(text).embed(create_job_embed(job, payload))).await;
+                            let mut display_job = job.clone();
+                            display_job
+                                .encode_warnings
+                                .push(get_message(id, &job.lang));
+                            let embed = create_job_embed(&display_job, payload);
+                            let _ = msg.edit(&**ctx, EditMessage::new().content("").embed(embed)).await;
                             return;
                         }
                     }
