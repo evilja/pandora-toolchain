@@ -10,6 +10,7 @@ use tokio::fs;
 use tokio::sync::Mutex;
 
 pub const STUDIO_ACTIVE_TTL_SECS: u64 = 24 * 60 * 60;
+pub const STUDIO_EXTENDED_TTL_SECS: u64 = 7 * 24 * 60 * 60;
 pub const STUDIO_DISOWNED_TTL_SECS: u64 = 30 * 60;
 pub const STUDIO_MAX_TRACKS: usize = 64;
 
@@ -94,6 +95,8 @@ pub struct StudioMeta {
     pub created_at: u64,
     pub last_command_at: u64,
     pub expires_at: u64,
+    #[serde(default)]
+    pub extended_timeout: bool,
     pub disowned_at: Option<u64>,
 }
 
@@ -176,6 +179,7 @@ impl StudioStore {
             created_at: now,
             last_command_at: now,
             expires_at: now + STUDIO_ACTIVE_TTL_SECS,
+            extended_timeout: false,
             disowned_at: None,
         };
         if let Err(e) = fs::create_dir_all(&guild_root(guild_id)).await {
@@ -365,6 +369,17 @@ impl StudioStore {
         Ok(meta)
     }
 
+    pub async fn extend(&self, guild_id: u64, user_id: u64) -> Result<StudioMeta, String> {
+        let _guard = studio_lock().lock().await;
+        let pointers = read_pointers(guild_id, user_id).await?;
+        let id = pointers.current.ok_or_else(|| "you do not have a current Studio".to_string())?;
+        let mut meta = self.authorized_meta_locked(guild_id, user_id, &id).await?;
+        meta.extended_timeout = true;
+        refresh_meta(&mut meta)?;
+        write_json_atomic(&meta_path(guild_id, &id), &meta).await?;
+        Ok(meta)
+    }
+
     pub async fn reown(
         &self,
         guild_id: u64,
@@ -390,7 +405,7 @@ impl StudioStore {
             meta.collaborators.push(user_id);
         }
         meta.last_command_at = now;
-        meta.expires_at = now + STUDIO_ACTIVE_TTL_SECS;
+        meta.expires_at = now + active_ttl_secs(&meta);
         meta.disowned_at = None;
         write_json_atomic(&meta_path(guild_id, &id), &meta).await?;
         remember_studio(&mut pointers, &id);
@@ -412,7 +427,7 @@ impl StudioStore {
             meta.expires_at = now + STUDIO_DISOWNED_TTL_SECS;
             meta.disowned_at = Some(now);
         } else {
-            meta.expires_at = now + STUDIO_ACTIVE_TTL_SECS;
+            meta.expires_at = now + active_ttl_secs(&meta);
         }
         write_json_atomic(&meta_path(guild_id, &id), &meta).await?;
         pointers.studios.retain(|studio_id| studio_id != &id);
@@ -946,13 +961,17 @@ async fn allocate_studio_id(guild_id: u64) -> Result<String, String> {
     Err("could not allocate a unique Studio ID".to_string())
 }
 
+fn active_ttl_secs(meta: &StudioMeta) -> u64 {
+    if meta.extended_timeout { STUDIO_EXTENDED_TTL_SECS } else { STUDIO_ACTIVE_TTL_SECS }
+}
+
 fn refresh_meta(meta: &mut StudioMeta) -> Result<(), String> {
     let now = now_secs();
     if meta.expires_at <= now && !meta.collaborators.is_empty() {
         return Err(format!("Studio `{}` has expired", meta.studio_id));
     }
     meta.last_command_at = now;
-    meta.expires_at = now + STUDIO_ACTIVE_TTL_SECS;
+    meta.expires_at = now + active_ttl_secs(meta);
     meta.disowned_at = None;
     Ok(())
 }
@@ -1073,6 +1092,45 @@ fn to_manifest(meta: &StudioMeta, preview: Option<PreviewWindow>, video_preset: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_meta() -> StudioMeta {
+        StudioMeta {
+            guild_id: 1,
+            studio_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            source_kind: KeepKind::Encode,
+            sources: Vec::new(),
+            collaborators: vec![1],
+            tracks: Vec::new(),
+            next_track_id: 1,
+            total_duration_ms: 0,
+            fps_num: 24,
+            fps_den: 1,
+            created_at: 1,
+            last_command_at: 1,
+            expires_at: u64::MAX,
+            extended_timeout: false,
+            disowned_at: None,
+        }
+    }
+
+    #[test]
+    fn old_studio_meta_defaults_to_standard_timeout() {
+        let mut value = serde_json::to_value(test_meta()).unwrap();
+        value.as_object_mut().unwrap().remove("extended_timeout");
+        let meta: StudioMeta = serde_json::from_value(value).unwrap();
+        assert!(!meta.extended_timeout);
+        assert_eq!(active_ttl_secs(&meta), STUDIO_ACTIVE_TTL_SECS);
+    }
+
+    #[test]
+    fn extended_timeout_policy_is_persistent() {
+        let mut meta = test_meta();
+        meta.extended_timeout = true;
+        assert_eq!(active_ttl_secs(&meta), STUDIO_EXTENDED_TTL_SECS);
+        let round_trip: StudioMeta = serde_json::from_str(&serde_json::to_string(&meta).unwrap()).unwrap();
+        assert!(round_trip.extended_timeout);
+        assert_eq!(active_ttl_secs(&round_trip), STUDIO_EXTENDED_TTL_SECS);
+    }
 
     #[test]
     fn studio_pointer_index_keeps_multiple_unique_studios() {

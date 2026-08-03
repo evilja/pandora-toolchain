@@ -77,6 +77,18 @@ pub async fn handle_studio(
                 Err(e) => edit_text(ctx, &mut response, format!("Studio switch failed: {}", e)).await,
             }
         }
+        "extend" => {
+            let Some(mut response) = working_response(ctx, command, "Extending Pandora Studio...").await else {
+                return;
+            };
+            match store.extend(guild_id, user_id).await {
+                Ok(meta) => edit_text(ctx, &mut response, format!(
+                    "Studio `{}` now permanently expires after 7 days of inactivity.",
+                    meta.studio_id,
+                )).await,
+                Err(e) => edit_text(ctx, &mut response, format!("Studio extend failed: {}", e)).await,
+            }
+        }
         "disown" => {
             let Some(mut response) = working_response(ctx, command, "Updating Pandora Studio...").await else {
                 return;
@@ -457,14 +469,16 @@ fn timeline_spec(meta: &StudioMeta) -> TimelineSpec {
 }
 
 fn studio_summary(meta: &StudioMeta, heading: &str) -> String {
+    let timeout = if meta.extended_timeout { "7 days" } else { "24 hours" };
     format!(
-        "{}\nStudio ID: `{}`\nInput: {} keep(s), {:?}\nDuration: `{}`\nCollaborators: {}\nExpires after 24 hours of inactivity.",
+        "{}\nStudio ID: `{}`\nInput: {} keep(s), {:?}\nDuration: `{}`\nCollaborators: {}\nExpires after {} of inactivity.",
         heading,
         meta.studio_id,
         meta.sources.len(),
         meta.source_kind,
         format_duration(meta.total_duration_ms),
         meta.collaborators.len(),
+        timeout,
     )
 }
 
@@ -479,7 +493,7 @@ fn studio_details(meta: &StudioMeta) -> String {
         format!("{:.3}", meta.fps_num as f64 / meta.fps_den as f64)
     };
     let mut details = format!(
-        "Pandora Studio details\nStudio ID: `{}`\nSources: {} {:?} keep(s) (`{}`)\nVideo: `{}`, `{}` FPS, duration `{}`\nTracks: {} | Collaborators: {}\nLast used: <t:{}:R> | Expires: <t:{}:R>",
+        "Pandora Studio details\nStudio ID: `{}`\nSources: {} {:?} keep(s) (`{}`)\nVideo: `{}`, `{}` FPS, duration `{}`\nTracks: {} | Collaborators: {}\nTimeout: {}\nLast used: <t:{}:R> | Expires: <t:{}:R>",
         meta.studio_id,
         meta.sources.len(),
         meta.source_kind,
@@ -489,6 +503,7 @@ fn studio_details(meta: &StudioMeta) -> String {
         format_duration(meta.total_duration_ms),
         meta.tracks.len(),
         meta.collaborators.len(),
+        if meta.extended_timeout { "7 days (extended)" } else { "24 hours" },
         meta.last_command_at,
         meta.expires_at,
     );
