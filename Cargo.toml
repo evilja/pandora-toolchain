@@ -1,6 +1,6 @@
 [package]
 name = "pandora-toolchain"
-version = "3.3.0-capella"
+version = "3.4.0-free"
 edition = "2024"
 license = "GPL-3.0-or-later"
 
