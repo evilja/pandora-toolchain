@@ -534,7 +534,7 @@ impl TorrentClient {
                 ))
                 .await;
             }
-            let peers = match self
+            let mut peers = match self
                 .trackers
                 .announce_all(&magnet.trackers, magnet.info_hash, 1)
                 .await
@@ -553,7 +553,10 @@ impl TorrentClient {
                 .metadata_from_peers(&magnet, &peers, cancel.clone())
                 .await
             {
-                Ok(metadata) => return Ok((metadata, peers)),
+                Ok((metadata, metadata_peer)) => {
+                    prioritize_peer(&mut peers, metadata_peer);
+                    return Ok((metadata, peers));
+                }
                 Err(error) => errors.push(error.to_string()),
             }
         }
@@ -574,7 +577,7 @@ impl TorrentClient {
         magnet: &Magnet,
         peers: &[SocketAddr],
         cancel: watch::Receiver<bool>,
-    ) -> Result<Metainfo> {
+    ) -> Result<(Metainfo, SocketAddr)> {
         let semaphore = Arc::new(Semaphore::new(self.config.max_connections.min(16).max(1)));
         let mut tasks = JoinSet::new();
         for address in peers
@@ -590,29 +593,32 @@ impl TorrentClient {
             let info_hash = magnet.info_hash;
             let peer_id = self.peer_id;
             tasks.spawn(async move {
-                let _permit = semaphore
-                    .acquire_owned()
-                    .await
-                    .map_err(|_| TorrentError::peer("metadata semaphore closed"))?;
-                fetch_metadata(address, info_hash, peer_id, proxy, settings, cancel).await
+                let result = match semaphore.acquire_owned().await {
+                    Ok(_permit) => {
+                        fetch_metadata(address, info_hash, peer_id, proxy, settings, cancel).await
+                    }
+                    Err(_) => Err(TorrentError::peer("metadata semaphore closed")),
+                };
+                (address, result)
             });
         }
         let mut errors = Vec::new();
         while let Some(result) = tasks.join_next().await {
             match result {
-                Ok(Ok(info_bytes)) => {
+                Ok((address, Ok(info_bytes))) => {
                     tasks.abort_all();
-                    return Metainfo::from_info_bytes(
+                    let metadata = Metainfo::from_info_bytes(
                         &info_bytes,
                         magnet.trackers.clone(),
                         Some(magnet.info_hash),
-                    );
+                    )?;
+                    return Ok((metadata, address));
                 }
-                Ok(Err(TorrentError::Cancelled)) if *cancel.borrow() => {
+                Ok((_, Err(TorrentError::Cancelled))) if *cancel.borrow() => {
                     tasks.abort_all();
                     return Err(TorrentError::Cancelled);
                 }
-                Ok(Err(error)) => errors.push(error.to_string()),
+                Ok((_, Err(error))) => errors.push(error.to_string()),
                 Err(error) => errors.push(error.to_string()),
             }
         }
@@ -639,6 +645,12 @@ impl TorrentClient {
             max_metadata_size: self.config.metadata_size_limit,
         }
     }
+}
+
+// The peer that supplied valid magnet metadata gets the first download connection attempt.
+fn prioritize_peer(peers: &mut Vec<SocketAddr>, preferred: SocketAddr) {
+    peers.retain(|peer| *peer != preferred);
+    peers.insert(0, preferred);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -801,6 +813,15 @@ mod tests {
         assert!(!usable_peer(&"0.0.0.0:1".parse().unwrap()));
         assert!(!usable_peer(&"127.0.0.1:0".parse().unwrap()));
         assert!(usable_peer(&"127.0.0.1:6881".parse().unwrap()));
+    }
+
+    #[test]
+    fn successful_metadata_peer_is_prioritized_for_downloading() {
+        let preferred = "127.0.0.1:6881".parse().unwrap();
+        let other = "127.0.0.2:6881".parse().unwrap();
+        let mut peers = vec![other, preferred];
+        prioritize_peer(&mut peers, preferred);
+        assert_eq!(peers, vec![preferred, other]);
     }
 
     #[tokio::test]

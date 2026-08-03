@@ -6,13 +6,14 @@ use std::time::Duration;
 use reqwest::Url;
 use tokio::net::{UdpSocket, lookup_host};
 use tokio::task::JoinSet;
-use tokio::time::{sleep, timeout};
+use tokio::time::{Instant, sleep, sleep_until, timeout};
 
 use super::bencode::{Value, decode};
 use super::error::{Result, TorrentError};
 use super::proxy::{ProxyConfig, ProxyKind, SocksUdp};
 
 const MAX_TRACKER_RESPONSE: usize = 4 * 1024 * 1024;
+const TRACKER_PEER_GRACE: Duration = Duration::from_millis(300);
 
 #[derive(Clone)]
 pub(crate) struct TrackerClient {
@@ -65,11 +66,39 @@ impl TrackerClient {
             let client = self.clone();
             tasks.spawn(async move { client.announce(&tracker, info_hash, left).await });
         }
-        let mut peers = HashSet::new();
+        let mut peers = Vec::new();
+        let mut seen = HashSet::new();
         let mut errors = Vec::new();
-        while let Some(result) = tasks.join_next().await {
+        let mut grace_deadline = None;
+        loop {
+            if tasks.is_empty() {
+                break;
+            }
+            let result = if let Some(deadline) = grace_deadline {
+                tokio::select! {
+                    result = tasks.join_next() => result,
+                    _ = sleep_until(deadline) => {
+                        tasks.abort_all();
+                        break;
+                    }
+                }
+            } else {
+                tasks.join_next().await
+            };
+            let Some(result) = result else {
+                break;
+            };
             match result {
-                Ok(Ok(found)) => peers.extend(found),
+                Ok(Ok(found)) => {
+                    for peer in found {
+                        if seen.insert(peer) {
+                            peers.push(peer);
+                        }
+                    }
+                    if !peers.is_empty() && grace_deadline.is_none() {
+                        grace_deadline = Some(Instant::now() + TRACKER_PEER_GRACE);
+                    }
+                }
                 Ok(Err(error)) => errors.push(error.to_string()),
                 Err(error) => errors.push(error.to_string()),
             }
@@ -77,7 +106,7 @@ impl TrackerClient {
         if peers.is_empty() && !errors.is_empty() {
             return Err(TorrentError::tracker(errors.join("; ")));
         }
-        Ok(peers.into_iter().collect())
+        Ok(peers)
     }
 
     async fn announce(
@@ -388,6 +417,8 @@ fn random_u32() -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     #[test]
     fn parses_compact_tracker_peers() {
@@ -446,5 +477,68 @@ mod tests {
             .unwrap();
         assert_eq!(peers, vec!["127.0.0.1:6881".parse().unwrap()]);
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn announce_all_does_not_wait_for_a_stalled_tracker_after_finding_peers() {
+        let fast = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let slow = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let fast_address = fast.local_addr().unwrap();
+        let slow_address = slow.local_addr().unwrap();
+        let fast_server = tokio::spawn(serve_http_tracker(
+            fast,
+            Duration::ZERO,
+            Some("127.0.0.1:6881".parse().unwrap()),
+        ));
+        let slow_server = tokio::spawn(serve_http_tracker(
+            slow,
+            Duration::from_secs(3),
+            None,
+        ));
+        let client = TrackerClient::new(None, Duration::from_secs(5), [7; 20], 6881).unwrap();
+        let started = Instant::now();
+        let peers = client
+            .announce_all(
+                &[
+                    format!("http://{fast_address}/announce"),
+                    format!("http://{slow_address}/announce"),
+                ],
+                [9; 20],
+                1,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(peers, vec!["127.0.0.1:6881".parse().unwrap()]);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        fast_server.await.unwrap();
+        slow_server.abort();
+    }
+
+    async fn serve_http_tracker(
+        listener: TcpListener,
+        delay: Duration,
+        peer: Option<SocketAddr>,
+    ) {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0u8; 4096];
+        let _ = stream.read(&mut request).await;
+        sleep(delay).await;
+        let mut body = b"d5:peers".to_vec();
+        match peer {
+            Some(SocketAddr::V4(peer)) => {
+                body.extend_from_slice(b"6:");
+                body.extend_from_slice(&peer.ip().octets());
+                body.extend_from_slice(&peer.port().to_be_bytes());
+            }
+            _ => body.extend_from_slice(b"0:"),
+        }
+        body.push(b'e');
+        let headers = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(headers.as_bytes()).await.unwrap();
+        stream.write_all(&body).await.unwrap();
     }
 }
