@@ -1,4 +1,5 @@
 /target
+/node_modules/
 /testing.sh
 /env.pandora
 /admin.pandora
