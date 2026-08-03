@@ -321,6 +321,7 @@ impl TorrentClient {
         );
         let mut written_pieces = 0usize;
         let mut downloaded_bytes = 0u64;
+        let mut written = HashSet::new();
 
         while written_pieces < scheduler.required_count() {
             if *cancel.borrow() {
@@ -329,6 +330,9 @@ impl TorrentClient {
             }
             if tasks.is_empty() {
                 while let Ok(piece) = piece_receiver.try_recv() {
+                    if !written.insert(piece.index) {
+                        continue;
+                    }
                     let offset = (piece.index as u64)
                         .checked_mul(metainfo.piece_length)
                         .ok_or_else(|| TorrentError::metainfo("piece write offset overflow"))?;
@@ -418,6 +422,9 @@ impl TorrentClient {
                     let Some(piece) = piece else {
                         return Err(TorrentError::peer("all piece workers stopped unexpectedly"));
                     };
+                    if !written.insert(piece.index) {
+                        continue;
+                    }
                     let offset = (piece.index as u64)
                         .checked_mul(metainfo.piece_length)
                         .ok_or_else(|| TorrentError::metainfo("piece write offset overflow"))?;

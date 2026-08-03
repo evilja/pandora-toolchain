@@ -298,7 +298,7 @@ fn emit_progress_throttled(
         return;
     }
     *last_progress = Some(now);
-    let percent = percent.ceil().min(100.0);
+    let percent = display_percent(percent, downloaded_bytes, total_bytes);
     println!(
         "{}",
         lib_pn_emit!(
@@ -309,6 +309,15 @@ fn emit_progress_throttled(
         )
         .unwrap()
     );
+}
+
+// Progress remains below 100 until the torrent client reports every byte written.
+fn display_percent(percent: f64, downloaded_bytes: u64, total_bytes: u64) -> f64 {
+    if total_bytes > 0 && downloaded_bytes >= total_bytes {
+        return 100.0;
+    }
+
+    percent.floor().clamp(0.0, 99.0)
 }
 
 fn emit_done(proto: &Protocol, neg: &str) {
@@ -365,6 +374,13 @@ mod tests {
             portable_path(Path::new("show/episode.mkv")),
             "show/episode.mkv"
         );
+    }
+
+    #[test]
+    fn progress_does_not_round_incomplete_downloads_up_to_100() {
+        assert_eq!(display_percent(99.72, 1_426, 1_430), 99.0);
+        assert_eq!(display_percent(100.0, 1_429, 1_430), 99.0);
+        assert_eq!(display_percent(100.0, 1_430, 1_430), 100.0);
     }
 
     #[tokio::test]

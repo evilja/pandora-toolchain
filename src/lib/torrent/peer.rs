@@ -18,6 +18,8 @@ const PROTOCOL: &[u8] = b"BitTorrent protocol";
 const HANDSHAKE_LENGTH: usize = 68;
 const MAX_WIRE_MESSAGE: usize = 2 * 1024 * 1024;
 const METADATA_BLOCK: usize = 16 * 1024;
+const ENDGAME_PIECES: usize = 8;
+const ENDGAME_COPIES: u8 = 2;
 pub(crate) const MEMORY_UNIT: usize = 64 * 1024;
 
 #[derive(Clone, Debug)]
@@ -36,7 +38,7 @@ pub(crate) struct CompletedPiece {
 }
 
 struct ScheduleState {
-    in_flight: Vec<bool>,
+    in_flight: Vec<u8>,
     complete: Vec<bool>,
     complete_count: usize,
 }
@@ -56,7 +58,7 @@ impl PieceScheduler {
             required,
             required_count,
             state: Mutex::new(ScheduleState {
-                in_flight: vec![false; length],
+                in_flight: vec![0; length],
                 complete: vec![false; length],
                 complete_count: 0,
             }),
@@ -64,16 +66,32 @@ impl PieceScheduler {
         }
     }
 
+    // Unclaimed work is spread out first. During the final pieces, a second peer may race a
+    // slow owner so completion is not held hostage by the full peer timeout.
     fn claim(&self, available: &[bool]) -> Option<usize> {
         let mut state = self.state.lock().unwrap();
         for index in 0..self.required.len() {
             if self.required[index]
                 && available.get(index).copied().unwrap_or(false)
-                && !state.in_flight[index]
+                && state.in_flight[index] == 0
                 && !state.complete[index]
             {
-                state.in_flight[index] = true;
+                state.in_flight[index] = 1;
                 return Some(index);
+            }
+        }
+        if state.complete_count > 0
+            && self.required_count.saturating_sub(state.complete_count) <= ENDGAME_PIECES
+        {
+            for index in 0..self.required.len() {
+                if self.required[index]
+                    && available.get(index).copied().unwrap_or(false)
+                    && !state.complete[index]
+                    && state.in_flight[index] < ENDGAME_COPIES
+                {
+                    state.in_flight[index] += 1;
+                    return Some(index);
+                }
             }
         }
         None
@@ -82,7 +100,7 @@ impl PieceScheduler {
     fn release(&self, index: usize) {
         if let Ok(mut state) = self.state.lock() {
             if let Some(in_flight) = state.in_flight.get_mut(index) {
-                *in_flight = false;
+                *in_flight = (*in_flight).saturating_sub(1);
             }
         }
         self.changed.notify_waiters();
@@ -90,7 +108,7 @@ impl PieceScheduler {
 
     fn complete(&self, index: usize) {
         let mut state = self.state.lock().unwrap();
-        state.in_flight[index] = false;
+        state.in_flight[index] = 0;
         if !state.complete[index] {
             state.complete[index] = true;
             state.complete_count += 1;
@@ -102,7 +120,9 @@ impl PieceScheduler {
     fn has_compatible_piece(&self, available: &[bool]) -> bool {
         let state = self.state.lock().unwrap();
         self.required.iter().enumerate().any(|(index, required)| {
-            *required && available.get(index).copied().unwrap_or(false) && !state.complete[index]
+            *required
+                && available.get(index).copied().unwrap_or(false)
+                && !state.complete[index]
         })
     }
 
@@ -719,6 +739,20 @@ mod tests {
         scheduler.complete(first);
         scheduler.release(second);
         assert_eq!(scheduler.claim(&available), Some(second));
+    }
+
+    #[test]
+    fn scheduler_duplicates_only_the_last_in_flight_pieces() {
+        let scheduler = PieceScheduler::new(vec![true, true, true]);
+        let available = vec![true, true, true];
+        let first = scheduler.claim(&available).unwrap();
+        let second = scheduler.claim(&available).unwrap();
+        let third = scheduler.claim(&available).unwrap();
+        assert!(scheduler.claim(&available).is_none());
+
+        scheduler.complete(first);
+        let duplicate = scheduler.claim(&available).unwrap();
+        assert!(duplicate == second || duplicate == third);
     }
 
     #[test]
