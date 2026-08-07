@@ -10,6 +10,7 @@ use crate::pnworker::messages::{
     BACKUPALL_PROG, JOB_CANCELLED, MessagePayload, UPLOAD_BACKUP_PROG, UPLOAD_DONE, UPLOAD_FAIL,
     UPLOAD_PROG, WORKER_ASSIGN,
 };
+use crate::pnworker::server_config::server_drive_only;
 use crate::pnworker::util::string_byte_to_mb;
 use crate::pnworker::util::{OUTPUT_RESOLUTION_FILE, WorkerNamePool, job_cancelled};
 use crate::pnworker::worker_slots::upload_worker_slots;
@@ -175,6 +176,10 @@ async fn run_lumiere_single_upload(
     let output_path = directory.join("work").join("output.mp4");
     let cancel_file = Some(directory.join("CANCEL"));
     let is_smartcode = gdrive_folder_local.is_some();
+    let drive_only = release && server_drive_only(server_id).await;
+    if drive_only {
+        println!("[lumiere] job {job_id}: server policy restricts uploads to Google Drive");
+    }
     let named_filename = match smartcode_drive_name.as_ref() {
         Some(name) => {
             Some(name.filename(&cached_output_resolution(&directory, &output_path).await))
@@ -204,7 +209,7 @@ async fn run_lumiere_single_upload(
         },
         event_tx.clone(),
     ));
-    if release {
+    if remote_uploads_enabled(release, drive_only) {
         for (host, provider) in [
             (LumiereHost::Doodstream, RemoteProvider::Doodstream),
             (LumiereHost::Lulustream, RemoteProvider::Lulustream),
@@ -236,14 +241,14 @@ async fn run_lumiere_single_upload(
     }
     drop(event_tx);
 
-    let expected_hosts = if release { 5usize } else { 1usize };
+    let expected_hosts = expected_lumiere_hosts(release, drive_only);
     let mut completed = 0usize;
     let mut any_success = false;
     let mut gd_link = "Google Bekleniyor".to_string();
-    let mut dood_link = "Doodstream Bekleniyor".to_string();
-    let mut lulu_link = "Lulustream Bekleniyor".to_string();
-    let mut voe_link = "Voe Bekleniyor".to_string();
-    let mut abyss_link = "Abyss Bekleniyor".to_string();
+    let mut dood_link = if drive_only { String::new() } else { "Doodstream Bekleniyor".to_string() };
+    let mut lulu_link = if drive_only { String::new() } else { "Lulustream Bekleniyor".to_string() };
+    let mut voe_link = if drive_only { String::new() } else { "Voe Bekleniyor".to_string() };
+    let mut abyss_link = if drive_only { String::new() } else { "Abyss Bekleniyor".to_string() };
     let mut done = [false; 5];
     let mut last_progress = [None; 5];
     let mut drive_meta: Option<(String, String, String, String)> = None;
@@ -710,6 +715,14 @@ fn local_drive_enabled(server_id: u64) -> bool {
     !matches!(value.as_str(), "false" | "0" | "disabled" | "off")
 }
 
+fn remote_uploads_enabled(release: bool, drive_only: bool) -> bool {
+    release && !drive_only
+}
+
+fn expected_lumiere_hosts(release: bool, drive_only: bool) -> usize {
+    if remote_uploads_enabled(release, drive_only) { 5 } else { 1 }
+}
+
 fn lumiere_host_index(host: LumiereHost) -> usize {
     match host {
         LumiereHost::Drive => 0,
@@ -983,6 +996,47 @@ mod tests {
         );
         assert_eq!(valid_resolution_label("0p"), None);
         assert_eq!(valid_resolution_label("fullhd"), None);
+    }
+
+    #[test]
+    fn drive_only_release_schedules_only_drive() {
+        assert_eq!(expected_lumiere_hosts(true, true), 1);
+        assert!(!remote_uploads_enabled(true, true));
+        assert_eq!(expected_lumiere_hosts(true, false), 5);
+        assert!(remote_uploads_enabled(true, false));
+        assert_eq!(expected_lumiere_hosts(false, false), 1);
+        assert!(!remote_uploads_enabled(false, false));
+    }
+
+    #[test]
+    fn drive_only_release_preserves_release_payload_positions() {
+        let payload = lumiere_upload_payload(
+            1,
+            true,
+            UPLOAD_DONE,
+            "https://drive.google.com/file/d/file/view",
+            "",
+            "",
+            "",
+            "",
+            Some((
+                "file".to_string(),
+                "folder".to_string(),
+                "guild:1".to_string(),
+                "delete-token".to_string(),
+            )),
+            Some(Stage::Uploaded),
+        );
+        assert_eq!(crate::pnworker::messages::format_payload(&payload.1, "en"), "https://drive.google.com/file/d/file/view");
+        let MessagePayload::Progress(_, args) = payload.1 else {
+            panic!("expected progress payload");
+        };
+        assert_eq!(args.len(), 9);
+        assert!(args[1..5].iter().all(|arg| arg.is_empty()));
+        assert_eq!(args[5], "file");
+        assert_eq!(args[6], "folder");
+        assert_eq!(args[7], "guild:1");
+        assert_eq!(args[8], "delete-token");
     }
 
     #[test]

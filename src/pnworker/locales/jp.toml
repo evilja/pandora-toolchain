@@ -322,6 +322,10 @@ args = 0
 text = "ローカルGoogle Drive"
 args = 0
 
+[FIELD_DRIVE_ONLY]
+text = "Google Driveのみのアップロード"
+args = 0
+
 [LABEL_ETA]
 text = "残り時間"
 args = 0

@@ -1,4 +1,5 @@
 use super::*;
+use pandora_toolchain::pnworker::server_config::drive_only_from_meta;
 
 pub async fn handle_configure(
     ctx: &Context,
@@ -56,6 +57,7 @@ pub async fn handle_configure(
     let existing_preset = existing_lines.get(11).copied().unwrap_or("standard").to_string();
     let existing_concat = existing_lines.get(12).copied().unwrap_or("").to_string();
     let existing_acix_template = existing_lines.get(SERVER_ACIX_TEMPLATE_LINE).copied().unwrap_or("").to_string();
+    let existing_drive_only = drive_only_from_meta(&existing_meta);
 
     let wrap_style = match option_str(command, "wrapstyle").map(str::trim) {
         Some("dont_touch") | Some("keep") | Some("-") => String::new(),
@@ -78,7 +80,7 @@ pub async fn handle_configure(
     let gdrive_folder_id = existing_gdrive_folder_id;
     let gdrive_anon_folder_id = existing_gdrive_anon_folder_id;
 
-    let body = format!("{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n", language, forgejo, command.channel_id.get(), new_api_key, gdrive_client_id, gdrive_client_secret, gdrive_refresh_token, gdrive_folder_id, wrap_style, existing_local_gdrive, gdrive_anon_folder_id, existing_preset, existing_concat, existing_acix_template);
+    let body = format!("{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n", language, forgejo, command.channel_id.get(), new_api_key, gdrive_client_id, gdrive_client_secret, gdrive_refresh_token, gdrive_folder_id, wrap_style, existing_local_gdrive, gdrive_anon_folder_id, existing_preset, existing_concat, existing_acix_template, existing_drive_only);
     let path = dir.join("meta.pandora");
     if let Err(e) = tokio::fs::write(&path, body).await {
         command.create_response(ctx, CreateInteractionResponse::Message(
@@ -103,6 +105,7 @@ pub async fn handle_configure(
     let gdrive_display = if broker_status.requested_drive || broker_status.global_drive { set.clone() } else { unset.clone() };
     let gdrive_anon_display = if broker_status.requested_drive { set } else { unset };
     let wrap_display = if wrap_style.is_empty() { "dont_touch".to_string() } else { wrap_style.clone() };
+    let drive_only_display = command_message(command, if existing_drive_only { VALUE_ENABLED } else { VALUE_DISABLED });
     let embed = success_embed(command, COMMAND_SERVER_CONFIGURED)
         .description(format!("Server `{}`", server_id))
         .field(command_message(command, FIELD_LANGUAGE), language, true)
@@ -110,6 +113,7 @@ pub async fn handle_configure(
         .field(command_message(command, FIELD_API_KEY), api_key_display, true)
         .field(command_message(command, FIELD_GDRIVE), gdrive_display, true)
         .field(command_message(command, FIELD_GDRIVE_ANONYMOUS), gdrive_anon_display, true)
+        .field(command_message(command, FIELD_DRIVE_ONLY), drive_only_display, true)
         .field(command_message(command, FIELD_WRAPSTYLE), wrap_display, true)
         .field(
             command_message(command, FIELD_ANNOUNCEMENT),

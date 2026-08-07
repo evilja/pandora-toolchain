@@ -91,6 +91,7 @@ pub const FIELD_WRAPSTYLE: &str = "FIELD_WRAPSTYLE";
 pub const FIELD_ANNOUNCEMENT: &str = "FIELD_ANNOUNCEMENT";
 pub const FIELD_CONCAT: &str = "FIELD_CONCAT";
 pub const FIELD_LOCAL_GDRIVE: &str = "FIELD_LOCAL_GDRIVE";
+pub const FIELD_DRIVE_ONLY: &str = "FIELD_DRIVE_ONLY";
 pub const LABEL_ETA: &str = "LABEL_ETA";
 pub const WARNINGS_MORE: &str = "WARNINGS_MORE";
 pub const STAGE_QUEUED: &str = "STAGE_QUEUED";

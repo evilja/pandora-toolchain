@@ -179,7 +179,7 @@ lumiere_poll_interval_secs|pntools|5
 docker compose up -d --build
 ```
 
-Use `/providers` to verify that the Worker reports the global/guild Drive profile and each configured streaming host.
+Use `/providers` to verify that the Worker reports the global/guild Drive profile and each configured streaming host. A server configured with `/edit drive_only:true` reports the streaming hosts as disabled by server policy even when their Worker secrets are present; use `/edit drive_only:false` to restore them for future releases.
 
 ## 8. Smoke test before deleting local credentials
 

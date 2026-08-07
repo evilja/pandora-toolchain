@@ -322,6 +322,10 @@ args = 0
 text = "Local Google Drive"
 args = 0
 
+[FIELD_DRIVE_ONLY]
+text = "Google Drive-only uploads"
+args = 0
+
 [LABEL_ETA]
 text = "ETA"
 args = 0

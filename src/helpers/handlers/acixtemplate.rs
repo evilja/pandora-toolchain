@@ -154,11 +154,12 @@ mod tests {
 
     #[test]
     fn server_template_preserves_existing_meta_lines() {
-        let meta = (0..=12).map(|line| format!("line{}", line)).collect::<Vec<_>>().join("\n");
+        let meta = (0..=14).map(|line| format!("line{}", line)).collect::<Vec<_>>().join("\n");
         let updated = server_meta_with_acix_template(&meta, 218);
         let lines = updated.lines().collect::<Vec<_>>();
         assert_eq!(lines[0], "line0");
         assert_eq!(lines[12], "line12");
         assert_eq!(lines[SERVER_ACIX_TEMPLATE_LINE], "218");
+        assert_eq!(lines[14], "line14");
     }
 }

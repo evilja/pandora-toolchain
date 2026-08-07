@@ -1,4 +1,5 @@
 use super::*;
+use pandora_toolchain::pnworker::server_config::drive_only_from_meta;
 use serenity::builder::CreateAutocompleteResponse;
 
 const CLEAR_SENTINEL: &str = "-";
@@ -103,6 +104,7 @@ pub async fn handle_edit(
     let existing_preset = existing_lines.get(11).copied().unwrap_or("standard");
     let existing_concat = existing_lines.get(12).copied().unwrap_or("");
     let existing_acix_template = existing_lines.get(SERVER_ACIX_TEMPLATE_LINE).copied().unwrap_or("");
+    let existing_drive_only = drive_only_from_meta(&existing_meta);
 
     let language = match option_str(command, "language") {
         Some(l) if matches!(l, "EN" | "TR" | "JP") => l.to_string(),
@@ -147,6 +149,7 @@ pub async fn handle_edit(
     let local_gdrive = option_bool(command, "local_gdrive")
         .map(|v| if v { "true" } else { "false" }.to_string())
         .unwrap_or_else(|| existing_local_gdrive.to_string());
+    let drive_only = option_bool(command, "drive_only").unwrap_or(existing_drive_only);
     let preset = match option_str(command, "preset").map(str::trim) {
         None => existing_preset.to_string(),
         Some("standard") | Some("gpu") | Some("pseudolossless") | Some("dummy") => option_str(command, "preset").unwrap().to_string(),
@@ -164,7 +167,7 @@ pub async fn handle_edit(
             return;
         }
     };
-    let body = format!("{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n", language, forgejo, channel, new_api_key, gdrive_client_id, gdrive_client_secret, gdrive_refresh_token, gdrive_folder_id, wrap_style, local_gdrive, gdrive_anon_folder_id, preset, concat, existing_acix_template);
+    let body = format!("{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n", language, forgejo, channel, new_api_key, gdrive_client_id, gdrive_client_secret, gdrive_refresh_token, gdrive_folder_id, wrap_style, local_gdrive, gdrive_anon_folder_id, preset, concat, existing_acix_template, drive_only);
     let path = dir.join("meta.pandora");
     if let Err(e) = tokio::fs::write(&path, body).await {
         command.create_response(ctx, CreateInteractionResponse::Message(
@@ -200,6 +203,7 @@ pub async fn handle_edit(
     } else {
         concat
     };
+    let drive_only_display = command_message(command, if drive_only { VALUE_ENABLED } else { VALUE_DISABLED });
     let embed = success_embed(command, COMMAND_SERVER_UPDATED)
         .description(format!("Server `{}`", server_id))
         .field(command_message(command, FIELD_LANGUAGE), language, true)
@@ -208,6 +212,7 @@ pub async fn handle_edit(
         .field(command_message(command, FIELD_GDRIVE), gdrive_display, true)
         .field(command_message(command, FIELD_GDRIVE_ANONYMOUS), gdrive_anon_display, true)
         .field(command_message(command, FIELD_LOCAL_GDRIVE), local_gdrive_display, true)
+        .field(command_message(command, FIELD_DRIVE_ONLY), drive_only_display, true)
         .field(command_message(command, FIELD_WRAPSTYLE), wrap_display, true)
         .field(command_message(command, FIELD_PRESET), preset, true)
         .field(command_message(command, FIELD_CONCAT), concat_display, true)

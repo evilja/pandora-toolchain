@@ -2,6 +2,7 @@ use super::*;
 use pandora_toolchain::lib::env::standard::{
     AKIRA_API, AKIRA_TOKEN, ANIZM_EMAIL, ANIZM_PASSWORD, OPENANIME_EMAIL, OPENANIME_PASSWORD,
 };
+use pandora_toolchain::pnworker::server_config::drive_only_from_meta;
 
 pub async fn handle_providers(ctx: &Context, command: &serenity::all::CommandInteraction) {
     let env = get_pandora_env();
@@ -11,6 +12,10 @@ pub async fn handle_providers(ctx: &Context, command: &serenity::all::CommandInt
         .as_deref()
         .map(|s| s.lines().collect())
         .unwrap_or_default();
+    let drive_only = server_meta
+        .as_deref()
+        .map(drive_only_from_meta)
+        .unwrap_or(false);
 
     let local_gdrive_enabled = !matches!(
         server_lines.get(9).copied().unwrap_or("true").trim(),
@@ -44,11 +49,20 @@ pub async fn handle_providers(ctx: &Context, command: &serenity::all::CommandInt
     let forgejo_attached = !persistence.is_empty() && !github_attached;
 
     let upload_lines = vec![
+        if drive_only {
+            "🔒 Server policy: Google Drive only".to_string()
+        } else {
+            "Server policy: all configured providers".to_string()
+        },
         attached_line_with_note("Google Drive", active_server_gdrive || global_gdrive, gdrive_label),
-        attached_line("Doodstream (via Lumiere)", broker_status.doodstream),
-        attached_line("LuluStream (via Lumiere)", broker_status.lulustream),
-        attached_line("Voe (via Lumiere)", broker_status.voe),
-        attached_line_with_note("Abyss", broker_status.abyss, "remote API unsupported"),
+        policy_provider_line("Doodstream (via Lumiere)", broker_status.doodstream, drive_only),
+        policy_provider_line("LuluStream (via Lumiere)", broker_status.lulustream, drive_only),
+        policy_provider_line("Voe (via Lumiere)", broker_status.voe, drive_only),
+        if drive_only {
+            policy_provider_line("Abyss", broker_status.abyss, true)
+        } else {
+            attached_line_with_note("Abyss", broker_status.abyss, "remote API unsupported")
+        },
     ].join("\n");
 
     let distribution_lines = vec![
@@ -109,10 +123,32 @@ fn attached_line(name: &str, active: bool) -> String {
     }
 }
 
+fn policy_provider_line(name: &str, configured: bool, drive_only: bool) -> String {
+    if drive_only {
+        format!("— {} (disabled by server policy)", name)
+    } else {
+        attached_line(name, configured)
+    }
+}
+
 fn attached_line_with_note(name: &str, active: bool, note: &str) -> String {
     if active {
         format!("✅ {} ({})", name, note)
     } else {
         format!("— {}", name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::policy_provider_line;
+
+    #[test]
+    fn drive_only_policy_overrides_configured_provider_status() {
+        assert_eq!(
+            policy_provider_line("Doodstream", true, true),
+            "— Doodstream (disabled by server policy)",
+        );
+        assert_eq!(policy_provider_line("Doodstream", true, false), "✅ Doodstream");
     }
 }
