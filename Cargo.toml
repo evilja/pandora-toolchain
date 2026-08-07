@@ -21,6 +21,7 @@ toml = "0.8"
 git2 = "0.19"
 md5 = "0.7"
 sha1 = "0.10"
+sha2 = "0.10"
 async_zip = { version = "0.0.17", features = ["tokio", "deflate"] }
 futures-lite = "2"
 axum = "0.7"

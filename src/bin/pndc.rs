@@ -499,6 +499,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("gitquery", 3),
     ("gentoken", 3),
     ("exportdrive", 4),
+    ("keyvault", 4),
     ("lstoken", 3),
     ("rmtoken", 3),
     ("touchflavor", 4),
@@ -894,6 +895,13 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Export legacy Drive profiles encrypted for Lumiere migration.",
             usage: "/exportdrive recipient:<age1...>",
             details: "Builds the global and every complete guild Drive profile in memory, encrypts the Worker-ready JSON to the supplied age X25519 public recipient, and returns only an ephemeral ciphertext attachment. The private age identity must never be sent to Pandora or Discord. Witch rank only.",
+        },
+        HelpCommand {
+            section: "admin",
+            name: "keyvault",
+            summary: "Back up VDS-readable credentials, then purge legacy upload secrets.",
+            usage: "/keyvault prepare recipient:<age1...>; decrypt manifest.json; /keyvault confirm backup_id:<id> proof:<proof>",
+            details: "Hard Witch-only two-phase operation. Prepare creates an age-encrypted ZIP containing known Pandora credential files, selected sensitive process variables, and a one-time proof; it purges nothing. Confirm verifies that proof, the retained ciphertext, and an unchanged source snapshot before blanking only legacy Google/streaming-provider values and removing historical gdrive_env.pandora files. Operational Discord, Lumiere, Forgejo, distribution, session, and HTTP API credentials are backed up but retained. Cloudflare Worker bindings cannot be exported.",
         },
         HelpCommand {
             section: "misc",
@@ -1990,6 +1998,9 @@ impl EventHandler for Handler {
                 "exportdrive" => {
                     handle_exportdrive(&ctx, &command).await;
                 }
+                "keyvault" => {
+                    handle_keyvault(&ctx, &command).await;
+                }
                 "lstoken" => {
                     handle_lstoken(&ctx, &command).await;
                 }
@@ -2740,6 +2751,26 @@ impl EventHandler for Handler {
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "recipient", "age X25519 recipient beginning with age1")
                         .required(true)
+                ),
+            CreateCommand::new("keyvault")
+                .description("Encrypt a credential backup, then purge only legacy upload secrets")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::SubCommand, "prepare", "Create an encrypted backup; purge nothing")
+                        .add_sub_option(
+                            CreateCommandOption::new(CommandOptionType::String, "recipient", "age X25519 recipient beginning with age1")
+                                .required(true)
+                        )
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::SubCommand, "confirm", "Purge after decrypting and verifying the backup")
+                        .add_sub_option(
+                            CreateCommandOption::new(CommandOptionType::String, "backup_id", "Backup id from decrypted manifest.json")
+                                .required(true)
+                        )
+                        .add_sub_option(
+                            CreateCommandOption::new(CommandOptionType::String, "proof", "One-time proof from decrypted manifest.json")
+                                .required(true)
+                        )
                 ),
             CreateCommand::new("lstoken")
                 .description("List API bearer tokens")

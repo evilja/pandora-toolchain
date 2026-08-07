@@ -202,7 +202,26 @@ Only after a successful smoke test and an offline recovery backup:
 - Preserve the Abyss key offline until a supported broker API exists, then remove it from the VDS. Pandora currently marks Abyss unavailable.
 - In each `DB/config/<guild>/meta.pandora`, blank legacy lines 4-7 and 10 while preserving line positions. Lines 4-6 were OAuth credentials; lines 7/10 were roots now stored in the Worker profile.
 
-Do not delete the only recovery copy until the new uploads and Smartcode cleanup have been exercised. Stop Pandora before changing these files. From PowerShell in the repository root, the following preserves the positional guild metadata format while blanking only migrated fields:
+The recommended automated flow is the hard Witch-only two-phase keyvault command. Generate an age identity only on the trusted administration machine, then run `/keyvault prepare recipient:<age1...>`. Prepare purges nothing. Download and decrypt the attachment locally:
+
+```sh
+age --decrypt -i ~/.config/pandora/lumiere-export.agekey \
+  -o pandora-keyvault.zip pandora-keyvault-*.zip.age
+unzip -p pandora-keyvault.zip manifest.json | jq .
+PROOF="$(unzip -p pandora-keyvault.zip manifest.json | jq -r '.confirmation.proof')"
+```
+
+Verify that the manifest's file list covers the expected VDS sources and retain the `.zip.age` file offline. Submit its `backup_id` and proof through `/keyvault confirm backup_id:<id> proof:<proof>` within one hour. Confirm refuses to purge if a target changed after prepare or if the mode-`0600` local ciphertext copy fails its SHA-256 check. It removes only the legacy upload credentials listed above, including provider-shaped values found in readable Compose `.env`/Worker `.dev.vars` files and readable local `drive-profiles.json` copies; it backs up but retains Discord, Lumiere, Forgejo, Tunnel, git-sync, distribution, session, Smartcode deletion, HTTP API, and other operational credentials. Worker secret bindings cannot be exported because Cloudflare intentionally provides no secret-read API. A cloudflared-only Tunnel environment variable is similarly unavailable unless its value is present in the Compose `.env` file readable at `/repo/.env`.
+
+Delete the plaintext ZIP after securely storing the encrypted recovery copy. Once rotation and post-purge tests are complete and an offline ciphertext copy is verified, the retained VDS ciphertext can also be removed:
+
+```sh
+rm -f pandora-keyvault.zip
+# On the VDS, only after copying/verifying the matching ciphertext offline:
+rm -f DB/config/global/environment/keyvault/pandora-keyvault-<id>.zip.age
+```
+
+Do not delete the only encrypted recovery copy until the new uploads and Smartcode cleanup have been exercised. For manual cleanup instead, stop Pandora before changing these files. From PowerShell in the repository root, the following preserves the positional guild metadata format while blanking only migrated fields:
 
 ```powershell
 docker compose stop
@@ -240,7 +259,7 @@ Get-ChildItem "DB/config" -Directory | ForEach-Object {
 docker compose up -d
 ```
 
-After verifying the scrub, rotate every legacy Google and streaming-provider credential because it previously existed on the VDS: install each replacement in the Worker, retest, and only then revoke the old value. Keep `lumiere_broker_token`: Pandora needs that narrow broker credential, and it is not a provider key.
+The command performs logical removal, not guaranteed forensic erasure; filesystem journals, snapshots, old container images, external backups, and already inherited process environment values may retain previous bytes. Inspect the archive's `runtime/process-environment.json`, scrub any external deployment source, remove legacy provider files mounted through `/run/secrets` at the orchestrator, and recreate the container after confirmation. After verifying the scrub, rotate every legacy Google and streaming-provider credential because it previously existed on the VDS: install each replacement in the Worker, retest, and only then revoke the old value. Keep `lumiere_broker_token`: Pandora needs that narrow broker credential, and it is not a provider key.
 
 ## API and security properties
 
