@@ -498,6 +498,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("gitsync", 3),
     ("gitquery", 3),
     ("gentoken", 3),
+    ("exportdrive", 4),
     ("lstoken", 3),
     ("rmtoken", 3),
     ("touchflavor", 4),
@@ -886,6 +887,13 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Generate a new API bearer token.",
             usage: "/gentoken [label:<note>] [local:<true|false>]",
             details: "Mints a random bearer token for the HTTP API and appends it to the token file. With local enabled, jobs submitted with the token prefer this server's Lumiere Drive profile when configured, falling back to the global Lumiere profile. The token is shown once, privately. Upper only.",
+        },
+        HelpCommand {
+            section: "admin",
+            name: "exportdrive",
+            summary: "Export legacy Drive profiles encrypted for Lumiere migration.",
+            usage: "/exportdrive recipient:<age1...>",
+            details: "Builds the global and every complete guild Drive profile in memory, encrypts the Worker-ready JSON to the supplied age X25519 public recipient, and returns only an ephemeral ciphertext attachment. The private age identity must never be sent to Pandora or Discord. Witch rank only.",
         },
         HelpCommand {
             section: "misc",
@@ -1979,6 +1987,9 @@ impl EventHandler for Handler {
                 "gentoken" => {
                     handle_gentoken(&ctx, &command).await;
                 }
+                "exportdrive" => {
+                    handle_exportdrive(&ctx, &command).await;
+                }
                 "lstoken" => {
                     handle_lstoken(&ctx, &command).await;
                 }
@@ -2719,6 +2730,12 @@ impl EventHandler for Handler {
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::Boolean, "local", "Bind token to this server for Drive creds and git console access")
                         .required(false)
+                ),
+            CreateCommand::new("exportdrive")
+                .description("Export Drive profiles encrypted to an age recipient (Witch only)")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "recipient", "age X25519 recipient beginning with age1")
+                        .required(true)
                 ),
             CreateCommand::new("lstoken")
                 .description("List API bearer tokens")

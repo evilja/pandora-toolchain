@@ -63,7 +63,28 @@ This token is stored on the VDS, so a VDS compromise can invoke the Worker's nar
 
 ## 4. Configure Drive profiles
 
-Copy `drive-profiles.example.json` to a temporary file outside the repository. Profiles are selected deterministically:
+For an existing Pandora installation, a Witch-rank operator can migrate all complete legacy profiles without sending plaintext through Discord. On the trusted administration machine, generate a one-purpose age identity and obtain its public recipient:
+
+```sh
+umask 077
+age-keygen -o lumiere-export.agekey
+age-keygen -y lumiere-export.agekey
+```
+
+Pass only the printed `age1...` public recipient to `/exportdrive recipient:<age1...>`. Download the ephemeral `.json.age` attachment and decrypt it on the trusted machine:
+
+```sh
+age --decrypt -i lumiere-export.agekey \
+  -o lumiere-drive-profiles.json lumiere-drive-profiles-*.json.age
+jq -e . lumiere-drive-profiles.json
+jq -c . lumiere-drive-profiles.json | \
+  npx wrangler secret put LUMIERE_DRIVE_PROFILES
+rm -f lumiere-drive-profiles.json lumiere-drive-profiles-*.json.age
+```
+
+Never send `lumiere-export.agekey` to Discord or Pandora. The command has a hard Witch-rank check, constructs JSON in memory, sends only ciphertext, omits incomplete guild profiles with a warning, and refuses output above Cloudflare's 5 KiB secret limit.
+
+Alternatively, copy `drive-profiles.example.json` to a temporary file outside the repository and fill it manually. Profiles are selected deterministically:
 
 - `global` is the mandatory fallback profile.
 - `guild:<Discord server id>` is preferred when `/edit local_gdrive:true` and that profile exists.
