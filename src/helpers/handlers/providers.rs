@@ -12,23 +12,29 @@ pub async fn handle_providers(ctx: &Context, command: &serenity::all::CommandInt
         .map(|s| s.lines().collect())
         .unwrap_or_default();
 
-    let global_gdrive = env_set(&env, CLIENT_ID)
-        && env_set(&env, CLIENT_SECRET)
-        && env_set(&env, REFRESH_TOKEN)
-        && env_set(&env, PARENTID);
-    let server_gdrive = [4usize, 5, 6, 7].iter()
-        .all(|idx| server_lines.get(*idx).map(|s| !s.trim().is_empty()).unwrap_or(false));
     let local_gdrive_enabled = !matches!(
         server_lines.get(9).copied().unwrap_or("true").trim(),
         "false" | "0" | "disabled" | "off"
     );
-    let active_server_gdrive = server_gdrive && local_gdrive_enabled;
+    let requested_profile = command
+        .guild_id
+        .filter(|_| local_gdrive_enabled)
+        .map(|guild| guild_drive_profile(guild.get()));
+    let broker_status = match LumiereClient::from_env() {
+        Ok(client) => client
+            .provider_status(requested_profile.as_deref())
+            .await
+            .unwrap_or_default(),
+        Err(_) => Default::default(),
+    };
+    let active_server_gdrive = local_gdrive_enabled && broker_status.requested_drive;
+    let global_gdrive = broker_status.global_drive;
     let gdrive_label = if active_server_gdrive {
-        "server"
-    } else if server_gdrive && global_gdrive {
-        "global (server disabled)"
+        "server via Lumiere"
+    } else if global_gdrive && !local_gdrive_enabled {
+        "global via Lumiere (server disabled)"
     } else if global_gdrive {
-        "global"
+        "global via Lumiere"
     } else {
         "not attached"
     };
@@ -39,10 +45,10 @@ pub async fn handle_providers(ctx: &Context, command: &serenity::all::CommandInt
 
     let upload_lines = vec![
         attached_line_with_note("Google Drive", active_server_gdrive || global_gdrive, gdrive_label),
-        attached_line("Doodstream", env_set(&env, DOODSTREAM)),
-        attached_line("LuluStream", env_set(&env, LULU)),
-        attached_line("Voe", env_set(&env, VOESX)),
-        attached_line("Abyss", env_set(&env, ABYSS)),
+        attached_line("Doodstream (via Lumiere)", broker_status.doodstream),
+        attached_line("LuluStream (via Lumiere)", broker_status.lulustream),
+        attached_line("Voe (via Lumiere)", broker_status.voe),
+        attached_line_with_note("Abyss", broker_status.abyss, "remote API unsupported"),
     ].join("\n");
 
     let distribution_lines = vec![

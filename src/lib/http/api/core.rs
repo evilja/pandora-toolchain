@@ -191,6 +191,10 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/favicon", get(favicon))
         .route("/favicon.ico", get(favicon))
         .route("/health", get(health))
+        .route(
+            "/lumiere/v1/files/:token/:filename",
+            get(crate::lumiere_broker::serve_transfer),
+        )
         .nest("/api/v1", protected)
         .with_state(state);
 

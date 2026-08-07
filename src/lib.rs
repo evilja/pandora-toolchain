@@ -2,6 +2,8 @@
 pub mod lib;
 pub mod pnworker;
 pub mod libkagami;
+#[path = "lumiere-broker/mod.rs"]
+pub mod lumiere_broker;
 
 pub use kagami_trace;
 

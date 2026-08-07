@@ -72,42 +72,11 @@ pub async fn handle_configure(
         .filter(|s| !s.is_empty())
         .unwrap_or(&existing_api_key)
         .to_string();
-    let gdrive_client_id = option_str(command, "gdrive_client_id")
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(&existing_gdrive_client_id)
-        .to_string();
-    let gdrive_client_secret = option_str(command, "gdrive_client_secret")
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(&existing_gdrive_client_secret)
-        .to_string();
-    let gdrive_refresh_token = option_str(command, "gdrive_refresh_token")
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(&existing_gdrive_refresh_token)
-        .to_string();
-    let gdrive_folder_id = option_str(command, "gdrive_folder_id")
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(&existing_gdrive_folder_id)
-        .to_string();
-    let gdrive_anon_folder_id = option_str(command, "gdrive_anon_folder_id")
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(&existing_gdrive_anon_folder_id)
-        .to_string();
-    let gdrive_auth_parts = [&gdrive_client_id, &gdrive_client_secret, &gdrive_refresh_token];
-    let any_gdrive = gdrive_auth_parts.iter().any(|s| !s.is_empty())
-        || !gdrive_folder_id.is_empty()
-        || !gdrive_anon_folder_id.is_empty();
-    if any_gdrive
-        && (gdrive_auth_parts.iter().any(|s| s.is_empty())
-            || (gdrive_folder_id.is_empty() && gdrive_anon_folder_id.is_empty()))
-    {
-        command_error(ctx, command, "Error: Google Drive config requires client id, client secret, refresh token, and at least one folder id.").await;
-        return;
-    }
+    let gdrive_client_id = existing_gdrive_client_id;
+    let gdrive_client_secret = existing_gdrive_client_secret;
+    let gdrive_refresh_token = existing_gdrive_refresh_token;
+    let gdrive_folder_id = existing_gdrive_folder_id;
+    let gdrive_anon_folder_id = existing_gdrive_anon_folder_id;
 
     let body = format!("{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n", language, forgejo, command.channel_id.get(), new_api_key, gdrive_client_id, gdrive_client_secret, gdrive_refresh_token, gdrive_folder_id, wrap_style, existing_local_gdrive, gdrive_anon_folder_id, existing_preset, existing_concat, existing_acix_template);
     let path = dir.join("meta.pandora");
@@ -124,8 +93,15 @@ pub async fn handle_configure(
     let unset = command_message(command, VALUE_UNSET);
     let forgejo_display = if forgejo.is_empty() { unset.clone() } else { forgejo.clone() };
     let api_key_display = if new_api_key.is_empty() { unset.clone() } else { set.clone() };
-    let gdrive_display = if gdrive_client_id.is_empty() && gdrive_client_secret.is_empty() && gdrive_refresh_token.is_empty() && gdrive_folder_id.is_empty() && gdrive_anon_folder_id.is_empty() { unset.clone() } else { set.clone() };
-    let gdrive_anon_display = if gdrive_anon_folder_id.is_empty() { unset } else { set };
+    let broker_status = match LumiereClient::from_env() {
+        Ok(client) => client
+            .provider_status(Some(&guild_drive_profile(server_id)))
+            .await
+            .unwrap_or_default(),
+        Err(_) => Default::default(),
+    };
+    let gdrive_display = if broker_status.requested_drive || broker_status.global_drive { set.clone() } else { unset.clone() };
+    let gdrive_anon_display = if broker_status.requested_drive { set } else { unset };
     let wrap_display = if wrap_style.is_empty() { "dont_touch".to_string() } else { wrap_style.clone() };
     let embed = success_embed(command, COMMAND_SERVER_CONFIGURED)
         .description(format!("Server `{}`", server_id))

@@ -125,6 +125,9 @@ fn upload_links_json(args: &[String], encode_warnings: &[String]) -> serde_json:
         if let Some(folder_id) = args.get(6).map(|s| s.trim()).filter(|s| !s.is_empty()) {
             obj.insert("drive_folder_id".to_string(), serde_json::json!(folder_id));
         }
+        if let Some(profile) = args.get(7).map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            obj.insert("drive_profile".to_string(), serde_json::json!(profile));
+        }
     }
     add_warnings(&mut v, encode_warnings);
     v
@@ -332,6 +335,8 @@ mod tests {
             "https://abyss.to/a".to_string(),
             "file123".to_string(),
             "folder456".to_string(),
+            "guild:1".to_string(),
+            "private-delete-token".to_string(),
         ];
 
         let links = upload_links_json(&args, &[]);
@@ -339,5 +344,7 @@ mod tests {
         assert_eq!(upload_display_args(&args).len(), 5);
         assert_eq!(links["drive_file_id"], "file123");
         assert_eq!(links["drive_folder_id"], "folder456");
+        assert_eq!(links["drive_profile"], "guild:1");
+        assert!(!links.to_string().contains("private-delete-token"));
     }
 }

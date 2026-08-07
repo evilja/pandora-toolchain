@@ -1182,11 +1182,15 @@ async fn persist_smartcode_drive_upload(job: &Job, payload: &MessagePayload, sta
     let Some(folder_id) = args.get(6).map(|s| s.trim()).filter(|s| !s.is_empty()) else {
         return;
     };
-    let url = args.get(0).cloned().unwrap_or_default();
+    let profile = args.get(7).cloned().unwrap_or_default();
+    let delete_token = args.get(8).cloned().unwrap_or_default();
+    let url = args.first().cloned().unwrap_or_default();
     let upload = SmartcodeDriveUpload {
         job_id: job.job_id,
         file_id: file_id.to_string(),
         folder_id: folder_id.to_string(),
+        profile,
+        delete_token,
         url,
     };
     if let Err(e) = replace_smartcode_upload(server_id, job.channel_id, name.episode, upload).await {

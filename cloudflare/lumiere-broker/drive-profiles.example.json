@@ -1,0 +1,21 @@
+{
+  "global": {
+    "client_id": "GOOGLE_OAUTH_CLIENT_ID",
+    "client_secret": "GOOGLE_OAUTH_CLIENT_SECRET",
+    "refresh_token": "GOOGLE_OAUTH_REFRESH_TOKEN",
+    "token_url": "https://oauth2.googleapis.com/token",
+    "roots": {
+      "default": "GLOBAL_DRIVE_PARENT_FOLDER_ID"
+    }
+  },
+  "guild:123456789012345678": {
+    "client_id": "GUILD_GOOGLE_OAUTH_CLIENT_ID",
+    "client_secret": "GUILD_GOOGLE_OAUTH_CLIENT_SECRET",
+    "refresh_token": "GUILD_GOOGLE_OAUTH_REFRESH_TOKEN",
+    "token_url": "https://oauth2.googleapis.com/token",
+    "roots": {
+      "smartcode": "GUILD_SMARTCODE_PARENT_FOLDER_ID",
+      "anonymous": "GUILD_ANONYMOUS_PARENT_FOLDER_ID"
+    }
+  }
+}

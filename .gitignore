@@ -1,5 +1,10 @@
 /target
 /node_modules/
+**/node_modules/
+**/.wrangler/
+**/.dev.vars
+/cloudflare/lumiere-broker/wrangler.toml
+/cloudflare/lumiere-broker/drive-profiles.json
 /testing.sh
 /env.pandora
 /admin.pandora

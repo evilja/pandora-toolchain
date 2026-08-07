@@ -6,7 +6,8 @@ Guidance for coding agents working in this repository.
 
 - `src/lib.rs` — crate root; re-exports modules and defines protocol macros (`pn_emit!`, `pn_schema!`, `pn_data!`, plus `lib_*` variants for in-crate use).
 - `src/bin/` — binaries: `pndc` (Discord bot), `pncurl`, `pnp2p`, `pnmpeg`, `pnass`, `pnprotocol`, `pnkagami`, and `pntrace` (standalone tracing lab + zipped libkagami ASS export; no PNdc runtime).
-- `src/lib/http/curl/` — HTTP layer: `core::Req` for downloads + multi-host uploads (Drive, Doodstream, Lulu, Voe, Abyss); `gscrape::GScrape` for Google Drive scraping.
+- `src/lib/http/curl/` — legacy HTTP/tool layer: `core::Req` for downloads and the standalone `pncurl --drive` compatibility path; `gscrape::GScrape` for Google Drive scraping. Worker-managed uploads no longer use provider credentials through this module.
+- `src/lumiere-broker/` — integrated secretless upload data plane. `client` speaks the typed Cloudflare Worker contract, `upload` performs broker-issued Drive resumable uploads and broker-triggered DoodStream/LuluStream/Voe remote pulls, and `transfer` owns memory-only file capabilities plus the public range handler. The Worker implementation is in `cloudflare/lumiere-broker/`; deployment and credential migration are documented in [LUMIERE_BROKER.md](LUMIERE_BROKER.md).
 - `src/lib/env/` — env file loader (`get_env`, `add_env`, `get_perm`, `upsert_env`) + key constants in `standard.rs` (`CLIENT_ID`, `TOKEN`, `PNCURL`, `PNP2P`, etc.).
 - `src/lib/logging/` — `LoggingHandle` async logger + `log!` macro (takes `Option<LoggingHandle>`).
 - `src/lib/torrent/` — self-contained asynchronous BitTorrent v1 client: bencode/metainfo parsing, HTTP/UDP trackers, TCP peer wire protocol, BEP 9/10 magnet metadata, selective concurrent piece downloads, bounded storage writes, cancellation, and HTTP/SOCKS5 proxy routing. It does not use an external torrent daemon or torrent engine and intentionally excludes DHT, uTP, and BitTorrent v2.
@@ -40,7 +41,7 @@ Worker-specific patterns live in [WORKER.md](WORKER.md).
 
 ## Environment / runtime
 
-- `env.pandora`: key-value config file. Each line is `NAME|pntools|VALUE` (literal `|pntools|` separator). Key names are the `&'static str` consts in `lib::env/standard.rs` (e.g. `discord_token`, `pnass`, `pnmpeg`). `get_env` returns a `HashMap<String, String>`; missing keys produce empty values via `.unwrap_or_default()`. `migrate_env_format` (called from `migrate_pandora_files` at startup) detects the old line-indexed format (no line contains `|pntools|`) and rewrites it to the new key-value format. Not committed.
+- `env.pandora`: key-value config file. Each line is `NAME|pntools|VALUE` (literal `|pntools|` separator). Key names are the `&'static str` consts in `lib::env/standard.rs` (e.g. `discord_token`, `pnass`, `pnmpeg`). `get_env` returns a `HashMap<String, String>`; missing keys produce empty values via `.unwrap_or_default()`. Lumiere uses `lumiere_broker_url`, the scoped `lumiere_broker_token`, `lumiere_public_url`, and optional transfer/poll timing keys; reusable Drive and streaming-host credentials belong only in Worker secrets. `migrate_env_format` (called from `migrate_pandora_files` at startup) detects the old line-indexed format (no line contains `|pntools|`) and rewrites it to the new key-value format. Not committed.
 - `DB/config/global/environment/intros.toml`: optional intro groups for the encoder. `[groups]` maps each group name to a folder containing its retained video variants. On startup, legacy groups whose values are arrays of files are copied/hard-linked into per-group folders and rewritten to the folder format. Not committed.
 - `DB/config/global/base.md`: optional operator-wide README-template guide; served as the Credits/Readme fallback when a server has no `DB/config/<serverid>/base.md`, before the binary-bundled `lib::git::README_BASE_GUIDE`. Not committed.
 - `DB/config/global/favicon.{png,ico,svg,jpg,jpeg,webp,gif}`: optional favicon override for `GET /favicon` (otherwise the bundled `web/favicon.png` is served). Not committed.
@@ -51,13 +52,10 @@ Worker-specific patterns live in [WORKER.md](WORKER.md).
   - line 1: Forgejo org link (full URL like `https://git.einzu.fun/AkiraSubs`, trailing `/` stripped at write time). `/init` uses the last path segment as the org; `/attach` ignores it.
   - line 2: announcement channel id (captured implicitly by `/configure` from `command.channel_id`)
   - line 3: Forgejo API key
-  - line 4: per-guild Google Drive client id (optional; falls back to global env when all Drive fields are empty)
-  - line 5: per-guild Google Drive client secret
-  - line 6: per-guild Google Drive refresh token
-  - line 7: per-guild Google Drive folder id for smartcode/default local-drive uploads
+  - lines 4-7: reserved legacy Google Drive credential/root slots. Lumiere does not read them; blank them after broker migration while preserving line positions.
   - line 8: ASS WrapStyle normalization (`""`/missing/`dont_touch` means preserve existing WrapStyle; `0`/`1`/`2`/`3` forces that value). `/configure` and `/edit` expose this as `wrapstyle`; default is `dont_touch`.
-  - line 9: local Google Drive enable flag (`true`/missing means enabled; `false`/`0`/`disabled`/`off` disables per-guild Drive and uses global env)
-  - line 10: per-guild Google Drive folder id for anonymous/random encode local-drive uploads (optional; falls back to line 7)
+  - line 9: local Google Drive profile preference (`true`/missing tries Worker profile `guild:<server_id>` before `global`; `false`/`0`/`disabled`/`off` uses only `global`)
+  - line 10: reserved legacy anonymous Drive root slot. Lumiere does not read it; blank it after migration.
   - line 11: server default encode preset (`standard`, `gpu`, `pseudolossless`, or `dummy`; missing/invalid defaults to `standard`)
   - line 12: server default concat/intro group name (blank or missing disables intro; a missing group resolves to no intro)
   - line 13: server-wide AnimeciX fansub template id selected through `/acixtemplate` (blank or missing disables pending AnimeciX publishing for new smartcode jobs)

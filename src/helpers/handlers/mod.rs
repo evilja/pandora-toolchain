@@ -84,10 +84,11 @@ pub use self::catlogs::handle_catlogs;
 
 use pandora_toolchain::pnworker::messages::*;
 use pandora_toolchain::pnworker::util::IntrosConfig;
-use pandora_toolchain::lib::env::standard::{
-    CLIENT_ID, CLIENT_SECRET, ENV_PATH, ENV_SEP, PARENTID, REFRESH_TOKEN,
+use pandora_toolchain::lib::env::standard::ENV_PATH;
+use pandora_toolchain::lumiere_broker::{
+    DriveCandidate, DriveUploadSpec, GLOBAL_DRIVE_PROFILE, LumiereClient, content_type_for_path,
+    guild_drive_profile,
 };
-use pandora_toolchain::lib::http::curl::core::{Host, Req, RpbData};
 
 const SERVER_ACIX_TEMPLATE_LINE: usize = 13;
 
@@ -483,12 +484,6 @@ impl ReleaseFontsDriveUpload {
             "default".to_string()
         }
     }
-}
-
-struct ReleaseDriveTarget {
-    env_path: String,
-    drive_folder: String,
-    local_drive: bool,
 }
 
 async fn run_attach_or_init(
@@ -919,109 +914,72 @@ async fn upload_release_fonts_to_drive(
     safe_name: &str,
     zip_path: &Path,
     zip_name: &str,
-    work_dir: &Path,
+    _work_dir: &Path,
 ) -> Result<ReleaseFontsDriveUpload, String> {
-    let target = release_fonts_drive_target(server_id, safe_name, work_dir).await;
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let req = Req {
-        target: zip_path.display().to_string(),
-        log: Some(work_dir.join("release_fonts_gdrive.log")),
-        cfile: None,
-    };
-    let drive_folder = if target.drive_folder.is_empty() {
-        None
-    } else {
-        Some(target.drive_folder.clone())
-    };
-    let ok = req.gdupload(target.env_path.clone(), Some(zip_name.to_string()), drive_folder, tx).await;
-
-    let mut link: Option<String> = None;
-    while let Some(event) = rx.recv().await {
-        match event {
-            RpbData::Done(url, Host::Drive, _) => link = Some(url),
-            RpbData::Fail(Host::Drive) => return Err("Google Drive returned an upload failure".to_string()),
-            RpbData::Cancel(Host::Drive) => return Err("Google Drive upload was cancelled".to_string()),
-            _ => {}
-        }
+    let local_folder = format!("{}/fonts", drive_folder_component(safe_name));
+    let mut candidates = Vec::new();
+    if lumiere_local_drive_enabled(server_id) {
+        let profile = guild_drive_profile(server_id);
+        candidates.push(DriveCandidate {
+            profile: profile.clone(),
+            root: "smartcode".to_string(),
+            folder_path: local_folder.clone(),
+            filename: zip_name.to_string(),
+        });
+        candidates.push(DriveCandidate {
+            profile,
+            root: "anonymous".to_string(),
+            folder_path: local_folder.clone(),
+            filename: zip_name.to_string(),
+        });
     }
-
-    match (ok, link) {
-        (_, Some(link)) => Ok(ReleaseFontsDriveUpload {
-            link,
-            local_drive: target.local_drive,
-            drive_folder: target.drive_folder,
-        }),
-        (false, None) => Err("Google Drive upload failed before returning a file link".to_string()),
-        (true, None) => Err("Google Drive upload completed without returning a file link".to_string()),
-    }
-}
-
-async fn release_fonts_drive_target(server_id: u64, safe_name: &str, work_dir: &Path) -> ReleaseDriveTarget {
-    match local_release_drive_target(server_id, safe_name, work_dir).await {
-        Some(target) => target,
-        None => ReleaseDriveTarget {
-            env_path: ENV_PATH.to_string(),
-            drive_folder: String::new(),
-            local_drive: false,
-        },
-    }
-}
-
-async fn local_release_drive_target(server_id: u64, safe_name: &str, work_dir: &Path) -> Option<ReleaseDriveTarget> {
-    let meta_path = PathBuf::from("DB")
-        .join("config")
-        .join(server_id.to_string())
-        .join("meta.pandora");
-    let meta = tokio::fs::read_to_string(meta_path).await.ok()?;
-    let (client_id, client_secret, refresh_token, parent_id) = parse_release_drive_meta(&meta)?;
-
-    let mut env = get_pandora_env();
-    env.insert(CLIENT_ID.to_string(), client_id);
-    env.insert(CLIENT_SECRET.to_string(), client_secret);
-    env.insert(REFRESH_TOKEN.to_string(), refresh_token);
-    env.insert(PARENTID.to_string(), parent_id);
-
-    let path = work_dir.join("release_fonts_gdrive_env.pandora");
-    let mut out = String::new();
-    for (key, value) in env {
-        out.push_str(&format!("{}{}{}\n", key, ENV_SEP, value));
-    }
-    tokio::fs::write(&path, out).await.ok()?;
-    Some(ReleaseDriveTarget {
-        env_path: path.display().to_string(),
-        drive_folder: format!("{}/fonts", drive_folder_component(safe_name)),
-        local_drive: true,
+    candidates.push(DriveCandidate {
+        profile: GLOBAL_DRIVE_PROFILE.to_string(),
+        root: "default".to_string(),
+        folder_path: String::new(),
+        filename: zip_name.to_string(),
+    });
+    let request_id = format!(
+        "pandora:fonts:{server_id}:{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| error.to_string())?
+            .as_nanos(),
+    );
+    let result = LumiereClient::from_env()
+        .map_err(|error| error.to_string())?
+        .upload_drive(
+            DriveUploadSpec {
+                path: zip_path.to_path_buf(),
+                request_id,
+                candidates: candidates.clone(),
+                content_type: content_type_for_path(zip_path).to_string(),
+                cancel_file: None,
+            },
+            None,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    let selected = candidates
+        .get(result.candidate_index)
+        .ok_or_else(|| "Lumiere selected an unknown Drive profile".to_string())?;
+    Ok(ReleaseFontsDriveUpload {
+        link: result.url,
+        local_drive: result.profile.starts_with("guild:"),
+        drive_folder: selected.folder_path.clone(),
     })
 }
 
-fn parse_release_drive_meta(meta: &str) -> Option<(String, String, String, String)> {
-    let lines: Vec<&str> = meta.lines().collect();
-    let client_id = lines.get(4).copied().unwrap_or("").trim();
-    let client_secret = lines.get(5).copied().unwrap_or("").trim();
-    let refresh_token = lines.get(6).copied().unwrap_or("").trim();
-    let smartcode_root = lines.get(7).copied().unwrap_or("").trim();
-    let anonymous_root = lines.get(10).copied().unwrap_or("").trim();
-    let local_drive = lines.get(9).copied().unwrap_or("true").trim();
-    if matches!(local_drive, "false" | "0" | "disabled" | "off") {
-        return None;
-    }
-    if client_id.is_empty() || client_secret.is_empty() || refresh_token.is_empty() {
-        return None;
-    }
-    let parent_id = if smartcode_root.is_empty() {
-        anonymous_root
-    } else {
-        smartcode_root
-    };
-    if parent_id.is_empty() {
-        return None;
-    }
-    Some((
-        client_id.to_string(),
-        client_secret.to_string(),
-        refresh_token.to_string(),
-        parent_id.to_string(),
-    ))
+fn lumiere_local_drive_enabled(server_id: u64) -> bool {
+    let path = PathBuf::from("DB")
+        .join("config")
+        .join(server_id.to_string())
+        .join("meta.pandora");
+    let value = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|meta| meta.lines().nth(9).map(str::trim).map(str::to_string))
+        .unwrap_or_else(|| "true".to_string());
+    !matches!(value.as_str(), "false" | "0" | "disabled" | "off")
 }
 
 async fn extract_zip_to_dir(bytes: &[u8], dest: &Path) -> Result<usize, String> {

@@ -1,0 +1,15 @@
+name = "lumiere-broker"
+main = "src/index.js"
+compatibility_date = "2026-08-01"
+workers_dev = true
+
+[vars]
+# Must exactly match the public origin that serves Pandora's capability URLs.
+# Do not include a trailing slash or path.
+LUMIERE_SOURCE_ORIGIN = "https://pandora-files.example.com"
+
+# Create with: npx wrangler kv namespace create OPERATIONS
+# Then replace the placeholder below with the returned namespace id.
+[[kv_namespaces]]
+binding = "OPERATIONS"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"

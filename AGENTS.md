@@ -7,6 +7,7 @@ Guidance for coding agents working in this repository.
 - **docs/WORKER.md** — worker runtime patterns, tool orchestration, torrent routing, and cache/duplicate behavior.
 - **docs/API.md** — HTTP API routes, auth/tokens, web console behavior, and deployment notes.
 - **docs/TOOLS.md** — `pncurl`, `pnass`, libkagami parsing, and ASS line-length checks.
+- **docs/LUMIERE_BROKER.md** — Cloudflare Worker deployment, Drive profiles, secret migration, and VDS upload data flow.
 - **docs/LOCALIZATION.md** — message IDs, TOML translation files, and how to add new strings.
 
 ## Build / verify

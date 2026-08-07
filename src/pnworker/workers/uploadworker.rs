@@ -1,23 +1,22 @@
-use crate::lib::env::core::get_pandora_env;
-use crate::lib::env::standard::{
-    CLIENT_ID, CLIENT_SECRET, ENV_PATH, ENV_SEP, PARENTID, PNCURL, REFRESH_TOKEN,
+use crate::lib::mpeg::probe::ffprobe_video_height;
+use crate::lumiere_broker::{
+    DriveCandidate, DriveUploadResult, DriveUploadSpec, GLOBAL_DRIVE_PROFILE, LumiereClient,
+    RemoteProvider, RemoteUploadSpec, UploadError, UploadProgress, content_type_for_path,
+    guild_drive_profile,
 };
-use crate::lib::protocol::core::Protocol;
 use crate::pnworker::core::{CommData, SmartcodeDriveName};
 use crate::pnworker::core::{Stage, WorkerMsg};
 use crate::pnworker::messages::{
     BACKUPALL_PROG, JOB_CANCELLED, MessagePayload, UPLOAD_BACKUP_PROG, UPLOAD_DONE, UPLOAD_FAIL,
     UPLOAD_PROG, WORKER_ASSIGN,
 };
-use crate::pnworker::tools::{PNCURL_BACKUP, PNCURL_BACKUP_FOLDER, PNCURL_UPLOAD, PNCURL_UPLOAD_FOLDER};
-use crate::pnworker::util::PathValue;
 use crate::pnworker::util::string_byte_to_mb;
-use crate::pnworker::util::{OUTPUT_RESOLUTION_FILE, ToolResult, WorkerNamePool, job_cancelled, run_tool};
+use crate::pnworker::util::{OUTPUT_RESOLUTION_FILE, WorkerNamePool, job_cancelled};
 use crate::pnworker::worker_slots::upload_worker_slots;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::Duration;
-use tokio::sync::mpsc::{Receiver, Sender, channel};
+use tokio::sync::mpsc::{Receiver, Sender, channel, unbounded_channel};
 use tokio::time::{Instant, sleep};
 
 pub type UploadData = (
@@ -34,7 +33,6 @@ pub type UploadData = (
 pub type UploadAllData = (PathBuf, u64, Option<u64>);
 
 pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, pulse: Sender<()>) {
-    let pncurl_path = get_pandora_env().get(PNCURL).cloned().unwrap_or_default();
     let mut pool = WorkerNamePool::new(upload_worker_slots().await);
     let mut next_slot_refresh = Instant::now() + Duration::from_secs(1);
     let (done_tx, mut done_rx) = channel::<String>(32);
@@ -54,19 +52,15 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 _ => {}
             }
         }
-        loop {
-            let Some(name) = pool.acquire() else {
-                break;
-            };
+        while let Some(name) = pool.acquire() {
             let Some(msg) = pending.pop_front() else {
                 pool.release(&name);
                 break;
             };
             let tx2 = tx.clone();
             let done_tx2 = done_tx.clone();
-            let pncurl_path2 = pncurl_path.clone();
             tokio::spawn(async move {
-                run_upload_job(msg, pncurl_path2, tx2, name.clone()).await;
+                run_lumiere_upload_job(msg, tx2, name.clone()).await;
                 done_tx2.send(name).await.ok();
             });
         }
@@ -75,14 +69,23 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
     }
 }
 
-async fn run_upload_job(
-    msg: WorkerMsg,
-    pncurl_path: String,
-    tx: Sender<CommData>,
-    worker_name: String,
-) {
-    let mut proto = Protocol::new(vec![1]);
-    let worker_key = format!("pn-upload-{}", worker_name);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LumiereHost {
+    Drive,
+    Doodstream,
+    Lulustream,
+    Voe,
+    Abyss,
+}
+
+enum LumiereUploadEvent {
+    Progress(LumiereHost, UploadProgress),
+    Done(LumiereHost, String, Option<DriveUploadResult>),
+    Failed(LumiereHost, String),
+    Cancelled,
+}
+
+async fn run_lumiere_upload_job(msg: WorkerMsg, tx: Sender<CommData>, worker_name: String) {
     let assign_job_id = match &msg {
         WorkerMsg::Upload((_, _, _, job_id, _, _, _, _, _)) => Some(*job_id),
         WorkerMsg::UploadAll((_, job_id, _)) => Some(*job_id),
@@ -91,11 +94,28 @@ async fn run_upload_job(
     if let Some(job_id) = assign_job_id {
         tx.try_send((
             job_id,
-            MessagePayload::Progress(WORKER_ASSIGN, vec![format!("upl-{}", worker_name)]),
+            MessagePayload::Progress(WORKER_ASSIGN, vec![format!("upl-{worker_name}")]),
             None,
         ))
         .ok();
     }
+    let client = match LumiereClient::from_env() {
+        Ok(client) => client,
+        Err(error) => {
+            eprintln!("[lumiere] configuration error: {error}");
+            if let Some(job_id) = assign_job_id {
+                tx.send((
+                    job_id,
+                    MessagePayload::Static(UPLOAD_FAIL),
+                    Some(Stage::Failed),
+                ))
+                .await
+                .ok();
+            }
+            return;
+        }
+    };
+
     match msg {
         WorkerMsg::Upload((
             directory,
@@ -108,761 +128,673 @@ async fn run_upload_job(
             gdrive_folder_local,
             smartcode_drive_name,
         )) => {
-            if job_cancelled(&directory) {
-                tx.send((
-                    job_id,
-                    MessagePayload::Static(JOB_CANCELLED),
-                    Some(Stage::Cancelled),
-                ))
-                .await
-                .unwrap();
-                return;
-            }
-            let output_path = directory
-                .join("work")
-                .join("output.mp4")
-                .display()
-                .to_string();
-            let mut completed = 0u8;
-            let mut gd_link = "Connecting to Google OAuth".to_string();
-            let mut gd_done = false;
-            let mut gd_file_id: Option<String> = None;
-            let mut gd_folder_id: Option<String> = None;
-            let mut dood_link = "Discovering Doodstream upload server".to_string();
-            let mut dood_done = false;
-            let mut lulu_link = "Discovering Lulustream upload server".to_string();
-            let mut lulu_done = false;
-            let mut voesx_link = "Discovering Voe upload server".to_string();
-            let mut voesx_done = false;
-            let mut abyss_link = "Connecting to Abyss".to_string();
-            let mut abyss_done = false;
-            let expected_hosts = if release { 5 } else { 1 };
-
-            let is_smartcode = gdrive_folder_local.is_some();
-            let drive_env = drive_env_path(&directory, server_id, is_smartcode).await;
-            let drive_folder = drive_folder_path(
-                drive_env.local_drive,
-                is_smartcode,
-                server_id,
-                if drive_env.local_drive {
-                    gdrive_folder_local
-                } else {
-                    gdrive_folder_global
-                },
-            );
-            let named_drive_upload = smartcode_drive_name.is_some()
-                && drive_env.local_drive
-                && drive_env.smartcode_root_set;
-            let drive_out_name = match smartcode_drive_name.filter(|_| named_drive_upload) {
-                Some(name) => name
-                    .filename(&cached_output_resolution(&directory).await),
-                None => out_name.clone(),
-            };
-            let logfile = directory
-                .join("log")
-                .join(format!("PNcurl_Upload{}.log", job_id))
-                .display()
-                .to_string();
-            println!(
-                "[uploadworker] job={} drive_env={} local_drive={} drive_folder={} logfile={}",
+            run_lumiere_single_upload(
+                client,
+                directory,
+                out_name,
+                release,
                 job_id,
-                drive_env.path,
-                drive_env.local_drive,
-                if drive_folder.is_empty() { "(none)" } else { drive_folder.as_str() },
-                logfile,
-            );
+                server_id,
+                gdrive_folder_global,
+                gdrive_folder_local,
+                smartcode_drive_name,
+                tx,
+            )
+            .await;
+        }
+        WorkerMsg::UploadAll((directory, job_id, server_id)) => {
+            run_lumiere_upload_all(client, directory, job_id, server_id, tx).await;
+        }
+        _ => {}
+    }
+}
 
-            let spec = if release && !drive_folder.is_empty() {
-                PNCURL_UPLOAD_FOLDER
-            } else if release {
-                PNCURL_UPLOAD
-            } else if !drive_folder.is_empty() {
-                PNCURL_BACKUP_FOLDER
-            } else {
-                PNCURL_BACKUP
-            };
+#[allow(clippy::too_many_arguments)]
+async fn run_lumiere_single_upload(
+    client: LumiereClient,
+    directory: PathBuf,
+    out_name: String,
+    release: bool,
+    job_id: u64,
+    server_id: Option<u64>,
+    gdrive_folder_global: Option<String>,
+    gdrive_folder_local: Option<String>,
+    smartcode_drive_name: Option<SmartcodeDriveName>,
+    tx: Sender<CommData>,
+) {
+    if job_cancelled(&directory) {
+        tx.send((
+            job_id,
+            MessagePayload::Static(JOB_CANCELLED),
+            Some(Stage::Cancelled),
+        ))
+        .await
+        .ok();
+        return;
+    }
+    let output_path = directory.join("work").join("output.mp4");
+    let cancel_file = Some(directory.join("CANCEL"));
+    let is_smartcode = gdrive_folder_local.is_some();
+    let named_filename = match smartcode_drive_name.as_ref() {
+        Some(name) => {
+            Some(name.filename(&cached_output_resolution(&directory, &output_path).await))
+        }
+        None => None,
+    };
+    let candidates = lumiere_drive_candidates(
+        server_id,
+        is_smartcode,
+        gdrive_folder_global,
+        gdrive_folder_local,
+        &out_name,
+        named_filename.as_deref(),
+    );
+    let content_type = content_type_for_path(&output_path).to_string();
+    let (event_tx, mut event_rx) = unbounded_channel();
+    let mut tasks = Vec::new();
 
-            tx.try_send(upload_payload(
+    tasks.extend(spawn_drive_upload(
+        client.clone(),
+        DriveUploadSpec {
+            path: output_path.clone(),
+            request_id: format!("pandora:{job_id}:drive"),
+            candidates,
+            content_type: content_type.clone(),
+            cancel_file: cancel_file.clone(),
+        },
+        event_tx.clone(),
+    ));
+    if release {
+        for (host, provider) in [
+            (LumiereHost::Doodstream, RemoteProvider::Doodstream),
+            (LumiereHost::Lulustream, RemoteProvider::Lulustream),
+            (LumiereHost::Voe, RemoteProvider::Voe),
+        ] {
+            tasks.extend(spawn_remote_upload(
+                client.clone(),
+                RemoteUploadSpec {
+                    path: output_path.clone(),
+                    request_id: format!(
+                        "pandora:{job_id}:{}",
+                        provider.label().to_ascii_lowercase()
+                    ),
+                    provider,
+                    filename: out_name.clone(),
+                    content_type: content_type.clone(),
+                    cancel_file: cancel_file.clone(),
+                },
+                host,
+                event_tx.clone(),
+            ));
+        }
+        event_tx
+            .send(LumiereUploadEvent::Failed(
+                LumiereHost::Abyss,
+                "Abyss remote upload API is not supported yet".to_string(),
+            ))
+            .ok();
+    }
+    drop(event_tx);
+
+    let expected_hosts = if release { 5usize } else { 1usize };
+    let mut completed = 0usize;
+    let mut any_success = false;
+    let mut gd_link = "Google Bekleniyor".to_string();
+    let mut dood_link = "Doodstream Bekleniyor".to_string();
+    let mut lulu_link = "Lulustream Bekleniyor".to_string();
+    let mut voe_link = "Voe Bekleniyor".to_string();
+    let mut abyss_link = "Abyss Bekleniyor".to_string();
+    let mut done = [false; 5];
+    let mut last_progress = [None; 5];
+    let mut drive_meta: Option<(String, String, String, String)> = None;
+    let track_smartcode = smartcode_drive_name.is_some();
+    let mut cancelled = false;
+
+    while let Some(event) = event_rx.recv().await {
+        let mut emit_update = true;
+        match event {
+            LumiereUploadEvent::Progress(host, progress) => {
+                let host_index = lumiere_host_index(host);
+                if done[host_index] {
+                    continue;
+                }
+                let now = Instant::now();
+                emit_update = last_progress[host_index]
+                    .map(|last| now.duration_since(last) >= Duration::from_secs(5))
+                    .unwrap_or(true)
+                    || progress.sent >= progress.total;
+                if emit_update {
+                    last_progress[host_index] = Some(now);
+                }
+                let text = upload_progress_text(
+                    lumiere_host_label(host),
+                    &progress.sent.to_string(),
+                    &progress.total.to_string(),
+                    "0",
+                );
+                set_lumiere_link(
+                    host,
+                    text,
+                    &mut gd_link,
+                    &mut dood_link,
+                    &mut lulu_link,
+                    &mut voe_link,
+                    &mut abyss_link,
+                );
+            }
+            LumiereUploadEvent::Done(host, url, result) => {
+                if done[lumiere_host_index(host)] {
+                    continue;
+                }
+                done[lumiere_host_index(host)] = true;
+                completed += 1;
+                any_success = true;
+                set_lumiere_link(
+                    host,
+                    url,
+                    &mut gd_link,
+                    &mut dood_link,
+                    &mut lulu_link,
+                    &mut voe_link,
+                    &mut abyss_link,
+                );
+                if let Some(result) = result
+                    && track_smartcode
+                    && result.profile.starts_with("guild:")
+                    && result.root == "smartcode"
+                {
+                    drive_meta = Some((
+                        result.file_id,
+                        result.parent_id,
+                        result.profile,
+                        result.delete_token,
+                    ));
+                }
+            }
+            LumiereUploadEvent::Failed(host, error) => {
+                if done[lumiere_host_index(host)] {
+                    continue;
+                }
+                eprintln!("[lumiere] {}: {}", lumiere_host_label(host), error);
+                done[lumiere_host_index(host)] = true;
+                completed += 1;
+                set_lumiere_link(
+                    host,
+                    format!("{} Başarısız", lumiere_host_label(host)),
+                    &mut gd_link,
+                    &mut dood_link,
+                    &mut lulu_link,
+                    &mut voe_link,
+                    &mut abyss_link,
+                );
+            }
+            LumiereUploadEvent::Cancelled => {
+                cancelled = true;
+                break;
+            }
+        }
+
+        if completed >= expected_hosts {
+            break;
+        }
+        if emit_update {
+            tx.try_send(lumiere_upload_payload(
                 job_id,
                 release,
                 UPLOAD_PROG,
                 &gd_link,
                 &dood_link,
                 &lulu_link,
-                &voesx_link,
+                &voe_link,
                 &abyss_link,
-                None,
-                None,
-            )).ok();
-            let mut last_initializing_emit = Instant::now();
-
-            let result = run_tool(
-                &pncurl_path,
-                spec,
-                &HashMap::from([
-                    ("LINK", PathValue::from(output_path.clone())),
-                    ("OPCODE", PathValue::from(out_name.clone())),
-                    ("DRIVEOPCODE", PathValue::from(drive_out_name)),
-                    ("ENV", PathValue::from(drive_env.path)),
-                    ("DRIVEFOLDER", PathValue::from(drive_folder)),
-                    ("NEGKEY", PathValue::from(worker_key.clone())),
-                    ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),
-                    ("LOGFILE", PathValue::from(logfile)),
-                ]),
-                job_id,
-                &mut proto,
-                |data| {
-                    let out: u16 = match data.get(0).and_then(|v| v.parse()) {
-                        Some(v) => v,
-                        None => return None,
-                    };
-                    match out {
-                        0 => {
-                            let total = data.get(1).and_then(|v| v.as_str());
-                            let compact = total.is_some();
-                            let offset = if compact { 2 } else { 1 };
-                            let total = total.unwrap_or("0");
-                            let gd_payload = data.get(offset).and_then(|v| v.as_multi())?;
-                            let dood_payload = data.get(offset + 1).and_then(|v| v.as_multi())?;
-                            let lulu_payload = data.get(offset + 2).and_then(|v| v.as_multi())?;
-                            let voesx_payload = data.get(offset + 3).and_then(|v| v.as_multi())?;
-                            let abyss_payload = data.get(offset + 4).and_then(|v| v.as_multi())?;
-                            let total_index = if compact { 0 } else { 1 };
-                            let ext_index = if compact { 1 } else { 2 };
-                            let gd_sent = gd_payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
-                            let gd_totl = if compact {
-                                total
-                            } else {
-                                gd_payload
-                                    .get(total_index)
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("0")
-                            };
-                            let gd_ext = gd_payload
-                                .get(ext_index)
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("0");
-                            let dood_sent =
-                                dood_payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
-                            let dood_totl = if compact {
-                                total
-                            } else {
-                                dood_payload
-                                    .get(total_index)
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("0")
-                            };
-                            let dood_ext = dood_payload
-                                .get(ext_index)
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("0");
-                            let lulu_sent =
-                                lulu_payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
-                            let lulu_totl = if compact {
-                                total
-                            } else {
-                                lulu_payload
-                                    .get(total_index)
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("0")
-                            };
-                            let lulu_ext = lulu_payload
-                                .get(ext_index)
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("0");
-                            let voesx_sent =
-                                voesx_payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
-                            let voesx_totl = if compact {
-                                total
-                            } else {
-                                voesx_payload
-                                    .get(total_index)
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("0")
-                            };
-                            let voesx_ext = voesx_payload
-                                .get(ext_index)
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("0");
-                            let abyss_sent =
-                                abyss_payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
-                            let abyss_totl = if compact {
-                                total
-                            } else {
-                                abyss_payload
-                                    .get(total_index)
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("0")
-                            };
-                            let abyss_ext = abyss_payload
-                                .get(ext_index)
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("0");
-                            if !gd_done {
-                                gd_link = upload_progress_text("Google", gd_sent, gd_totl, gd_ext);
-                            }
-                            if release && !dood_done && dood_totl != "0" {
-                                dood_link = upload_progress_text(
-                                    "Doodstream",
-                                    dood_sent,
-                                    dood_totl,
-                                    dood_ext,
-                                );
-                            }
-                            if release && !lulu_done && lulu_totl != "0" {
-                                lulu_link = upload_progress_text(
-                                    "Lulustream",
-                                    lulu_sent,
-                                    lulu_totl,
-                                    lulu_ext,
-                                );
-                            }
-                            if release && !voesx_done && voesx_totl != "0" {
-                                voesx_link =
-                                    upload_progress_text("Voe", voesx_sent, voesx_totl, voesx_ext);
-                            }
-                            if release && !abyss_done && abyss_totl != "0" {
-                                abyss_link = upload_progress_text(
-                                    "Abyss", abyss_sent, abyss_totl, abyss_ext,
-                                );
-                            }
-                            tx.try_send(upload_payload(
-                                job_id,
-                                release,
-                                UPLOAD_PROG,
-                                &gd_link,
-                                &dood_link,
-                                &lulu_link,
-                                &voesx_link,
-                                &abyss_link,
-                                None,
-                                None,
-                            ))
-                            .ok();
-                        }
-                        1 => {
-                            completed += 1;
-                            let host_id = data.get(1).and_then(|v| v.as_str()).unwrap_or("0");
-                            let url = data
-                                .get(2)
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("Başarısız")
-                                .to_string();
-                            match host_id {
-                                "1" => {
-                                    gd_file_id = drive_file_id(&url);
-                                    gd_folder_id = data
-                                        .get(3)
-                                        .and_then(|v| v.as_str())
-                                        .map(str::trim)
-                                        .filter(|s| !s.is_empty())
-                                        .map(|s| s.to_string());
-                                    gd_link = url;
-                                    gd_done = true;
-                                }
-                                "2" => {
-                                    dood_link = normalize_doodstream_link(&url);
-                                    dood_done = true;
-                                }
-                                "4" => {
-                                    lulu_link = normalize_lulu_link(&url);
-                                    lulu_done = true;
-                                }
-                                "5" => {
-                                    voesx_link = normalize_voe_link(&url);
-                                    voesx_done = true;
-                                }
-                                "6" => {
-                                    abyss_link = url;
-                                    abyss_done = true;
-                                }
-                                _ => {}
-                            }
-                            let stage = if completed >= expected_hosts {
-                                Some(Stage::Uploaded)
-                            } else {
-                                None
-                            };
-                            let message_id = if stage.is_some() {
-                                UPLOAD_DONE
-                            } else {
-                                UPLOAD_PROG
-                            };
-                            tx.try_send(upload_payload(
-                                job_id,
-                                release,
-                                message_id,
-                                &gd_link,
-                                &dood_link,
-                                &lulu_link,
-                                &voesx_link,
-                                &abyss_link,
-                                drive_upload_meta(named_drive_upload, gd_file_id.as_deref(), gd_folder_id.as_deref()),
-                                stage,
-                            ))
-                            .ok();
-                            if completed >= expected_hosts {
-                                return Some(ToolResult::Success);
-                            }
-                        }
-                        2 => {
-                            completed += 1;
-                            let host_id = data.get(1).and_then(|v| v.as_str()).unwrap_or("0");
-                            match host_id {
-                                "1" => {
-                                    gd_link = "Google Başarısız".to_string();
-                                    gd_done = true;
-                                }
-                                "2" => {
-                                    dood_link = "Doodstream Başarısız".to_string();
-                                    dood_done = true;
-                                }
-                                "4" => {
-                                    lulu_link = "Lulustream Başarısız".to_string();
-                                    lulu_done = true;
-                                }
-                                "5" => {
-                                    voesx_link = "Voe Başarısız".to_string();
-                                    voesx_done = true;
-                                }
-                                "6" => {
-                                    abyss_link = "Abyss Başarısız".to_string();
-                                    abyss_done = true;
-                                }
-                                _ => {}
-                            }
-                            let stage = if completed >= expected_hosts {
-                                Some(Stage::Uploaded)
-                            } else {
-                                None
-                            };
-                            let message_id = if stage.is_some() {
-                                UPLOAD_DONE
-                            } else {
-                                UPLOAD_PROG
-                            };
-                            tx.try_send(upload_payload(
-                                job_id,
-                                release,
-                                message_id,
-                                &gd_link,
-                                &dood_link,
-                                &lulu_link,
-                                &voesx_link,
-                                &abyss_link,
-                                drive_upload_meta(named_drive_upload, gd_file_id.as_deref(), gd_folder_id.as_deref()),
-                                stage,
-                            ))
-                            .ok();
-                            if completed >= expected_hosts {
-                                return Some(ToolResult::Success);
-                            }
-                        }
-                        3 => return Some(ToolResult::Cancel),
-                        4 => {
-                            let host_id = data.get(1).and_then(|v| v.as_str()).unwrap_or("0");
-                            let message = data
-                                .get(2)
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("Initializing upload")
-                                .to_string();
-                            match host_id {
-                                "1" if !gd_done => gd_link = message,
-                                "2" if release && !dood_done => dood_link = message,
-                                "4" if release && !lulu_done => lulu_link = message,
-                                "5" if release && !voesx_done => voesx_link = message,
-                                "6" if release && !abyss_done => abyss_link = message,
-                                _ => return None,
-                            }
-                            if last_initializing_emit.elapsed() >= Duration::from_secs(1) {
-                                tx.try_send(upload_payload(
-                                    job_id,
-                                    release,
-                                    UPLOAD_PROG,
-                                    &gd_link,
-                                    &dood_link,
-                                    &lulu_link,
-                                    &voesx_link,
-                                    &abyss_link,
-                                    None,
-                                    None,
-                                )).ok();
-                                last_initializing_emit = Instant::now();
-                            }
-                        }
-                        _ => {}
-                    }
-                    None
-                },
-            )
-            .await;
-
-            let any_done = gd_done || dood_done || lulu_done || voesx_done || abyss_done;
-            match result {
-                ToolResult::Success | ToolResult::Fail => {
-                    if any_done {
-                        tx.send(upload_payload(
-                            job_id,
-                            release,
-                            UPLOAD_DONE,
-                            &gd_link,
-                            &dood_link,
-                            &lulu_link,
-                            &voesx_link,
-                            &abyss_link,
-                            drive_upload_meta(named_drive_upload, gd_file_id.as_deref(), gd_folder_id.as_deref()),
-                            Some(Stage::Uploaded),
-                        ))
-                        .await
-                        .unwrap();
-                    } else {
-                        tx.send((
-                            job_id,
-                            MessagePayload::Static(UPLOAD_FAIL),
-                            Some(Stage::Failed),
-                        ))
-                        .await
-                        .unwrap();
-                    }
-                }
-                ToolResult::Cancel => {
-                    if any_done {
-                        tx.send(upload_payload(
-                            job_id,
-                            release,
-                            JOB_CANCELLED,
-                            &gd_link,
-                            &dood_link,
-                            &lulu_link,
-                            &voesx_link,
-                            &abyss_link,
-                            drive_upload_meta(named_drive_upload, gd_file_id.as_deref(), gd_folder_id.as_deref()),
-                            Some(Stage::Cancelled),
-                        ))
-                        .await
-                        .unwrap();
-                    } else {
-                        tx.send((
-                            job_id,
-                            MessagePayload::Static(JOB_CANCELLED),
-                            Some(Stage::Cancelled),
-                        ))
-                        .await
-                        .unwrap();
-                    }
-                }
-            }
-            println!("[Pandora Uploader] End of Session");
-            return;
-        }
-        WorkerMsg::UploadAll((directory, job_id, server_id)) => {
-            if job_cancelled(&directory) {
-                tx.send((
-                    job_id,
-                    MessagePayload::Static(JOB_CANCELLED),
-                    Some(Stage::Cancelled),
-                ))
-                .await
-                .unwrap();
-                return;
-            }
-            let mut files = find_mkv_files(&directory.join("contents").join("torrent")).await;
-            files.sort_by(|a, b| a.display().to_string().cmp(&b.display().to_string()));
-            if files.is_empty() {
-                tx.send((
-                    job_id,
-                    MessagePayload::Static(UPLOAD_FAIL),
-                    Some(Stage::Failed),
-                ))
-                .await
-                .unwrap();
-                return;
-            }
-
-            let mut rows: Vec<String> = (0..files.len())
-                .map(|i| format!("episode {:02}: Bekleniyor", i + 1))
-                .collect();
-            let mut any_uploaded = false;
-            tx.try_send((
-                job_id,
-                MessagePayload::Progress(BACKUPALL_PROG, vec![format_backupall_rows(&rows)]),
+                drive_meta.clone(),
                 None,
             ))
             .ok();
-
-            let drive_env = drive_env_path(&directory, server_id, false).await;
-            let drive_folder = drive_folder_path(drive_env.local_drive, false, server_id, None);
-            println!(
-                "[uploadworker] upload_all job={} drive_env={} local_drive={} drive_folder={}",
-                job_id,
-                drive_env.path,
-                drive_env.local_drive,
-                if drive_folder.is_empty() { "(none)" } else { drive_folder.as_str() },
+        }
+    }
+    for task in tasks {
+        task.abort();
+    }
+    if !cancelled && completed < expected_hosts {
+        for host in [
+            LumiereHost::Drive,
+            LumiereHost::Doodstream,
+            LumiereHost::Lulustream,
+            LumiereHost::Voe,
+            LumiereHost::Abyss,
+        ]
+        .into_iter()
+        .take(expected_hosts)
+        .filter(|host| !done[lumiere_host_index(*host)])
+        {
+            set_lumiere_link(
+                host,
+                format!("{} Başarısız", lumiere_host_label(host)),
+                &mut gd_link,
+                &mut dood_link,
+                &mut lulu_link,
+                &mut voe_link,
+                &mut abyss_link,
             );
-            let spec = if drive_folder.is_empty() {
-                PNCURL_BACKUP
-            } else {
-                PNCURL_BACKUP_FOLDER
-            };
-            for (idx, file) in files.iter().enumerate() {
-                if job_cancelled(&directory) {
-                    tx.send((
-                        job_id,
-                        MessagePayload::Static(JOB_CANCELLED),
-                        Some(Stage::Cancelled),
+        }
+    }
+
+    if cancelled || job_cancelled(&directory) {
+        if any_success {
+            tx.send(lumiere_upload_payload(
+                job_id,
+                release,
+                JOB_CANCELLED,
+                &gd_link,
+                &dood_link,
+                &lulu_link,
+                &voe_link,
+                &abyss_link,
+                drive_meta,
+                Some(Stage::Cancelled),
+            ))
+            .await
+            .ok();
+        } else {
+            tx.send((
+                job_id,
+                MessagePayload::Static(JOB_CANCELLED),
+                Some(Stage::Cancelled),
+            ))
+            .await
+            .ok();
+        }
+    } else if any_success {
+        tx.send(lumiere_upload_payload(
+            job_id,
+            release,
+            UPLOAD_DONE,
+            &gd_link,
+            &dood_link,
+            &lulu_link,
+            &voe_link,
+            &abyss_link,
+            drive_meta,
+            Some(Stage::Uploaded),
+        ))
+        .await
+        .ok();
+    } else {
+        tx.send((
+            job_id,
+            MessagePayload::Static(UPLOAD_FAIL),
+            Some(Stage::Failed),
+        ))
+        .await
+        .ok();
+    }
+    println!("[Pandora Lumiere] End of Session");
+}
+
+fn spawn_drive_upload(
+    client: LumiereClient,
+    spec: DriveUploadSpec,
+    event_tx: tokio::sync::mpsc::UnboundedSender<LumiereUploadEvent>,
+) -> Vec<tokio::task::JoinHandle<()>> {
+    let (progress_tx, mut progress_rx) = unbounded_channel();
+    let progress_events = event_tx.clone();
+    let progress_task = tokio::spawn(async move {
+        while let Some(progress) = progress_rx.recv().await {
+            progress_events
+                .send(LumiereUploadEvent::Progress(LumiereHost::Drive, progress))
+                .ok();
+        }
+    });
+    let upload_task = tokio::spawn(async move {
+        match client.upload_drive(spec, Some(progress_tx)).await {
+            Ok(result) => {
+                event_tx
+                    .send(LumiereUploadEvent::Done(
+                        LumiereHost::Drive,
+                        result.url.clone(),
+                        Some(result),
                     ))
-                    .await
-                    .unwrap();
-                    return;
-                }
-                let label = format!("episode {:02}", idx + 1);
-                let out_name = file
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("backup.mkv")
-                    .to_string();
-                let mut uploaded = false;
+                    .ok();
+            }
+            Err(error) if error.is_cancelled() => {
+                event_tx.send(LumiereUploadEvent::Cancelled).ok();
+            }
+            Err(error) => {
+                event_tx
+                    .send(LumiereUploadEvent::Failed(
+                        LumiereHost::Drive,
+                        error.to_string(),
+                    ))
+                    .ok();
+            }
+        }
+    });
+    vec![progress_task, upload_task]
+}
 
-                let upload_job_id = job_id.saturating_mul(1000).saturating_add(idx as u64);
-                let logfile = directory
-                    .join("log")
-                    .join(format!("PNcurl_UploadAll{}.log", upload_job_id))
-                    .display()
-                    .to_string();
-                println!(
-                    "[uploadworker] upload_all job={} file={} logfile={}",
-                    upload_job_id,
-                    file.display(),
-                    logfile,
-                );
-                let result = run_tool(
-                    &pncurl_path,
-                    spec,
-                    &HashMap::from([
-                        ("LINK", PathValue::from(file.display().to_string())),
-                        ("OPCODE", PathValue::from(out_name.clone())),
-                        ("DRIVEOPCODE", PathValue::from(out_name)),
-                        ("ENV", PathValue::from(drive_env.path.clone())),
-                        ("DRIVEFOLDER", PathValue::from(drive_folder.clone())),
-                        ("NEGKEY", PathValue::from(worker_key.clone())),
-                        ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),
-                        ("LOGFILE", PathValue::from(logfile)),
-                    ]),
-                    upload_job_id,
-                    &mut proto,
-                    |data| {
-                        let out: u16 = match data.get(0).and_then(|v| v.parse()) {
-                            Some(v) => v,
-                            None => return None,
-                        };
-                        match out {
-                            0 => {
-                                let total = data.get(1).and_then(|v| v.as_str());
-                                let compact = total.is_some();
-                                let gd_payload = data
-                                    .get(if compact { 2 } else { 1 })
-                                    .and_then(|v| v.as_multi())?;
-                                let gd_sent =
-                                    gd_payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
-                                let gd_totl = if compact {
-                                    total.unwrap_or("0")
-                                } else {
-                                    gd_payload.get(1).and_then(|v| v.as_str()).unwrap_or("0")
-                                };
-                                let gd_ext = gd_payload
-                                    .get(if compact { 1 } else { 2 })
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("0");
-                                rows[idx] = format!(
-                                    "{}: {}",
-                                    label,
-                                    upload_progress_text("", gd_sent, gd_totl, gd_ext)
-                                );
-                                tx.try_send((
-                                    job_id,
-                                    MessagePayload::Progress(
-                                        BACKUPALL_PROG,
-                                        vec![format_backupall_rows(&rows)],
-                                    ),
-                                    None,
-                                ))
-                                .ok();
-                            }
-                            1 => {
-                                let host_id = data.get(1).and_then(|v| v.as_str()).unwrap_or("0");
-                                let url = data
-                                    .get(2)
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("Başarısız")
-                                    .to_string();
-                                if host_id == "1" {
-                                    uploaded = true;
-                                    rows[idx] = format!("{}: {}", label, url);
-                                    tx.try_send((
-                                        job_id,
-                                        MessagePayload::Progress(
-                                            BACKUPALL_PROG,
-                                            vec![format_backupall_rows(&rows)],
-                                        ),
-                                        None,
-                                    ))
-                                    .ok();
-                                    return Some(ToolResult::Success);
-                                }
-                            }
-                            2 => {
-                                rows[idx] = format!("{}: Başarısız", label);
-                                tx.try_send((
-                                    job_id,
-                                    MessagePayload::Progress(
-                                        BACKUPALL_PROG,
-                                        vec![format_backupall_rows(&rows)],
-                                    ),
-                                    None,
-                                ))
-                                .ok();
-                                return Some(ToolResult::Fail);
-                            }
-                            3 => return Some(ToolResult::Cancel),
-                            _ => {}
-                        }
-                        None
-                    },
-                )
-                .await;
+fn spawn_remote_upload(
+    client: LumiereClient,
+    spec: RemoteUploadSpec,
+    host: LumiereHost,
+    event_tx: tokio::sync::mpsc::UnboundedSender<LumiereUploadEvent>,
+) -> Vec<tokio::task::JoinHandle<()>> {
+    let (progress_tx, mut progress_rx) = unbounded_channel();
+    let progress_events = event_tx.clone();
+    let progress_task = tokio::spawn(async move {
+        while let Some(progress) = progress_rx.recv().await {
+            progress_events
+                .send(LumiereUploadEvent::Progress(host, progress))
+                .ok();
+        }
+    });
+    let upload_task = tokio::spawn(async move {
+        match client.upload_remote(spec, Some(progress_tx)).await {
+            Ok(result) => {
+                event_tx
+                    .send(LumiereUploadEvent::Done(host, result.url, None))
+                    .ok();
+            }
+            Err(error) if error.is_cancelled() => {
+                event_tx.send(LumiereUploadEvent::Cancelled).ok();
+            }
+            Err(error) => {
+                event_tx
+                    .send(LumiereUploadEvent::Failed(host, error.to_string()))
+                    .ok();
+            }
+        }
+    });
+    vec![progress_task, upload_task]
+}
 
-                match result {
-                    ToolResult::Success => {
-                        if !uploaded {
-                            rows[idx] = format!("{}: Başarısız", label);
-                            tx.try_send((
-                                job_id,
-                                MessagePayload::Progress(
-                                    BACKUPALL_PROG,
-                                    vec![format_backupall_rows(&rows)],
-                                ),
-                                None,
-                            ))
-                            .ok();
-                        } else {
-                            any_uploaded = true;
-                        }
-                    }
-                    ToolResult::Fail => {
-                        rows[idx] = format!("{}: Başarısız", label);
+async fn run_lumiere_upload_all(
+    client: LumiereClient,
+    directory: PathBuf,
+    job_id: u64,
+    server_id: Option<u64>,
+    tx: Sender<CommData>,
+) {
+    if job_cancelled(&directory) {
+        tx.send((
+            job_id,
+            MessagePayload::Static(JOB_CANCELLED),
+            Some(Stage::Cancelled),
+        ))
+        .await
+        .ok();
+        return;
+    }
+    let mut files = find_mkv_files(&directory.join("contents").join("torrent")).await;
+    files.sort_by_key(|path| path.display().to_string());
+    if files.is_empty() {
+        tx.send((
+            job_id,
+            MessagePayload::Static(UPLOAD_FAIL),
+            Some(Stage::Failed),
+        ))
+        .await
+        .ok();
+        return;
+    }
+    let mut rows = (0..files.len())
+        .map(|index| format!("episode {:02}: Bekleniyor", index + 1))
+        .collect::<Vec<_>>();
+    let mut any_uploaded = false;
+    let cancel_file = Some(directory.join("CANCEL"));
+    tx.try_send((
+        job_id,
+        MessagePayload::Progress(BACKUPALL_PROG, vec![format_backupall_rows(&rows)]),
+        None,
+    ))
+    .ok();
+
+    for (index, file) in files.iter().enumerate() {
+        if job_cancelled(&directory) {
+            tx.send((
+                job_id,
+                MessagePayload::Static(JOB_CANCELLED),
+                Some(Stage::Cancelled),
+            ))
+            .await
+            .ok();
+            return;
+        }
+        let label = format!("episode {:02}", index + 1);
+        let filename = file
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("backup.mkv")
+            .to_string();
+        let candidates = lumiere_drive_candidates(server_id, false, None, None, &filename, None);
+        let (progress_tx, mut progress_rx) = unbounded_channel();
+        let upload = client.upload_drive(
+            DriveUploadSpec {
+                path: file.clone(),
+                request_id: format!("pandora:{job_id}:drive:{index}"),
+                candidates,
+                content_type: content_type_for_path(file).to_string(),
+                cancel_file: cancel_file.clone(),
+            },
+            Some(progress_tx),
+        );
+        tokio::pin!(upload);
+        let mut last_progress = None;
+        let result = loop {
+            tokio::select! {
+                result = &mut upload => break result,
+                Some(progress) = progress_rx.recv() => {
+                    let now = Instant::now();
+                    let should_emit = last_progress
+                        .map(|last| now.duration_since(last) >= Duration::from_secs(5))
+                        .unwrap_or(true)
+                        || progress.sent >= progress.total;
+                    if should_emit {
+                        last_progress = Some(now);
+                        rows[index] = format!(
+                            "{}: {}",
+                            label,
+                            upload_progress_text("", &progress.sent.to_string(), &progress.total.to_string(), "0"),
+                        );
                         tx.try_send((
                             job_id,
-                            MessagePayload::Progress(
-                                BACKUPALL_PROG,
-                                vec![format_backupall_rows(&rows)],
-                            ),
+                            MessagePayload::Progress(BACKUPALL_PROG, vec![format_backupall_rows(&rows)]),
                             None,
-                        ))
-                        .ok();
-                    }
-                    ToolResult::Cancel => {
-                        rows[idx] = format!("{}: İptal Edildi", label);
-                        tx.send((
-                            job_id,
-                            MessagePayload::Progress(
-                                BACKUPALL_PROG,
-                                vec![format_backupall_rows(&rows)],
-                            ),
-                            Some(Stage::Cancelled),
-                        ))
-                        .await
-                        .unwrap();
-                        return;
+                        )).ok();
                     }
                 }
             }
-
-            let stage = if any_uploaded {
-                Stage::Uploaded
-            } else {
-                Stage::Failed
-            };
-            tx.send((
-                job_id,
-                MessagePayload::Progress(BACKUPALL_PROG, vec![format_backupall_rows(&rows)]),
-                Some(stage),
-            ))
-            .await
-            .unwrap();
-            println!("[Pandora Uploader] End of BackupAll Session");
-            return;
+        };
+        match result {
+            Ok(result) => {
+                rows[index] = format!("{}: {}", label, result.url);
+                any_uploaded = true;
+            }
+            Err(UploadError::Cancelled) => {
+                rows[index] = format!("{}: İptal Edildi", label);
+                tx.send((
+                    job_id,
+                    MessagePayload::Progress(BACKUPALL_PROG, vec![format_backupall_rows(&rows)]),
+                    Some(Stage::Cancelled),
+                ))
+                .await
+                .ok();
+                return;
+            }
+            Err(error) => {
+                eprintln!("[lumiere] Drive backup {} failed: {}", index + 1, error);
+                rows[index] = format!("{}: Başarısız", label);
+            }
         }
-        _ => {}
+        tx.try_send((
+            job_id,
+            MessagePayload::Progress(BACKUPALL_PROG, vec![format_backupall_rows(&rows)]),
+            None,
+        ))
+        .ok();
     }
+
+    tx.send((
+        job_id,
+        MessagePayload::Progress(BACKUPALL_PROG, vec![format_backupall_rows(&rows)]),
+        Some(if any_uploaded {
+            Stage::Uploaded
+        } else {
+            Stage::Failed
+        }),
+    ))
+    .await
+    .ok();
+    println!("[Pandora Lumiere] End of BackupAll Session");
 }
 
-struct DriveEnv {
-    path: String,
-    local_drive: bool,
-    smartcode_root_set: bool,
+fn lumiere_drive_candidates(
+    server_id: Option<u64>,
+    is_smartcode: bool,
+    global_folder: Option<String>,
+    local_folder: Option<String>,
+    filename: &str,
+    named_filename: Option<&str>,
+) -> Vec<DriveCandidate> {
+    let mut candidates = Vec::new();
+    if let Some(server_id) = server_id.filter(|id| local_drive_enabled(*id)) {
+        let profile = guild_drive_profile(server_id);
+        let folder_path =
+            drive_folder_path(true, is_smartcode, Some(server_id), local_folder.clone());
+        if is_smartcode {
+            candidates.push(DriveCandidate {
+                profile: profile.clone(),
+                root: "smartcode".to_string(),
+                folder_path: folder_path.clone(),
+                filename: named_filename.unwrap_or(filename).to_string(),
+            });
+            candidates.push(DriveCandidate {
+                profile,
+                root: "anonymous".to_string(),
+                folder_path,
+                filename: filename.to_string(),
+            });
+        } else {
+            candidates.push(DriveCandidate {
+                profile: profile.clone(),
+                root: "anonymous".to_string(),
+                folder_path: folder_path.clone(),
+                filename: filename.to_string(),
+            });
+            candidates.push(DriveCandidate {
+                profile,
+                root: "smartcode".to_string(),
+                folder_path,
+                filename: filename.to_string(),
+            });
+        }
+    }
+    candidates.push(DriveCandidate {
+        profile: GLOBAL_DRIVE_PROFILE.to_string(),
+        root: "default".to_string(),
+        folder_path: drive_folder_path(false, is_smartcode, server_id, global_folder),
+        filename: filename.to_string(),
+    });
+    candidates
 }
 
-async fn drive_env_path(directory: &PathBuf, server_id: Option<u64>, is_smartcode: bool) -> DriveEnv {
-    let Some(server_id) = server_id else {
-        return global_drive_env();
-    };
-    let meta_path = PathBuf::from("DB")
+fn local_drive_enabled(server_id: u64) -> bool {
+    let path = PathBuf::from("DB")
         .join("config")
         .join(server_id.to_string())
         .join("meta.pandora");
-    let meta = match tokio::fs::read_to_string(meta_path).await {
-        Ok(s) => s,
-        Err(_) => return global_drive_env(),
-    };
-    let smartcode_root_set = smartcode_root_configured(&meta);
-    let Some((client_id, client_secret, refresh_token, parent_id)) = parse_server_drive_meta(&meta, is_smartcode) else {
-        return global_drive_env();
-    };
+    let value = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|meta| meta.lines().nth(9).map(str::trim).map(str::to_string))
+        .unwrap_or_else(|| "true".to_string());
+    !matches!(value.as_str(), "false" | "0" | "disabled" | "off")
+}
 
-    let mut env = get_pandora_env();
-    env.insert(CLIENT_ID.to_string(), client_id);
-    env.insert(CLIENT_SECRET.to_string(), client_secret);
-    env.insert(REFRESH_TOKEN.to_string(), refresh_token);
-    env.insert(PARENTID.to_string(), parent_id);
-
-    let path = directory.join("work").join("gdrive_env.pandora");
-    let mut out = String::new();
-    for (key, value) in env {
-        out.push_str(&format!("{}{}{}\n", key, ENV_SEP, value));
-    }
-    if tokio::fs::write(&path, out).await.is_ok() {
-        DriveEnv {
-            path: path.display().to_string(),
-            local_drive: true,
-            smartcode_root_set,
-        }
-    } else {
-        global_drive_env()
+fn lumiere_host_index(host: LumiereHost) -> usize {
+    match host {
+        LumiereHost::Drive => 0,
+        LumiereHost::Doodstream => 1,
+        LumiereHost::Lulustream => 2,
+        LumiereHost::Voe => 3,
+        LumiereHost::Abyss => 4,
     }
 }
 
-fn global_drive_env() -> DriveEnv {
-    DriveEnv {
-        path: ENV_PATH.to_string(),
-        local_drive: false,
-        smartcode_root_set: false,
+fn lumiere_host_label(host: LumiereHost) -> &'static str {
+    match host {
+        LumiereHost::Drive => "Google",
+        LumiereHost::Doodstream => "Doodstream",
+        LumiereHost::Lulustream => "Lulustream",
+        LumiereHost::Voe => "Voe",
+        LumiereHost::Abyss => "Abyss",
     }
 }
 
-fn smartcode_root_configured(meta: &str) -> bool {
-    meta.lines()
-        .nth(7)
-        .map(str::trim)
-        .map(|s| !s.is_empty())
-        .unwrap_or(false)
+#[allow(clippy::too_many_arguments)]
+fn set_lumiere_link(
+    host: LumiereHost,
+    value: String,
+    drive: &mut String,
+    doodstream: &mut String,
+    lulustream: &mut String,
+    voe: &mut String,
+    abyss: &mut String,
+) {
+    match host {
+        LumiereHost::Drive => *drive = value,
+        LumiereHost::Doodstream => *doodstream = value,
+        LumiereHost::Lulustream => *lulustream = value,
+        LumiereHost::Voe => *voe = value,
+        LumiereHost::Abyss => *abyss = value,
+    }
 }
 
-async fn cached_output_resolution(directory: &std::path::Path) -> String {
+#[allow(clippy::too_many_arguments)]
+fn lumiere_upload_payload(
+    job_id: u64,
+    release: bool,
+    message_id: &'static str,
+    gd_link: &str,
+    dood_link: &str,
+    lulu_link: &str,
+    voe_link: &str,
+    abyss_link: &str,
+    drive_meta: Option<(String, String, String, String)>,
+    stage: Option<Stage>,
+) -> CommData {
+    let visible_meta = drive_meta
+        .as_ref()
+        .map(|(file_id, folder_id, _, _)| (file_id.clone(), folder_id.clone()));
+    let mut payload = upload_payload(
+        job_id,
+        release,
+        message_id,
+        gd_link,
+        dood_link,
+        lulu_link,
+        voe_link,
+        abyss_link,
+        visible_meta,
+        stage,
+    );
+    if let Some((_, _, profile, delete_token)) = drive_meta
+        && let MessagePayload::Progress(_, args) = &mut payload.1
+    {
+        args.push(profile);
+        args.push(delete_token);
+    }
+    payload
+}
+
+async fn cached_output_resolution(
+    directory: &std::path::Path,
+    output_path: &std::path::Path,
+) -> String {
     tokio::fs::read_to_string(directory.join("work").join(OUTPUT_RESOLUTION_FILE))
         .await
         .ok()
         .and_then(|value| valid_resolution_label(&value))
-        .unwrap_or_else(|| "1080p".to_string())
+        .unwrap_or_else(|| resolution_label(&output_path.display().to_string()))
 }
 
 fn valid_resolution_label(value: &str) -> Option<String> {
@@ -874,49 +806,10 @@ fn valid_resolution_label(value: &str) -> Option<String> {
         .map(|height| format!("{}p", height))
 }
 
-fn resolve_local_drive_root(lines: &[&str], is_smartcode: bool) -> Option<String> {
-    let smartcode_root = lines.get(7).copied().unwrap_or("").trim();
-    let anonymous_root = lines.get(10).copied().unwrap_or("").trim();
-    let selected = if is_smartcode {
-        if smartcode_root.is_empty() {
-            anonymous_root
-        } else {
-            smartcode_root
-        }
-    } else if anonymous_root.is_empty() {
-        smartcode_root
-    } else {
-        anonymous_root
-    };
-    if selected.is_empty() {
-        None
-    } else {
-        Some(selected.to_string())
-    }
-}
-
-fn parse_server_drive_meta(meta: &str, is_smartcode: bool) -> Option<(String, String, String, String)> {
-    let lines: Vec<&str> = meta.lines().collect();
-    let client_id = lines.get(4).copied().unwrap_or("").trim();
-    let client_secret = lines.get(5).copied().unwrap_or("").trim();
-    let refresh_token = lines.get(6).copied().unwrap_or("").trim();
-    let parent_id = resolve_local_drive_root(&lines, is_smartcode)?;
-    let local_drive = lines.get(9).copied().unwrap_or("true").trim();
-    if matches!(local_drive, "false" | "0" | "disabled" | "off") {
-        return None;
-    }
-    if client_id.is_empty()
-        || client_secret.is_empty()
-        || refresh_token.is_empty()
-    {
-        return None;
-    }
-    Some((
-        client_id.to_string(),
-        client_secret.to_string(),
-        refresh_token.to_string(),
-        parent_id,
-    ))
+fn resolution_label(path: &str) -> String {
+    ffprobe_video_height(path)
+        .map(|height| format!("{}p", height))
+        .unwrap_or_else(|| "1080p".to_string())
 }
 
 fn drive_folder_path(
@@ -957,9 +850,9 @@ fn is_video_ext(ext: &str) -> bool {
     )
 }
 
-async fn find_mkv_files(root: &PathBuf) -> Vec<PathBuf> {
+async fn find_mkv_files(root: &std::path::Path) -> Vec<PathBuf> {
     let mut result = Vec::new();
-    let mut stack = vec![root.clone()];
+    let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let mut read = match tokio::fs::read_dir(&dir).await {
             Ok(r) => r,
@@ -1022,113 +915,10 @@ fn upload_progress_text(host: &str, sent: &str, total: &str, extensions: &str) -
     }
 }
 
-fn normalize_lulu_link(link: &str) -> String {
-    let trimmed = link.trim();
-    for prefix in ["https://lulustream.com/", "http://lulustream.com/", "https://luluvdo.com/", "http://luluvdo.com/"] {
-        if let Some(rest) = trimmed.strip_prefix(prefix) {
-            let code = rest.strip_prefix("e/").unwrap_or(rest).trim_matches('/');
-            if !code.is_empty() && !code.contains('/') {
-                return format!("https://luluvdo.com/e/{}", code);
-            }
-        }
-    }
-    trimmed.to_string()
-}
-
-fn normalize_doodstream_link(link: &str) -> String {
-    let trimmed = link.trim();
-    for prefix in ["https://doodstream.com/", "http://doodstream.com/"] {
-        if let Some(rest) = trimmed.strip_prefix(prefix) {
-            let code = rest
-                .strip_prefix("e/")
-                .or_else(|| rest.strip_prefix("d/"))
-                .unwrap_or(rest)
-                .trim_matches('/');
-            if !code.is_empty() && !code.contains('/') {
-                return format!("https://doodstream.com/e/{}", code);
-            }
-        }
-    }
-    trimmed.to_string()
-}
-
-fn normalize_voe_link(link: &str) -> String {
-    let trimmed = link.trim();
-    for prefix in ["https://voe.sx/", "http://voe.sx/"] {
-        if let Some(rest) = trimmed.strip_prefix(prefix) {
-            let code = rest.strip_prefix("e/").unwrap_or(rest).trim_matches('/');
-            if !code.is_empty() && !code.contains('/') {
-                return format!("https://voe.sx/e/{}", code);
-            }
-        }
-    }
-    trimmed.to_string()
-}
-
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
-
-    fn meta(wrap_style: &str, local_gdrive: &str) -> String {
-        format!(
-            "EN\nhttps://forgejo.example/org\n123\napi\nclient\nsecret\nrefresh\nparent\n{}\n{}\n",
-            wrap_style, local_gdrive
-        )
-    }
-
-    fn meta_with_roots(smartcode_root: &str, anonymous_root: &str) -> String {
-        format!(
-            "EN\nhttps://forgejo.example/org\n123\napi\nclient\nsecret\nrefresh\n{}\n\ntrue\n{}\n",
-            smartcode_root, anonymous_root
-        )
-    }
-
-    #[test]
-    fn parse_server_drive_meta_uses_local_gdrive_line_not_wrapstyle() {
-        let parsed = parse_server_drive_meta(&meta("0", "true"), true);
-        assert_eq!(
-            parsed,
-            Some((
-                "client".to_string(),
-                "secret".to_string(),
-                "refresh".to_string(),
-                "parent".to_string(),
-            ))
-        );
-    }
-
-    #[test]
-    fn parse_server_drive_meta_respects_disabled_local_gdrive() {
-        assert_eq!(parse_server_drive_meta(&meta("1", "false"), true), None);
-    }
-
-    #[test]
-    fn parse_server_drive_meta_splits_smartcode_and_anonymous_roots() {
-        let smart = parse_server_drive_meta(&meta_with_roots("smart-root", "anon-root"), true);
-        let anon = parse_server_drive_meta(&meta_with_roots("smart-root", "anon-root"), false);
-        assert_eq!(smart.unwrap().3, "smart-root");
-        assert_eq!(anon.unwrap().3, "anon-root");
-    }
-
-    #[test]
-    fn parse_server_drive_meta_falls_back_between_roots() {
-        let smart = parse_server_drive_meta(&meta_with_roots("", "anon-root"), true);
-        let anon = parse_server_drive_meta(&meta_with_roots("smart-root", ""), false);
-        assert_eq!(smart.unwrap().3, "anon-root");
-        assert_eq!(anon.unwrap().3, "smart-root");
-    }
-
-    #[test]
-    fn parse_server_drive_meta_rejects_missing_roots() {
-        assert_eq!(parse_server_drive_meta(&meta_with_roots("", ""), true), None);
-        assert_eq!(parse_server_drive_meta(&meta_with_roots("", ""), false), None);
-    }
-
-    #[test]
-    fn smartcode_root_configured_requires_line_seven() {
-        assert!(smartcode_root_configured(&meta_with_roots("smart-root", "anon-root")));
-        assert!(!smartcode_root_configured(&meta_with_roots("", "anon-root")));
-    }
 
     #[test]
     fn smartcode_drive_name_formats_release_filename() {
@@ -1140,44 +930,23 @@ mod tests {
     }
 
     #[test]
-    fn parse_server_drive_meta_old_ten_line_meta_uses_smartcode_root_for_anonymous() {
-        let parsed = parse_server_drive_meta(&meta("0", "true"), false);
-        assert_eq!(parsed.unwrap().3, "parent");
-    }
-
-    #[test]
-    fn normalize_lulu_link_converts_to_embed_url() {
-        assert_eq!(
-            normalize_lulu_link("https://lulustream.com/yzip3nvuot20"),
-            "https://luluvdo.com/e/yzip3nvuot20",
+    fn smartcode_candidates_prefer_guild_smartcode_then_global() {
+        let candidates = lumiere_drive_candidates(
+            Some(u64::MAX),
+            true,
+            Some("global/anime".to_string()),
+            Some("Anime".to_string()),
+            "release.mp4",
+            Some("named.mp4"),
         );
+        assert_eq!(candidates[0].profile, guild_drive_profile(u64::MAX));
+        assert_eq!(candidates[0].root, "smartcode");
+        assert_eq!(candidates[0].filename, "named.mp4");
+        assert_eq!(candidates[1].root, "anonymous");
+        assert_eq!(candidates.last().unwrap().profile, GLOBAL_DRIVE_PROFILE);
         assert_eq!(
-            normalize_lulu_link("https://luluvdo.com/e/yzip3nvuot20"),
-            "https://luluvdo.com/e/yzip3nvuot20",
-        );
-    }
-
-    #[test]
-    fn normalize_doodstream_link_converts_to_embed_url() {
-        assert_eq!(
-            normalize_doodstream_link("https://doodstream.com/d/abc123"),
-            "https://doodstream.com/e/abc123",
-        );
-        assert_eq!(
-            normalize_doodstream_link("https://doodstream.com/e/abc123"),
-            "https://doodstream.com/e/abc123",
-        );
-    }
-
-    #[test]
-    fn normalize_voe_link_converts_to_embed_url() {
-        assert_eq!(
-            normalize_voe_link("https://voe.sx/abc123"),
-            "https://voe.sx/e/abc123",
-        );
-        assert_eq!(
-            normalize_voe_link("https://voe.sx/e/abc123"),
-            "https://voe.sx/e/abc123",
+            candidates.last().unwrap().folder_path,
+            format!("{}/global/anime", u64::MAX)
         );
     }
 
@@ -1208,12 +977,46 @@ mod tests {
 
     #[test]
     fn cached_resolution_labels_are_validated() {
-        assert_eq!(valid_resolution_label(" 1080p\n"), Some("1080p".to_string()));
+        assert_eq!(
+            valid_resolution_label(" 1080p\n"),
+            Some("1080p".to_string())
+        );
         assert_eq!(valid_resolution_label("0p"), None);
         assert_eq!(valid_resolution_label("fullhd"), None);
     }
+
+    #[test]
+    fn lumiere_payload_hides_drive_profile_after_display_hosts() {
+        let payload = lumiere_upload_payload(
+            1,
+            true,
+            UPLOAD_DONE,
+            "drive",
+            "dood",
+            "lulu",
+            "voe",
+            "abyss",
+            Some((
+                "file".to_string(),
+                "folder".to_string(),
+                "guild:1".to_string(),
+                "delete-token".to_string(),
+            )),
+            Some(Stage::Uploaded),
+        );
+        let rendered = crate::pnworker::messages::format_payload(&payload.1, "EN");
+        assert!(!rendered.contains("guild:1"));
+        assert!(!rendered.contains("delete-token"));
+        let MessagePayload::Progress(_, args) = payload.1 else {
+            panic!("expected progress payload");
+        };
+        assert_eq!(args.len(), 9);
+        assert_eq!(args[7], "guild:1");
+        assert_eq!(args[8], "delete-token");
+    }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn upload_payload(
     job_id: u64,
     release: bool,
@@ -1238,11 +1041,7 @@ fn upload_payload(
             args.push(file_id);
             args.push(folder_id);
         }
-        (
-            job_id,
-            MessagePayload::Progress(message_id, args),
-            stage,
-        )
+        (job_id, MessagePayload::Progress(message_id, args), stage)
     } else {
         (
             job_id,
@@ -1250,40 +1049,4 @@ fn upload_payload(
             stage,
         )
     }
-}
-
-fn drive_upload_meta(
-    named_drive_upload: bool,
-    file_id: Option<&str>,
-    folder_id: Option<&str>,
-) -> Option<(String, String)> {
-    if !named_drive_upload {
-        return None;
-    }
-    Some((
-        file_id?.trim().to_string(),
-        folder_id?.trim().to_string(),
-    ))
-}
-
-fn drive_file_id(url: &str) -> Option<String> {
-    let marker = "/file/d/";
-    if let Some(rest) = url.split_once(marker).map(|(_, rest)| rest) {
-        return rest
-            .split('/')
-            .next()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string());
-    }
-    let query = url.split_once('?').map(|(_, q)| q).unwrap_or(url);
-    for part in query.split('&') {
-        if let Some(id) = part.strip_prefix("id=") {
-            let id = id.trim();
-            if !id.is_empty() {
-                return Some(id.to_string());
-            }
-        }
-    }
-    None
 }

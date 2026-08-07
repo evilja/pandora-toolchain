@@ -11,6 +11,27 @@ pub async fn handle_addapi(
             return;
         }
     };
+    if matches!(
+        key_name.to_ascii_lowercase().as_str(),
+        "gdrive_client_id"
+            | "gdrive_client_secret"
+            | "gdrive_refresh_token"
+            | "gdrive_token_url"
+            | "gdrive_upload_url"
+            | "gdrive_parent_id"
+            | "doodstream"
+            | "lulu"
+            | "voesx"
+            | "abyss"
+    ) {
+        command_error(
+            ctx,
+            command,
+            "Error: upload-provider credentials must be configured as Lumiere Worker secrets.",
+        )
+        .await;
+        return;
+    }
     let token = match option_trimmed(command, "token") {
         Some(s) => s,
         None => {

@@ -33,6 +33,12 @@ pub const AKIRA_API: &str = "akira_api";
 pub const AKIRA_TOKEN: &str = "akira_token";
 pub const AKIRA_INDEX: &str = "akira_index";
 
+pub const LUMIERE_BROKER_URL: &str = "lumiere_broker_url";
+pub const LUMIERE_BROKER_TOKEN: &str = "lumiere_broker_token";
+pub const LUMIERE_PUBLIC_URL: &str = "lumiere_public_url";
+pub const LUMIERE_TRANSFER_TTL_SECS: &str = "lumiere_transfer_ttl_secs";
+pub const LUMIERE_POLL_INTERVAL_SECS: &str = "lumiere_poll_interval_secs";
+
 pub const API_PORT: &str = "api_port";
 pub const API_HOST: &str = "api_host";
 pub const API_AUTHOR_ID: &str = "api_author_id";

@@ -14,7 +14,7 @@ use pandora_toolchain::pnworker::tools::PNASS_MERGE_TL_ONLY;
 use pandora_toolchain::pnworker::tools::PNASS_SPLIT_SIGNS;
 use pandora_toolchain::lib::env::{
     core::{add_env, get_pandora_env, get_perm, remove_env, upsert_env},
-    standard::{ENV_SEP, TOKEN, DOODSTREAM, LULU, VOESX, ABYSS, ANIMECIX},
+    standard::{ENV_SEP, TOKEN, ANIMECIX},
 };
 use pandora_toolchain::lib::http::mal::{fetch_anime, AnimeMeta, AnimeKind};
 use pandora_toolchain::lib::http::forgejo::{Forgejo, base64_encode, base64_encode_bytes};
@@ -827,16 +827,16 @@ fn help_catalog() -> &'static [HelpCommand] {
         HelpCommand {
             section: "admin",
             name: "configure",
-            summary: "Configure server language, Forgejo, and Google Drive credentials.",
-            usage: "/configure language:<EN|TR|JP> [forgejo] [api_key] [gdrive_client_id] [gdrive_client_secret] [gdrive_refresh_token] [gdrive_folder_id] [gdrive_anon_folder_id] [wrapstyle] (encode defaults are set with /edit)",
-            details: "Writes server metadata. Run this before /init if the server needs a Forgejo org/base or per-guild Google Drive upload credentials configured. Encode preset and intro defaults are managed later with /edit. wrapstyle controls ASS WrapStyle normalization; default dont_touch leaves existing subtitles unchanged.",
+            summary: "Configure server language and Forgejo; Drive profiles live in Lumiere.",
+            usage: "/configure language:<EN|TR|JP> [forgejo] [api_key] [wrapstyle] (Drive profiles are configured in Lumiere; encode defaults are set with /edit)",
+            details: "Writes server metadata. Google Drive credentials and roots are configured in the external Lumiere broker, never through Discord. Encode preset and intro defaults are managed later with /edit. wrapstyle controls ASS WrapStyle normalization; default dont_touch leaves existing subtitles unchanged.",
         },
         HelpCommand {
             section: "admin",
             name: "edit",
             summary: "Edit individual server metadata fields, leaving the rest untouched.",
-            usage: "/edit [language] [forgejo] [api_key] [gdrive_client_id] [gdrive_client_secret] [gdrive_refresh_token] [gdrive_folder_id] [gdrive_anon_folder_id] [local_gdrive] [wrapstyle] [preset] [concat] [announcement_channel]",
-            details: "Like /configure but every field is optional — omitted fields keep their current value. Pass `-` to clear a text field. Set local_gdrive:false to keep stored server Drive credentials but upload through global Drive. gdrive_folder_id is the smartcode/default root; gdrive_anon_folder_id is the random encode root. wrapstyle can be dont_touch or 0-3. preset and concat set server-wide encode defaults; type/search in concat and select a registered `/touchintro` group, or select `Disable concat` to clear it. The dropdown updates from the global intro config as groups are added. Set announcement_channel:true to point announcements at the current channel. Requires the server to already be configured.",
+            usage: "/edit [language] [forgejo] [api_key] [local_gdrive] [wrapstyle] [preset] [concat] [announcement_channel]",
+            details: "Like /configure but every field is optional — omitted fields keep their current value. Pass `-` to clear a text field. local_gdrive selects whether Lumiere should prefer the deterministic guild Drive profile before the global profile. Drive credentials and roots are managed only in Lumiere. wrapstyle can be dont_touch or 0-3. preset and concat set server-wide encode defaults; type/search in concat and select a registered `/touchintro` group, or select `Disable concat` to clear it. The dropdown updates from the global intro config as groups are added. Set announcement_channel:true to point announcements at the current channel. Requires the server to already be configured.",
         },
         HelpCommand {
             section: "admin",
@@ -885,7 +885,7 @@ fn help_catalog() -> &'static [HelpCommand] {
             name: "gentoken",
             summary: "Generate a new API bearer token.",
             usage: "/gentoken [label:<note>] [local:<true|false>]",
-            details: "Mints a random bearer token for the HTTP API and appends it to the token file. With local enabled, jobs submitted with the token use this server's Google Drive credentials when available, falling back to global credentials. The token is shown once, privately. Upper only.",
+            details: "Mints a random bearer token for the HTTP API and appends it to the token file. With local enabled, jobs submitted with the token prefer this server's Lumiere Drive profile when configured, falling back to the global Lumiere profile. The token is shown once, privately. Upper only.",
         },
         HelpCommand {
             section: "misc",
@@ -2565,7 +2565,7 @@ impl EventHandler for Handler {
                         .min_int_value(1)
                 ),
             CreateCommand::new("configure")
-                .description("Configure this server (language, Forgejo, Google Drive)")
+                .description("Configure this server (Drive credentials are managed by Lumiere)")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "language", "Bot language")
                         .required(true)
@@ -2579,26 +2579,6 @@ impl EventHandler for Handler {
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "api_key", "Forgejo API token. Omit to keep the existing one.")
-                        .required(false)
-                )
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "gdrive_client_id", "Google Drive OAuth client id. Omit to keep the existing one.")
-                        .required(false)
-                )
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "gdrive_client_secret", "Google Drive OAuth client secret. Omit to keep the existing one.")
-                        .required(false)
-                )
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "gdrive_refresh_token", "Google Drive OAuth refresh token. Omit to keep the existing one.")
-                        .required(false)
-                )
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "gdrive_folder_id", "Google Drive upload folder id. Omit to keep the existing one.")
-                        .required(false)
-                )
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "gdrive_anon_folder_id", "Google Drive random encode root folder id. Omit to keep the existing one.")
                         .required(false)
                 )
                 .add_option(
@@ -2628,27 +2608,7 @@ impl EventHandler for Handler {
                         .required(false)
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "gdrive_client_id", "Google Drive OAuth client id. Omit to keep, `-` to unset.")
-                        .required(false)
-                )
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "gdrive_client_secret", "Google Drive OAuth client secret. Omit to keep, `-` to unset.")
-                        .required(false)
-                )
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "gdrive_refresh_token", "Google Drive OAuth refresh token. Omit to keep, `-` to unset.")
-                        .required(false)
-                )
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "gdrive_folder_id", "Google Drive upload folder id. Omit to keep, `-` to unset.")
-                        .required(false)
-                )
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "gdrive_anon_folder_id", "Google Drive random encode root folder id. Omit to keep, `-` to unset.")
-                        .required(false)
-                )
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::Boolean, "local_gdrive", "Use this server's Google Drive credentials for uploads.")
+                    CreateCommandOption::new(CommandOptionType::Boolean, "local_gdrive", "Prefer this server's Lumiere Drive profile when configured.")
                         .required(false)
                 )
                 .add_option(

@@ -70,7 +70,7 @@ pub async fn handle_gentoken(
 
     let labelled = label.map(|l| format!(" for `{}`", l)).unwrap_or_default();
     let scope = local_server_id
-        .map(|id| format!(" It's bound to this server (`{}`): it uses this server's Google Drive credentials when available, and unlocks the git console (`/init`, `/attach`, `/source`) at `/git`.", id))
+        .map(|id| format!(" It's bound to this server (`{}`): it prefers this server's Lumiere Drive profile when configured, and unlocks the git console (`/init`, `/attach`, `/source`) at `/git`.", id))
         .unwrap_or_default();
     let embed = success_embed(command, COMMAND_UPDATED)
         .description(format!(

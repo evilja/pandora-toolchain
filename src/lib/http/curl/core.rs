@@ -478,10 +478,11 @@ impl Req {
         )).ok();
         let env = get_env(&envpath);
         println!(
-            "[abyss] env len: {}, ABYSS key: {}, value: {:?}",
+            "[abyss] env len: {}, credential configured: {}",
             env.len(),
-            ABYSS,
             env.get(ABYSS)
+                .map(|value| !value.is_empty())
+                .unwrap_or(false)
         );
         let api_key = env.get(ABYSS).cloned().unwrap_or_default();
 
