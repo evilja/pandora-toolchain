@@ -158,6 +158,12 @@ fn match_priority(option: &FansubOption, partial: &str) -> u8 {
     }
 }
 
+// A directory lookup that fails and one that simply has no match both render as Discord's "no
+// options" box, which hides an expired login or an unreachable staff panel behind what looks like a
+// bad search term. The reason is surfaced as a single choice instead; picking it stores nothing,
+// because `resolve_fansub_selection` rejects the sentinel like any other non-identifier.
+const LOOKUP_FAILED_VALUE: &str = "__lookup_failed__";
+
 pub async fn fansub_autocomplete(
     ctx: &Context,
     interaction: &serenity::all::CommandInteraction,
@@ -171,12 +177,30 @@ pub async fn fansub_autocomplete(
                 response = response.add_string_choice(option.choice_label(), option.value.clone());
             }
         }
-        Err(e) => eprintln!("[{}] fansub autocomplete failed: {}", site.option_name(), e),
+        Err(e) => {
+            eprintln!("[{}] fansub autocomplete failed: {}", site.option_name(), e);
+            response =
+                response.add_string_choice(lookup_failed_label(site, &e), LOOKUP_FAILED_VALUE);
+        }
     }
     interaction
         .create_response(ctx, CreateInteractionResponse::Autocomplete(response))
         .await
         .ok();
+}
+
+fn lookup_failed_label(site: FansubSite, error: &str) -> String {
+    let prefix = format!("⚠ {} lookup failed: ", site.label());
+    let available = MAX_CHOICE_LABEL_CHARS.saturating_sub(prefix.chars().count());
+    let reason = error.split_whitespace().collect::<Vec<_>>().join(" ");
+    if reason.chars().count() <= available {
+        return format!("{}{}", prefix, reason);
+    }
+    let truncated = reason
+        .chars()
+        .take(available.saturating_sub(1))
+        .collect::<String>();
+    format!("{}{}…", prefix, truncated)
 }
 
 #[cfg(test)]
@@ -223,6 +247,16 @@ mod tests {
 
         let secure = option("akira-subs", "Akira Subs — akira-subs", None, &[]);
         assert_eq!(secure.choice_label(), "Akira Subs — akira-subs");
+    }
+
+    #[test]
+    fn lookup_failures_are_reported_inside_the_label_limit() {
+        let short = lookup_failed_label(FansubSite::Anizm, "Anizm email is empty.");
+        assert_eq!(short, "⚠ Anizm lookup failed: Anizm email is empty.");
+
+        let long = lookup_failed_label(FansubSite::Anizm, &"detail ".repeat(60));
+        assert!(long.chars().count() <= MAX_CHOICE_LABEL_CHARS, "{}", long);
+        assert!(long.ends_with('…'), "{}", long);
     }
 
     #[test]
