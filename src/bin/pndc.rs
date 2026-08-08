@@ -973,7 +973,7 @@ fn help_catalog() -> &'static [HelpCommand] {
             name: "publish",
             summary: "Publish a finished encode to AnimeciX, OpenAnime and Anizm at once.",
             usage: "/publish job_id:<id> [anime:<search>] [season:<number>] [episode:<number>] [extra:<text>]",
-            details: "Runs the three site publishes from one command and reports each as published, skipped, or failed. A smartcode job already recorded its anime, season, and episode, so only `job_id` is needed; anything else takes `anime` from the AnimeciX search plus `season`/`episode`. The selected MyAnimeList id drives AnimeciX and OpenAnime, while Anizm is matched by title and skipped when that match is not unique. `extra` replaces the full AnimeciX Extra field; role credits come from the channel and are edited with `/acixconfirm`.",
+            details: "Runs the three site publishes from one command and reports each as published, skipped, or failed. A smartcode job already recorded its anime, season, and episode, so only `job_id` is needed; anything else takes `anime` from the AnimeciX search plus `season`/`episode`. The selected MyAnimeList id drives AnimeciX and OpenAnime, while Anizm is matched by title and skipped when that match is not unique. `extra` replaces the complete credit line on every site — AnimeciX's Extra, OpenAnime's contributors, and Anizm's translator — and `-` clears it; the TL/TLC/TS/QC role fields stay on `/acixconfirm`. Anizm's encoder is always `Pandora`.",
         },
         HelpCommand {
             section: "fonts",
@@ -3077,7 +3077,7 @@ impl EventHandler for Handler {
                         .min_int_value(1)
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "extra", "Replace the full AnimeciX Extra field; `-` clears it")
+                    CreateCommandOption::new(CommandOptionType::String, "extra", "Replace the credit line on all three sites; `-` clears it")
                 ),
             CreateCommand::new("font")
                 .description("Download a font zip and install it for this server")

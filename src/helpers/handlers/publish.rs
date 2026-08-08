@@ -24,6 +24,9 @@ const ANIME_VALUE_SEPARATOR: char = '|';
 // Same sentinel `/edit`'s fansub selectors use: a failed lookup still has to be a selectable choice
 // with a non-empty value, or Discord drops the whole autocomplete response.
 const LOOKUP_FAILED_VALUE: &str = "__lookup_failed__";
+// Anizm's encoder field names the tooling that produced the release, not a person, so it is fixed
+// rather than defaulting to the fansub the way the translator credit does.
+const ANIZM_ENCODER: &str = "Pandora";
 
 // AnimeciX and OpenAnime are both keyed by MyAnimeList id, so one selection drives both. Anizm's
 // staff panel exposes nothing but its own opaque ids, so the same selection's title is matched
@@ -31,6 +34,37 @@ const LOOKUP_FAILED_VALUE: &str = "__lookup_failed__";
 struct AnimeSelection {
     mal_id: i64,
     name: String,
+}
+
+// `extra` is the one credit override /publish offers, and it means the same thing everywhere: the
+// complete credit line, replacing whatever the channel or the queued record would have supplied.
+// Each site keeps that line in its own field — AnimeciX's Extra, OpenAnime's contributors, Anizm's
+// translator — so one option edits all three rather than only the site it was named after.
+enum CreditOverride {
+    Keep,
+    Replace(String),
+    Clear,
+}
+
+impl CreditOverride {
+    fn parse(value: Option<&str>) -> Self {
+        match value.map(str::trim) {
+            None => Self::Keep,
+            Some("-") => Self::Clear,
+            Some(value) => Self::Replace(value.to_string()),
+        }
+    }
+
+    // `None` means the site gets no credit line at all: AnimeciX stores an empty Extra, OpenAnime
+    // sends no contributors, and Anizm falls back to the fansub name because its translation
+    // relation is always named.
+    fn resolve(&self, fallback: Option<String>) -> Option<String> {
+        match self {
+            Self::Keep => fallback,
+            Self::Replace(value) => Some(value.clone()),
+            Self::Clear => None,
+        }
+    }
 }
 
 // What a single site publish ended as. Everything is reported, so one site that cannot be published
@@ -189,6 +223,7 @@ pub async fn handle_publish(ctx: &Context, command: &serenity::all::CommandInter
         None => None,
     };
     let extra = option_trimmed(command, "extra");
+    let credits = CreditOverride::parse(extra.as_deref());
     let server_id = match command_server_id(ctx, command, "/publish").await {
         Some(id) => id,
         None => return,
@@ -346,9 +381,11 @@ pub async fn handle_publish(ctx: &Context, command: &serenity::all::CommandInter
         pending.is_some(),
     )
     .await;
-    let openanime =
-        publish_openanime(server_id, &uploaded, &meta, mal_id, &name, season, episode).await;
-    let anizm = publish_anizm(server_id, &uploaded, &meta, &name, episode).await;
+    let openanime = publish_openanime(
+        server_id, &uploaded, &meta, &credits, mal_id, &name, season, episode,
+    )
+    .await;
+    let anizm = publish_anizm(server_id, &uploaded, &meta, &credits, &name, episode).await;
 
     let mut lines = vec![format!(
         "Publish of job `{}` — **{}** (MAL {}) S{:02}E{:02}",
@@ -444,10 +481,12 @@ async fn publish_acix(
 // OpenAnime is keyed by MyAnimeList id, so the resolved anime is accepted only when the catalog
 // entry reports the same id. The season/episode must already exist there — this command creates
 // nothing on OpenAnime.
+#[allow(clippy::too_many_arguments)]
 async fn publish_openanime(
     server_id: u64,
     uploaded: &serde_json::Value,
     meta: &ChannelMeta,
+    credits: &CreditOverride,
     mal_id: i64,
     name: &str,
     season: i64,
@@ -490,7 +529,7 @@ async fn publish_openanime(
         Ok(planned) => planned,
         Err(e) => return Outcome::Skipped(e.trim_start_matches("Error: ").to_string()),
     };
-    let contributors = channel_credits(meta);
+    let contributors = credits.resolve(channel_credits(meta));
 
     let mut published = Vec::new();
     let mut failed = Vec::new();
@@ -533,6 +572,7 @@ async fn publish_anizm(
     server_id: u64,
     uploaded: &serde_json::Value,
     meta: &ChannelMeta,
+    credits: &CreditOverride,
     name: &str,
     episode: i64,
 ) -> Outcome {
@@ -590,7 +630,11 @@ async fn publish_anizm(
         Err(e) => return Outcome::Failed(e),
     };
 
-    let translator = credit(&meta.tl).unwrap_or_else(|| fansub.label.clone());
+    // Anizm's translation relation is always named, so a cleared credit line falls back to the
+    // fansub rather than creating a nameless relation.
+    let translator = credits
+        .resolve(credit(&meta.tl))
+        .unwrap_or_else(|| fansub.label.clone());
     let mut notes = Vec::new();
     let translation = match resolve_or_create_translation(
         &client,
@@ -602,7 +646,7 @@ async fn publish_anizm(
             episode_id: episode_option.id,
             translator,
             fansub_id,
-            encoder: fansub.label.clone(),
+            encoder: ANIZM_ENCODER.to_string(),
             bluray: false,
         },
         &mut notes,
@@ -757,6 +801,23 @@ mod tests {
         for value in ["Naruto", "20", "0|Naruto", "20|", LOOKUP_FAILED_VALUE] {
             assert!(parse_anime_option(value).is_err(), "{}", value);
         }
+    }
+
+    #[test]
+    fn the_credit_override_replaces_clears_or_keeps_every_sites_fallback() {
+        let channel = || Some("Translator & Editor".to_string());
+
+        assert_eq!(
+            CreditOverride::parse(None).resolve(channel()),
+            Some("Translator & Editor".to_string())
+        );
+        assert_eq!(
+            CreditOverride::parse(Some("  Someone Else  ")).resolve(channel()),
+            Some("Someone Else".to_string())
+        );
+        assert_eq!(CreditOverride::parse(Some("-")).resolve(channel()), None);
+        // A site with nothing to fall back on stays empty rather than inventing a credit.
+        assert_eq!(CreditOverride::parse(None).resolve(None), None);
     }
 
     #[test]
