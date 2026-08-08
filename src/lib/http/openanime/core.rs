@@ -80,21 +80,15 @@ impl OpenAnime {
         )
     }
 
-    // Publishing can only use fansubs the account belongs to, so those are listed first. Accounts
-    // that cannot read their own list (or belong to none) fall back to the public directory rather
-    // than leaving the selector empty.
+    // Pandora publishes through the admin dashboard's episode form, which searches the whole
+    // directory (`GET /fansub/all`) rather than the fansub panel's `GET /user/fansubs`, so every
+    // fansub is selectable and not just the ones the account is a member of. Narrowing to the
+    // account list on error is deliberately avoided: a partial directory would reject a valid
+    // stored secure name as unknown instead of reporting that the lookup failed.
     pub async fn fansubs(&self) -> Result<Vec<FansubChoice>, String> {
-        let mut fansubs = match self.client.available_fansubs().await {
-            Ok(fansubs) => fansub_choices(fansubs),
-            Err(e) => {
-                eprintln!("[openanime] account fansub list failed: {}", e);
-                Vec::new()
-            }
-        };
-        if fansubs.is_empty() {
-            fansubs = fansub_choices(self.client.public_fansubs().await.map_err(stringify)?);
-        }
-        Ok(fansubs)
+        Ok(fansub_choices(
+            self.client.public_fansubs().await.map_err(stringify)?,
+        ))
     }
 
     // Capella resolves through title aliases but accepts a candidate only when its detail response
