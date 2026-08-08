@@ -1,36 +1,98 @@
 use capella::anizm::AnizmClient;
-use std::time::{Duration, Instant};
+use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use crate::lib::env::core::get_pandora_env;
 use crate::lib::env::standard::{ANIZM_EMAIL, ANIZM_PASSWORD};
+use crate::lib::http::directory::{self, MemoryCache};
 
 pub use capella::anizm::{
     EpisodeCreate, Error as AnizmError, MutationResponse, PublishingCatalog, SelectOption,
     TranslationCreate, VideoCreate,
 };
 
-const CATALOG_CACHE_TTL_SECS: u64 = 5 * 60;
+const DIRECTORY_SITE: &str = "anizm";
 
-static CATALOG_CACHE: Mutex<Option<(Instant, PublishingCatalog)>> = Mutex::const_new(None);
+static CATALOG_CACHE: MemoryCache<CachedCatalog> = Mutex::const_new(None);
 
-// Anizm has no versioned API: the staff pages are the only authoritative source for which anime and
-// fansub ids the account may publish under. The catalog is fetched through an authenticated page
-// load, so it is cached briefly for the per-keystroke Discord autocomplete.
-pub async fn fetch_publishing_catalog() -> Result<PublishingCatalog, String> {
-    let mut cache = CATALOG_CACHE.lock().await;
-    if let Some((fetched_at, catalog)) = cache.as_ref() {
-        if fetched_at.elapsed() < Duration::from_secs(CATALOG_CACHE_TTL_SECS) {
-            return Ok(catalog.clone());
+// Capella's `PublishingCatalog` and `SelectOption` derive `Serialize` but not `Deserialize`, so the
+// persisted copy uses Pandora's own mirror of the two fields the staff forms need.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct CachedCatalog {
+    anime: Vec<CachedOption>,
+    fansubs: Vec<CachedOption>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct CachedOption {
+    id: u64,
+    label: String,
+}
+
+impl CachedCatalog {
+    fn from_catalog(catalog: &PublishingCatalog) -> Self {
+        Self {
+            anime: catalog.anime.iter().map(CachedOption::from_option).collect(),
+            fansubs: catalog
+                .fansubs
+                .iter()
+                .map(CachedOption::from_option)
+                .collect(),
         }
     }
 
+    fn into_catalog(self) -> PublishingCatalog {
+        PublishingCatalog {
+            anime: self.anime.into_iter().map(CachedOption::into_option).collect(),
+            fansubs: self
+                .fansubs
+                .into_iter()
+                .map(CachedOption::into_option)
+                .collect(),
+        }
+    }
+}
+
+impl CachedOption {
+    fn from_option(option: &SelectOption) -> Self {
+        Self {
+            id: option.id,
+            label: option.label.clone(),
+        }
+    }
+
+    fn into_option(self) -> SelectOption {
+        SelectOption {
+            id: self.id,
+            label: self.label,
+        }
+    }
+}
+
+// Anizm has no versioned API: the staff pages are the only authoritative source for which anime and
+// fansub ids the account may publish under, and reading them costs a login plus a full page load of
+// several thousand options. That does not fit Discord's three-second autocomplete budget, so the
+// catalog is served from the persisted directory and refreshed in the background.
+pub async fn fetch_publishing_catalog() -> Result<PublishingCatalog, String> {
+    directory::cached(DIRECTORY_SITE, &CATALOG_CACHE, fetch_catalog_uncached)
+        .await
+        .map(CachedCatalog::into_catalog)
+}
+
+pub async fn refresh_publishing_catalog() -> Result<PublishingCatalog, String> {
+    directory::refresh_now(DIRECTORY_SITE, &CATALOG_CACHE, fetch_catalog_uncached)
+        .await
+        .map(CachedCatalog::into_catalog)
+}
+
+// An empty catalog is an error rather than a cached result, so a logged-out staff page cannot
+// overwrite a good copy on disk with nothing.
+async fn fetch_catalog_uncached() -> Result<CachedCatalog, String> {
     let catalog = Anizm::from_env()?.publishing_catalog().await?;
     if catalog.anime.is_empty() && catalog.fansubs.is_empty() {
         return Err("Anizm staff panel returned no anime or fansub options".to_string());
     }
-    *cache = Some((Instant::now(), catalog.clone()));
-    Ok(catalog)
+    Ok(CachedCatalog::from_catalog(&catalog))
 }
 
 pub struct Anizm {

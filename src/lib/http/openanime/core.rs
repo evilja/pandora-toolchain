@@ -1,22 +1,23 @@
 use capella::openanime::{Fansub, OpenAnimeClient};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 use crate::lib::env::core::get_pandora_env;
 use crate::lib::env::standard::{OPENANIME_EMAIL, OPENANIME_PASSWORD};
+use crate::lib::http::directory::{self, MemoryCache};
 
 pub use capella::openanime::{
     Anime, EpisodeSource, Error as OpenAnimeError, Player, PlayerProvider, Resolutions,
 };
 
-const FANSUB_CACHE_TTL_SECS: u64 = 5 * 60;
+const DIRECTORY_SITE: &str = "openanime";
 
-static FANSUB_CACHE: Mutex<Option<(Instant, Vec<FansubChoice>)>> = Mutex::const_new(None);
+static FANSUB_CACHE: MemoryCache<Vec<FansubChoice>> = Mutex::const_new(None);
 
 // OpenAnime episode sources are addressed by `fansubSecureName`, not by the display name, so a
 // fansub without a secure name is not selectable and is dropped while building the directory.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FansubChoice {
     pub secure_name: String,
     pub name: String,
@@ -32,21 +33,23 @@ impl FansubChoice {
     }
 }
 
-// Discord requests autocomplete after nearly every keystroke, so the directory is cached briefly
-// like the AnimeciX translator directory is.
+// Served from the persisted directory so a keystroke never waits on OpenAnime; see
+// `lib::http::directory` for the refresh and staleness rules.
 pub async fn fetch_fansubs() -> Result<Vec<FansubChoice>, String> {
-    let mut cache = FANSUB_CACHE.lock().await;
-    if let Some((fetched_at, fansubs)) = cache.as_ref() {
-        if fetched_at.elapsed() < Duration::from_secs(FANSUB_CACHE_TTL_SECS) {
-            return Ok(fansubs.clone());
-        }
-    }
+    directory::cached(DIRECTORY_SITE, &FANSUB_CACHE, fetch_fansubs_uncached).await
+}
 
+pub async fn refresh_fansubs() -> Result<Vec<FansubChoice>, String> {
+    directory::refresh_now(DIRECTORY_SITE, &FANSUB_CACHE, fetch_fansubs_uncached).await
+}
+
+// An empty directory is an error rather than a cached result, so a transient bad response cannot
+// overwrite a good copy on disk with nothing.
+async fn fetch_fansubs_uncached() -> Result<Vec<FansubChoice>, String> {
     let fansubs = OpenAnime::from_env()?.fansubs().await?;
     if fansubs.is_empty() {
         return Err("OpenAnime returned no fansubs with a secure name".to_string());
     }
-    *cache = Some((Instant::now(), fansubs.clone()));
     Ok(fansubs)
 }
 

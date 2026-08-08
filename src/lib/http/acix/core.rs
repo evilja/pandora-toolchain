@@ -1,11 +1,12 @@
 use capella::animecix::{AnimeciXClient, TranslatorTemplate};
 use serde_json::Value;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
 use crate::lib::env::core::get_pandora_env;
 use crate::lib::env::standard::{ANIMECIX, ANIMECIX_EMAIL, ANIMECIX_PASSWORD};
+use crate::lib::http::directory::{self, MemoryCache};
 
 pub use capella::animecix::{
     MediaType, TmdbImportResult as TmdbResolve, VideoPayload as MixedUpload,
@@ -13,10 +14,10 @@ pub use capella::animecix::{
 
 const SESSION_PATH: &str = "DB/config/global/environment/animecix.session";
 const SESSION_FALLBACK_TTL_SECS: u64 = 30 * 24 * 60 * 60;
-const FANSUB_CACHE_TTL_SECS: u64 = 5 * 60;
+const DIRECTORY_SITE: &str = "animecix";
 
 static SESSION_ACCESS: Mutex<()> = Mutex::const_new(());
-static FANSUB_CACHE: Mutex<Option<(Instant, Vec<FansubTemplate>)>> = Mutex::const_new(None);
+static FANSUB_CACHE: MemoryCache<Vec<FansubTemplate>> = Mutex::const_new(None);
 
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
 struct Session {
@@ -33,7 +34,7 @@ struct Credentials {
     password: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FansubTemplate {
     pub id: i64,
     pub name: String,
@@ -64,23 +65,23 @@ pub struct AnimeCix {
     initialized: Mutex<bool>,
 }
 
-// The translator directory is cached briefly because Discord sends an
-// autocomplete request after nearly every keystroke. Capella owns the HTTP
-// contract and response parsing; Pandora keeps only the autocomplete cache.
+// Capella owns the HTTP contract and response parsing; Pandora keeps only the autocomplete
+// directory, served from disk so a keystroke never waits on AnimeciX. See `lib::http::directory`.
 pub async fn fetch_fansub_templates() -> Result<Vec<FansubTemplate>, String> {
-    let mut cache = FANSUB_CACHE.lock().await;
-    if let Some((fetched_at, templates)) = cache.as_ref() {
-        if fetched_at.elapsed() < Duration::from_secs(FANSUB_CACHE_TTL_SECS) {
-            return Ok(templates.clone());
-        }
-    }
+    directory::cached(DIRECTORY_SITE, &FANSUB_CACHE, fetch_templates_uncached).await
+}
 
-    let client = AnimeCix::from_token_env()?;
-    let templates = client.translator_templates().await?;
+pub async fn refresh_fansub_templates() -> Result<Vec<FansubTemplate>, String> {
+    directory::refresh_now(DIRECTORY_SITE, &FANSUB_CACHE, fetch_templates_uncached).await
+}
+
+// An empty directory is an error rather than a cached result, so a transient bad response cannot
+// overwrite a good copy on disk with nothing.
+async fn fetch_templates_uncached() -> Result<Vec<FansubTemplate>, String> {
+    let templates = AnimeCix::from_token_env()?.translator_templates().await?;
     if templates.is_empty() {
         return Err("AnimeciX fansub directory returned no templates".to_string());
     }
-    *cache = Some((Instant::now(), templates.clone()));
     Ok(templates)
 }
 

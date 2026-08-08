@@ -3,6 +3,7 @@ pub mod anisub;
 pub mod anizm;
 pub mod api;
 pub mod curl;
+pub mod directory;
 pub mod forgejo;
 pub mod hyperkira;
 pub mod mal;
