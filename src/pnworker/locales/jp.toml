@@ -326,6 +326,18 @@ args = 0
 text = "Google Driveのみのアップロード"
 args = 0
 
+[FIELD_ANIMECIX_FANSUB]
+text = "AnimeciXファンサブ"
+args = 0
+
+[FIELD_OPENANIME_FANSUB]
+text = "OpenAnimeファンサブ"
+args = 0
+
+[FIELD_ANIZM_FANSUB]
+text = "Anizmファンサブ"
+args = 0
+
 [LABEL_ETA]
 text = "残り時間"
 args = 0

@@ -25,7 +25,9 @@ mod keyvault;
 mod acixconfirm;
 mod acixunpublish;
 mod akiraconfirm;
-mod acixtemplate;
+mod openanimeconfirm;
+mod anizmconfirm;
+mod fansubs;
 mod font;
 mod fontcheck;
 mod readmebase;
@@ -68,7 +70,9 @@ pub use self::keyvault::handle_keyvault;
 pub use self::acixconfirm::handle_acixconfirm;
 pub use self::acixunpublish::handle_acixunpublish;
 pub use self::akiraconfirm::handle_akiraconfirm;
-pub use self::acixtemplate::{handle_acixtemplate, handle_acixtemplate_autocomplete};
+pub use self::openanimeconfirm::handle_openanimeconfirm;
+pub use self::anizmconfirm::{handle_anizmconfirm, handle_anizmconfirm_autocomplete};
+pub use self::fansubs::{fansub_autocomplete, resolve_fansub_selection};
 pub use self::font::{handle_font, install_persisted_pandora_fonts};
 pub use self::fontcheck::handle_fontcheck;
 pub use self::readmebase::handle_readmebase;
@@ -93,40 +97,58 @@ use pandora_toolchain::lumiere_broker::{
     DriveCandidate, DriveUploadSpec, GLOBAL_DRIVE_PROFILE, LumiereClient, content_type_for_path,
     guild_drive_profile,
 };
-
-const SERVER_ACIX_TEMPLATE_LINE: usize = 13;
+use pandora_toolchain::pnworker::server_config::{read_server_fansub, FansubSite};
 
 fn read_server_acix_template(server_id: u64) -> Option<i64> {
-    std::fs::read_to_string(format!("DB/config/{}/meta.pandora", server_id))
-        .ok()?
-        .lines()
-        .nth(SERVER_ACIX_TEMPLATE_LINE)?
-        .trim()
+    read_server_fansub(server_id, FansubSite::AnimeciX)?
         .parse::<i64>()
         .ok()
         .filter(|template| *template > 0)
 }
 
-fn server_meta_with_acix_template(text: &str, template: i64) -> String {
-    let mut lines = text.lines().map(str::to_string).collect::<Vec<_>>();
-    while lines.len() <= SERVER_ACIX_TEMPLATE_LINE {
-        lines.push(String::new());
-    }
-    lines[SERVER_ACIX_TEMPLATE_LINE] = template.to_string();
-    format!("{}\n", lines.join("\n"))
+// `meta.pandora` is positional, so `/configure` and `/edit` compose it here instead of each keeping
+// its own line list — a field added in one place can no longer shift the other's lines.
+struct ServerMetaFields {
+    language: String,
+    forgejo: String,
+    announcement_channel: String,
+    api_key: String,
+    gdrive_client_id: String,
+    gdrive_client_secret: String,
+    gdrive_refresh_token: String,
+    gdrive_folder_id: String,
+    wrap_style: String,
+    local_gdrive: String,
+    gdrive_anon_folder_id: String,
+    preset: String,
+    concat: String,
+    animecix_fansub: String,
+    drive_only: String,
+    openanime_fansub: String,
+    anizm_fansub: String,
 }
 
-async fn write_server_acix_template(server_id: u64, template: i64) -> Result<(), String> {
-    let path = PathBuf::from("DB")
-        .join("config")
-        .join(server_id.to_string())
-        .join("meta.pandora");
-    let text = tokio::fs::read_to_string(&path)
-        .await
-        .map_err(|_| "this server has no config yet. Run /configure first.".to_string())?;
-    tokio::fs::write(path, server_meta_with_acix_template(&text, template))
-        .await
-        .map_err(|e| e.to_string())
+fn compose_server_meta(fields: &ServerMetaFields) -> String {
+    let lines = [
+        fields.language.as_str(),
+        fields.forgejo.as_str(),
+        fields.announcement_channel.as_str(),
+        fields.api_key.as_str(),
+        fields.gdrive_client_id.as_str(),
+        fields.gdrive_client_secret.as_str(),
+        fields.gdrive_refresh_token.as_str(),
+        fields.gdrive_folder_id.as_str(),
+        fields.wrap_style.as_str(),
+        fields.local_gdrive.as_str(),
+        fields.gdrive_anon_folder_id.as_str(),
+        fields.preset.as_str(),
+        fields.concat.as_str(),
+        fields.animecix_fansub.as_str(),
+        fields.drive_only.as_str(),
+        fields.openanime_fansub.as_str(),
+        fields.anizm_fansub.as_str(),
+    ];
+    format!("{}\n", lines.join("\n"))
 }
 
 struct SmartMergeResult {
@@ -1151,4 +1173,70 @@ async fn font_response(
     content: impl Into<String>,
 ) {
     command.edit_response(ctx, EditInteractionResponse::new().content(content.into())).await.ok();
+}
+
+#[cfg(test)]
+mod server_meta_tests {
+    use super::{compose_server_meta, ServerMetaFields};
+    use pandora_toolchain::pnworker::server_config::{
+        drive_only_from_meta, fansub_from_meta, FansubSite,
+    };
+
+    fn fields() -> ServerMetaFields {
+        ServerMetaFields {
+            language: "EN".to_string(),
+            forgejo: "https://git.example/Org".to_string(),
+            announcement_channel: "123".to_string(),
+            api_key: "key".to_string(),
+            gdrive_client_id: String::new(),
+            gdrive_client_secret: String::new(),
+            gdrive_refresh_token: String::new(),
+            gdrive_folder_id: String::new(),
+            wrap_style: "2".to_string(),
+            local_gdrive: "true".to_string(),
+            gdrive_anon_folder_id: String::new(),
+            preset: "standard".to_string(),
+            concat: "Summer".to_string(),
+            animecix_fansub: "218".to_string(),
+            drive_only: "true".to_string(),
+            openanime_fansub: "akira-subs".to_string(),
+            anizm_fansub: "42".to_string(),
+        }
+    }
+
+    #[test]
+    fn every_field_lands_on_its_documented_line() {
+        let meta = compose_server_meta(&fields());
+        let lines = meta.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 17);
+        assert_eq!(lines[0], "EN");
+        assert_eq!(lines[8], "2");
+        assert_eq!(lines[11], "standard");
+        assert_eq!(lines[12], "Summer");
+        assert!(drive_only_from_meta(&meta));
+        assert_eq!(
+            fansub_from_meta(&meta, FansubSite::AnimeciX).as_deref(),
+            Some("218")
+        );
+        assert_eq!(
+            fansub_from_meta(&meta, FansubSite::OpenAnime).as_deref(),
+            Some("akira-subs")
+        );
+        assert_eq!(
+            fansub_from_meta(&meta, FansubSite::Anizm).as_deref(),
+            Some("42")
+        );
+    }
+
+    #[test]
+    fn cleared_selections_keep_later_lines_in_place() {
+        let mut fields = fields();
+        fields.animecix_fansub = String::new();
+        fields.openanime_fansub = String::new();
+        let meta = compose_server_meta(&fields);
+        assert_eq!(fansub_from_meta(&meta, FansubSite::AnimeciX), None);
+        assert_eq!(fansub_from_meta(&meta, FansubSite::OpenAnime), None);
+        assert_eq!(fansub_from_meta(&meta, FansubSite::Anizm).as_deref(), Some("42"));
+        assert!(drive_only_from_meta(&meta));
+    }
 }

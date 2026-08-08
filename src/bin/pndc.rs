@@ -516,7 +516,8 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("acixconfirm", 4),
     ("acixunpublish", 4),
     ("akiraconfirm", 4),
-    ("acixtemplate", 4),
+    ("openanimeconfirm", 4),
+    ("anizmconfirm", 4),
     ("touchintro", 4),
     ("changerank", 4),
     ("fontcheck", 4),
@@ -617,7 +618,6 @@ const SERVER_ADMIN_COMMANDS: &[&str] = &[
     "readmebase",
     "font",
     "cfont",
-    "acixtemplate",
 ];
 
 fn requires_server_admin(part: &str) -> bool {
@@ -947,10 +947,17 @@ fn help_catalog() -> &'static [HelpCommand] {
         },
         HelpCommand {
             section: "publish",
-            name: "acixtemplate",
-            summary: "Set this server's AnimeciX fansub template.",
-            usage: "/acixtemplate template:<search>",
-            details: "Searches AnimeciX's live fansub directory and stores the selected template for every smartcode publish in this server.",
+            name: "openanimeconfirm",
+            summary: "Publish a finished encode to OpenAnime.",
+            usage: "/openanimeconfirm job_id:<id> episode:<number> [season:<number>] [slug:<openanime-slug>] [resolutions:<set>] [contributors:<text>]",
+            details: "Publishes the job's uploaded links as OpenAnime episode sources under this server's `/edit openanime_fansub:` secure name. The catalog entry is accepted only when its malID equals the channel's MAL id, the season/episode must already exist, and upload hosts without a documented OpenAnime player adapter are reported as skipped instead of being published through a guessed adapter.",
+        },
+        HelpCommand {
+            section: "publish",
+            name: "anizmconfirm",
+            summary: "Publish a finished encode to Anizm.",
+            usage: "/anizmconfirm job_id:<id> episode:<number> anime:<search> [embed:<url>] [translator] [encoder] [type] [bluray] [create_episode]",
+            details: "Adds the job's public streaming links as Anizm players under this server's `/edit anizm_fansub:` selection. Anizm exposes no MyAnimeList id, so the anime is selected from the staff panel's own option list and re-verified by id; the episode id must resolve to exactly one option unless `create_episode:true` is passed, and the fansub's translation relation is created when missing. Drive links are not published because Anizm players are website embeds.",
         },
         HelpCommand {
             section: "fonts",
@@ -1386,10 +1393,10 @@ mod tests {
 
     #[test]
     fn server_admin_gate_covers_only_server_scoped_configuration() {
-        for command in ["configure", "edit", "touchwatermark", "readmebase", "font", "cfont", "acixtemplate"] {
+        for command in ["configure", "edit", "touchwatermark", "readmebase", "font", "cfont"] {
             assert!(requires_server_admin(command), "{} should require Server Administrator", command);
         }
-        for command in ["touchapi", "touchtranslation", "touchintro", "acixconfirm", "acixunpublish"] {
+        for command in ["touchapi", "touchtranslation", "touchintro", "acixconfirm", "acixunpublish", "openanimeconfirm", "anizmconfirm"] {
             assert!(!requires_server_admin(command), "{} should remain rank-only", command);
         }
     }
@@ -2052,8 +2059,11 @@ impl EventHandler for Handler {
                 "akiraconfirm" => {
                     handle_akiraconfirm(&ctx, &command).await;
                 }
-                "acixtemplate" => {
-                    handle_acixtemplate(&ctx, &command).await;
+                "openanimeconfirm" => {
+                    handle_openanimeconfirm(&ctx, &command).await;
+                }
+                "anizmconfirm" => {
+                    handle_anizmconfirm(&ctx, &command).await;
                 }
                 "font" => {
                     handle_font(&ctx, &command).await;
@@ -2196,7 +2206,7 @@ impl EventHandler for Handler {
             match command_name {
                 "cfont" => handle_cfont_autocomplete(&ctx, &autocomplete).await,
                 "edit" => handle_edit_autocomplete(&ctx, &autocomplete).await,
-                "acixtemplate" => handle_acixtemplate_autocomplete(&ctx, &autocomplete).await,
+                "anizmconfirm" => handle_anizmconfirm_autocomplete(&ctx, &autocomplete).await,
                 _ => {}
             }
         } else if let Interaction::Component(component) = interaction {
@@ -2660,6 +2670,21 @@ impl EventHandler for Handler {
                         .set_autocomplete(true)
                 )
                 .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "animecix_fansub", "Type to search AnimeciX fansubs; `-` to unset.")
+                        .required(false)
+                        .set_autocomplete(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "openanime_fansub", "Type to search OpenAnime fansubs; `-` to unset.")
+                        .required(false)
+                        .set_autocomplete(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "anizm_fansub", "Type to search Anizm fansubs; `-` to unset.")
+                        .required(false)
+                        .set_autocomplete(true)
+                )
+                .add_option(
                     CreateCommandOption::new(CommandOptionType::Boolean, "announcement_channel", "Set the announcement channel to this channel.")
                         .required(false)
                 ),
@@ -2940,12 +2965,73 @@ impl EventHandler for Handler {
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "folder", "Akira index folder; defaults to slug")
                 ),
-            CreateCommand::new("acixtemplate")
-                .description("Set this server's AnimeciX fansub template")
+            CreateCommand::new("openanimeconfirm")
+                .description("[BETA-TESTING] Publish uploaded job links as OpenAnime episode sources")
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "template", "Type a fansub name to search AnimeciX")
+                    CreateCommandOption::new(CommandOptionType::String, "job_id", "The job id (from the upload message)")
+                        .required(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "episode", "OpenAnime episode number")
+                        .required(true)
+                        .min_int_value(1)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "season", "OpenAnime season number; defaults to the attached channel season")
+                        .min_int_value(1)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "slug", "OpenAnime slug; still verified against this channel's MAL id")
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "resolutions", "Resolution flags sent with the Google Drive player")
+                        .add_string_choice("1080p", "1080p")
+                        .add_string_choice("1080p + 720p", "1080p+720p")
+                        .add_string_choice("1080p + 720p + 480p", "1080p+720p+480p")
+                        .add_string_choice("720p", "720p")
+                        .add_string_choice("480p", "480p")
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "contributors", "Contributor credits; defaults to the channel's TL/TLC/TS/QC credits")
+                ),
+            CreateCommand::new("anizmconfirm")
+                .description("[BETA-TESTING] Publish uploaded job links as Anizm episode players")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "job_id", "The job id (from the upload message)")
+                        .required(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Number, "episode", "Anizm episode number")
+                        .required(true)
+                        .min_number_value(0.001)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "anime", "Type to search the Anizm staff panel anime list")
                         .required(true)
                         .set_autocomplete(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "embed", "Publish this player URL/iframe instead of the job's streaming links")
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "translator", "Translator credit; defaults to the channel TL credit")
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "encoder", "Encoder credit; defaults to the selected fansub name")
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "type", "Episode type used when creating the episode")
+                        .add_string_choice("Normal", "Normal")
+                        .add_string_choice("Special", "Special")
+                        .add_string_choice("OVA", "OVA")
+                        .add_string_choice("Movie", "Movie")
+                        .add_string_choice("Fragman", "Fragman")
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Boolean, "bluray", "Mark the fansub relation as a BluRay release")
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Boolean, "create_episode", "Create the episode on Anizm when the number is not listed")
                 ),
             CreateCommand::new("font")
                 .description("Download a font zip and install it for this server")

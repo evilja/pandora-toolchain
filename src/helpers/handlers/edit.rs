@@ -1,5 +1,5 @@
 use super::*;
-use pandora_toolchain::pnworker::server_config::drive_only_from_meta;
+use pandora_toolchain::pnworker::server_config::{drive_only_from_meta, fansub_from_meta, FansubSite};
 use serenity::builder::CreateAutocompleteResponse;
 
 const CLEAR_SENTINEL: &str = "-";
@@ -39,26 +39,60 @@ fn filter_concat_choices(
     choices
 }
 
+// `/edit` autocompletes several unrelated options, so the focused option decides which directory is
+// searched: the local intro groups for `concat`, and the matching site's live fansub directory for
+// each per-site fansub selector.
 pub async fn handle_edit_autocomplete(
     ctx: &Context,
     interaction: &serenity::all::CommandInteraction,
 ) {
-    let partial = interaction
-        .data
-        .autocomplete()
-        .filter(|option| option.name == "concat")
-        .map(|option| option.value.to_string())
-        .unwrap_or_default();
-    let config = IntrosConfig::load();
+    let Some(focused) = interaction.data.autocomplete() else {
+        return;
+    };
+    let partial = focused.value.to_string();
+    if let Some(site) = FansubSite::from_option_name(focused.name) {
+        fansub_autocomplete(ctx, interaction, site, &partial).await;
+        return;
+    }
     let mut response = CreateAutocompleteResponse::new();
-    for (label, value) in filter_concat_choices(&config.groups, &partial) {
-        response = response.add_string_choice(label, value);
+    if focused.name == "concat" {
+        let config = IntrosConfig::load();
+        for (label, value) in filter_concat_choices(&config.groups, &partial) {
+            response = response.add_string_choice(label, value);
+        }
     }
     if let Err(e) = interaction
         .create_response(ctx, CreateInteractionResponse::Autocomplete(response))
         .await
     {
         eprintln!("[edit] concat autocomplete response failed: {}", e);
+    }
+}
+
+// A submitted fansub is re-resolved against the site's live directory so the stored value is always
+// a real identifier for that site; `-` clears the selection and an omitted option keeps it.
+async fn edit_fansub_field(
+    command: &serenity::all::CommandInteraction,
+    site: FansubSite,
+    existing: Option<String>,
+) -> Result<(String, Option<String>), String> {
+    let existing_value = existing.unwrap_or_default();
+    match option_str(command, site.option_name()).map(str::trim) {
+        None => Ok((existing_value, None)),
+        Some(CLEAR_SENTINEL) => Ok((String::new(), None)),
+        Some(value) if value.is_empty() => Ok((existing_value, None)),
+        Some(value) => resolve_fansub_selection(site, value)
+            .await
+            .map(|option| (option.value.clone(), Some(option.display())))
+            .map_err(|e| format!("Error: {}", e)),
+    }
+}
+
+fn fansub_field_id(site: FansubSite) -> &'static str {
+    match site {
+        FansubSite::AnimeciX => FIELD_ANIMECIX_FANSUB,
+        FansubSite::OpenAnime => FIELD_OPENANIME_FANSUB,
+        FansubSite::Anizm => FIELD_ANIZM_FANSUB,
     }
 }
 
@@ -80,13 +114,32 @@ pub async fn handle_edit(
         None => return,
     };
 
+    // Resolving a fansub selection contacts that site, which can outlast Discord's three-second
+    // initial-response window, so `/edit` defers only when a fansub option was actually submitted.
+    let deferred = FansubSite::ALL
+        .into_iter()
+        .any(|site| option_str(command, site.option_name()).is_some());
+    if deferred
+        && command
+            .create_response(
+                ctx,
+                CreateInteractionResponse::Defer(
+                    CreateInteractionResponseMessage::new().ephemeral(true),
+                ),
+            )
+            .await
+            .is_err()
+    {
+        return;
+    }
+
     let dir = std::path::PathBuf::from("DB")
         .join("config")
         .join(server_id.to_string());
 
     let existing_meta = std::fs::read_to_string(dir.join("meta.pandora")).unwrap_or_default();
     if existing_meta.trim().is_empty() {
-        command_error(ctx, command, "Error: this server has no config yet. Run /configure first.").await;
+        edit_error(ctx, command, deferred, "Error: this server has no config yet. Run /configure first.").await;
         return;
     }
     let existing_lines: Vec<&str> = existing_meta.lines().collect();
@@ -103,13 +156,12 @@ pub async fn handle_edit(
     let existing_gdrive_anon_folder_id = existing_lines.get(10).copied().unwrap_or("");
     let existing_preset = existing_lines.get(11).copied().unwrap_or("standard");
     let existing_concat = existing_lines.get(12).copied().unwrap_or("");
-    let existing_acix_template = existing_lines.get(SERVER_ACIX_TEMPLATE_LINE).copied().unwrap_or("");
     let existing_drive_only = drive_only_from_meta(&existing_meta);
 
     let language = match option_str(command, "language") {
         Some(l) if matches!(l, "EN" | "TR" | "JP") => l.to_string(),
         Some(other) => {
-            command_error(ctx, command, format!("Error: language `{}` is not one of EN/TR/JP", other)).await;
+            edit_error(ctx, command, deferred, format!("Error: language `{}` is not one of EN/TR/JP", other)).await;
             return;
         }
         None => existing_language.to_string(),
@@ -121,7 +173,7 @@ pub async fn handle_edit(
         Some(u) if u.is_empty() => existing_forgejo.to_string(),
         Some(u) if u.starts_with("http://") || u.starts_with("https://") => u.trim_end_matches('/').to_string(),
         Some(other) => {
-            command_error(ctx, command, format!("Error: forgejo `{}` must be an http(s) URL", other)).await;
+            edit_error(ctx, command, deferred, format!("Error: forgejo `{}` must be an http(s) URL", other)).await;
             return;
         }
     };
@@ -142,7 +194,7 @@ pub async fn handle_edit(
         Some("dont_touch") | Some("keep") | Some(CLEAR_SENTINEL) => String::new(),
         Some(v) if matches!(v, "0" | "1" | "2" | "3") => v.to_string(),
         Some(other) => {
-            command_error(ctx, command, format!("Error: wrapstyle `{}` must be dont_touch, 0, 1, 2, or 3", other)).await;
+            edit_error(ctx, command, deferred, format!("Error: wrapstyle `{}` must be dont_touch, 0, 1, 2, or 3", other)).await;
             return;
         }
     };
@@ -154,7 +206,7 @@ pub async fn handle_edit(
         None => existing_preset.to_string(),
         Some("standard") | Some("gpu") | Some("pseudolossless") | Some("dummy") => option_str(command, "preset").unwrap().to_string(),
         Some(other) => {
-            command_error(ctx, command, format!("Error: preset `{}` is not standard, gpu, pseudolossless, or dummy", other)).await;
+            edit_error(ctx, command, deferred, format!("Error: preset `{}` is not standard, gpu, pseudolossless, or dummy", other)).await;
             return;
         }
     };
@@ -163,18 +215,51 @@ pub async fn handle_edit(
         Some("-") | Some("") => String::new(),
         Some(group) if IntrosConfig::load().resolve(group).is_some() => group.to_string(),
         Some(group) => {
-            command_error(ctx, command, format!("Error: concat group `{}` does not exist", group)).await;
+            edit_error(ctx, command, deferred, format!("Error: concat group `{}` does not exist", group)).await;
             return;
         }
     };
-    let body = format!("{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n", language, forgejo, channel, new_api_key, gdrive_client_id, gdrive_client_secret, gdrive_refresh_token, gdrive_folder_id, wrap_style, local_gdrive, gdrive_anon_folder_id, preset, concat, existing_acix_template, drive_only);
+
+    let mut fansubs = Vec::new();
+    for site in FansubSite::ALL {
+        match edit_fansub_field(command, site, fansub_from_meta(&existing_meta, site)).await {
+            Ok(resolved) => fansubs.push((site, resolved)),
+            Err(e) => {
+                edit_error(ctx, command, deferred, e).await;
+                return;
+            }
+        }
+    }
+    let fansub_value = |site: FansubSite| {
+        fansubs
+            .iter()
+            .find(|(candidate, _)| *candidate == site)
+            .map(|(_, (value, _))| value.clone())
+            .unwrap_or_default()
+    };
+
+    let body = compose_server_meta(&ServerMetaFields {
+        language: language.clone(),
+        forgejo: forgejo.clone(),
+        announcement_channel: channel.clone(),
+        api_key: new_api_key.clone(),
+        gdrive_client_id,
+        gdrive_client_secret,
+        gdrive_refresh_token,
+        gdrive_folder_id,
+        wrap_style: wrap_style.clone(),
+        local_gdrive: local_gdrive.clone(),
+        gdrive_anon_folder_id,
+        preset: preset.clone(),
+        concat: concat.clone(),
+        animecix_fansub: fansub_value(FansubSite::AnimeciX),
+        drive_only: drive_only.to_string(),
+        openanime_fansub: fansub_value(FansubSite::OpenAnime),
+        anizm_fansub: fansub_value(FansubSite::Anizm),
+    });
     let path = dir.join("meta.pandora");
     if let Err(e) = tokio::fs::write(&path, body).await {
-        command.create_response(ctx, CreateInteractionResponse::Message(
-            CreateInteractionResponseMessage::new()
-                .content(format!("Failed to write meta.pandora: {}", e))
-                .ephemeral(true)
-        )).await.ok();
+        edit_error(ctx, command, deferred, format!("Failed to write meta.pandora: {}", e)).await;
         return;
     }
 
@@ -204,7 +289,7 @@ pub async fn handle_edit(
         concat
     };
     let drive_only_display = command_message(command, if drive_only { VALUE_ENABLED } else { VALUE_DISABLED });
-    let embed = success_embed(command, COMMAND_SERVER_UPDATED)
+    let mut embed = success_embed(command, COMMAND_SERVER_UPDATED)
         .description(format!("Server `{}`", server_id))
         .field(command_message(command, FIELD_LANGUAGE), language, true)
         .field(command_message(command, FIELD_REPO), forgejo_display, true)
@@ -215,13 +300,44 @@ pub async fn handle_edit(
         .field(command_message(command, FIELD_DRIVE_ONLY), drive_only_display, true)
         .field(command_message(command, FIELD_WRAPSTYLE), wrap_display, true)
         .field(command_message(command, FIELD_PRESET), preset, true)
-        .field(command_message(command, FIELD_CONCAT), concat_display, true)
-        .field(command_message(command, FIELD_ANNOUNCEMENT), channel_display, false);
-    command.create_response(ctx, CreateInteractionResponse::Message(
-        CreateInteractionResponseMessage::new()
-            .embed(embed)
-            .ephemeral(true)
-    )).await.ok();
+        .field(command_message(command, FIELD_CONCAT), concat_display, true);
+    for (site, (value, display)) in &fansubs {
+        let shown = display
+            .clone()
+            .or_else(|| Some(value.clone()).filter(|value| !value.is_empty()))
+            .unwrap_or_else(|| command_message(command, VALUE_UNSET));
+        embed = embed.field(command_message(command, fansub_field_id(*site)), shown, true);
+    }
+    let embed = embed.field(command_message(command, FIELD_ANNOUNCEMENT), channel_display, false);
+    if deferred {
+        command
+            .edit_response(ctx, EditInteractionResponse::new().embed(embed))
+            .await
+            .ok();
+    } else {
+        command.create_response(ctx, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .embed(embed)
+                .ephemeral(true)
+        )).await.ok();
+    }
+}
+
+// `command_error` opens a fresh response, which Discord rejects once the interaction was deferred.
+async fn edit_error(
+    ctx: &Context,
+    command: &serenity::all::CommandInteraction,
+    deferred: bool,
+    content: impl Into<String>,
+) {
+    if deferred {
+        command
+            .edit_response(ctx, EditInteractionResponse::new().content(content.into()))
+            .await
+            .ok();
+    } else {
+        command_error(ctx, command, content).await;
+    }
 }
 
 #[cfg(test)]

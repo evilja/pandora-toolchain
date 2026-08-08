@@ -1,5 +1,5 @@
 use super::*;
-use pandora_toolchain::pnworker::server_config::drive_only_from_meta;
+use pandora_toolchain::pnworker::server_config::{drive_only_from_meta, fansub_from_meta, FansubSite};
 
 pub async fn handle_configure(
     ctx: &Context,
@@ -56,8 +56,8 @@ pub async fn handle_configure(
     let existing_gdrive_anon_folder_id = existing_lines.get(10).copied().unwrap_or("").to_string();
     let existing_preset = existing_lines.get(11).copied().unwrap_or("standard").to_string();
     let existing_concat = existing_lines.get(12).copied().unwrap_or("").to_string();
-    let existing_acix_template = existing_lines.get(SERVER_ACIX_TEMPLATE_LINE).copied().unwrap_or("").to_string();
     let existing_drive_only = drive_only_from_meta(&existing_meta);
+    let existing_fansub = |site: FansubSite| fansub_from_meta(&existing_meta, site).unwrap_or_default();
 
     let wrap_style = match option_str(command, "wrapstyle").map(str::trim) {
         Some("dont_touch") | Some("keep") | Some("-") => String::new(),
@@ -80,7 +80,25 @@ pub async fn handle_configure(
     let gdrive_folder_id = existing_gdrive_folder_id;
     let gdrive_anon_folder_id = existing_gdrive_anon_folder_id;
 
-    let body = format!("{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n", language, forgejo, command.channel_id.get(), new_api_key, gdrive_client_id, gdrive_client_secret, gdrive_refresh_token, gdrive_folder_id, wrap_style, existing_local_gdrive, gdrive_anon_folder_id, existing_preset, existing_concat, existing_acix_template, existing_drive_only);
+    let body = compose_server_meta(&ServerMetaFields {
+        language: language.clone(),
+        forgejo: forgejo.clone(),
+        announcement_channel: command.channel_id.get().to_string(),
+        api_key: new_api_key.clone(),
+        gdrive_client_id,
+        gdrive_client_secret,
+        gdrive_refresh_token,
+        gdrive_folder_id,
+        wrap_style: wrap_style.clone(),
+        local_gdrive: existing_local_gdrive,
+        gdrive_anon_folder_id,
+        preset: existing_preset,
+        concat: existing_concat,
+        animecix_fansub: existing_fansub(FansubSite::AnimeciX),
+        drive_only: existing_drive_only.to_string(),
+        openanime_fansub: existing_fansub(FansubSite::OpenAnime),
+        anizm_fansub: existing_fansub(FansubSite::Anizm),
+    });
     let path = dir.join("meta.pandora");
     if let Err(e) = tokio::fs::write(&path, body).await {
         command.create_response(ctx, CreateInteractionResponse::Message(
