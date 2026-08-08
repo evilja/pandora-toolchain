@@ -19,10 +19,10 @@ Server-scoped configuration commands require both their normal Pandora rank and 
 ## Discord commands
 
 - `/help [section]` — public, ephemeral command guide. Bare `/help` shows section overview; `section` choices are `encode`, `repo`, `workers`, `admin`, `publish`, `fonts`, and `misc`. Section and command menus are filtered to commands the caller can run.
-- `/encode do <torrent> <subtitle attachment>` — encode with an attached ASS file. The server’s `/edit` preset and concat settings are applied automatically. Accepts torrent URLs, magnet links, Google Drive links, and direct video file links.
+- `/encode do <torrent> <subtitle attachment>` — encode with an attached subtitle (ASS, or any text format ffmpeg can read — see [subtitle formats](#subtitle-formats)). The server’s `/edit` preset and concat settings are applied automatically. Accepts torrent URLs, magnet links, Google Drive links, and direct video file links.
 - `/encode pan <job_id> <index> <subtitle attachment>` — re-encode using a previously probed torrent's `fetch.torrent` (the probe job's `contents/fetch.torrent` is copied into the new job's dir). When this finishes, the parent probe job is archived.
 - `/encode link <torrent> <subtitle_url>` — like `/encode do` but the subtitle is fetched from a URL. `https://github.com/<u>/<r>/blob/<b>/<path>` is auto-rewritten to `https://raw.githubusercontent.com/<u>/<r>/<b>/<path>`; other URLs pass through. 60s HTTP timeout.
-- `/encode keep <torrent> <subtitle attachment> [keyword]` — encode with an attached ASS and keep the output locally under a generated or supplied keyword instead of uploading it.
+- `/encode keep <torrent> <subtitle attachment> [keyword]` — encode with an attached subtitle and keep the output locally under a generated or supplied keyword instead of uploading it.
 - `/encode key <keywords> [subtitle attachment]` — join locally kept outputs and upload the result. The server’s configured concat setting is used automatically. Backup keywords require a subtitle.
 - `/studio create <keywords>` — create a Pandora Studio from guild-scoped keep outputs, concatenated in comma-separated order. All keywords must be ready and of the same Encode/Backup kind. Studio copies are isolated from the original keeps. Creating another Studio selects it without leaving Studios the user already owns.
 - `/studio details [studio_id]` — show source keywords/kind, video dimensions/FPS/duration, tracks, collaborator count, last-use time, and expiry for the current Studio or another Studio the user owns.
@@ -83,6 +83,17 @@ Torrent classification, duplicate handling, and cache behavior are covered in [W
 
 Worker jobs use localized embeds whose title reflects the real job type (Encode, Probe, Backup, Preview, Studio, and so on). Status appears once in the status field; the details field only carries metrics, links, warnings, or actionable context. Encode presets are intentionally omitted. The source field never renders blank, and Nyaa download endpoints are displayed as their corresponding `/view/<id>` page while the worker continues fetching the canonical `.torrent` endpoint internally.
 
+## Subtitle formats
+
+Every command that takes a subtitle — `/encode do` / `pan` / `link` / `keep` / `key`, `/job`, `!ts`, and the API's `subtitle_b64` / `subtitle_url` submits — accepts ASS plus any text format ffmpeg can demux, and normalises it through `lib::subs` (see [PROJECT.md](PROJECT.md)) before anything else touches it. `/touchwatermark` is the exception and stays ASS-only: a watermark is styled overlay events, so there is nothing to convert.
+
+- **ASS** passes through byte-for-byte. Nothing about the existing flows changes.
+- **Text formats** (`.srt`, `.ssa`, `.vtt`, `.sub` MicroDVD, `.smi`, `.lrc`, `.mpl2`, `.jss`, `.stl`, `.pjs`, `.rt`, `.aqt`) are converted by ffmpeg. The conversion carries timings, line breaks, and inline bold/italic/underline tags, but **no styling** — the result uses ffmpeg's `Default` Arial 16 style at PlayRes 384x288. `/job` and `!ts` report this in the response's Warnings field; encode jobs log it. Restyle a converted script before treating it as a release file: `/smartcode`'s merge expects styled TL/TS with `Sign` styles and will not invent them.
+- **Image-based subtitles** (PGS `.sup`, VobSub `.idx`/`.sub`) are rejected — turning them into text needs OCR. VobSub `.sub` is told apart from MicroDVD `.sub` by its MPEG program-stream magic bytes, not by name.
+- **Non-UTF-8 text** is rejected with a "re-save it as UTF-8" message rather than guessed at, since a wrong codepage guess produces plausible-looking mojibake.
+
+Uploads that arrive without a usable filename — `.zip` entries aside, every worker job attachment, because only the bytes are queued — are classified by sniffing content instead of extension.
+
 ## Discord presence
 
 `src/pnworker/presence.rs` drives the bot's Discord activity + status from the in-memory job queue.
@@ -106,26 +117,27 @@ Slash command `type` (TL / TLC / TS, required) + `episode` (1-based int, require
 
 Flow:
 
-1. Download the attachment. `.ass` → write straight to `DB/saved_data/<response_msg_id>/input.ass`. `.zip` → extract via `async_zip` over a temp file; walk root-level entries (no recursion), collect paths ending in `.ass` case-insensitively. Exactly one → move to `input.ass`. Zero or more than one → reply with an error. Anything else → `unsupported subtitle file type`.
-2. Standardise only the ASS `[Script Info]` header into `output.ass`: set `Title:` to `<Org> - <Anime Name>` (or just `<Org>` if the attached anime name is empty), fill the standard header keys, preserve existing `PlayResX/Y` when present, and only write `WrapStyle:` when the server's line-8 wrapstyle config is `0`/`1`/`2`/`3`. It does **not** invoke pnass and does **not** touch event layers or parsed event/style data.
-3. Read `output.ass`, base64-encode the **bytes** (`base64_encode_bytes`), compute:
+1. Download the attachment and resolve it to one subtitle file. `.zip` → extract via `async_zip` over a temp file; walk root-level entries (no recursion), collect the ones `lib::subs::is_subtitle_name` accepts (at most 16, then the zip is ambiguous). A single `.ass` entry wins regardless of what else is in there; failing that, a single entry of any accepted format is used. Zero, or ambiguity → reply with an error. Anything else → the attachment itself is the subtitle.
+2. Normalise it to ASS with `lib::subs::ensure_ass` and write `DB/saved_data/<response_msg_id>/input.ass`. ASS passes through byte-for-byte; other text formats are converted by ffmpeg and add a warning (see [subtitle formats](#subtitle-formats)) that shows up in the response's Warnings field; image-based and non-UTF-8 uploads are rejected with their own message.
+3. Standardise only the ASS `[Script Info]` header into `output.ass`: set `Title:` to `<Org> - <Anime Name>` (or just `<Org>` if the attached anime name is empty), fill the standard header keys, preserve existing `PlayResX/Y` when present, and only write `WrapStyle:` when the server's line-8 wrapstyle config is `0`/`1`/`2`/`3`. It does **not** invoke pnass and does **not** touch event layers or parsed event/style data.
+4. Read `output.ass`, base64-encode the **bytes** (`base64_encode_bytes`), compute:
    - `folder = pad2(episode)`.
    - `file_type_label = "TL"` for `TL` and `TLC`, `"TS"` for `TS` — **TLC edits the TL file**, so its target filename is the same as `TL`'s.
    - `name = meta.name` with `/` replaced by `-` (filesystem-safe).
    - `file_name = "{file_type_label} - {name} - S{season:02}E{episode:02}.ass"`, where `season` comes from the channel meta.
    - `repo_path = "{folder}/{file_name}"`.
-4. Commit message:
+5. Commit message:
    - Default by type: `TL` → `"Translation"`, `TLC` → `"Edit"`, `TS` → `"Typeset"`.
    - If the user supplied a non-empty `commit`, the prefix `[TL]` / `[TLC]` / `[TS]` is prepended (`"[TLC] review pass"`).
-5. Upload via `fg.upsert_file(&owner_repo, &repo_path, &b64, &commit_msg)`. The upsert transparently handles "file already exists" by reading the existing sha and PUTting.
-6. Edit the response with a localized success embed (`EditMessage::new().content("").embed(...)`):
+6. Upload via `fg.upsert_file(&owner_repo, &repo_path, &b64, &commit_msg)`. The upsert transparently handles "file already exists" by reading the existing sha and PUTting.
+7. Edit the response with a localized success embed (`EditMessage::new().content("").embed(...)`):
    - **Repository** (inline, linked) — `owner_repo`.
    - **Job ID** (inline) — `job_id` (the response message id).
    - **File** (block) — `repo_path`.
    - **Commit message** (block) — `commit_msg`.
    - **Warnings** (block) — a localized `None` value when empty, otherwise a bullet list truncated to the Discord embed-field limit with a localized remaining-count tail.
 
-`/job` intentionally does not run `PNASS_LAYER`; it is a repository upload/header-standardisation path only. The Warnings embed field is currently normally `None`.
+`/job` intentionally does not run `PNASS_LAYER`; it is a repository upload/header-standardisation path only. The Warnings embed field is `None` unless the upload had to be converted to ASS.
 
 ## `/smartcode`
 

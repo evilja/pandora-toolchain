@@ -746,7 +746,15 @@ fn parse_job_kind(s: &str) -> Option<JobKind> {
     }
 }
 
-async fn extract_zip_root_ass(bytes: &[u8], dest: &Path) -> Result<Option<PathBuf>, String> {
+// A zip holding more root-level subtitles than this is treated as ambiguous without
+// extracting the rest of them.
+const MAX_ZIP_SUBTITLE_ENTRIES: usize = 16;
+
+// Pulls the single root-level subtitle out of a zip. `any_subtitle` widens the filter
+// from ASS-only to every format ensure_ass accepts; repo blobs we wrote ourselves keep
+// the narrow filter. An ASS entry wins over other formats, so a zip carrying both an
+// .ass and a converted copy of it still resolves; anything else ambiguous is `None`.
+async fn extract_zip_root_subtitle(bytes: &[u8], dest: &Path, any_subtitle: bool) -> Result<Option<PathBuf>, String> {
     use async_zip::base::read::stream::ZipFileReader;
     use futures_lite::io::AsyncReadExt;
     use tokio::io::{AsyncWriteExt, BufReader};
@@ -766,8 +774,8 @@ async fn extract_zip_root_ass(bytes: &[u8], dest: &Path) -> Result<Option<PathBu
         let f = tokio::fs::File::open(&tmp).await.map_err(|e| e.to_string())?;
         let mut zip = ZipFileReader::with_tokio(BufReader::new(f));
 
-        let mut found: Option<PathBuf> = None;
-        let mut count: usize = 0;
+        let mut ass_entries: Vec<PathBuf> = Vec::new();
+        let mut other_entries: Vec<PathBuf> = Vec::new();
 
         loop {
             let mut entry = match zip.next_with_entry().await.map_err(|e| format!("zip: {}", e))? {
@@ -778,18 +786,22 @@ async fn extract_zip_root_ass(bytes: &[u8], dest: &Path) -> Result<Option<PathBu
                 .map_err(|e| format!("zip filename: {}", e))?
                 .to_string();
             let is_ass = filename.to_lowercase().ends_with(".ass");
+            let wanted = if any_subtitle {
+                is_subtitle_name(&filename)
+            } else {
+                is_ass
+            };
 
-            if is_ass {
+            if wanted {
                 if filename.contains('\\') {
-                    return Err(format!("zip contains unsafe .ass path: {}", filename));
+                    return Err(format!("zip contains unsafe subtitle path: {}", filename));
                 }
                 let mut components = Path::new(&filename).components();
                 let safe_name = match (components.next(), components.next()) {
                     (Some(std::path::Component::Normal(name)), None) => name.to_owned(),
-                    _ => return Err(format!("zip contains unsafe .ass path: {}", filename)),
+                    _ => return Err(format!("zip contains unsafe subtitle path: {}", filename)),
                 };
-                count += 1;
-                if count > 1 {
+                if ass_entries.len() + other_entries.len() >= MAX_ZIP_SUBTITLE_ENTRIES {
                     return Ok(None);
                 }
                 let mut data = Vec::new();
@@ -797,13 +809,23 @@ async fn extract_zip_root_ass(bytes: &[u8], dest: &Path) -> Result<Option<PathBu
                     .map_err(|e| format!("zip read: {}", e))?;
                 let out_path = dest.join(safe_name);
                 tokio::fs::write(&out_path, &data).await.map_err(|e| e.to_string())?;
-                found = Some(out_path);
+                if is_ass {
+                    ass_entries.push(out_path);
+                } else {
+                    other_entries.push(out_path);
+                }
             }
 
             zip = entry.skip().await.map_err(|e| format!("zip skip: {}", e))?;
         }
 
-        Ok(found)
+        // One ASS is the answer whatever else is in there; otherwise a single subtitle
+        // of any accepted format is, and everything else is ambiguous.
+        Ok(match (ass_entries.len(), other_entries.len()) {
+            (1, _) => ass_entries.pop(),
+            (0, 1) => other_entries.pop(),
+            _ => None,
+        })
     }.await;
 
     let _ = tokio::fs::remove_file(&tmp).await;
@@ -829,7 +851,7 @@ async fn unzip_single_ass(bytes: &[u8]) -> Result<Vec<u8>, String> {
             .as_nanos()));
     let result = async {
         tokio::fs::create_dir_all(&dir).await.map_err(|e| e.to_string())?;
-        let extracted = extract_zip_root_ass(bytes, &dir).await?
+        let extracted = extract_zip_root_subtitle(bytes, &dir, false).await?
             .ok_or_else(|| "zip must contain exactly one root .ass file".to_string())?;
         tokio::fs::read(extracted).await.map_err(|e| e.to_string())
     }.await;

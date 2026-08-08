@@ -29,6 +29,7 @@ use pandora_toolchain::pnworker::worker_slots::{
 use pandora_toolchain::lib::env::standard::{PNASS, ANISUB, API_PORT};
 use pandora_toolchain::libkagami::core::{SubstationAlpha, find_fonts_with_roots};
 use pandora_toolchain::lib::protocol::core::Protocol;
+use pandora_toolchain::lib::subs::{ensure_ass, is_subtitle_name};
 use pandora_toolchain::lib::db::core::JobDb;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::{channel, Sender, Receiver};
@@ -783,8 +784,8 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "repo",
             name: "job",
             summary: "Upload one episode work file to the attached repo.",
-            usage: "/job type:<TL|TLC|TS> episode:<n> subtitle:<ass_or_zip> [commit]",
-            details: "Requires a channel attachment. Normalizes the uploaded ASS or root-level ASS zip, then uploads it under the selected job type.",
+            usage: "/job type:<TL|TLC|TS> episode:<n> subtitle:<subtitle_or_zip> [commit]",
+            details: "Requires a channel attachment. Accepts ASS or any text subtitle ffmpeg can read (.srt, .ssa, .vtt, .sub, .smi, ...), directly or as a root-level zip entry; non-ASS uploads are converted to ASS and flagged as unstyled. Normalizes the result, then uploads it under the selected job type.",
         },
         HelpCommand {
             section: "repo",
@@ -2274,13 +2275,13 @@ impl EventHandler for Handler {
         let encode_command = CreateCommand::new("encode")
             .description("Encode, keep, or join video outputs")
             .add_option(
-                CreateCommandOption::new(CommandOptionType::SubCommand, "do", "Encode with an attached ASS subtitle")
+                CreateCommandOption::new(CommandOptionType::SubCommand, "do", "Encode with an attached subtitle file")
                     .add_sub_option(
                         CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent URL, magnet link, or Google Drive link")
                             .required(true)
                     )
                     .add_sub_option(
-                        CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "ASS subtitle file")
+                        CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "Subtitle file (.ass, .srt, .vtt, .ssa, ...; converted to ASS)")
                             .required(true)
                     )
             )
@@ -2295,18 +2296,18 @@ impl EventHandler for Handler {
                             .required(true)
                     )
                     .add_sub_option(
-                        CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "ASS subtitle file")
+                        CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "Subtitle file (.ass, .srt, .vtt, .ssa, ...; converted to ASS)")
                             .required(true)
                     )
             )
             .add_option(
-                CreateCommandOption::new(CommandOptionType::SubCommand, "link", "Encode with an ASS subtitle fetched from a URL")
+                CreateCommandOption::new(CommandOptionType::SubCommand, "link", "Encode with a subtitle fetched from a URL")
                     .add_sub_option(
                         CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent URL, magnet link, or Google Drive link")
                             .required(true)
                     )
                     .add_sub_option(
-                        CreateCommandOption::new(CommandOptionType::String, "subtitle_url", "URL to an .ass subtitle file (raw or GitHub blob)")
+                        CreateCommandOption::new(CommandOptionType::String, "subtitle_url", "URL to a subtitle file (raw or GitHub blob)")
                             .required(true)
                     )
             )
@@ -2317,7 +2318,7 @@ impl EventHandler for Handler {
                             .required(true)
                     )
                     .add_sub_option(
-                        CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "ASS subtitle file")
+                        CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "Subtitle file (.ass, .srt, .vtt, .ssa, ...; converted to ASS)")
                             .required(true)
                     )
                     .add_sub_option(keyword_option.clone())
@@ -2329,7 +2330,7 @@ impl EventHandler for Handler {
                             .required(true)
                     )
                     .add_sub_option(
-                        CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "ASS subtitle file; required for backup keywords")
+                        CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "Subtitle file; required for backup keywords (converted to ASS)")
                             .required(false)
                     )
             );
@@ -3159,7 +3160,7 @@ impl EventHandler for Handler {
                         .min_int_value(1)
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "The .ass or .zip file")
+                    CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "Subtitle file or .zip (.ass, .srt, .vtt, ...; converted to ASS)")
                         .required(true)
                 )
                 .add_option(

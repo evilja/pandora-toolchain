@@ -4,14 +4,14 @@ pub async fn handle_ts_message(ctx: &Context, msg: &Message, parts: &[&str]) {
     let episode = match parts.get(1).and_then(|s| s.parse::<u32>().ok()).filter(|n| *n >= 1) {
         Some(n) => n,
         None => {
-            msg.reply(ctx, "Usage: `!ts <episode>` with an .ass or .zip attachment.").await.ok();
+            msg.reply(ctx, "Usage: `!ts <episode>` with a subtitle or .zip attachment.").await.ok();
             return;
         }
     };
     let attachment = match msg.attachments.first() {
         Some(a) => a,
         None => {
-            msg.reply(ctx, "Error: attach an .ass or .zip file.").await.ok();
+            msg.reply(ctx, "Error: attach a subtitle file (.ass, .srt, .vtt, ...) or a .zip.").await.ok();
             return;
         }
     };
@@ -85,30 +85,31 @@ pub async fn handle_ts_message(ctx: &Context, msg: &Message, parts: &[&str]) {
     let output_path = format!("{}/output.ass", job_dir);
 
     let attachment_name = attachment.filename.to_lowercase();
-    if attachment_name.ends_with(".ass") {
-        if let Err(e) = tokio::fs::write(&input_path, &attachment_bytes).await {
-            let _ = response_msg.edit(ctx, EditMessage::new()
-                .content(format!("Failed to write input: {}", e))).await;
-            return;
-        }
-    } else if attachment_name.ends_with(".zip") {
+    let (source_name, source_bytes) = if attachment_name.ends_with(".zip") {
         let extract_dir = format!("{}/extract", job_dir);
         if let Err(e) = tokio::fs::create_dir_all(&extract_dir).await {
             let _ = response_msg.edit(ctx, EditMessage::new()
                 .content(format!("Failed to create extract dir: {}", e))).await;
             return;
         }
-        match extract_zip_root_ass(&attachment_bytes, &PathBuf::from(&extract_dir)).await {
+        match extract_zip_root_subtitle(&attachment_bytes, &PathBuf::from(&extract_dir), true).await {
             Ok(Some(src)) => {
-                if let Err(e) = tokio::fs::copy(&src, &input_path).await {
-                    let _ = response_msg.edit(ctx, EditMessage::new()
-                        .content(format!("Failed to copy extracted .ass: {}", e))).await;
-                    return;
+                let name = src.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("subtitle")
+                    .to_string();
+                match tokio::fs::read(&src).await {
+                    Ok(b) => (name, b),
+                    Err(e) => {
+                        let _ = response_msg.edit(ctx, EditMessage::new()
+                            .content(format!("Failed to read extracted subtitle: {}", e))).await;
+                        return;
+                    }
                 }
             }
             Ok(None) => {
                 let _ = response_msg.edit(ctx, EditMessage::new()
-                    .content("Error: zip must contain exactly one .ass file at the root.")).await;
+                    .content("Error: zip must contain exactly one subtitle file at the root.")).await;
                 return;
             }
             Err(e) => {
@@ -118,14 +119,30 @@ pub async fn handle_ts_message(ctx: &Context, msg: &Message, parts: &[&str]) {
             }
         }
     } else {
+        (attachment.filename.clone(), attachment_bytes)
+    };
+
+    let mut conversion_warning: Option<String> = None;
+    let ass_bytes = match ensure_ass(&source_name, &source_bytes).await {
+        Ok(converted) => {
+            if let Some(warning) = converted.warning {
+                println!("[ts] id={} converted={}", job_id, source_name);
+                conversion_warning = Some(warning);
+            }
+            converted.bytes
+        }
+        Err(e) => {
+            let _ = response_msg.edit(ctx, EditMessage::new()
+                .content(format!("Error: {}", e))).await;
+            return;
+        }
+    };
+    if let Err(e) = tokio::fs::write(&input_path, &ass_bytes).await {
         let _ = response_msg.edit(ctx, EditMessage::new()
-            .content("Error: unsupported subtitle file type. Use .ass or .zip.")).await;
+            .content(format!("Failed to write input: {}", e))).await;
         return;
     }
-    match tokio::fs::metadata(&input_path).await {
-        Ok(m) => println!("[ts] id={} input_ass_bytes={}", job_id, m.len()),
-        Err(e) => println!("[ts] id={} input_ass_metadata_failed={}", job_id, e),
-    }
+    println!("[ts] id={} input_ass_bytes={}", job_id, ass_bytes.len());
 
     if let Err(e) = tokio::fs::copy(&input_path, &output_path).await {
         let _ = response_msg.edit(ctx, EditMessage::new()
@@ -164,11 +181,14 @@ pub async fn handle_ts_message(ctx: &Context, msg: &Message, parts: &[&str]) {
     match upsert_repo_ass(&fg, &owner_repo, &repo_path, &output_bytes, "Typeset").await {
         Ok(uploaded_path) => {
             println!("[ts] id={} uploaded_path={} raw_bytes={}", job_id, uploaded_path, output_bytes.len());
-            let embed = CreateEmbed::new()
+            let mut embed = CreateEmbed::new()
                 .title("TS complete")
                 .field("Repo", format!("`{}`", owner_repo), true)
                 .field("File", format!("`{}`", uploaded_path), true)
                 .field("Job", format!("`{}`", job_id), true);
+            if let Some(warning) = &conversion_warning {
+                embed = embed.field("Warnings", warning, false);
+            }
             let _ = response_msg.edit(ctx, EditMessage::new().content("").embed(embed)).await;
         }
         Err(e) => {

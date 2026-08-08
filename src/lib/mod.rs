@@ -8,4 +8,5 @@ pub mod logging;
 pub mod mpeg;
 pub mod p2p;
 pub mod protocol;
+pub mod subs;
 pub mod torrent;

@@ -1,6 +1,7 @@
 use crate::lib::db::core::JobDb;
 use crate::lib::p2p::core::cleanup_torrent_runtime;
 use crate::lib::p2p::nyaaise::TorrentType;
+use crate::lib::subs::ensure_ass_bytes;
 use crate::pnworker::cache::{
     cache_encode_input, cleanup_expired_input_cache, cleanup_input_cache_startup,
     duplicate_input_path, duplicate_path_to_container, duplicate_source_orphaned,
@@ -253,7 +254,10 @@ async fn queue_new_job(
     }
 }
 
-async fn prepare_queued_job(job: &mut Job, worker: &str, write_subtitle: bool) -> bool {
+// Sets up the work directory for a queued job. The error string is the reason the
+// caller hands to decline_job_setup, so subtitle problems reach the user as themselves
+// instead of a generic setup failure.
+async fn prepare_queued_job(job: &mut Job, worker: &str, write_subtitle: bool) -> Result<(), String> {
     job.worker = worker.to_string();
     if let Some((parent, keyword)) = keep_keywords(job) {
         render(
@@ -270,10 +274,26 @@ async fn prepare_queued_job(job: &mut Job, worker: &str, write_subtitle: bool) -
                 "[Pandora] job {} work directory setup failed: {}",
                 job.job_id, e
             );
-            return false;
+            return Err("could not prepare the work directory".to_string());
         }
     }
     if write_subtitle {
+        // Anything ffmpeg can read as text is accepted and normalised here, since libass
+        // only takes ASS/SSA and the attachment arrives as raw bytes.
+        if !job.attachment.is_empty() {
+            match ensure_ass_bytes(&job.attachment).await {
+                Ok(converted) => {
+                    if converted.warning.is_some() {
+                        println!("[Pandora] job {} subtitle converted to ASS", job.job_id);
+                    }
+                    job.attachment = converted.bytes;
+                }
+                Err(e) => {
+                    eprintln!("[Pandora] job {} subtitle conversion failed: {}", job.job_id, e);
+                    return Err(e);
+                }
+            }
+        }
         if let Err(e) = write(
             job.directory.join("contents").join("subtitle.ass"),
             &job.attachment,
@@ -284,7 +304,7 @@ async fn prepare_queued_job(job: &mut Job, worker: &str, write_subtitle: bool) -
                 "[Pandora] job {} subtitle setup failed: {}",
                 job.job_id, e
             );
-            return false;
+            return Err("could not prepare the work directory".to_string());
         }
         if let Some(watermark) = &job.server_watermark {
             if let Err(e) = write(
@@ -297,11 +317,11 @@ async fn prepare_queued_job(job: &mut Job, worker: &str, write_subtitle: bool) -
                     "[Pandora] job {} watermark setup failed: {}",
                     job.job_id, e
                 );
-                return false;
+                return Err("could not prepare the work directory".to_string());
             }
         }
     }
-    true
+    Ok(())
 }
 
 async fn queue_encode_job(
@@ -321,8 +341,8 @@ async fn queue_encode_job(
         .await;
         return true;
     }
-    if !prepare_queued_job(job, "dwl-pending", true).await {
-        decline_job_setup(job, "could not prepare the work directory").await;
+    if let Err(reason) = prepare_queued_job(job, "dwl-pending", true).await {
+        decline_job_setup(job, &reason).await;
         return true;
     }
     if let Some((parent_id, parent_stage, forwarded_worker)) = queued_encode_parent(job, queue) {
@@ -351,8 +371,8 @@ async fn queue_probe_job(
     shrine: &mut TypedShrine<WorkerMsg>,
     job: &mut Job,
 ) -> bool {
-    if !prepare_queued_job(job, "prw-pending", false).await {
-        decline_job_setup(job, "could not prepare the work directory").await;
+    if let Err(reason) = prepare_queued_job(job, "prw-pending", false).await {
+        decline_job_setup(job, &reason).await;
         return true;
     }
     if !dispatch_or_kill(
@@ -403,8 +423,8 @@ async fn queue_pancode_job(
         .await;
         return true;
     }
-    if !prepare_queued_job(job, "dwl-pending", true).await {
-        decline_job_setup(job, "could not prepare the work directory").await;
+    if let Err(reason) = prepare_queued_job(job, "dwl-pending", true).await {
+        decline_job_setup(job, &reason).await;
         return true;
     }
 
@@ -444,8 +464,8 @@ async fn queue_backup_job(
         .await;
         return true;
     }
-    if !prepare_queued_job(job, "dwl-pending", false).await {
-        decline_job_setup(job, "could not prepare the work directory").await;
+    if let Err(reason) = prepare_queued_job(job, "dwl-pending", false).await {
+        decline_job_setup(job, &reason).await;
         return true;
     }
     if let Some(probe_dir) = probe_dir {
@@ -465,8 +485,8 @@ async fn queue_keycode_job(
     _shrine: &mut TypedShrine<WorkerMsg>,
     job: &mut Job,
 ) -> bool {
-    if !prepare_queued_job(job, "enc-main", !job.attachment.is_empty()).await {
-        decline_job_setup(job, "could not prepare the work directory").await;
+    if let Err(reason) = prepare_queued_job(job, "enc-main", !job.attachment.is_empty()).await {
+        decline_job_setup(job, &reason).await;
         return true;
     }
     let Some(request) = job.keycode.clone() else {
@@ -700,8 +720,8 @@ async fn queue_backup_all_job(
     shrine: &mut TypedShrine<WorkerMsg>,
     job: &mut Job,
 ) -> bool {
-    if !prepare_queued_job(job, "dwl-pending", false).await {
-        decline_job_setup(job, "could not prepare the work directory").await;
+    if let Err(reason) = prepare_queued_job(job, "dwl-pending", false).await {
+        decline_job_setup(job, &reason).await;
         return true;
     }
     if !dispatch_or_kill(
@@ -740,8 +760,8 @@ async fn queue_preview_job(
     shrine: &mut TypedShrine<WorkerMsg>,
     job: &mut Job,
 ) -> bool {
-    if !prepare_queued_job(job, "dwl-pending", true).await {
-        decline_job_setup(job, "could not prepare the work directory").await;
+    if let Err(reason) = prepare_queued_job(job, "dwl-pending", true).await {
+        decline_job_setup(job, &reason).await;
         return true;
     }
     queue_download_job(db, queue, shrine, job, None, false).await
@@ -761,7 +781,7 @@ async fn queue_studio_job(
         decline_job_setup(job, "Studio render manifest is missing").await;
         return true;
     }
-    if !prepare_queued_job(job, "enc-main", false).await {
+    if prepare_queued_job(job, "enc-main", false).await.is_err() {
         decline_job_setup(job, "could not prepare the Studio work directory").await;
         return true;
     }
@@ -795,7 +815,7 @@ async fn queue_studio_preview_job(
         decline_job_setup(job, "Studio preview manifest is missing").await;
         return true;
     }
-    if !prepare_queued_job(job, "prw-pending", false).await {
+    if prepare_queued_job(job, "prw-pending", false).await.is_err() {
         decline_job_setup(job, "could not prepare the Studio preview directory").await;
         return true;
     }
