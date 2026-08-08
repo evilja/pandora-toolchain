@@ -29,7 +29,7 @@ use crate::pnworker::messages::{
 };
 use crate::pnworker::presence::{Presence, presence_from_queue};
 use crate::pnworker::progress::{drive_link_from_payload, persist_side_effects};
-use crate::pnworker::pull::git_pull;
+use crate::pnworker::pull::{git_pull, head_commit};
 use crate::pnworker::server_effects::load_server_settings;
 use crate::pnworker::smartcode_drive::{replace_smartcode_upload, SmartcodeDriveUpload};
 use crate::pnworker::workers::downloadworker::*;
@@ -994,8 +994,9 @@ async fn run_gitsync(mut frontend: Frontend, shrine: &mut TypedShrine<WorkerMsg>
     });
     println!("{}", repo_path);
     let mut rebuild_requested = false;
-    match git_pull(&repo_path) {
-        Ok(_) => {
+    // A failed pull still reports HEAD, so the reply always names the revision the bot restarts on.
+    let (status, commit) = match git_pull(&repo_path) {
+        Ok(commit) => {
             if let Ok(request_path) = env::var("PANDORA_GITSYNC_REQUEST") {
                 let request_path = PathBuf::from(request_path);
                 if let Some(parent) = request_path.parent() {
@@ -1003,19 +1004,24 @@ async fn run_gitsync(mut frontend: Frontend, shrine: &mut TypedShrine<WorkerMsg>
                 }
                 rebuild_requested = write(request_path, b"rebuild\n").await.is_ok();
             }
-            frontend
-                .set_text("Kaynak kodlar git ile güncellendi.\nBot yeniden başlatılıyor.")
-                .await
+            (
+                "Kaynak kodlar git ile güncellendi.\nBot yeniden başlatılıyor.",
+                Some(commit),
+            )
         }
         Err(e) => {
             println!("{}", e);
-            frontend
-                .set_text(
-                    "Git güncellemesi başarısız oldu.\nBot yine de yeniden başlatılıyor.",
-                )
-                .await
+            (
+                "Git güncellemesi başarısız oldu.\nBot yine de yeniden başlatılıyor.",
+                head_commit(&repo_path),
+            )
         }
-    }
+    };
+    let text = match commit {
+        Some(commit) => format!("{}\n{}", status, commit.label()),
+        None => status.to_string(),
+    };
+    frontend.set_text(&text).await;
     let _ = remove_dir_all(PathBuf::from("DB").join("work")).await;
     if rebuild_requested {
         tokio::time::sleep(Duration::from_secs(3600)).await;
