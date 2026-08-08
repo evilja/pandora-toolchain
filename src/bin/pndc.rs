@@ -519,6 +519,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("akiraconfirm", 4),
     ("openanimeconfirm", 4),
     ("anizmconfirm", 4),
+    ("publish", 4),
     ("touchintro", 4),
     ("changerank", 4),
     ("fontcheck", 4),
@@ -968,6 +969,13 @@ fn help_catalog() -> &'static [HelpCommand] {
             details: "Adds the job's public streaming links as Anizm players under this server's `/edit anizm_fansub:` selection. Anizm exposes no MyAnimeList id, so the anime is selected from the staff panel's own option list and re-verified by id; the episode id must resolve to exactly one option unless `create_episode:true` is passed, and the fansub's translation relation is created when missing. Drive links are not published because Anizm players are website embeds.",
         },
         HelpCommand {
+            section: "publish",
+            name: "publish",
+            summary: "Publish a finished encode to AnimeciX, OpenAnime and Anizm at once.",
+            usage: "/publish job_id:<id> [anime:<search>] [season:<number>] [episode:<number>] [extra:<text>]",
+            details: "Runs the three site publishes from one command and reports each as published, skipped, or failed. A smartcode job already recorded its anime, season, and episode, so only `job_id` is needed; anything else takes `anime` from the AnimeciX search plus `season`/`episode`. The selected MyAnimeList id drives AnimeciX and OpenAnime, while Anizm is matched by title and skipped when that match is not unique. `extra` replaces the full AnimeciX Extra field; role credits come from the channel and are edited with `/acixconfirm`.",
+        },
+        HelpCommand {
             section: "fonts",
             name: "font",
             summary: "Install a font zip for this server.",
@@ -1404,7 +1412,7 @@ mod tests {
         for command in ["configure", "edit", "touchwatermark", "readmebase", "font", "cfont"] {
             assert!(requires_server_admin(command), "{} should require Server Administrator", command);
         }
-        for command in ["touchapi", "touchtranslation", "touchintro", "acixconfirm", "acixunpublish", "openanimeconfirm", "anizmconfirm"] {
+        for command in ["touchapi", "touchtranslation", "touchintro", "acixconfirm", "acixunpublish", "openanimeconfirm", "anizmconfirm", "publish"] {
             assert!(!requires_server_admin(command), "{} should remain rank-only", command);
         }
     }
@@ -2076,6 +2084,9 @@ impl EventHandler for Handler {
                 "anizmconfirm" => {
                     handle_anizmconfirm(&ctx, &command).await;
                 }
+                "publish" => {
+                    handle_publish(&ctx, &command).await;
+                }
                 "font" => {
                     handle_font(&ctx, &command).await;
                 }
@@ -2218,6 +2229,7 @@ impl EventHandler for Handler {
                 "cfont" => handle_cfont_autocomplete(&ctx, &autocomplete).await,
                 "edit" => handle_edit_autocomplete(&ctx, &autocomplete).await,
                 "anizmconfirm" => handle_anizmconfirm_autocomplete(&ctx, &autocomplete).await,
+                "publish" => handle_publish_autocomplete(&ctx, &autocomplete).await,
                 _ => {}
             }
         } else if let Interaction::Component(component) = interaction {
@@ -3045,6 +3057,27 @@ impl EventHandler for Handler {
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::Boolean, "create_episode", "Create the episode on Anizm when the number is not listed")
+                ),
+            CreateCommand::new("publish")
+                .description("[BETA-TESTING] Publish a finished encode to AnimeciX, OpenAnime and Anizm")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "job_id", "The job id (from the upload message)")
+                        .required(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "anime", "Type to search AnimeciX; only needed when the job did not record one")
+                        .set_autocomplete(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "season", "Season number; defaults to the job's or the attached channel's")
+                        .min_int_value(1)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number; smartcode jobs already recorded one")
+                        .min_int_value(1)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "extra", "Replace the full AnimeciX Extra field; `-` clears it")
                 ),
             CreateCommand::new("font")
                 .description("Download a font zip and install it for this server")

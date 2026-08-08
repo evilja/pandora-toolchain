@@ -288,7 +288,7 @@ async fn resolve_or_create_episode(
 
 // A video attaches to a fansub/translator relation, not to the episode directly. The relation for
 // this server's own fansub is created when absent, then re-read so the id comes from the server.
-async fn resolve_or_create_translation(
+pub(super) async fn resolve_or_create_translation(
     client: &Anizm,
     anime_id: u64,
     episode_id: u64,
@@ -326,7 +326,7 @@ async fn embed_targets(
     Ok(embeds)
 }
 
-fn job_embed_links(uploaded: &serde_json::Value) -> Vec<(String, String)> {
+pub(super) fn job_embed_links(uploaded: &serde_json::Value) -> Vec<(String, String)> {
     EMBED_LINK_KEYS
         .iter()
         .filter_map(|key| {
@@ -359,7 +359,7 @@ async fn uploaded_links(job_id: u64) -> Result<serde_json::Value, String> {
         .map_err(|e| format!("Error: uploaded links JSON is invalid: {}", e))
 }
 
-fn credit(value: &str) -> Option<String> {
+pub(super) fn credit(value: &str) -> Option<String> {
     let value = value.trim();
     if value.is_empty() || value == "---" {
         None

@@ -214,7 +214,7 @@ async fn resolve_anime(
 
 // OpenAnime only accepts the player adapters it documents, so an upload host it cannot embed is
 // reported as skipped rather than pushed through a guessed adapter number.
-fn plan_players(
+pub(super) fn plan_players(
     uploaded: &serde_json::Value,
     resolutions: Resolutions,
 ) -> Result<(Vec<(String, Player)>, Vec<String>), String> {
@@ -264,7 +264,7 @@ fn resolutions_option(command: &serenity::all::CommandInteraction) -> Result<Res
     }
 }
 
-fn channel_credits(meta: &ChannelMeta) -> Option<String> {
+pub(super) fn channel_credits(meta: &ChannelMeta) -> Option<String> {
     let credits = [&meta.tl, &meta.tlc, &meta.ts, &meta.qc]
         .into_iter()
         .map(|value| value.trim())
@@ -296,7 +296,7 @@ async fn uploaded_links(job_id: u64) -> Result<serde_json::Value, String> {
         .map_err(|e| format!("Error: uploaded links JSON is invalid: {}", e))
 }
 
-fn link_value(uploaded: &serde_json::Value, key: &str) -> Option<String> {
+pub(super) fn link_value(uploaded: &serde_json::Value, key: &str) -> Option<String> {
     uploaded
         .get(key)
         .and_then(|value| value.as_str())
