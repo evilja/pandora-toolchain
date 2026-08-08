@@ -44,6 +44,7 @@ mod addintro;
 mod watermark;
 mod studio;
 mod catlogs;
+mod refreshcache;
 #[allow(unused_imports)]
 pub use self::message::handle_message;
 pub use self::probe::handle_probe;
@@ -89,6 +90,7 @@ pub use self::addintro::handle_addintro;
 pub use self::watermark::handle_touchwatermark;
 pub use self::studio::handle_studio;
 pub use self::catlogs::handle_catlogs;
+pub use self::refreshcache::handle_refreshcache;
 
 use pandora_toolchain::pnworker::messages::*;
 use pandora_toolchain::pnworker::util::IntrosConfig;

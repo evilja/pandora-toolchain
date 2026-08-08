@@ -593,3 +593,15 @@ args = 0
 [CATLOGS_ARCHIVED]
 text = "arşivlenmiş"
 args = 0
+
+[REFRESHCACHE_HEADER]
+text = "{}/{} fansub dizini yenilendi."
+args = 2
+
+[REFRESHCACHE_OK]
+text = "{}: {} fansub."
+args = 2
+
+[REFRESHCACHE_FAIL]
+text = "{}: yenileme başarısız, önbellekteki kopya korunuyor — {}"
+args = 2

@@ -512,6 +512,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("lsworker", 4),
     ("rmworker", 4),
     ("catlogs", 4),
+    ("refreshcache", 2),
     ("lsauth", 3),
     ("acixconfirm", 4),
     ("acixunpublish", 4),
@@ -811,6 +812,13 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Download a job's worker logs.",
             usage: "/catlogs job_id:<id>",
             details: "Packs the job's active or archived log directory into one private ZIP attachment. Witch tier only.",
+        },
+        HelpCommand {
+            section: "publish",
+            name: "refreshcache",
+            summary: "Refresh the cached fansub directories now.",
+            usage: "/refreshcache",
+            details: "Re-reads the AnimeciX, OpenAnime, and Anizm fansub directories from their providers and rewrites the persisted copies under `DB/cache/directories/`, instead of waiting for the automatic 12-hour refresh. Use it after creating a fansub that the `/edit` selectors do not offer yet. Every site is refreshed, and one that fails keeps its previous copy and is reported in the reply.",
         },
         HelpCommand {
             section: "workers",
@@ -2044,6 +2052,9 @@ impl EventHandler for Handler {
                 "catlogs" => {
                     handle_catlogs(&ctx, &command).await;
                 }
+                "refreshcache" => {
+                    handle_refreshcache(&ctx, &command).await;
+                }
                 "lsauth" => {
                     handle_lsauth(&ctx, &command).await;
                 }
@@ -2881,6 +2892,8 @@ impl EventHandler for Handler {
                     CreateCommandOption::new(CommandOptionType::String, "name", "Worker slot name or /lsworker index")
                         .required(true)
                 ),
+            CreateCommand::new("refreshcache")
+                .description("Refresh the cached AnimeciX/OpenAnime/Anizm fansub directories now"),
             CreateCommand::new("catlogs")
                 .description("Download a job's logs as a ZIP (Witch only)")
                 .add_option(

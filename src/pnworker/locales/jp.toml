@@ -593,3 +593,15 @@ args = 0
 [CATLOGS_ARCHIVED]
 text = "アーカイブ済み"
 args = 0
+
+[REFRESHCACHE_HEADER]
+text = "{}/{} 件のファンサブディレクトリを更新しました。"
+args = 2
+
+[REFRESHCACHE_OK]
+text = "{}: {} 件のファンサブ。"
+args = 2
+
+[REFRESHCACHE_FAIL]
+text = "{}: 更新に失敗したため、キャッシュされたコピーを保持します — {}"
+args = 2

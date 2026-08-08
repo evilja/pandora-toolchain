@@ -593,3 +593,15 @@ args = 0
 [CATLOGS_ARCHIVED]
 text = "archived"
 args = 0
+
+[REFRESHCACHE_HEADER]
+text = "Refreshed {}/{} fansub directories."
+args = 2
+
+[REFRESHCACHE_OK]
+text = "{}: {} fansubs."
+args = 2
+
+[REFRESHCACHE_FAIL]
+text = "{}: refresh failed, keeping the cached copy — {}"
+args = 2
