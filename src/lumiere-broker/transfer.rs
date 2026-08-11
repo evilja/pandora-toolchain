@@ -14,6 +14,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, ReadBuf};
 use tokio_util::io::ReaderStream;
 
 use super::client::Config;
+use super::observe::{bytes_label, duration_label, info, token_tag, trace, warn};
 
 static TRANSFERS: OnceLock<RwLock<HashMap<String, TransferRecord>>> = OnceLock::new();
 
@@ -36,6 +37,9 @@ pub struct TransferLease {
 
 struct LeaseInner {
     token: String,
+    size: u64,
+    bytes_served: Arc<AtomicU64>,
+    created: Instant,
 }
 
 impl Drop for LeaseInner {
@@ -43,6 +47,16 @@ impl Drop for LeaseInner {
         if let Ok(mut transfers) = registry().write() {
             transfers.remove(&self.token);
         }
+        let served = self.bytes_served.load(Ordering::Relaxed);
+        info(
+            &format!("xfer {}", token_tag(&self.token)),
+            format!(
+                "capability revoked after {}: {} of {} served",
+                duration_label(self.created.elapsed()),
+                bytes_label(served),
+                bytes_label(self.size)
+            ),
+        );
     }
 }
 
@@ -153,8 +167,24 @@ async fn register_transfer_under(
         segments.push(&token);
         segments.push(&filename);
     }
+    info(
+        &format!("xfer {}", token_tag(&token)),
+        format!(
+            "published {} as {} ({}, {}) for {}",
+            canonical.display(),
+            filename,
+            bytes_label(metadata.len()),
+            content_type,
+            duration_label(ttl)
+        ),
+    );
     Ok(TransferLease {
-        inner: Arc::new(LeaseInner { token }),
+        inner: Arc::new(LeaseInner {
+            token,
+            size: metadata.len(),
+            bytes_served: bytes_served.clone(),
+            created: Instant::now(),
+        }),
         url: url.to_string(),
         size: metadata.len(),
         bytes_served,
@@ -166,13 +196,29 @@ pub async fn serve_transfer(
     method: Method,
     headers: HeaderMap,
 ) -> Response {
+    let scope = format!("xfer {}", token_tag(&token));
+    let range_header = headers
+        .get(header::RANGE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("-")
+        .to_string();
+    let client = client_label(&headers);
+    trace(
+        &scope,
+        format!("{method} {filename} range={range_header} from {client}"),
+    );
     if token.len() != 64 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        warn(
+            &scope,
+            format!("rejected a malformed capability token from {client}"),
+        );
         return not_found();
     }
     let record = {
         let transfers = match registry().read() {
             Ok(transfers) => transfers,
             Err(_) => {
+                warn(&scope, "transfer registry lock is poisoned");
                 return (
                     StatusCode::SERVICE_UNAVAILABLE,
                     "transfer registry unavailable",
@@ -183,18 +229,36 @@ pub async fn serve_transfer(
         transfers.get(&token).cloned()
     };
     let Some(record) = record else {
+        warn(
+            &scope,
+            format!(
+                "404 for {client}: no such capability (already finished, or pndc restarted since it was issued)"
+            ),
+        );
         return not_found();
     };
     if record.expires_at <= Instant::now() {
         if let Ok(mut transfers) = registry().write() {
             transfers.remove(&token);
         }
+        warn(
+            &scope,
+            format!("404 for {client}: capability expired before the host fetched it"),
+        );
         return not_found();
     }
     if record.filename != filename {
+        warn(
+            &scope,
+            format!(
+                "404 for {client}: asked for {filename}, capability holds {}",
+                record.filename
+            ),
+        );
         return not_found();
     }
     if method != Method::GET && method != Method::HEAD {
+        warn(&scope, format!("{client} used unsupported method {method}"));
         return (StatusCode::METHOD_NOT_ALLOWED, "method not allowed").into_response();
     }
 
@@ -205,6 +269,13 @@ pub async fn serve_transfer(
         Some(raw) => match parse_byte_range(raw, record.size) {
             Some(range) => Some(range),
             None => {
+                warn(
+                    &scope,
+                    format!(
+                        "416 for {client}: unusable range {raw} against {}",
+                        bytes_label(record.size)
+                    ),
+                );
                 return base_response(StatusCode::RANGE_NOT_SATISFIABLE, &record)
                     .header(header::CONTENT_RANGE, format!("bytes */{}", record.size))
                     .body(Body::empty())
@@ -225,23 +296,50 @@ pub async fn serve_transfer(
         );
     }
     if method == Method::HEAD {
+        info(
+            &scope,
+            format!(
+                "{client} probed the file with HEAD ({})",
+                bytes_label(record.size)
+            ),
+        );
         return builder.body(Body::empty()).unwrap();
     }
 
     let mut file = match tokio::fs::File::open(&record.path).await {
         Ok(file) => file,
-        Err(_) => return not_found(),
+        Err(error) => {
+            warn(
+                &scope,
+                format!("source {} disappeared: {error}", record.path.display()),
+            );
+            return not_found();
+        }
     };
     if start > 0 && file.seek(std::io::SeekFrom::Start(start)).await.is_err() {
+        warn(&scope, format!("failed to seek to {start} for {client}"));
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             "failed to seek transfer source",
         )
             .into_response();
     }
+    info(
+        &scope,
+        format!(
+            "{client} is downloading bytes {start}-{end} ({} of {})",
+            bytes_label(content_length),
+            bytes_label(record.size)
+        ),
+    );
     let reader = CountingReader {
         inner: file.take(content_length),
         bytes_served: record.bytes_served,
+        scope,
+        client,
+        expected: content_length,
+        streamed: 0,
+        started: Instant::now(),
     };
     let stream = ReaderStream::with_capacity(reader, 256 * 1024);
     builder.body(Body::from_stream(stream)).unwrap()
@@ -329,6 +427,11 @@ fn parse_byte_range(raw: &str, file_size: u64) -> Option<(u64, u64)> {
 struct CountingReader<R> {
     inner: R,
     bytes_served: Arc<AtomicU64>,
+    scope: String,
+    client: String,
+    expected: u64,
+    streamed: u64,
+    started: Instant,
 }
 
 impl<R: AsyncRead + Unpin> AsyncRead for CountingReader<R> {
@@ -342,9 +445,59 @@ impl<R: AsyncRead + Unpin> AsyncRead for CountingReader<R> {
         let read = buffer.filled().len().saturating_sub(before);
         if read > 0 {
             self.bytes_served.fetch_add(read as u64, Ordering::Relaxed);
+            self.streamed += read as u64;
         }
         result
     }
+}
+
+// A provider that hangs up mid-file is the difference between "the host is slow"
+// and "the host gave up", and nothing else in the pipeline can see it.
+impl<R> Drop for CountingReader<R> {
+    fn drop(&mut self) {
+        let elapsed = self.started.elapsed();
+        if self.streamed >= self.expected {
+            info(
+                &self.scope,
+                format!(
+                    "{} finished its download: {} in {}",
+                    self.client,
+                    bytes_label(self.streamed),
+                    duration_label(elapsed)
+                ),
+            );
+        } else {
+            warn(
+                &self.scope,
+                format!(
+                    "{} disconnected after {} of {} in {}",
+                    self.client,
+                    bytes_label(self.streamed),
+                    bytes_label(self.expected),
+                    duration_label(elapsed)
+                ),
+            );
+        }
+    }
+}
+
+// Provider fetchers are only identifiable by their user agent and forwarded IP;
+// both are what tells a real provider pull apart from a Cloudflare challenge or
+// an unrelated crawler hitting the file hostname.
+fn client_label(headers: &HeaderMap) -> String {
+    let agent = headers
+        .get(header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.chars().take(60).collect::<String>())
+        .unwrap_or_else(|| "<no user agent>".to_string());
+    let address = headers
+        .get("CF-Connecting-IP")
+        .or_else(|| headers.get("X-Forwarded-For"))
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .unwrap_or("unknown ip");
+    format!("{address} \"{agent}\"")
 }
 
 #[derive(Debug)]

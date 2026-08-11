@@ -1,4 +1,5 @@
 mod client;
+mod observe;
 mod protocol;
 mod transfer;
 mod upload;

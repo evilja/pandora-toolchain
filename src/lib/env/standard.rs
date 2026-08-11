@@ -38,6 +38,7 @@ pub const LUMIERE_BROKER_TOKEN: &str = "lumiere_broker_token";
 pub const LUMIERE_PUBLIC_URL: &str = "lumiere_public_url";
 pub const LUMIERE_TRANSFER_TTL_SECS: &str = "lumiere_transfer_ttl_secs";
 pub const LUMIERE_POLL_INTERVAL_SECS: &str = "lumiere_poll_interval_secs";
+pub const LUMIERE_LOG_VERBOSE: &str = "lumiere_log_verbose";
 
 pub const API_PORT: &str = "api_port";
 pub const API_HOST: &str = "api_host";

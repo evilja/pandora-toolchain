@@ -18,7 +18,12 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender, channel, unbounded_channel};
-use tokio::time::{Instant, sleep};
+use tokio::time::{Instant, sleep, sleep_until};
+
+// How often a release job reports which hosts it is still waiting on. Hosts that
+// hang produce no events at all, so without this tick the log goes silent exactly
+// when something is wrong.
+const HOST_WAIT_HEARTBEAT: Duration = Duration::from_secs(60);
 
 pub type UploadData = (
     PathBuf,
@@ -242,6 +247,13 @@ async fn run_lumiere_single_upload(
     drop(event_tx);
 
     let expected_hosts = expected_lumiere_hosts(release, drive_only);
+    println!(
+        "[lumiere] job {job_id}: waiting on {} host(s) for {} (release={release}, drive_only={drive_only}, smartcode={is_smartcode})",
+        expected_hosts,
+        output_path.display()
+    );
+    let job_started = Instant::now();
+    let mut next_heartbeat = Instant::now() + HOST_WAIT_HEARTBEAT;
     let mut completed = 0usize;
     let mut any_success = false;
     let mut gd_link = "Google Bekleniyor".to_string();
@@ -255,7 +267,22 @@ async fn run_lumiere_single_upload(
     let track_smartcode = smartcode_drive_name.is_some();
     let mut cancelled = false;
 
-    while let Some(event) = event_rx.recv().await {
+    loop {
+        let event = tokio::select! {
+            event = event_rx.recv() => match event {
+                Some(event) => event,
+                None => break,
+            },
+            _ = sleep_until(next_heartbeat) => {
+                next_heartbeat = Instant::now() + HOST_WAIT_HEARTBEAT;
+                println!(
+                    "[lumiere] job {job_id}: still waiting after {}s on {}",
+                    job_started.elapsed().as_secs(),
+                    pending_host_labels(&done, expected_hosts)
+                );
+                continue;
+            }
+        };
         let mut emit_update = true;
         match event {
             LumiereUploadEvent::Progress(host, progress) => {
@@ -294,6 +321,13 @@ async fn run_lumiere_single_upload(
                 done[lumiere_host_index(host)] = true;
                 completed += 1;
                 any_success = true;
+                println!(
+                    "[lumiere] job {job_id}: {} finished after {}s ({}/{} hosts done)",
+                    lumiere_host_label(host),
+                    job_started.elapsed().as_secs(),
+                    completed,
+                    expected_hosts
+                );
                 set_lumiere_link(
                     host,
                     url,
@@ -320,7 +354,14 @@ async fn run_lumiere_single_upload(
                 if done[lumiere_host_index(host)] {
                     continue;
                 }
-                eprintln!("[lumiere] {}: {}", lumiere_host_label(host), error);
+                eprintln!(
+                    "[lumiere] job {job_id}: {} failed after {}s ({}/{} hosts done): {}",
+                    lumiere_host_label(host),
+                    job_started.elapsed().as_secs(),
+                    completed + 1,
+                    expected_hosts,
+                    error
+                );
                 done[lumiere_host_index(host)] = true;
                 completed += 1;
                 set_lumiere_link(
@@ -334,6 +375,11 @@ async fn run_lumiere_single_upload(
                 );
             }
             LumiereUploadEvent::Cancelled => {
+                println!(
+                    "[lumiere] job {job_id}: cancelled after {}s, still pending: {}",
+                    job_started.elapsed().as_secs(),
+                    pending_host_labels(&done, expected_hosts)
+                );
                 cancelled = true;
                 break;
             }
@@ -362,6 +408,11 @@ async fn run_lumiere_single_upload(
         task.abort();
     }
     if !cancelled && completed < expected_hosts {
+        eprintln!(
+            "[lumiere] job {job_id}: giving up after {}s with {} never reporting — their upload tasks were aborted",
+            job_started.elapsed().as_secs(),
+            pending_host_labels(&done, expected_hosts)
+        );
         for host in [
             LumiereHost::Drive,
             LumiereHost::Doodstream,
@@ -434,7 +485,35 @@ async fn run_lumiere_single_upload(
         .await
         .ok();
     }
+    println!(
+        "[lumiere] job {job_id}: session ended after {}s — {}/{} hosts succeeded (cancelled={cancelled})",
+        job_started.elapsed().as_secs(),
+        done.iter().take(expected_hosts).filter(|done| **done).count(),
+        expected_hosts
+    );
     println!("[Pandora Lumiere] End of Session");
+}
+
+// The event loop only hears from hosts that finish; naming the silent ones is the
+// point of the wait heartbeat.
+fn pending_host_labels(done: &[bool; 5], expected_hosts: usize) -> String {
+    let pending = [
+        LumiereHost::Drive,
+        LumiereHost::Doodstream,
+        LumiereHost::Lulustream,
+        LumiereHost::Voe,
+        LumiereHost::Abyss,
+    ]
+    .into_iter()
+    .take(expected_hosts)
+    .filter(|host| !done[lumiere_host_index(*host)])
+    .map(lumiere_host_label)
+    .collect::<Vec<_>>();
+    if pending.is_empty() {
+        "no hosts".to_string()
+    } else {
+        pending.join(", ")
+    }
 }
 
 fn spawn_drive_upload(

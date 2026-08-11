@@ -173,6 +173,8 @@ lumiere_transfer_ttl_secs|pntools|21600
 lumiere_poll_interval_secs|pntools|5
 ```
 
+`lumiere_log_verbose|pntools|true` is optional and adds per-chunk/per-poll upload logging; see [Reading the upload log in production](#7b-reading-the-upload-log-in-production).
+
 `api_port` must remain enabled and the Tunnel hostname must point to the same `pndc` service. The transfer TTL must cover provider queueing plus download time; accepted values are 5 minutes through 24 hours, capabilities remain memory-only, and restarting `pndc` invalidates active transfers. Rebuild/restart Pandora after deploying the code:
 
 ```sh
@@ -180,6 +182,30 @@ docker compose up -d --build
 ```
 
 Use `/providers` to verify that the Worker reports the global/guild Drive profile and each configured streaming host. A server configured with `/edit drive_only:true` reports the streaming hosts as disabled by server policy even when their Worker secrets are present; use `/edit drive_only:false` to restore them for future releases.
+
+## 7b. Reading the upload log in production
+
+Every upload stage logs to `pndc`'s stdout/stderr, so `docker compose logs -f --tail 200 pndc | grep lumiere` is the whole diagnostic surface. Lines look like:
+
+```text
+[lumiere] 18:04:11Z pandora:81:voe | Voe remote upload starting: [Fansub] Show - 01.mp4 (1.42GB), capability https://pandora-files.example.com/lumiere/v1/files/9f31ab…/[Fansub] Show - 01.mp4 valid for 6h00m
+[lumiere] 18:04:12Z xfer 9f31ab2c… | published /home/pandora/DB/work/81/work/output.mp4 as [Fansub] Show - 01.mp4 (1.42GB, video/mp4) for 6h00m
+[lumiere] 18:04:19Z xfer 9f31ab2c… | 172.67.x.x "Go-http-client/2.0" is downloading bytes 0-1524301823 (1.42GB of 1.42GB)
+[lumiere] 18:06:40Z pandora:81:voe | Voe state Queued -> Uploading after 2m29s
+```
+
+Scopes are `pandora:<job id>:<host>` for a host's own upload, `xfer <token prefix>` for one capability URL, `broker` for Cloudflare Worker calls, and `[lumiere] job <id>:` for the job-level view. Tokens, `upload_id`s, and bearer tokens are redacted before printing; capability tokens appear only as an 8-character prefix that ties the transfer lines to the host that owns them.
+
+Set `lumiere_log_verbose|pntools|true` in `env.pandora` and restart `pndc` to add per-chunk Drive lines, per-poll remote status lines, and every capability request. The flag is read once at startup.
+
+What the common failures look like:
+
+- **A host never fetches the file.** `Doodstream has not requested https://… in 2m00s` with no matching `xfer` download line means the provider's fetcher cannot reach the file hostname. Check that `/lumiere/v1/files/*` bypasses Cloudflare Access, bot challenges, and caching, and that `lumiere_public_url` resolves to this `pndc`.
+- **A host fetches and then stalls.** `Voe still Uploading after 5m00s: we served 1.42GB of 1.42GB, provider reports 41.0%` is a provider-side queue, not a Pandora problem; it ends when the transfer TTL expires, logged as `expired after … the host never finished pulling the file`.
+- **A host disconnects mid-pull.** `… disconnected after 812.0MB of 1.42GB in 3m18s` — the provider hung up. Providers usually retry with a `Range` request, which appears as a fresh download line for the same `xfer` scope.
+- **A host is refused at the broker.** `broker | v1/remote/start rejected: HTTP 400 provider_disabled — …` means the Worker has no secret for that provider, or the source origin does not match `LUMIERE_SOURCE_ORIGIN`.
+- **Everything is silent.** `job 81: still waiting after 300s on Voe, Abyss` names the hosts that have produced no result at all; Abyss is expected there until its remote API is supported.
+- **Drive stalls or retries.** `Drive returned HTTP 503 at offset …`, `chunk 12 acknowledged … no progress`, and `resuming Drive upload from 640.0MB` trace the resumable session; `drive verification failed: md5 expected … got …` means the finished file was rejected and deleted through its deletion capability.
 
 ## 8. Smoke test before deleting local credentials
 

@@ -8,6 +8,10 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::client::LumiereClient;
+use super::observe::{
+    bytes_label, duration_label, info, rate_label, redact_url, response_body_excerpt, trace,
+    transport_reason, warn,
+};
 use super::protocol::{
     DriveCandidate, DriveSessionRequest, DriveSessionResponse, RemoteProvider, RemoteStartRequest,
     RemoteState,
@@ -17,6 +21,11 @@ use super::transfer::register_transfer;
 const DRIVE_CHUNK_SIZE: usize = 8 * 1024 * 1024;
 const DRIVE_RETRY_LIMIT: u8 = 5;
 const REMOTE_STATUS_ERROR_LIMIT: u8 = 5;
+const REMOTE_HEARTBEAT: Duration = Duration::from_secs(60);
+// A provider that has not touched the capability URL by this point is not simply
+// slow: it usually cannot reach it at all (Access login, bot challenge, wrong
+// hostname), which is the failure this warning exists to name.
+const REMOTE_FETCH_GRACE: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UploadProgress {
@@ -64,15 +73,47 @@ impl LumiereClient {
         spec: DriveUploadSpec,
         progress: Option<UnboundedSender<UploadProgress>>,
     ) -> Result<DriveUploadResult, UploadError> {
-        validate_drive_spec(&spec)?;
-        let metadata = tokio::fs::metadata(&spec.path)
-            .await
-            .map_err(|_| UploadError::failed("Drive upload source is unavailable"))?;
+        let scope = spec.request_id.clone();
+        let started = Instant::now();
+        validate_drive_spec(&spec).inspect_err(|error| warn(&scope, format!("rejected: {error}")))?;
+        let metadata = tokio::fs::metadata(&spec.path).await.map_err(|error| {
+            warn(
+                &scope,
+                format!("source {} is unreadable: {error}", spec.path.display()),
+            );
+            UploadError::failed("Drive upload source is unavailable")
+        })?;
         if !metadata.is_file() || metadata.len() == 0 {
+            warn(
+                &scope,
+                format!(
+                    "source {} is not a non-empty file (len={})",
+                    spec.path.display(),
+                    metadata.len()
+                ),
+            );
             return Err(UploadError::failed("Drive upload source is empty"));
         }
+        info(
+            &scope,
+            format!(
+                "drive upload starting: {} ({}), candidates=[{}]",
+                spec.path.display(),
+                bytes_label(metadata.len()),
+                describe_candidates(&spec.candidates)
+            ),
+        );
         ensure_not_cancelled(&spec.cancel_file)?;
+        let hashing = Instant::now();
         let expected_md5 = file_md5(&spec.path, &spec.cancel_file).await?;
+        trace(
+            &scope,
+            format!(
+                "md5 {} computed in {}",
+                expected_md5,
+                duration_label(hashing.elapsed())
+            ),
+        );
         ensure_not_cancelled(&spec.cancel_file)?;
         let session = self
             .start_drive_session(&DriveSessionRequest {
@@ -83,10 +124,42 @@ impl LumiereClient {
                 expected_md5: expected_md5.clone(),
             })
             .await
-            .map_err(|error| UploadError::failed(error.to_string()))?;
+            .map_err(|error| {
+                warn(
+                    &scope,
+                    format!(
+                        "broker refused the Drive session ({}{}): {error}",
+                        error.code(),
+                        error
+                            .status()
+                            .map(|status| format!(" http {}", status.as_u16()))
+                            .unwrap_or_default()
+                    ),
+                );
+                UploadError::failed(error.to_string())
+            })?;
+        info(
+            &scope,
+            format!(
+                "drive session granted: profile={} root={} candidate={} file_id={}",
+                session.profile, session.root, session.candidate_index, session.file_id
+            ),
+        );
+        trace(
+            &scope,
+            format!("drive session url: {}", redact_url(&session.upload_url)),
+        );
         let selected = match spec.candidates.get(session.candidate_index) {
             Some(selected) => selected,
             None => {
+                warn(
+                    &scope,
+                    format!(
+                        "broker chose candidate {} but only {} were offered",
+                        session.candidate_index,
+                        spec.candidates.len()
+                    ),
+                );
                 self.cleanup_drive_session(&session).await;
                 return Err(UploadError::failed(
                     "Lumiere selected an unknown Drive profile",
@@ -99,6 +172,19 @@ impl LumiereClient {
             || !valid_drive_id(&session.parent_id)
             || !valid_delete_token(&session.delete_token)
         {
+            warn(
+                &scope,
+                format!(
+                    "session mismatch: asked {}/{}, got {}/{} (file_id ok={}, parent_id ok={}, delete token ok={})",
+                    selected.profile,
+                    selected.root,
+                    session.profile,
+                    session.root,
+                    valid_drive_id(&session.file_id),
+                    valid_drive_id(&session.parent_id),
+                    valid_delete_token(&session.delete_token)
+                ),
+            );
             self.cleanup_drive_session(&session).await;
             return Err(UploadError::failed(
                 "Lumiere Drive profile response did not match the request",
@@ -107,11 +193,19 @@ impl LumiereClient {
         let session_url = match validate_drive_session_url(&session.upload_url) {
             Ok(url) => url,
             Err(error) => {
+                warn(
+                    &scope,
+                    format!(
+                        "untrusted Drive session url {}: {error}",
+                        redact_url(&session.upload_url)
+                    ),
+                );
                 self.cleanup_drive_session(&session).await;
                 return Err(error);
             }
         };
         let final_file = match upload_drive_chunks(
+            &scope,
             &spec.path,
             metadata.len(),
             &session_url,
@@ -122,6 +216,11 @@ impl LumiereClient {
         {
             Ok(file) => file,
             Err(error) => {
+                if error.is_cancelled() {
+                    info(&scope, "drive upload cancelled");
+                } else {
+                    warn(&scope, format!("drive upload failed: {error}"));
+                }
                 self.cleanup_drive_session(&session).await;
                 return Err(error);
             }
@@ -139,6 +238,18 @@ impl LumiereClient {
             == Some(metadata.len());
         let id_matches = final_file.id == session.file_id;
         if !checksum_matches || !size_matches || !id_matches {
+            warn(
+                &scope,
+                format!(
+                    "drive verification failed: md5 expected {} got {}, size expected {} got {}, file_id expected {} got {}",
+                    expected_md5,
+                    final_file.md5_checksum.as_deref().unwrap_or("<none>"),
+                    metadata.len(),
+                    final_file.size.as_deref().unwrap_or("<none>"),
+                    session.file_id,
+                    final_file.id
+                ),
+            );
             let removed = self
                 .delete_drive_file(
                     session.profile.clone(),
@@ -155,6 +266,17 @@ impl LumiereClient {
             return Err(UploadError::failed(message));
         }
 
+        info(
+            &scope,
+            format!(
+                "drive upload complete in {} ({} avg): profile={} root={} file_id={}",
+                duration_label(started.elapsed()),
+                rate_label(metadata.len(), started.elapsed()),
+                session.profile,
+                session.root,
+                final_file.id
+            ),
+        );
         Ok(DriveUploadResult {
             url: format!(
                 "https://drive.google.com/file/d/{}/view?usp=sharing",
@@ -170,13 +292,26 @@ impl LumiereClient {
     }
 
     async fn cleanup_drive_session(&self, session: &DriveSessionResponse) {
-        self.delete_drive_file(
-            session.profile.clone(),
-            session.file_id.clone(),
-            session.delete_token.clone(),
-        )
-        .await
-        .ok();
+        match self
+            .delete_drive_file(
+                session.profile.clone(),
+                session.file_id.clone(),
+                session.delete_token.clone(),
+            )
+            .await
+        {
+            Ok(()) => info(
+                "broker",
+                format!("removed abandoned Drive file {}", session.file_id),
+            ),
+            Err(error) => warn(
+                "broker",
+                format!(
+                    "abandoned Drive file {} could not be removed and needs manual cleanup: {error}",
+                    session.file_id
+                ),
+            ),
+        }
     }
 
     pub async fn upload_remote(
@@ -184,7 +319,11 @@ impl LumiereClient {
         spec: RemoteUploadSpec,
         progress: Option<UnboundedSender<UploadProgress>>,
     ) -> Result<RemoteUploadResult, UploadError> {
+        let scope = spec.request_id.clone();
+        let provider = spec.provider.label();
+        let started = Instant::now();
         if spec.request_id.trim().is_empty() || spec.filename.trim().is_empty() {
+            warn(&scope, "remote upload request is incomplete");
             return Err(UploadError::failed("remote upload request is incomplete"));
         }
         ensure_not_cancelled(&spec.cancel_file)?;
@@ -195,7 +334,26 @@ impl LumiereClient {
             self.config(),
         )
         .await
-        .map_err(|error| UploadError::failed(error.to_string()))?;
+        .map_err(|error| {
+            warn(
+                &scope,
+                format!(
+                    "could not publish {} for {provider}: {error}",
+                    spec.path.display()
+                ),
+            );
+            UploadError::failed(error.to_string())
+        })?;
+        info(
+            &scope,
+            format!(
+                "{provider} remote upload starting: {} ({}), capability {} valid for {}",
+                spec.filename,
+                bytes_label(lease.size()),
+                redact_url(lease.url()),
+                duration_label(self.config().transfer_ttl())
+            ),
+        );
         let operation = self
             .start_remote(&RemoteStartRequest {
                 request_id: spec.request_id,
@@ -204,21 +362,70 @@ impl LumiereClient {
                 filename: spec.filename,
             })
             .await
-            .map_err(|error| UploadError::failed(error.to_string()))?;
+            .map_err(|error| {
+                warn(
+                    &scope,
+                    format!(
+                        "broker refused to start the {provider} upload ({}{}): {error}",
+                        error.code(),
+                        error
+                            .status()
+                            .map(|status| format!(" http {}", status.as_u16()))
+                            .unwrap_or_default()
+                    ),
+                );
+                UploadError::failed(error.to_string())
+            })?;
         if operation.provider != spec.provider
             || !valid_remote_id(&operation.file_code)
             || !valid_remote_id(&operation.operation_id)
         {
+            warn(
+                &scope,
+                format!(
+                    "broker returned an unusable {provider} operation: provider={:?} operation_id={:?} file_code={:?}",
+                    operation.provider, operation.operation_id, operation.file_code
+                ),
+            );
             return Err(UploadError::failed(
                 "Lumiere returned an invalid remote upload operation",
             ));
         }
+        info(
+            &scope,
+            format!(
+                "{provider} accepted the job: operation={} file_code={}",
+                operation.operation_id, operation.file_code
+            ),
+        );
 
         let deadline = Instant::now() + self.config().transfer_ttl();
         let mut status_errors = 0u8;
+        let mut last_state: Option<RemoteState> = None;
+        let mut next_heartbeat = Instant::now() + REMOTE_HEARTBEAT;
+        let mut fetch_warned = false;
         loop {
-            ensure_not_cancelled(&spec.cancel_file)?;
+            ensure_not_cancelled(&spec.cancel_file).inspect_err(|_| {
+                info(
+                    &scope,
+                    format!(
+                        "{provider} upload cancelled after {} (served {})",
+                        duration_label(started.elapsed()),
+                        bytes_label(lease.bytes_served())
+                    ),
+                );
+            })?;
             if Instant::now() >= deadline {
+                warn(
+                    &scope,
+                    format!(
+                        "{provider} upload expired after {} in state {}: the provider served {} of {} — the host never finished pulling the file",
+                        duration_label(started.elapsed()),
+                        state_label(last_state),
+                        bytes_label(lease.bytes_served()),
+                        bytes_label(lease.size())
+                    ),
+                );
                 return Err(UploadError::failed("remote upload capability expired"));
             }
             match self.remote_status(operation.clone()).await {
@@ -232,6 +439,66 @@ impl LumiereClient {
                         status.progress,
                     );
                     send_progress(&progress, served, lease.size());
+                    if last_state != Some(status.state) {
+                        info(
+                            &scope,
+                            format!(
+                                "{provider} state {} -> {:?} after {}",
+                                state_label(last_state),
+                                status.state,
+                                duration_label(started.elapsed())
+                            ),
+                        );
+                        last_state = Some(status.state);
+                    } else if Instant::now() >= next_heartbeat {
+                        next_heartbeat = Instant::now() + REMOTE_HEARTBEAT;
+                        info(
+                            &scope,
+                            format!(
+                                "{provider} still {:?} after {}: we served {} of {}, provider reports {}",
+                                status.state,
+                                duration_label(started.elapsed()),
+                                bytes_label(lease.bytes_served()),
+                                bytes_label(lease.size()),
+                                provider_progress_label(
+                                    status.bytes_done,
+                                    status.bytes_total,
+                                    status.progress
+                                )
+                            ),
+                        );
+                    } else {
+                        trace(
+                            &scope,
+                            format!(
+                                "{provider} poll: state={:?} served={} provider={}",
+                                status.state,
+                                bytes_label(lease.bytes_served()),
+                                provider_progress_label(
+                                    status.bytes_done,
+                                    status.bytes_total,
+                                    status.progress
+                                )
+                            ),
+                        );
+                    }
+                    // Zero bytes served means the provider's fetcher never reached
+                    // the capability URL, which is a Cloudflare/hostname problem on
+                    // our side rather than a slow provider queue.
+                    if !fetch_warned
+                        && lease.bytes_served() == 0
+                        && started.elapsed() >= REMOTE_FETCH_GRACE
+                    {
+                        fetch_warned = true;
+                        warn(
+                            &scope,
+                            format!(
+                                "{provider} has not requested {} in {} — check that the file hostname is reachable without Access login or a bot challenge",
+                                redact_url(lease.url()),
+                                duration_label(started.elapsed())
+                            ),
+                        );
+                    }
                     match status.state {
                         RemoteState::Complete => {
                             let expected_url = spec.provider.final_url(operation.file_code.trim());
@@ -239,12 +506,30 @@ impl LumiereClient {
                                 .url
                                 .filter(|url| url == &expected_url)
                                 .unwrap_or(expected_url);
+                            info(
+                                &scope,
+                                format!(
+                                    "{provider} upload complete in {} ({} served, {} avg): {url}",
+                                    duration_label(started.elapsed()),
+                                    bytes_label(lease.bytes_served()),
+                                    rate_label(lease.bytes_served(), started.elapsed())
+                                ),
+                            );
                             return Ok(RemoteUploadResult {
                                 url,
                                 file_code: operation.file_code,
                             });
                         }
                         RemoteState::Failed => {
+                            warn(
+                                &scope,
+                                format!(
+                                    "{provider} reported failure after {} (served {} of {})",
+                                    duration_label(started.elapsed()),
+                                    bytes_label(lease.bytes_served()),
+                                    bytes_label(lease.size())
+                                ),
+                            );
                             return Err(UploadError::failed(format!(
                                 "{} remote upload failed",
                                 spec.provider.label()
@@ -253,8 +538,19 @@ impl LumiereClient {
                         RemoteState::Queued | RemoteState::Uploading => {}
                     }
                 }
-                Err(_) => {
+                Err(error) => {
                     status_errors = status_errors.saturating_add(1);
+                    warn(
+                        &scope,
+                        format!(
+                            "{provider} status check {status_errors}/{REMOTE_STATUS_ERROR_LIMIT} failed ({}{}): {error}",
+                            error.code(),
+                            error
+                                .status()
+                                .map(|status| format!(" http {}", status.as_u16()))
+                                .unwrap_or_default()
+                        ),
+                    );
                     if status_errors >= REMOTE_STATUS_ERROR_LIMIT {
                         return Err(UploadError::failed(format!(
                             "{} remote upload status is unavailable",
@@ -266,6 +562,40 @@ impl LumiereClient {
             tokio::time::sleep(self.config().poll_interval()).await;
         }
     }
+}
+
+fn state_label(state: Option<RemoteState>) -> String {
+    state
+        .map(|state| format!("{state:?}"))
+        .unwrap_or_else(|| "<none>".to_string())
+}
+
+fn provider_progress_label(
+    bytes_done: Option<u64>,
+    bytes_total: Option<u64>,
+    percent: Option<f64>,
+) -> String {
+    match (bytes_done, bytes_total) {
+        (Some(done), Some(total)) => format!("{}/{}", bytes_label(done), bytes_label(total)),
+        (Some(done), None) => bytes_label(done),
+        _ => percent
+            .filter(|percent| percent.is_finite())
+            .map(|percent| format!("{percent:.1}%"))
+            .unwrap_or_else(|| "no progress reported".to_string()),
+    }
+}
+
+fn describe_candidates(candidates: &[DriveCandidate]) -> String {
+    candidates
+        .iter()
+        .map(|candidate| {
+            format!(
+                "{}:{}:{}",
+                candidate.profile, candidate.root, candidate.folder_path
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 pub fn content_type_for_path(path: &Path) -> &'static str {
@@ -316,6 +646,7 @@ async fn file_md5(path: &Path, cancel_file: &Option<PathBuf>) -> Result<String, 
 }
 
 async fn upload_drive_chunks(
+    scope: &str,
     path: &Path,
     total: u64,
     session_url: &Url,
@@ -333,9 +664,13 @@ async fn upload_drive_chunks(
         .map_err(|_| UploadError::failed("Drive upload source is unavailable"))?;
     let mut offset = 0u64;
     let mut failures = 0u8;
+    let mut chunk_index = 0u64;
+    let started = Instant::now();
 
     while offset < total {
         ensure_not_cancelled(cancel_file)?;
+        let chunk_started = Instant::now();
+        chunk_index += 1;
         file.seek(std::io::SeekFrom::Start(offset))
             .await
             .map_err(|_| UploadError::failed("failed to seek Drive upload source"))?;
@@ -357,32 +692,73 @@ async fn upload_drive_chunks(
             .await;
         match response {
             Ok(response) if response.status().is_success() => {
+                trace(
+                    scope,
+                    format!(
+                        "chunk {chunk_index} finalised the upload ({} in {})",
+                        bytes_label(chunk_len as u64),
+                        duration_label(chunk_started.elapsed())
+                    ),
+                );
                 send_progress(&progress, total, total);
-                return decode_drive_file(response).await;
+                return decode_drive_file(response).await.inspect_err(|error| {
+                    warn(scope, format!("final Drive metadata unusable: {error}"));
+                });
             }
             Ok(response) if response.status() == StatusCode::PERMANENT_REDIRECT => {
                 let acknowledged = acknowledged_offset(response.headers(), total)?;
                 if acknowledged <= offset {
                     failures = failures.saturating_add(1);
+                    warn(
+                        scope,
+                        format!(
+                            "chunk {chunk_index} acknowledged {} of an expected {} — no progress (attempt {failures}/{DRIVE_RETRY_LIMIT})",
+                            acknowledged,
+                            offset + chunk_len as u64
+                        ),
+                    );
                     if failures > DRIVE_RETRY_LIMIT {
+                        warn(
+                            scope,
+                            format!("giving up: Drive stopped advancing at {}", bytes_label(offset)),
+                        );
                         return Err(UploadError::failed("Google Drive upload stopped advancing"));
                     }
                     tokio::time::sleep(retry_delay(failures)).await;
                 } else {
                     failures = 0;
+                    trace(
+                        scope,
+                        format!(
+                            "chunk {chunk_index} ok: {}/{} ({} in {}, {} avg)",
+                            bytes_label(acknowledged),
+                            bytes_label(total),
+                            bytes_label(acknowledged.saturating_sub(offset)),
+                            duration_label(chunk_started.elapsed()),
+                            rate_label(acknowledged, started.elapsed())
+                        ),
+                    );
                 }
                 offset = acknowledged;
                 send_progress(&progress, offset, total);
             }
             Ok(response) if response.status().is_server_error() => {
                 failures = failures.saturating_add(1);
+                warn(
+                    scope,
+                    format!(
+                        "Drive returned HTTP {} at offset {} (attempt {failures}/{DRIVE_RETRY_LIMIT})",
+                        response.status().as_u16(),
+                        offset
+                    ),
+                );
                 if failures > DRIVE_RETRY_LIMIT {
                     return Err(UploadError::failed(
                         "Google Drive upload retry limit reached",
                     ));
                 }
                 tokio::time::sleep(retry_delay(failures)).await;
-                match query_drive_offset(&http, session_url, total).await? {
+                match query_drive_offset(scope, &http, session_url, total).await? {
                     DrivePosition::Offset(position) => {
                         offset = position;
                         send_progress(&progress, offset, total);
@@ -390,14 +766,32 @@ async fn upload_drive_chunks(
                     DrivePosition::Complete(file) => return Ok(file),
                 }
             }
-            Ok(_) => return Err(UploadError::failed("Google Drive rejected an upload chunk")),
-            Err(_) => {
+            Ok(response) => {
+                warn(
+                    scope,
+                    format!(
+                        "Drive rejected chunk {chunk_index} at offset {offset} with HTTP {}: {}",
+                        response.status().as_u16(),
+                        response_body_excerpt(response).await
+                    ),
+                );
+                return Err(UploadError::failed("Google Drive rejected an upload chunk"));
+            }
+            Err(error) => {
                 failures = failures.saturating_add(1);
+                warn(
+                    scope,
+                    format!(
+                        "Drive chunk {chunk_index} transport error at offset {offset} after {} (attempt {failures}/{DRIVE_RETRY_LIMIT}): {}",
+                        duration_label(chunk_started.elapsed()),
+                        transport_reason(&error)
+                    ),
+                );
                 if failures > DRIVE_RETRY_LIMIT {
                     return Err(UploadError::failed("Google Drive upload connection failed"));
                 }
                 tokio::time::sleep(retry_delay(failures)).await;
-                match query_drive_offset(&http, session_url, total).await? {
+                match query_drive_offset(scope, &http, session_url, total).await? {
                     DrivePosition::Offset(position) => {
                         offset = position;
                         send_progress(&progress, offset, total);
@@ -407,10 +801,18 @@ async fn upload_drive_chunks(
             }
         }
     }
+    warn(
+        scope,
+        format!(
+            "Drive acknowledged all {} bytes but never returned file metadata",
+            total
+        ),
+    );
     Err(UploadError::failed(
         "Google Drive upload ended without file metadata",
     ))
 }
+
 
 enum DrivePosition {
     Offset(u64),
@@ -418,6 +820,7 @@ enum DrivePosition {
 }
 
 async fn query_drive_offset(
+    scope: &str,
     http: &HttpClient,
     session_url: &Url,
     total: u64,
@@ -428,15 +831,34 @@ async fn query_drive_offset(
         .header(header::CONTENT_RANGE, format!("bytes */{total}"))
         .send()
         .await
-        .map_err(|_| UploadError::failed("Google Drive upload status request failed"))?;
+        .map_err(|error| {
+            warn(
+                scope,
+                format!("Drive resume query failed: {}", transport_reason(&error)),
+            );
+            UploadError::failed("Google Drive upload status request failed")
+        })?;
     if response.status().is_success() {
         return decode_drive_file(response)
             .await
             .map(DrivePosition::Complete);
     }
     if response.status() == StatusCode::PERMANENT_REDIRECT {
-        return acknowledged_offset(response.headers(), total).map(DrivePosition::Offset);
+        let offset = acknowledged_offset(response.headers(), total)?;
+        info(
+            scope,
+            format!("resuming Drive upload from {}", bytes_label(offset)),
+        );
+        return Ok(DrivePosition::Offset(offset));
     }
+    warn(
+        scope,
+        format!(
+            "Drive session is gone (HTTP {}): {}",
+            response.status().as_u16(),
+            response_body_excerpt(response).await
+        ),
+    );
     Err(UploadError::failed(
         "Google Drive upload session is no longer available",
     ))

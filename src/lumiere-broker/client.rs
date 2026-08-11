@@ -9,11 +9,14 @@ use serde::de::DeserializeOwned;
 use std::fmt::{Display, Formatter};
 use std::time::Duration;
 
+use super::observe::{duration_label, info, trace, transport_reason, warn};
 use super::protocol::{
     API_VERSION, DriveDeleteRequest, DriveSessionRequest, DriveSessionResponse, ErrorEnvelope,
     ProviderStatus, RemoteOperation, RemoteStartRequest, RemoteStatusRequest, RemoteStatusResponse,
     StatusResponse,
 };
+
+const BROKER_SCOPE: &str = "broker";
 
 const DEFAULT_TRANSFER_TTL_SECS: u64 = 6 * 60 * 60;
 const MIN_TRANSFER_TTL_SECS: u64 = 5 * 60;
@@ -139,10 +142,30 @@ impl LumiereClient {
             .timeout(Duration::from_secs(10))
             .send()
             .await
-            .map_err(|_| Error::unavailable("Lumiere broker status request failed"))?;
-        self.decode::<StatusResponse>(response)
+            .map_err(|error| {
+                warn(
+                    BROKER_SCOPE,
+                    format!("status request failed: {}", transport_reason(&error)),
+                );
+                Error::unavailable("Lumiere broker status request failed")
+            })?;
+        self.decode::<StatusResponse>(response, "v1/status")
             .await
             .map(|status| status.providers)
+            .inspect(|providers| {
+                info(
+                    BROKER_SCOPE,
+                    format!(
+                        "provider status: global drive={} requested drive={} doodstream={} lulustream={} voe={} abyss={}",
+                        providers.global_drive,
+                        providers.requested_drive,
+                        providers.doodstream,
+                        providers.lulustream,
+                        providers.voe,
+                        providers.abyss
+                    ),
+                );
+            })
     }
 
     pub(crate) async fn start_drive_session(
@@ -191,6 +214,8 @@ impl LumiereClient {
         body: &T,
     ) -> Result<R, Error> {
         let url = self.endpoint(segments)?;
+        let route = segments.join("/");
+        let started = std::time::Instant::now();
         let response = self
             .http
             .post(url)
@@ -199,23 +224,60 @@ impl LumiereClient {
             .json(body)
             .send()
             .await
-            .map_err(|_| Error::unavailable("Lumiere broker request failed"))?;
-        self.decode(response).await
+            .map_err(|error| {
+                warn(
+                    BROKER_SCOPE,
+                    format!(
+                        "POST {route} never completed after {}: {}",
+                        duration_label(started.elapsed()),
+                        transport_reason(&error)
+                    ),
+                );
+                Error::unavailable("Lumiere broker request failed")
+            })?;
+        trace(
+            BROKER_SCOPE,
+            format!(
+                "POST {route} -> HTTP {} in {}",
+                response.status().as_u16(),
+                duration_label(started.elapsed())
+            ),
+        );
+        self.decode(response, &route).await
     }
 
-    async fn decode<T: DeserializeOwned>(&self, response: reqwest::Response) -> Result<T, Error> {
+    async fn decode<T: DeserializeOwned>(
+        &self,
+        response: reqwest::Response,
+        route: &str,
+    ) -> Result<T, Error> {
         let status = response.status();
         if status.is_success() {
-            return response
-                .json::<T>()
-                .await
-                .map_err(|_| Error::protocol("Lumiere broker returned invalid JSON"));
+            return response.json::<T>().await.map_err(|error| {
+                warn(
+                    BROKER_SCOPE,
+                    format!("{route} returned a body we could not parse: {error}"),
+                );
+                Error::protocol("Lumiere broker returned invalid JSON")
+            });
         }
         let safe = response.json::<ErrorEnvelope>().await.ok();
         if let Some(safe) = safe {
             let message = truncate_message(&safe.error.message);
+            warn(
+                BROKER_SCOPE,
+                format!(
+                    "{route} rejected: HTTP {} {} — {message}",
+                    status.as_u16(),
+                    safe.error.code
+                ),
+            );
             return Err(Error::broker(status, safe.error.code, message));
         }
+        warn(
+            BROKER_SCOPE,
+            format!("{route} returned bare HTTP {}", status.as_u16()),
+        );
         Err(Error::broker(
             status,
             "http_error".to_string(),
