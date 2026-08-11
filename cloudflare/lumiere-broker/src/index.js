@@ -227,9 +227,39 @@ async function remoteStatus(body, env) {
   const provider = remoteProvider(operation.provider);
   const operationId = safeOperationId(operation.operation_id);
   const fileCode = safeFileCode(operation.file_code);
-  if (provider === "doodstream") return doodstreamStatus(operationId, fileCode, env);
-  if (provider === "lulustream") return lulustreamStatus(operationId, fileCode, env);
-  return voeStatus(operationId, fileCode, env);
+  // Pandora sets source_drained once the provider has pulled every byte from the
+  // capability URL. Providers whose queue entry stops reporting (or reports a
+  // word this Worker does not know) otherwise stay "uploading" forever, so that
+  // is the point at which asking file/info is both cheap and decisive.
+  const sourceDrained = body.source_drained === true;
+  let status;
+  if (provider === "doodstream") status = await doodstreamStatus(operationId, fileCode, env);
+  else if (provider === "lulustream") status = await lulustreamStatus(operationId, fileCode, env);
+  else status = await voeStatus(operationId, fileCode, env);
+
+  if (sourceDrained && (status.state === "queued" || status.state === "uploading")) {
+    const playable = await fileInfoPlayable(provider, fileCode, providerKey(provider, env));
+    if (playable) {
+      return {
+        ...status,
+        state: "complete",
+        url: finalUrl(provider, fileCode),
+        detail: joinDetail(status.detail, "file/info reports the file is playable"),
+      };
+    }
+    return { ...status, detail: joinDetail(status.detail, "file/info not playable yet") };
+  }
+  return status;
+}
+
+function providerKey(provider, env) {
+  if (provider === "doodstream") {
+    return requiredSecret(env.DOODSTREAM_API_KEY, "doodstream_not_configured", "DoodStream is not configured");
+  }
+  if (provider === "lulustream") {
+    return requiredSecret(env.LULUSTREAM_API_KEY, "lulustream_not_configured", "LuluStream is not configured");
+  }
+  return requiredSecret(env.VOE_API_KEY, "voe_not_configured", "Voe is not configured");
 }
 
 async function startDoodstream(sourceUrl, filename, env) {
@@ -239,7 +269,7 @@ async function startDoodstream(sourceUrl, filename, env) {
   endpoint.searchParams.set("url", sourceUrl);
   endpoint.searchParams.set("new_title", filename);
   const data = await providerJson(endpoint, "DoodStream");
-  const fileCode = safeFileCode(data?.result?.filecode);
+  const fileCode = providerFileCode(data?.result?.filecode, "DoodStream", data);
   return { provider: "doodstream", operation_id: fileCode, file_code: fileCode };
 }
 
@@ -249,7 +279,7 @@ async function startLulustream(sourceUrl, env) {
   endpoint.searchParams.set("key", key);
   endpoint.searchParams.set("url", sourceUrl);
   const data = await providerJson(endpoint, "LuluStream");
-  const fileCode = safeFileCode(data?.result?.filecode);
+  const fileCode = providerFileCode(data?.result?.filecode, "LuluStream", data);
   return { provider: "lulustream", operation_id: fileCode, file_code: fileCode };
 }
 
@@ -259,7 +289,7 @@ async function startVoe(sourceUrl, env) {
   endpoint.searchParams.set("key", key);
   endpoint.searchParams.set("url", sourceUrl);
   const data = await providerJson(endpoint, "Voe");
-  const fileCode = safeFileCode(data?.result?.file_code);
+  const fileCode = providerFileCode(data?.result?.file_code, "Voe", data);
   const operationId = safeOperationId(data?.result?.queueID ?? fileCode);
   return { provider: "voe", operation_id: operationId, file_code: fileCode };
 }
@@ -271,13 +301,16 @@ async function doodstreamStatus(operationId, fileCode, env) {
   endpoint.searchParams.set("file_code", operationId);
   const data = await providerJson(endpoint, "DoodStream");
   const item = Array.isArray(data.result) ? data.result[0] : data.result;
-  if (!item) return fileInfoFallback("doodstream", fileCode, key);
+  if (!item) {
+    return { ...(await fileInfoFallback("doodstream", fileCode, key)), detail: "urlupload/status listed no entry" };
+  }
   const state = normalizeTextState(item.status);
   return {
     state,
     bytes_done: numeric(item.bytes_downloaded),
     bytes_total: numeric(item.bytes_total),
     url: state === "complete" ? finalUrl("doodstream", fileCode) : undefined,
+    detail: describeItem(item, ["status", "bytes_downloaded", "bytes_total"]),
   };
 }
 
@@ -289,12 +322,15 @@ async function lulustreamStatus(_operationId, fileCode, env) {
   const data = await providerJson(endpoint, "LuluStream");
   const items = Array.isArray(data.result) ? data.result : [];
   const item = items.find((entry) => String(entry.file_code || "") === fileCode) || items[0];
-  if (!item) return fileInfoFallback("lulustream", fileCode, key);
+  if (!item) {
+    return { ...(await fileInfoFallback("lulustream", fileCode, key)), detail: "url_uploads listed no entry" };
+  }
   const state = normalizeTextState(item.status);
   return {
     state,
     progress: numeric(item.progress),
     url: state === "complete" ? finalUrl("lulustream", fileCode) : undefined,
+    detail: describeItem(item, ["status", "progress", "error", "message"]),
   };
 }
 
@@ -307,7 +343,9 @@ async function voeStatus(operationId, fileCode, env) {
   const data = await providerJson(endpoint, "Voe");
   const items = data?.list?.data || data?.result?.data || data?.result || [];
   const item = Array.isArray(items) ? items[0] : items;
-  if (!item) return fileInfoFallback("voe", fileCode, key);
+  if (!item) {
+    return { ...(await fileInfoFallback("voe", fileCode, key)), detail: "upload/url/list returned no entry" };
+  }
   const code = Number(item.status);
   const state = code === 3 ? "complete" : code === 4 ? "failed" : "uploading";
   return {
@@ -316,10 +354,19 @@ async function voeStatus(operationId, fileCode, env) {
     bytes_done: numeric(item.loaded_size),
     bytes_total: numeric(item.total_size),
     url: state === "complete" ? finalUrl("voe", fileCode) : undefined,
+    detail: describeItem(item, ["status", "percent", "loaded_size", "total_size", "message"]),
   };
 }
 
 async function fileInfoFallback(provider, fileCode, key) {
+  const playable = await fileInfoPlayable(provider, fileCode, key);
+  if (playable) return { state: "complete", url: finalUrl(provider, fileCode) };
+  return { state: "uploading" };
+}
+
+// The provider's own file record is the only signal that survives a queue entry
+// disappearing or reporting a state this Worker does not recognise.
+async function fileInfoPlayable(provider, fileCode, key) {
   const endpoints = {
     doodstream: "https://doodapi.co/api/file/info",
     lulustream: "https://lulustream.com/api/file/info",
@@ -331,13 +378,39 @@ async function fileInfoFallback(provider, fileCode, key) {
   try {
     const data = await providerJson(endpoint, provider);
     const result = Array.isArray(data.result) ? data.result[0] : data.result;
-    const playable = result && Number(result.status) === 200
-      && (result.canplay === undefined || Number(result.canplay) === 1);
-    if (playable) return { state: "complete", url: finalUrl(provider, fileCode) };
+    return Boolean(
+      result && Number(result.status) === 200
+        && (result.canplay === undefined || Number(result.canplay) === 1),
+    );
   } catch (_) {
-    return { state: "uploading" };
+    return false;
   }
-  return { state: "uploading" };
+}
+
+// Echoes the fields the provider actually sent so an unmapped state shows up in
+// Pandora's log as the provider's own word instead of a silent "uploading".
+function describeItem(item, fields) {
+  const parts = [];
+  for (const field of fields) {
+    const value = item?.[field];
+    if (value === undefined || value === null || value === "") continue;
+    parts.push(`${field}=${safeDetail(value)}`);
+  }
+  return parts.length > 0 ? parts.join(" ") : "provider sent no recognisable fields";
+}
+
+function joinDetail(existing, addition) {
+  return existing ? `${existing}; ${addition}` : addition;
+}
+
+// Provider payloads can echo the source URL back at us, and that URL carries the
+// capability token; strip anything URL-shaped before it can reach a log line.
+function safeDetail(raw) {
+  const value = String(raw)
+    .replace(/[a-z][a-z0-9+.-]*:\/\/\S*/gi, "<url>")
+    .replace(/[\r\n\t]+/g, " ")
+    .trim();
+  return value.length > 120 ? `${value.slice(0, 120)}…` : value;
 }
 
 async function providerJson(url, provider) {
@@ -355,7 +428,14 @@ async function providerJson(url, provider) {
   }
   const envelopeStatus = Number(data?.status ?? response.status);
   if (!response.ok || (Number.isFinite(envelopeStatus) && envelopeStatus >= 400)) {
-    throw new ApiError(502, "provider_rejected", `${provider} rejected the request`);
+    const reason = safeDetail(data?.msg ?? data?.message ?? data?.error ?? "");
+    throw new ApiError(
+      502,
+      "provider_rejected",
+      reason
+        ? `${provider} rejected the request (${envelopeStatus}): ${reason}`
+        : `${provider} rejected the request (${envelopeStatus})`,
+    );
   }
   return data;
 }
@@ -623,6 +703,21 @@ function safeOperationId(raw) {
   const value = String(raw ?? "").trim();
   if (!/^[A-Za-z0-9_-]{1,100}$/.test(value)) {
     throw new ApiError(400, "invalid_operation", "Remote operation id is invalid");
+  }
+  return value;
+}
+
+// A start call that returns no file code is the provider declining the job; its
+// own message is the only thing that explains why.
+function providerFileCode(raw, provider, data) {
+  const value = String(raw ?? "").trim();
+  if (!/^[A-Za-z0-9_-]{1,100}$/.test(value)) {
+    const reason = safeDetail(data?.msg ?? data?.message ?? data?.error ?? "");
+    throw new ApiError(
+      502,
+      "provider_protocol",
+      reason ? `${provider} returned no file code: ${reason}` : `${provider} returned no file code`,
+    );
   }
   return value;
 }

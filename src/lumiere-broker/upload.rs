@@ -14,7 +14,7 @@ use super::observe::{
 };
 use super::protocol::{
     DriveCandidate, DriveSessionRequest, DriveSessionResponse, RemoteProvider, RemoteStartRequest,
-    RemoteState,
+    RemoteState, RemoteStatusResponse,
 };
 use super::transfer::register_transfer;
 
@@ -400,10 +400,13 @@ impl LumiereClient {
         );
 
         let deadline = Instant::now() + self.config().transfer_ttl();
+        let stall_limit = self.config().remote_stall();
         let mut status_errors = 0u8;
         let mut last_state: Option<RemoteState> = None;
         let mut next_heartbeat = Instant::now() + REMOTE_HEARTBEAT;
         let mut fetch_warned = false;
+        let mut last_movement = Instant::now();
+        let mut movement_mark = RemoteMovement::default();
         loop {
             ensure_not_cancelled(&spec.cancel_file).inspect_err(|_| {
                 info(
@@ -428,7 +431,8 @@ impl LumiereClient {
                 );
                 return Err(UploadError::failed("remote upload capability expired"));
             }
-            match self.remote_status(operation.clone()).await {
+            let source_drained = lease.bytes_served() >= lease.size();
+            match self.remote_status(operation.clone(), source_drained).await {
                 Ok(status) => {
                     status_errors = 0;
                     let served = remote_progress_bytes(
@@ -439,14 +443,20 @@ impl LumiereClient {
                         status.progress,
                     );
                     send_progress(&progress, served, lease.size());
+                    let movement = RemoteMovement::new(&status, lease.bytes_served());
+                    if movement != movement_mark {
+                        movement_mark = movement;
+                        last_movement = Instant::now();
+                    }
                     if last_state != Some(status.state) {
                         info(
                             &scope,
                             format!(
-                                "{provider} state {} -> {:?} after {}",
+                                "{provider} state {} -> {:?} after {} ({})",
                                 state_label(last_state),
                                 status.state,
-                                duration_label(started.elapsed())
+                                duration_label(started.elapsed()),
+                                detail_label(&status.detail)
                             ),
                         );
                         last_state = Some(status.state);
@@ -455,7 +465,7 @@ impl LumiereClient {
                         info(
                             &scope,
                             format!(
-                                "{provider} still {:?} after {}: we served {} of {}, provider reports {}",
+                                "{provider} still {:?} after {}: we served {} of {}, provider reports {} ({})",
                                 status.state,
                                 duration_label(started.elapsed()),
                                 bytes_label(lease.bytes_served()),
@@ -464,21 +474,23 @@ impl LumiereClient {
                                     status.bytes_done,
                                     status.bytes_total,
                                     status.progress
-                                )
+                                ),
+                                detail_label(&status.detail)
                             ),
                         );
                     } else {
                         trace(
                             &scope,
                             format!(
-                                "{provider} poll: state={:?} served={} provider={}",
+                                "{provider} poll: state={:?} served={} provider={} ({})",
                                 status.state,
                                 bytes_label(lease.bytes_served()),
                                 provider_progress_label(
                                     status.bytes_done,
                                     status.bytes_total,
                                     status.progress
-                                )
+                                ),
+                                detail_label(&status.detail)
                             ),
                         );
                     }
@@ -524,10 +536,11 @@ impl LumiereClient {
                             warn(
                                 &scope,
                                 format!(
-                                    "{provider} reported failure after {} (served {} of {})",
+                                    "{provider} reported failure after {} (served {} of {}): {}",
                                     duration_label(started.elapsed()),
                                     bytes_label(lease.bytes_served()),
-                                    bytes_label(lease.size())
+                                    bytes_label(lease.size()),
+                                    detail_label(&status.detail)
                                 ),
                             );
                             return Err(UploadError::failed(format!(
@@ -535,7 +548,35 @@ impl LumiereClient {
                                 spec.provider.label()
                             )));
                         }
-                        RemoteState::Queued | RemoteState::Uploading => {}
+                        // A host that stops moving would otherwise hold the job —
+                        // and its Discord message — until the transfer TTL, so give
+                        // up on it and let the remaining hosts finish the release.
+                        RemoteState::Queued | RemoteState::Uploading => {
+                            if let Some(limit) = stall_limit
+                                && last_movement.elapsed() >= limit
+                            {
+                                warn(
+                                    &scope,
+                                    format!(
+                                        "{provider} has not moved in {} (state {:?} after {}, served {} of {}, provider reports {}) — giving up on this host",
+                                        duration_label(last_movement.elapsed()),
+                                        status.state,
+                                        duration_label(started.elapsed()),
+                                        bytes_label(lease.bytes_served()),
+                                        bytes_label(lease.size()),
+                                        provider_progress_label(
+                                            status.bytes_done,
+                                            status.bytes_total,
+                                            status.progress
+                                        )
+                                    ),
+                                );
+                                return Err(UploadError::failed(format!(
+                                    "{} remote upload stalled",
+                                    spec.provider.label()
+                                )));
+                            }
+                        }
                     }
                 }
                 Err(error) => {
@@ -562,6 +603,39 @@ impl LumiereClient {
             tokio::time::sleep(self.config().poll_interval()).await;
         }
     }
+}
+
+// Forward progress for the stall guard: any change in what the provider tells us,
+// or in how much of the file we have handed over.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct RemoteMovement {
+    state: Option<RemoteState>,
+    served: u64,
+    provider_done: Option<u64>,
+    provider_permille: Option<u64>,
+}
+
+impl RemoteMovement {
+    fn new(status: &RemoteStatusResponse, served: u64) -> Self {
+        Self {
+            state: Some(status.state),
+            served,
+            provider_done: status.bytes_done,
+            provider_permille: status
+                .progress
+                .filter(|percent| percent.is_finite())
+                .map(|percent| (percent.clamp(0.0, 100.0) * 10.0) as u64),
+        }
+    }
+}
+
+fn detail_label(detail: &Option<String>) -> String {
+    detail
+        .as_deref()
+        .map(str::trim)
+        .filter(|detail| !detail.is_empty())
+        .unwrap_or("no detail from provider")
+        .to_string()
 }
 
 fn state_label(state: Option<RemoteState>) -> String {
@@ -1062,6 +1136,52 @@ mod tests {
             80
         );
         assert_eq!(remote_progress_bytes(0, 100, None, None, Some(25.0)), 25);
+    }
+
+    fn status(state: RemoteState, progress: Option<f64>, bytes_done: Option<u64>) -> RemoteStatusResponse {
+        RemoteStatusResponse {
+            state,
+            progress,
+            bytes_done,
+            bytes_total: Some(100),
+            url: None,
+            detail: None,
+        }
+    }
+
+    #[test]
+    fn stall_guard_only_resets_on_real_movement() {
+        let queued = RemoteMovement::new(&status(RemoteState::Queued, None, None), 0);
+        assert_eq!(
+            queued,
+            RemoteMovement::new(&status(RemoteState::Queued, None, None), 0),
+            "an identical poll must not count as progress"
+        );
+        assert_ne!(
+            queued,
+            RemoteMovement::new(&status(RemoteState::Uploading, None, None), 0),
+            "a state change is progress"
+        );
+        assert_ne!(
+            queued,
+            RemoteMovement::new(&status(RemoteState::Queued, None, None), 4096),
+            "bytes leaving our side is progress"
+        );
+        assert_ne!(
+            RemoteMovement::new(&status(RemoteState::Uploading, Some(12.0), None), 100),
+            RemoteMovement::new(&status(RemoteState::Uploading, Some(12.5), None), 100),
+            "provider percentage movement is progress"
+        );
+    }
+
+    #[test]
+    fn missing_provider_detail_is_named_rather_than_blank() {
+        assert_eq!(detail_label(&None), "no detail from provider");
+        assert_eq!(detail_label(&Some("  ".to_string())), "no detail from provider");
+        assert_eq!(
+            detail_label(&Some("status=working".to_string())),
+            "status=working"
+        );
     }
 
     #[test]

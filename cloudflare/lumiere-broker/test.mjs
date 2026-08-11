@@ -58,6 +58,14 @@ assert.equal((await invalidSource.json()).error.code, "invalid_source_url");
 const realFetch = globalThis.fetch;
 let deleteTokenHash = "";
 let uploadMetadata = null;
+let doodStatusResult = [{
+  status: "finished",
+  file_code: "dood-file",
+  bytes_downloaded: "10",
+  bytes_total: "10",
+}];
+let doodPlayable = false;
+let luluStartResponse = { status: 200, result: { filecode: "lulu-file" } };
 globalThis.fetch = async (input, init = {}) => {
   const url = new URL(input instanceof Request ? input.url : input);
   const method = init.method || (input instanceof Request ? input.method : "GET");
@@ -95,15 +103,17 @@ globalThis.fetch = async (input, init = {}) => {
     return Response.json({ status: 200, result: { filecode: "dood-file" } });
   }
   if (url.hostname === "doodapi.co" && url.pathname === "/api/urlupload/status") {
+    return Response.json({ status: 200, result: doodStatusResult });
+  }
+  if (url.hostname === "doodapi.co" && url.pathname === "/api/file/info") {
+    assert.equal(url.searchParams.get("file_code"), "dood-file");
     return Response.json({
       status: 200,
-      result: [{
-        status: "finished",
-        file_code: "dood-file",
-        bytes_downloaded: "10",
-        bytes_total: "10",
-      }],
+      result: [{ status: doodPlayable ? 200 : 404, canplay: doodPlayable ? 1 : 0 }],
     });
+  }
+  if (url.hostname === "lulustream.com" && url.pathname === "/api/upload/url") {
+    return Response.json(luluStartResponse);
   }
   throw new Error(`unexpected test fetch ${method} ${url}`);
 };
@@ -176,6 +186,65 @@ const remoteStatus = await worker.fetch(
 );
 assert.equal(remoteStatus.status, 200);
 assert.equal((await remoteStatus.json()).state, "complete");
+
+const statusRequest = (body, statusEnv = remoteEnv) =>
+  worker.fetch(
+    new Request("https://broker.example/v1/remote/status", {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+    statusEnv,
+  );
+
+// A provider state this Worker does not recognise must reach Pandora as the
+// provider's own word rather than a silent, permanent "uploading".
+doodStatusResult = [{ status: "working", file_code: "dood-file" }];
+const unmapped = await statusRequest({ operation });
+assert.equal(unmapped.status, 200);
+const unmappedBody = await unmapped.json();
+assert.equal(unmappedBody.state, "uploading");
+assert.match(unmappedBody.detail, /status=working/);
+
+// Once Pandora has served every byte, a playable file ends the poll instead of
+// hanging until the transfer capability expires.
+doodPlayable = true;
+const drained = await statusRequest({ operation, source_drained: true });
+const drainedBody = await drained.json();
+assert.equal(drainedBody.state, "complete");
+assert.equal(drainedBody.url, "https://doodstream.com/e/dood-file");
+assert.match(drainedBody.detail, /file\/info reports the file is playable/);
+
+doodPlayable = false;
+const stillEncoding = await statusRequest({ operation, source_drained: true });
+const stillEncodingBody = await stillEncoding.json();
+assert.equal(stillEncodingBody.state, "uploading");
+assert.match(stillEncodingBody.detail, /file\/info not playable yet/);
+
+// A refusal must explain itself without ever echoing the capability URL back.
+luluStartResponse = {
+  status: 400,
+  msg: "invalid url https://files.example.com/lumiere/v1/files/abc/test.mp4",
+};
+const luluStart = await worker.fetch(
+  new Request("https://broker.example/v1/remote/start", {
+    method: "POST",
+    headers: { ...headers, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      request_id: "test:remote:lulu",
+      provider: "lulustream",
+      source_url: "https://files.example.com/lumiere/v1/files/abc/test.mp4",
+      filename: "test.mp4",
+    }),
+  }),
+  { ...env, LULUSTREAM_API_KEY: "lulu-key" },
+);
+assert.equal(luluStart.status, 502);
+const luluError = (await luluStart.json()).error;
+assert.equal(luluError.code, "provider_rejected");
+assert.match(luluError.message, /invalid url <url>/);
+assert.ok(!luluError.message.includes("/lumiere/v1/files/"));
+
 globalThis.fetch = realFetch;
 
 console.log("Lumiere Worker contract tests passed");

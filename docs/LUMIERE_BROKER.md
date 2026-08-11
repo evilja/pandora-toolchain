@@ -173,7 +173,7 @@ lumiere_transfer_ttl_secs|pntools|21600
 lumiere_poll_interval_secs|pntools|5
 ```
 
-`lumiere_log_verbose|pntools|true` is optional and adds per-chunk/per-poll upload logging; see [Reading the upload log in production](#7b-reading-the-upload-log-in-production).
+Two optional keys: `lumiere_log_verbose|pntools|true` adds per-chunk/per-poll upload logging (see [Reading the upload log in production](#7b-reading-the-upload-log-in-production)), and `lumiere_remote_stall_secs|pntools|900` bounds how long a streaming host may report no movement at all before Pandora gives up on that host and lets the rest of the release finish. Accepted values are 120 through 21600; `0` disables the guard and restores the old behaviour of polling until the transfer TTL expires. "Movement" means a provider state change, provider-reported byte/percentage progress, or more bytes leaving the capability URL, so a host that is genuinely queued keeps its slot as long as its queue position is reported.
 
 `api_port` must remain enabled and the Tunnel hostname must point to the same `pndc` service. The transfer TTL must cover provider queueing plus download time; accepted values are 5 minutes through 24 hours, capabilities remain memory-only, and restarting `pndc` invalidates active transfers. Rebuild/restart Pandora after deploying the code:
 
@@ -201,7 +201,8 @@ Set `lumiere_log_verbose|pntools|true` in `env.pandora` and restart `pndc` to ad
 What the common failures look like:
 
 - **A host never fetches the file.** `Doodstream has not requested https://… in 2m00s` with no matching `xfer` download line means the provider's fetcher cannot reach the file hostname. Check that `/lumiere/v1/files/*` bypasses Cloudflare Access, bot challenges, and caching, and that `lumiere_public_url` resolves to this `pndc`.
-- **A host fetches and then stalls.** `Voe still Uploading after 5m00s: we served 1.42GB of 1.42GB, provider reports 41.0%` is a provider-side queue, not a Pandora problem; it ends when the transfer TTL expires, logged as `expired after … the host never finished pulling the file`.
+- **A host fetches and then stalls.** `Voe still Uploading after 5m00s: we served 1.42GB of 1.42GB, provider reports 41.0%` is a provider-side queue, not a Pandora problem. If nothing moves for `lumiere_remote_stall_secs`, the host is dropped with `has not moved in 15m00s … giving up on this host` and the other hosts still publish; with the guard disabled it instead runs to `expired after … the host never finished pulling the file`.
+- **A host finished but its queue entry never says so.** Each poll after we have served the whole file asks the provider's `file/info`, and the log shows the provider's own words plus the verdict: `Doodstream state Uploading -> Complete after 43m33s (status=working; file/info reports the file is playable)`. A trailing `file/info not playable yet` means the provider really is still transcoding.
 - **A host disconnects mid-pull.** `… disconnected after 812.0MB of 1.42GB in 3m18s` — the provider hung up. Providers usually retry with a `Range` request, which appears as a fresh download line for the same `xfer` scope.
 - **A host is refused at the broker.** `broker | v1/remote/start rejected: HTTP 400 provider_disabled — …` means the Worker has no secret for that provider, or the source origin does not match `LUMIERE_SOURCE_ORIGIN`.
 - **Everything is silent.** `job 81: still waiting after 300s on Voe, Abyss` names the hosts that have produced no result at all; Abyss is expected there until its remote API is supported.
@@ -289,6 +290,7 @@ The command performs logical removal, not guaranteed forensic erasure; filesyste
 
 ## API and security properties
 
+- `POST /v1/remote/status` takes `{operation, source_drained}`. `source_drained` is set once the provider has pulled every byte from the capability URL; only then does the Worker spend a second provider call on `file/info`, and a playable file is reported as `complete` even when the provider's queue entry still says otherwise. Every status response carries a `detail` string echoing the provider's own status fields, sanitised: URLs are replaced with `<url>` so a provider that quotes the source back at us cannot leak the capability token into a log.
 - The Worker accepts only typed Drive/session/delete and three remote-upload operations.
 - Provider endpoints and source origin are hard-coded/allowlisted.
 - KV stores idempotency records containing temporary source URLs and provider operation IDs for 24 hours; it never stores provider credentials.

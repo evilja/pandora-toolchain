@@ -1,7 +1,7 @@
 use crate::lib::env::core::get_pandora_env;
 use crate::lib::env::standard::{
     LUMIERE_BROKER_TOKEN, LUMIERE_BROKER_URL, LUMIERE_POLL_INTERVAL_SECS, LUMIERE_PUBLIC_URL,
-    LUMIERE_TRANSFER_TTL_SECS,
+    LUMIERE_REMOTE_STALL_SECS, LUMIERE_TRANSFER_TTL_SECS,
 };
 use reqwest::{Client as HttpClient, StatusCode, Url};
 use serde::Serialize;
@@ -22,6 +22,9 @@ const DEFAULT_TRANSFER_TTL_SECS: u64 = 6 * 60 * 60;
 const MIN_TRANSFER_TTL_SECS: u64 = 5 * 60;
 const MAX_TRANSFER_TTL_SECS: u64 = 24 * 60 * 60;
 const DEFAULT_POLL_INTERVAL_SECS: u64 = 5;
+const DEFAULT_REMOTE_STALL_SECS: u64 = 15 * 60;
+const MIN_REMOTE_STALL_SECS: u64 = 2 * 60;
+const MAX_REMOTE_STALL_SECS: u64 = 6 * 60 * 60;
 
 #[derive(Clone)]
 pub struct Config {
@@ -30,6 +33,7 @@ pub struct Config {
     public_url: Url,
     transfer_ttl: Duration,
     poll_interval: Duration,
+    remote_stall: Option<Duration>,
 }
 
 impl Config {
@@ -48,12 +52,25 @@ impl Config {
             .and_then(|value| value.trim().parse::<u64>().ok())
             .unwrap_or(DEFAULT_POLL_INTERVAL_SECS)
             .clamp(2, 60);
+        // `0` disables the guard; anything else is clamped into a range that
+        // cannot fail a provider that is merely queued behind other jobs.
+        let remote_stall = match env
+            .get(LUMIERE_REMOTE_STALL_SECS)
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or(DEFAULT_REMOTE_STALL_SECS)
+        {
+            0 => None,
+            seconds => Some(Duration::from_secs(
+                seconds.clamp(MIN_REMOTE_STALL_SECS, MAX_REMOTE_STALL_SECS),
+            )),
+        };
         Self::new(
             &broker_url,
             broker_token,
             &public_url,
             Duration::from_secs(transfer_ttl),
             Duration::from_secs(poll_interval),
+            remote_stall,
         )
     }
 
@@ -63,6 +80,7 @@ impl Config {
         public_url: &str,
         transfer_ttl: Duration,
         poll_interval: Duration,
+        remote_stall: Option<Duration>,
     ) -> Result<Self, Error> {
         let broker_url = parse_base_url(broker_url, LUMIERE_BROKER_URL)?;
         let public_url = parse_base_url(public_url, LUMIERE_PUBLIC_URL)?;
@@ -82,6 +100,7 @@ impl Config {
             public_url,
             transfer_ttl,
             poll_interval,
+            remote_stall,
         })
     }
 
@@ -95,6 +114,10 @@ impl Config {
 
     pub fn poll_interval(&self) -> Duration {
         self.poll_interval
+    }
+
+    pub fn remote_stall(&self) -> Option<Duration> {
+        self.remote_stall
     }
 }
 
@@ -200,10 +223,14 @@ impl LumiereClient {
     pub(crate) async fn remote_status(
         &self,
         operation: RemoteOperation,
+        source_drained: bool,
     ) -> Result<RemoteStatusResponse, Error> {
         self.post(
             &["v1", "remote", "status"],
-            &RemoteStatusRequest { operation },
+            &RemoteStatusRequest {
+                operation,
+                source_drained,
+            },
         )
         .await
     }
@@ -423,6 +450,7 @@ mod tests {
             "https://files.example",
             Duration::from_secs(60),
             Duration::from_secs(5),
+            Some(Duration::from_secs(900)),
         )
         .err()
         .unwrap();
@@ -438,6 +466,7 @@ mod tests {
                 "http://localhost:8787",
                 Duration::from_secs(60),
                 Duration::from_secs(5),
+                None,
             )
             .is_ok()
         );

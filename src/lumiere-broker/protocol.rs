@@ -81,6 +81,10 @@ pub(crate) struct RemoteOperation {
 #[derive(Debug, Serialize)]
 pub(crate) struct RemoteStatusRequest {
     pub operation: RemoteOperation,
+    // True once the provider has pulled every byte from the capability URL. The
+    // Worker uses it to confirm completion through the provider's file record,
+    // because some providers stop reporting a queue entry they have finished.
+    pub source_drained: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -103,6 +107,10 @@ pub(crate) struct RemoteStatusResponse {
     pub bytes_total: Option<u64>,
     #[serde(default)]
     pub url: Option<String>,
+    // The provider's own status fields, echoed and sanitised by the Worker so an
+    // unmapped state is visible in the log instead of a silent "uploading".
+    #[serde(default)]
+    pub detail: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
