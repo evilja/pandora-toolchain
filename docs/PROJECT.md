@@ -61,7 +61,7 @@ Worker-specific patterns live in [WORKER.md](WORKER.md).
   - line 8: ASS WrapStyle normalization (`""`/missing/`dont_touch` means preserve existing WrapStyle; `0`/`1`/`2`/`3` forces that value). `/configure` and `/edit` expose this as `wrapstyle`; default is `dont_touch`.
   - line 9: local Google Drive profile preference (`true`/missing tries Worker profile `guild:<server_id>` before `global`; `false`/`0`/`disabled`/`off` uses only `global`)
   - line 10: reserved legacy anonymous Drive root slot. Lumiere does not read it; blank it after migration.
-  - line 11: server default encode preset (`standard`, `gpu`, `pseudolossless`, or `dummy`; missing/invalid defaults to `standard`)
+  - line 11: server default encode preset (`standard`, `veryslow`, `gpu`, `pseudolossless`, or `dummy`; missing/invalid defaults to `standard`). `veryslow` is x264 `-preset veryslow -crf 18` with no `-x264-params` overrides, so AQ and motion search keep libx264's own defaults
   - line 12: server default concat/intro group name (blank or missing disables intro; a missing group resolves to no intro)
   - line 13: server-wide AnimeciX fansub template id selected through `/edit animecix_fansub:` (blank or missing disables pending AnimeciX publishing for new smartcode jobs)
   - line 14: Drive-only upload policy (`true` restricts release uploads to Google Drive; blank/missing/`false` uses all configured Lumiere providers). Unknown non-empty values fail closed to Drive-only. `/edit drive_only:<true|false>` manages this setting.

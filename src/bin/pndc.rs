@@ -2685,6 +2685,7 @@ impl EventHandler for Handler {
                         .required(false)
                         .add_string_choice("Pseudo Lossless", "pseudolossless")
                         .add_string_choice("Standard x264", "standard")
+                        .add_string_choice("Very Slow x264 (CRF 18)", "veryslow")
                         .add_string_choice("GPU", "gpu")
                         .add_string_choice("DEV", "dummy")
                 )

@@ -204,9 +204,9 @@ pub async fn handle_edit(
     let drive_only = option_bool(command, "drive_only").unwrap_or(existing_drive_only);
     let preset = match option_str(command, "preset").map(str::trim) {
         None => existing_preset.to_string(),
-        Some("standard") | Some("gpu") | Some("pseudolossless") | Some("dummy") => option_str(command, "preset").unwrap().to_string(),
+        Some("standard") | Some("veryslow") | Some("gpu") | Some("pseudolossless") | Some("dummy") => option_str(command, "preset").unwrap().to_string(),
         Some(other) => {
-            edit_error(ctx, command, deferred, format!("Error: preset `{}` is not standard, gpu, pseudolossless, or dummy", other)).await;
+            edit_error(ctx, command, deferred, format!("Error: preset `{}` is not standard, veryslow, gpu, pseudolossless, or dummy", other)).await;
             return;
         }
     };

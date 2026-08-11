@@ -219,6 +219,7 @@ pub(crate) fn remaining_secs_active(frame: Option<u64>, total: Option<u64>, fps:
 pub(crate) fn remaining_secs_queued(frames: Option<u64>, preset: &Preset) -> Option<u64> {
     let fps = match preset {
         Preset::PseudoLossless(_) => 30.0,
+        Preset::VerySlow(_) => 12.0,
         Preset::Dummy(_) => 150.0,
         Preset::Standard(_) | Preset::Gpu(_) => 60.0,
         Preset::Copy => 300.0,

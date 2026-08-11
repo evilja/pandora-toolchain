@@ -120,6 +120,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 Preset::PseudoLossless(cc) => (cc, "pseudolossless"),
                 Preset::Gpu(cc)            => (cc, "gpu"),
                 Preset::Standard(cc)       => (cc, "x264"),
+                Preset::VerySlow(cc)       => (cc, "veryslow"),
                 Preset::Dummy(cc)          => (cc, "dummy"),
                 Preset::Copy               => (None, "copy"),
             };

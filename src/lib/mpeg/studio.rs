@@ -23,6 +23,7 @@ pub enum StudioVideoPreset {
     Standard,
     Gpu,
     PseudoLossless,
+    VerySlow,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -320,6 +321,13 @@ pub fn studio_ffmpeg_params(
                 FfmpegParams::Level(Cow::Borrowed("4.1")),
                 FfmpegParams::Crf(17),
                 FfmpegParams::Preset(Cow::Borrowed("fast")),
+            ]),
+            StudioVideoPreset::VerySlow => params.extend([
+                FfmpegParams::Cv(Cow::Borrowed("libx264")),
+                FfmpegParams::Profile(Cow::Borrowed("high")),
+                FfmpegParams::Level(Cow::Borrowed("4.1")),
+                FfmpegParams::Crf(18),
+                FfmpegParams::Preset(Cow::Borrowed("veryslow")),
             ]),
             StudioVideoPreset::Dummy => params.extend([
                 FfmpegParams::Cv(Cow::Borrowed("libx264")),

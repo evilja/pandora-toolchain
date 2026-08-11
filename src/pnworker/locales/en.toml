@@ -418,6 +418,14 @@ args = 0
 text = "Standard CPU • no intro"
 args = 0
 
+[PRESET_VERYSLOW_INTRO]
+text = "Very slow CPU • intro"
+args = 0
+
+[PRESET_VERYSLOW_NOINTRO]
+text = "Very slow CPU • no intro"
+args = 0
+
 [PRESET_DUMMY]
 text = "Developer"
 args = 0

@@ -418,6 +418,14 @@ args = 0
 text = "Standart CPU • introsuz"
 args = 0
 
+[PRESET_VERYSLOW_INTRO]
+text = "Çok yavaş CPU • introlu"
+args = 0
+
+[PRESET_VERYSLOW_NOINTRO]
+text = "Çok yavaş CPU • introsuz"
+args = 0
+
 [PRESET_DUMMY]
 text = "Geliştirici"
 args = 0

@@ -411,6 +411,7 @@ fn preset_label(preset: &Preset) -> String {
         Preset::PseudoLossless(_) => "pseudolossless",
         Preset::Dummy(_) => "dummy",
         Preset::Standard(_) => "standard",
+        Preset::VerySlow(_) => "veryslow",
         Preset::Gpu(_) => "gpu",
         Preset::Copy => "copy",
     }

@@ -569,6 +569,7 @@ async fn dispatch_keycode_ready(
         Preset::PseudoLossless(intro_dir)
         | Preset::Dummy(intro_dir)
         | Preset::Standard(intro_dir)
+        | Preset::VerySlow(intro_dir)
         | Preset::Gpu(intro_dir) => intro_dir.clone(),
         Preset::Copy => None,
     };
@@ -709,6 +710,7 @@ fn preset_without_intro(preset: &Preset) -> Preset {
         Preset::PseudoLossless(_) => Preset::PseudoLossless(None),
         Preset::Dummy(_) => Preset::Dummy(None),
         Preset::Standard(_) => Preset::Standard(None),
+        Preset::VerySlow(_) => Preset::VerySlow(None),
         Preset::Gpu(_) => Preset::Gpu(None),
         Preset::Copy => Preset::Copy,
     }
@@ -2040,6 +2042,7 @@ pub enum Preset {
     PseudoLossless(Option<String>),
     Dummy(Option<String>),
     Standard(Option<String>),
+    VerySlow(Option<String>),
     Gpu(Option<String>),
     Copy,
 }
@@ -2393,6 +2396,7 @@ impl Job {
                 Preset::PseudoLossless(candidates)
                 | Preset::Dummy(candidates)
                 | Preset::Standard(candidates)
+                | Preset::VerySlow(candidates)
                 | Preset::Gpu(candidates) => Preset::Standard(candidates),
                 Preset::Copy => Preset::Standard(None),
             },
@@ -2472,6 +2476,7 @@ impl Job {
                 Preset::PseudoLossless(candidates)
                 | Preset::Dummy(candidates)
                 | Preset::Standard(candidates)
+                | Preset::VerySlow(candidates)
                 | Preset::Gpu(candidates) => Preset::Standard(candidates),
                 Preset::Copy => Preset::Standard(None),
             },

@@ -1,7 +1,8 @@
 use pandora_toolchain::lib::mpeg::{
     core::{
         FFmpeg, FfmpegParams, do_comm_encode_ffmpeg}, preset::{
-        CONCAT, CONCAT_LEGACY, CPU_DUMMY, CPU_PSEUDOLOSSLESS, CPU_SANE_DEFAULTS, GPU_SANE_DEFAULTS
+        CONCAT, CONCAT_LEGACY, CPU_DUMMY, CPU_PSEUDOLOSSLESS, CPU_SANE_DEFAULTS, CPU_VERYSLOW,
+        GPU_SANE_DEFAULTS
     }, probe::{
         ConcatMedia, ffprobe_concat_media, ffprobe_frame, ffprobe_framerate, ffprobe_lang,
         ffprobe_samplerate
@@ -36,6 +37,10 @@ struct Args {
 
     #[arg(long)]
     pseudolossless: bool,
+
+    /// x264 veryslow at CRF 18 with untouched x264 defaults
+    #[arg(long)]
+    veryslow: bool,
 
     #[arg(long)]
     concat: bool,
@@ -254,6 +259,7 @@ async fn main() {
     let a = if args.gpu { 1 } else { 0 } +
             if args.x264 { 1 } else { 0 } +
             if args.pseudolossless { 1 } else { 0 } +
+            if args.veryslow { 1 } else { 0 } +
             if args.dummy { 1 } else { 0 };
 
     if a > 1 {
@@ -264,6 +270,8 @@ async fn main() {
         params = Vec::from(CPU_SANE_DEFAULTS);
     } else if args.pseudolossless {
         params = Vec::from(CPU_PSEUDOLOSSLESS);
+    } else if args.veryslow {
+        params = Vec::from(CPU_VERYSLOW);
     } else if args.concat {
         if use_legacy {
             params = Vec::from(CONCAT_LEGACY);

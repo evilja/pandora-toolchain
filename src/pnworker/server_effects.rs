@@ -42,6 +42,7 @@ pub fn load_server_settings(server_id: Option<u64>) -> ServerSettings {
         "gpu" => Preset::Gpu(candidates),
         "pseudolossless" | "pseudo_lossless" => Preset::PseudoLossless(candidates),
         "dummy" => Preset::Dummy(candidates),
+        "veryslow" | "very_slow" => Preset::VerySlow(candidates),
         _ => Preset::Standard(candidates),
     };
     let watermark_path = PathBuf::from("DB")

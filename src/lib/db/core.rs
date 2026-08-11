@@ -143,6 +143,7 @@ impl JobDb {
             Preset::Gpu(c)            => (2i64, candidates_to_db(c)),
             Preset::Dummy(c)          => (3i64, candidates_to_db(c)),
             Preset::Copy              => (4i64, None),
+            Preset::VerySlow(c)       => (5i64, candidates_to_db(c)),
         };
         let link = job
             .display_link
@@ -450,6 +451,7 @@ pub fn preset_label(preset_type: i64) -> &'static str {
         2 => "Gpu",
         3 => "Dummy",
         4 => "Copy",
+        5 => "VerySlow",
         _ => "Unknown",
     }
 }

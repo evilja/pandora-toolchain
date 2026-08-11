@@ -418,6 +418,14 @@ args = 0
 text = "標準 CPU • イントロなし"
 args = 0
 
+[PRESET_VERYSLOW_INTRO]
+text = "超低速 CPU • イントロあり"
+args = 0
+
+[PRESET_VERYSLOW_NOINTRO]
+text = "超低速 CPU • イントロなし"
+args = 0
+
 [PRESET_DUMMY]
 text = "開発用"
 args = 0

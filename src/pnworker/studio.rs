@@ -686,6 +686,7 @@ pub fn studio_render_presets(
     }
     match load_server_settings(Some(guild_id)).preset {
         Preset::PseudoLossless(_) => (Preset::PseudoLossless(None), StudioVideoPreset::PseudoLossless),
+        Preset::VerySlow(_) => (Preset::VerySlow(None), StudioVideoPreset::VerySlow),
         Preset::Gpu(_) => (Preset::Gpu(None), StudioVideoPreset::Gpu),
         Preset::Dummy(_) => (Preset::Dummy(None), StudioVideoPreset::Dummy),
         Preset::Standard(_) | Preset::Copy => (Preset::Standard(None), StudioVideoPreset::Standard),

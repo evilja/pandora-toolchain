@@ -61,6 +61,27 @@ pub const CPU_SANE_DEFAULTS: [FfmpegParams; 17] =
     FfmpegParams::Overwrite,
     FfmpegParams::Output(Cow::Borrowed("OUTFILEV")),
 ];
+// Slow quality-first CPU preset: x264 veryslow at CRF 18 with no -x264-params
+// tuning at all, so AQ and motion search stay on libx264's own defaults.
+pub const CPU_VERYSLOW: [FfmpegParams; 16] =
+[
+    FfmpegParams::Input(Cow::Borrowed("INPUTFILEV")),
+    FfmpegParams::BasicFilter(Cow::Borrowed("ass=INPUTFILEASS,format=yuv420p")),
+    FfmpegParams::Cv(Cow::Borrowed("libx264")),
+    FfmpegParams::Profile(Cow::Borrowed("high")),
+    FfmpegParams::Level(Cow::Borrowed("4.1")),
+    FfmpegParams::Map(Cow::Borrowed("0:v:0")),
+    FfmpegParams::Map(Cow::Borrowed("0:JPN_INDEX")),
+    FfmpegParams::Crf(18),
+    FfmpegParams::Preset(Cow::Borrowed("veryslow")),
+    FfmpegParams::Ca(Cow::Borrowed("aac")),
+    FfmpegParams::Ba(Cow::Borrowed("192k")),
+    FfmpegParams::Movflags,
+    FfmpegParams::NoStats,
+    FfmpegParams::Progress(Cow::Borrowed("pipe:2")),
+    FfmpegParams::Overwrite,
+    FfmpegParams::Output(Cow::Borrowed("OUTFILEV")),
+];
 pub const GPU_SANE_DEFAULTS: [FfmpegParams; 18] =
 [
     FfmpegParams::Input(Cow::Borrowed("INPUTFILEV")),
