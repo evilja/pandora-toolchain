@@ -10,6 +10,7 @@ pub mod smartcode_drive;
 pub mod workers;
 pub mod workers_view;
 pub mod preview;
+pub mod probe_pages;
 pub mod heartbeat;
 pub mod pull;
 pub mod presence;

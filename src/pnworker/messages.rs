@@ -1,4 +1,5 @@
 use crate::pnworker::core::{Job, JobType, Stage};
+use crate::pnworker::probe_pages::probe_page_body;
 use serde::{Deserialize, Serialize};
 use serenity::all::{Colour, CreateEmbed, CreateEmbedFooter};
 use std::collections::{BTreeMap, HashMap};
@@ -46,6 +47,8 @@ pub const KEYCODE_FAIL: &str = "KEYCODE_FAIL";
 pub const PROBE_DONE: &str = "PROBE_DONE";
 pub const PROBE_FAIL: &str = "PROBE_FAIL";
 pub const PROBE_ROW: &str = "PROBE_ROW";
+pub const PROBE_PAGE: &str = "PROBE_PAGE";
+pub const PROBE_PAGE_EXPIRED: &str = "PROBE_PAGE_EXPIRED";
 pub const PREVIEW_DONE: &str = "PREVIEW_DONE";
 pub const PREVIEW_FAIL: &str = "PREVIEW_FAIL";
 pub const STUDIO_PREVIEW_DONE: &str = "STUDIO_PREVIEW_DONE";
@@ -437,6 +440,11 @@ fn job_details(job: &Job, payload: &MessagePayload) -> String {
             if matches!(*id, QUEUED | JOB_CANCELLED | TORRENT_DONE | ENCODE_START | ENCODE_DONE)
     ) {
         return String::new();
+    }
+    if let MessagePayload::Progress(id, args) = payload {
+        if *id == PROBE_ROW {
+            return probe_page_body(args.first().map(String::as_str).unwrap_or(""), 1, &job.lang);
+        }
     }
     let details = format_payload(payload, &job.lang).trim().to_string();
     if !matches!(payload, MessagePayload::Progress(id, _) if *id == ENCODE_PROG) {

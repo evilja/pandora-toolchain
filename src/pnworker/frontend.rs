@@ -5,10 +5,12 @@ use tokio::time::{sleep, Duration};
 use crate::pnworker::core::Job;
 use crate::pnworker::messages::{
     get_message, MessagePayload, create_job_embed, PREVIEW_ATTACHMENT_MISSING,
-    PREVIEW_ATTACHMENT_REJECTED, PREVIEW_DONE, STUDIO_PREVIEW_ATTACHMENT_MISSING,
+    PREVIEW_ATTACHMENT_REJECTED, PREVIEW_DONE, PROBE_ROW, STUDIO_PREVIEW_ATTACHMENT_MISSING,
     STUDIO_PREVIEW_DONE,
 };
 use crate::pnworker::presence::{change_presence_job, global_context, Presence};
+use crate::pnworker::probe_pages::{probe_page_components, probe_page_count};
+use serenity::all::CreateActionRow;
 
 #[derive(Clone)]
 pub enum Frontend {
@@ -57,7 +59,11 @@ impl Frontend {
                         }
                     }
                 }
-                if let Err(error) = msg.edit(&**ctx, EditMessage::new().content("").embed(create_job_embed(job, payload))).await {
+                let edit = EditMessage::new()
+                    .content("")
+                    .embed(create_job_embed(job, payload))
+                    .components(probe_page_buttons(job, payload));
+                if let Err(error) = msg.edit(&**ctx, edit).await {
                     eprintln!("[Pandora Frontend] Discord update failed for job {}: {}", job.job_id, error);
                 }
             }
@@ -160,6 +166,19 @@ fn is_studio_preview_done(payload: &MessagePayload) -> bool {
 
 fn is_attachment_done(payload: &MessagePayload) -> bool {
     is_preview_done(payload) || is_studio_preview_done(payload)
+}
+
+// Probe file lists longer than one embed field get prev/next buttons; every other payload sends an
+// empty row set so a later edit of the same message clears buttons left over from the list.
+fn probe_page_buttons(job: &Job, payload: &MessagePayload) -> Vec<CreateActionRow> {
+    let MessagePayload::Progress(id, args) = payload else {
+        return Vec::new();
+    };
+    if *id != PROBE_ROW {
+        return Vec::new();
+    }
+    let pages = probe_page_count(args.first().map(String::as_str).unwrap_or(""));
+    probe_page_components(job.job_id, 1, pages)
 }
 
 async fn preview_done_edit(job: &Job, payload: &MessagePayload) -> Option<EditMessage> {

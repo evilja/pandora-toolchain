@@ -590,10 +590,24 @@ fn format_probe_rows(rows: &[ProbeFile]) -> Vec<String> {
         sequence_tokens(&basenames)
     };
     let detected = tokens.iter().filter(|t| t.is_some()).count() >= 2;
-    rows.iter()
+    let mut listed: Vec<(&ProbeFile, &String, &Option<String>)> = rows
+        .iter()
         .zip(basenames.iter())
         .zip(tokens.iter())
-        .map(|((row, name), token)| {
+        .map(|((row, name), token)| (row, name, token))
+        .collect();
+    // Torrents list their files in whatever order they were packed, so an episode-numbered release
+    // arrives shuffled (E10 before E2, specials in the middle). Sort by the detected number and
+    // keep the torrent's own index in the label — that index is what `/encode pan` selects with.
+    if detected {
+        listed.sort_by_key(|(_, _, token)| match token {
+            Some(token) => (0, token_number(token).unwrap_or(u64::MAX), token_version(token)),
+            None => (1, 0, 0),
+        });
+    }
+    listed
+        .into_iter()
+        .map(|(row, name, token)| {
             if detected {
                 if let Some(t) = token {
                     return format!("`{}` — E{}", row.idx, t);
@@ -704,4 +718,80 @@ fn numeric_candidates(name: &str) -> Vec<String> {
 fn token_number(token: &str) -> Option<u64> {
     let digits: String = token.chars().take_while(|c| c.is_ascii_digit()).collect();
     digits.parse::<u64>().ok()
+}
+
+// `12v2` is a re-release of episode 12 and sorts after it rather than next to episode 122.
+fn token_version(token: &str) -> u64 {
+    let rest = token.trim_start_matches(|c: char| c.is_ascii_digit());
+    let digits: String = rest
+        .strip_prefix(['v', 'V'])
+        .unwrap_or("")
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    digits.parse::<u64>().unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn probe_file(idx: u32, name: &str) -> ProbeFile {
+        ProbeFile {
+            idx: idx.to_string(),
+            name: name.to_string(),
+            size: "734003200".to_string(),
+        }
+    }
+
+    #[test]
+    fn episode_rows_sort_by_number_and_keep_torrent_indices() {
+        let rows = vec![
+            probe_file(0, "[Sub] Show - 10 [1080p].mkv"),
+            probe_file(1, "[Sub] Show - 2 [1080p].mkv"),
+            probe_file(2, "[Sub] Show - 1v2 [1080p].mkv"),
+            probe_file(3, "[Sub] Show - 1 [1080p].mkv"),
+        ];
+        assert_eq!(
+            format_probe_rows(&rows),
+            vec![
+                "`3` — E1".to_string(),
+                "`2` — E1v2".to_string(),
+                "`1` — E2".to_string(),
+                "`0` — E10".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn files_without_an_episode_number_sink_below_the_numbered_ones() {
+        let rows = vec![
+            probe_file(0, "Show/Extras/creditless OP.mkv"),
+            probe_file(1, "Show/Show S01E02.mkv"),
+            probe_file(2, "Show/Show S01E01.mkv"),
+        ];
+        assert_eq!(
+            format_probe_rows(&rows),
+            vec![
+                "`2` — E01".to_string(),
+                "`1` — E02".to_string(),
+                "`0` — creditless OP.mkv (700MB)".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn unnumbered_lists_keep_the_torrents_own_order() {
+        let rows = vec![
+            probe_file(0, "video.mkv"),
+            probe_file(1, "bonus.mkv"),
+        ];
+        assert_eq!(
+            format_probe_rows(&rows),
+            vec![
+                "`0` — video.mkv (700MB)".to_string(),
+                "`1` — bonus.mkv (700MB)".to_string(),
+            ]
+        );
+    }
 }

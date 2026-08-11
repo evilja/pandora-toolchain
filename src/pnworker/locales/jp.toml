@@ -142,6 +142,14 @@ args = 0
 text = "{}"
 args = 1
 
+[PROBE_PAGE]
+text = "ページ {}/{}"
+args = 2
+
+[PROBE_PAGE_EXPIRED]
+text = "このファイル一覧はもう利用できません。"
+args = 0
+
 [PREVIEW_DONE]
 text = "{}枚のフレームを添付しました。"
 args = 1
