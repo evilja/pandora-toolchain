@@ -54,9 +54,14 @@ impl RemoteProvider {
         }
     }
 
+    // Player origins rotate independently of the provider API origins. DoodStream's
+    // doodstream.com and dood.li both 301 to playmogo.com, and a published link has
+    // to name the live host itself because AnimeciX/OpenAnime/Anizm store it and
+    // embed it long after the redirect chain moves again. Mirrors PROVIDER_EMBED in
+    // cloudflare/lumiere-broker/src/index.js.
     pub fn final_url(self, file_code: &str) -> String {
         match self {
-            Self::Doodstream => format!("https://doodstream.com/e/{file_code}"),
+            Self::Doodstream => format!("https://playmogo.com/e/{file_code}"),
             Self::Lulustream => format!("https://luluvdo.com/e/{file_code}"),
             Self::Voe => format!("https://voe.sx/e/{file_code}"),
         }

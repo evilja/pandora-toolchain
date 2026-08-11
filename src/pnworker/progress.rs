@@ -151,17 +151,23 @@ fn normalize_lulu_link(link: &str) -> String {
     trimmed.to_string()
 }
 
+// DoodStream keeps its retired domains alive as redirects, so links stored before
+// a move still arrive here on the old host; canonicalize every known one onto the
+// live player origin rather than republishing a redirect.
 fn normalize_doodstream_link(link: &str) -> String {
     let trimmed = link.trim();
-    for prefix in ["https://doodstream.com/", "http://doodstream.com/"] {
-        if let Some(rest) = trimmed.strip_prefix(prefix) {
+    for host in ["playmogo.com", "doodstream.com", "dood.li"] {
+        for scheme in ["https://", "http://"] {
+            let Some(rest) = trimmed.strip_prefix(&format!("{}{}/", scheme, host)) else {
+                continue;
+            };
             let code = rest
                 .strip_prefix("e/")
                 .or_else(|| rest.strip_prefix("d/"))
                 .unwrap_or(rest)
                 .trim_matches('/');
             if !code.is_empty() && !code.contains('/') {
-                return format!("https://doodstream.com/e/{}", code);
+                return format!("https://playmogo.com/e/{}", code);
             }
         }
     }
@@ -305,11 +311,15 @@ mod tests {
     fn normalize_doodstream_link_converts_file_codes_to_embed_urls() {
         assert_eq!(
             normalize_doodstream_link("https://doodstream.com/d/abc123"),
-            "https://doodstream.com/e/abc123",
+            "https://playmogo.com/e/abc123",
         );
         assert_eq!(
-            normalize_doodstream_link("https://doodstream.com/e/abc123"),
-            "https://doodstream.com/e/abc123",
+            normalize_doodstream_link("https://dood.li/e/abc123"),
+            "https://playmogo.com/e/abc123",
+        );
+        assert_eq!(
+            normalize_doodstream_link("https://playmogo.com/e/abc123"),
+            "https://playmogo.com/e/abc123",
         );
     }
 

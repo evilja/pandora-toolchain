@@ -218,7 +218,7 @@ doodPlayable = true;
 const drained = await statusRequest({ operation, source_drained: true });
 const drainedBody = await drained.json();
 assert.equal(drainedBody.state, "complete");
-assert.equal(drainedBody.url, "https://doodstream.com/e/dood-file");
+assert.equal(drainedBody.url, "https://playmogo.com/e/dood-file");
 assert.match(drainedBody.detail, /file\/info reports the file is playable/);
 
 doodPlayable = false;
@@ -226,6 +226,34 @@ const stillEncoding = await statusRequest({ operation, source_drained: true });
 const stillEncodingBody = await stillEncoding.json();
 assert.equal(stillEncodingBody.state, "uploading");
 assert.match(stillEncodingBody.detail, /file\/info not playable yet/);
+
+// DoodStream's queue listing is the whole account's, so an older stuck transfer
+// can sit ahead of ours. Reading index 0 there reports a state that never moves
+// and hangs the upload until the stall guard drops the host.
+doodStatusResult = [
+  { status: "working", file_code: "someone-elses-file", bytes_downloaded: "0", bytes_total: "999" },
+  { status: "finished", file_code: "dood-file", bytes_downloaded: "10", bytes_total: "10" },
+];
+const shadowed = await statusRequest({ operation });
+const shadowedBody = await shadowed.json();
+assert.equal(shadowedBody.state, "complete");
+assert.equal(shadowedBody.url, "https://playmogo.com/e/dood-file");
+assert.match(shadowedBody.detail, /file_code=dood-file/);
+
+// The same listing without our transfer in it must fall through to file/info
+// rather than adopting an unrelated entry's state.
+doodStatusResult = [{ status: "working", file_code: "someone-elses-file" }];
+doodPlayable = true;
+const absent = await statusRequest({ operation });
+const absentBody = await absent.json();
+assert.equal(absentBody.state, "complete");
+assert.equal(absentBody.detail, "urlupload/status listed no entry");
+doodPlayable = false;
+
+// The start call spells it `filecode`; the queue listing spells it `file_code`.
+doodStatusResult = [{ status: "finished", filecode: "dood-file" }];
+const spelling = await statusRequest({ operation });
+assert.equal((await spelling.json()).state, "complete");
 
 // A refusal must explain itself without ever echoing the capability URL back.
 luluStartResponse = {

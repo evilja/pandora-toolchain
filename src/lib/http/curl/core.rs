@@ -633,7 +633,7 @@ impl Req {
                     .and_then(|j| {
                         j["result"][0]["filecode"]
                             .as_str()
-                            .map(|s| format!("https://doodstream.com/e/{s}"))
+                            .map(|s| format!("https://playmogo.com/e/{s}"))
                     })
                     .unwrap_or_default()
             },

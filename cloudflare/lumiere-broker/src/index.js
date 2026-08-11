@@ -6,6 +6,17 @@ const PROVIDER_API = {
   lulustream: "https://api.lulustream.com",
   voe: "https://voe.sx",
 };
+// Player origins for the links Pandora publishes. These rotate independently of
+// the API origins above — DoodStream's own doodstream.com and dood.li now 301 to
+// playmogo.com — and a published link must name the live host itself, because the
+// sites we hand it to store the URL and embed it long after the redirect chain
+// changes again. Keep this in sync with RemoteProvider::final_url on the Pandora
+// side; both are checked by `test.mjs`.
+const PROVIDER_EMBED = {
+  doodstream: "https://playmogo.com",
+  lulustream: "https://luluvdo.com",
+  voe: "https://voe.sx",
+};
 const OPERATION_TTL_SECONDS = 24 * 60 * 60;
 const ACCESS_TOKEN_SKEW_MS = 60 * 1000;
 const tokenCache = new Map();
@@ -307,7 +318,12 @@ async function doodstreamStatus(operationId, fileCode, env) {
   endpoint.searchParams.set("key", key);
   endpoint.searchParams.set("file_code", operationId);
   const data = await providerJson(endpoint, "DoodStream");
-  const item = Array.isArray(data.result) ? data.result[0] : data.result;
+  // The queue endpoint answers with the account's remote uploads and does not
+  // reliably honour the file_code filter, so index 0 can be an unrelated — and
+  // possibly permanently stuck — transfer. Polling that entry reports a state
+  // that never changes and hangs this upload until the stall guard drops it, so
+  // match our own file code and treat "not listed" as not listed.
+  const item = matchFileCode(data.result, fileCode);
   if (!item) {
     return { ...(await fileInfoFallback("doodstream", fileCode, key)), detail: "urlupload/status listed no entry" };
   }
@@ -317,8 +333,22 @@ async function doodstreamStatus(operationId, fileCode, env) {
     bytes_done: numeric(item.bytes_downloaded),
     bytes_total: numeric(item.bytes_total),
     url: state === "complete" ? finalUrl("doodstream", fileCode) : undefined,
-    detail: describeItem(item, ["status", "bytes_downloaded", "bytes_total"]),
+    detail: describeItem(item, ["file_code", "filecode", "status", "bytes_downloaded", "bytes_total"]),
   };
+}
+
+// DoodStream spells the code `filecode` when it starts an upload and `file_code`
+// in its queue listing, so accept either rather than silently matching nothing.
+function itemFileCode(item) {
+  return String(item?.file_code ?? item?.filecode ?? "").trim();
+}
+
+// A single-object result is the provider answering about the file we asked for;
+// a list has to be searched, and no match means our transfer is genuinely absent.
+function matchFileCode(result, fileCode) {
+  if (!result) return undefined;
+  if (!Array.isArray(result)) return result;
+  return result.find((entry) => itemFileCode(entry) === fileCode);
 }
 
 async function lulustreamStatus(_operationId, fileCode, env) {
@@ -686,9 +716,7 @@ function normalizeTextState(raw) {
 }
 
 function finalUrl(provider, fileCode) {
-  if (provider === "doodstream") return `https://doodstream.com/e/${fileCode}`;
-  if (provider === "lulustream") return `https://luluvdo.com/e/${fileCode}`;
-  return `https://voe.sx/e/${fileCode}`;
+  return `${PROVIDER_EMBED[provider]}/e/${fileCode}`;
 }
 
 function remoteProvider(raw) {
