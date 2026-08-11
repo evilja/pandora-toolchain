@@ -31,6 +31,10 @@ No formatter or clippy config is enforced; match surrounding style. Tests are `#
 
 Docker (`docker-compose.yml`) builds release binaries and runs `pndc` behind cloudflared; `DB/` is a mounted volume.
 
+## Git
+
+Always commit finished work and push it to `main` — do not ask first, and do not open a branch or a PR. Commit only once `cargo check --all-targets` and `cargo test --lib` pass (plus `npm run check` in `cloudflare/lumiere-broker/` when the Worker changed). Split unrelated work into separate commits, and match the existing message style: a conventional prefix (`feat:` / `fix:` / `docs:`), then a body explaining the failure mode or the reason the change exists rather than restating the diff. Others push here too, so re-check `git status` before staging and never stage files you did not touch.
+
 ## Architecture
 
 **One crate, many binaries.** `src/bin/*.rs` are separate processes: `pndc` (Discord bot + worker runtime + HTTP API, the only long-running one), and the tools `pncurl`, `pnp2p`, `pnmpeg`, `pnass`, `pnkagami`, `pnprotocol`, `pntrace`. `kagami-trace/` is a path dependency that must stay extraction-ready — it never depends back on Pandora (`pntrace` and `src/libkagami/tracing.rs` hold the Pandora-side glue).
