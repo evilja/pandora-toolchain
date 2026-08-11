@@ -1,4 +1,11 @@
 const API_VERSION = "1";
+// Provider API origins. These hosts rotate; when one moves, its old origin
+// answers with a 301 that this Worker refuses to follow, so change it here.
+const PROVIDER_API = {
+  doodstream: "https://doodapi.co",
+  lulustream: "https://api.lulustream.com",
+  voe: "https://voe.sx",
+};
 const OPERATION_TTL_SECONDS = 24 * 60 * 60;
 const ACCESS_TOKEN_SKEW_MS = 60 * 1000;
 const tokenCache = new Map();
@@ -264,7 +271,7 @@ function providerKey(provider, env) {
 
 async function startDoodstream(sourceUrl, filename, env) {
   const key = requiredSecret(env.DOODSTREAM_API_KEY, "doodstream_not_configured", "DoodStream is not configured");
-  const endpoint = new URL("https://doodapi.co/api/upload/url");
+  const endpoint = new URL(`${PROVIDER_API.doodstream}/api/upload/url`);
   endpoint.searchParams.set("key", key);
   endpoint.searchParams.set("url", sourceUrl);
   endpoint.searchParams.set("new_title", filename);
@@ -275,7 +282,7 @@ async function startDoodstream(sourceUrl, filename, env) {
 
 async function startLulustream(sourceUrl, env) {
   const key = requiredSecret(env.LULUSTREAM_API_KEY, "lulustream_not_configured", "LuluStream is not configured");
-  const endpoint = new URL("https://lulustream.com/api/upload/url");
+  const endpoint = new URL(`${PROVIDER_API.lulustream}/api/upload/url`);
   endpoint.searchParams.set("key", key);
   endpoint.searchParams.set("url", sourceUrl);
   const data = await providerJson(endpoint, "LuluStream");
@@ -285,7 +292,7 @@ async function startLulustream(sourceUrl, env) {
 
 async function startVoe(sourceUrl, env) {
   const key = requiredSecret(env.VOE_API_KEY, "voe_not_configured", "Voe is not configured");
-  const endpoint = new URL("https://voe.sx/api/upload/url");
+  const endpoint = new URL(`${PROVIDER_API.voe}/api/upload/url`);
   endpoint.searchParams.set("key", key);
   endpoint.searchParams.set("url", sourceUrl);
   const data = await providerJson(endpoint, "Voe");
@@ -296,7 +303,7 @@ async function startVoe(sourceUrl, env) {
 
 async function doodstreamStatus(operationId, fileCode, env) {
   const key = requiredSecret(env.DOODSTREAM_API_KEY, "doodstream_not_configured", "DoodStream is not configured");
-  const endpoint = new URL("https://doodapi.co/api/urlupload/status");
+  const endpoint = new URL(`${PROVIDER_API.doodstream}/api/urlupload/status`);
   endpoint.searchParams.set("key", key);
   endpoint.searchParams.set("file_code", operationId);
   const data = await providerJson(endpoint, "DoodStream");
@@ -316,7 +323,7 @@ async function doodstreamStatus(operationId, fileCode, env) {
 
 async function lulustreamStatus(_operationId, fileCode, env) {
   const key = requiredSecret(env.LULUSTREAM_API_KEY, "lulustream_not_configured", "LuluStream is not configured");
-  const endpoint = new URL("https://lulustream.com/api/file/url_uploads");
+  const endpoint = new URL(`${PROVIDER_API.lulustream}/api/file/url_uploads`);
   endpoint.searchParams.set("key", key);
   endpoint.searchParams.set("file_code", fileCode);
   const data = await providerJson(endpoint, "LuluStream");
@@ -336,7 +343,7 @@ async function lulustreamStatus(_operationId, fileCode, env) {
 
 async function voeStatus(operationId, fileCode, env) {
   const key = requiredSecret(env.VOE_API_KEY, "voe_not_configured", "Voe is not configured");
-  const endpoint = new URL("https://voe.sx/api/upload/url/list");
+  const endpoint = new URL(`${PROVIDER_API.voe}/api/upload/url/list`);
   endpoint.searchParams.set("key", key);
   endpoint.searchParams.set("id", operationId);
   endpoint.searchParams.set("limit", "1");
@@ -367,12 +374,7 @@ async function fileInfoFallback(provider, fileCode, key) {
 // The provider's own file record is the only signal that survives a queue entry
 // disappearing or reporting a state this Worker does not recognise.
 async function fileInfoPlayable(provider, fileCode, key) {
-  const endpoints = {
-    doodstream: "https://doodapi.co/api/file/info",
-    lulustream: "https://lulustream.com/api/file/info",
-    voe: "https://voe.sx/api/file/info",
-  };
-  const endpoint = new URL(endpoints[provider]);
+  const endpoint = new URL(`${PROVIDER_API[provider]}/api/file/info`);
   endpoint.searchParams.set("key", key);
   endpoint.searchParams.set("file_code", fileCode);
   try {
@@ -399,6 +401,15 @@ function describeItem(item, fields) {
   return parts.length > 0 ? parts.join(" ") : "provider sent no recognisable fields";
 }
 
+// Hostname only: a provider Location carries our API key in its query string.
+function hostOf(raw) {
+  try {
+    return new URL(String(raw || "")).host;
+  } catch (_) {
+    return "";
+  }
+}
+
 function joinDetail(existing, addition) {
   return existing ? `${existing}; ${addition}` : addition;
 }
@@ -419,6 +430,19 @@ async function providerJson(url, provider) {
     response = await fetch(url, { redirect: "manual" });
   } catch (_) {
     throw new ApiError(502, "provider_unavailable", `${provider} is unavailable`);
+  }
+  // A moved API answers with a redirect this Worker deliberately does not follow.
+  // Name the new host — and only the host, because the Location echoes our API
+  // key in its query — so the next domain rotation diagnoses itself.
+  if (response.status >= 300 && response.status < 400) {
+    const moved = hostOf(response.headers.get("Location"));
+    throw new ApiError(
+      502,
+      "provider_moved",
+      moved
+        ? `${provider} redirected its API to ${moved}; update PROVIDER_API`
+        : `${provider} redirected its API without a target`,
+    );
   }
   let data;
   try {

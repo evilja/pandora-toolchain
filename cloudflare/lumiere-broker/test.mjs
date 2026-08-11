@@ -112,7 +112,13 @@ globalThis.fetch = async (input, init = {}) => {
       result: [{ status: doodPlayable ? 200 : 404, canplay: doodPlayable ? 1 : 0 }],
     });
   }
-  if (url.hostname === "lulustream.com" && url.pathname === "/api/upload/url") {
+  if (url.hostname === "api.lulustream.com" && url.pathname === "/api/upload/url") {
+    if (luluStartResponse === "moved") {
+      return new Response("<html>moved</html>", {
+        status: 301,
+        headers: { Location: `https://api.example.net/api/upload/url?key=lulu-key&url=${url.searchParams.get("url")}` },
+      });
+    }
     return Response.json(luluStartResponse);
   }
   throw new Error(`unexpected test fetch ${method} ${url}`);
@@ -244,6 +250,30 @@ const luluError = (await luluStart.json()).error;
 assert.equal(luluError.code, "provider_rejected");
 assert.match(luluError.message, /invalid url <url>/);
 assert.ok(!luluError.message.includes("/lumiere/v1/files/"));
+
+// A provider that moves its API answers with a redirect this Worker refuses to
+// follow. It must name the new host and nothing else: the Location echoes our
+// provider key and the capability URL back at us.
+luluStartResponse = "moved";
+const luluMoved = await worker.fetch(
+  new Request("https://broker.example/v1/remote/start", {
+    method: "POST",
+    headers: { ...headers, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      request_id: "test:remote:lulu-moved",
+      provider: "lulustream",
+      source_url: "https://files.example.com/lumiere/v1/files/abc/test.mp4",
+      filename: "test.mp4",
+    }),
+  }),
+  { ...env, LULUSTREAM_API_KEY: "lulu-key" },
+);
+assert.equal(luluMoved.status, 502);
+const movedError = (await luluMoved.json()).error;
+assert.equal(movedError.code, "provider_moved");
+assert.match(movedError.message, /redirected its API to api\.example\.net/);
+assert.ok(!movedError.message.includes("lulu-key"));
+assert.ok(!movedError.message.includes("/lumiere/v1/files/"));
 
 globalThis.fetch = realFetch;
 
