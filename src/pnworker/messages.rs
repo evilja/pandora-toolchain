@@ -27,6 +27,17 @@ pub const TORRENT_PROG_SELECT: &str = "TORRENT_PROG_SELECT";
 pub const TORRENT_DONE: &str = "TORRENT_DONE";
 pub const TORRENT_FAIL: &str = "TORRENT_FAIL";
 pub const TORRENT_DUPLICATE_WAIT: &str = "TORRENT_DUPLICATE_WAIT";
+// Internal, like WORKER_ASSIGN: core.rs turns one finished batch file into a child encode job and
+// never renders this payload, so it carries no locale entry.
+pub const TORRENT_FILE_DONE: &str = "TORRENT_FILE_DONE";
+pub const BATCH_PROG: &str = "BATCH_PROG";
+pub const BATCH_DONE: &str = "BATCH_DONE";
+pub const BATCH_EPISODE: &str = "BATCH_EPISODE";
+pub const BATCH_CONFIRM: &str = "BATCH_CONFIRM";
+pub const BATCH_CONFIRM_BODY: &str = "BATCH_CONFIRM_BODY";
+pub const BATCH_CONFIRM_EXPIRED: &str = "BATCH_CONFIRM_EXPIRED";
+pub const BATCH_CANCELLED: &str = "BATCH_CANCELLED";
+pub const BATCH_MISMATCH: &str = "BATCH_MISMATCH";
 pub const ENCODE_PROG: &str = "ENCODE_PROG";
 pub const ENCODE_CONCAT_PROG: &str = "ENCODE_CONCAT_PROG";
 pub const ENCODE_START: &str = "ENCODE_START";
@@ -98,6 +109,7 @@ pub const FIELD_DRIVE_ONLY: &str = "FIELD_DRIVE_ONLY";
 pub const FIELD_ANIMECIX_FANSUB: &str = "FIELD_ANIMECIX_FANSUB";
 pub const FIELD_OPENANIME_FANSUB: &str = "FIELD_OPENANIME_FANSUB";
 pub const FIELD_ANIZM_FANSUB: &str = "FIELD_ANIZM_FANSUB";
+pub const FIELD_OUTPUT: &str = "FIELD_OUTPUT";
 pub const LABEL_ETA: &str = "LABEL_ETA";
 pub const WARNINGS_MORE: &str = "WARNINGS_MORE";
 pub const STAGE_QUEUED: &str = "STAGE_QUEUED";
@@ -131,6 +143,7 @@ pub const JOB_TYPE_KEYCODE: &str = "JOB_TYPE_KEYCODE";
 pub const JOB_TYPE_PREVIEW: &str = "JOB_TYPE_PREVIEW";
 pub const JOB_TYPE_STUDIO: &str = "JOB_TYPE_STUDIO";
 pub const JOB_TYPE_STUDIO_PREVIEW: &str = "JOB_TYPE_STUDIO_PREVIEW";
+pub const JOB_TYPE_BATCH: &str = "JOB_TYPE_BATCH";
 pub const JOB_TYPE_UNKNOWN: &str = "JOB_TYPE_UNKNOWN";
 pub const VALUE_NONE: &str = "VALUE_NONE";
 pub const VALUE_NOT_AVAILABLE: &str = "VALUE_NOT_AVAILABLE";
@@ -414,6 +427,18 @@ pub fn create_job_embed(job: &Job, payload: &MessagePayload) -> CreateEmbed {
             false,
         );
 
+    // The batch's own message carries the episode count and, when Pandora serves a public page,
+    // the link that holds every child encode's output.
+    if let Some(batch) = job.batch.as_ref() {
+        embed = embed.field(
+            get_message(FIELD_EPISODES, lang),
+            format!("`{}`", batch.total()),
+            true,
+        );
+        if let Some(url) = crate::pnworker::batch::batch_output_url(&batch.token) {
+            embed = embed.field(get_message(FIELD_OUTPUT, lang), url, false);
+        }
+    }
     if !job.encode_warnings.is_empty() {
         embed = embed.field(
             get_message(FIELD_WARNINGS, lang),
@@ -619,6 +644,7 @@ pub fn get_job_type_text(job_type: JobType, lang: &str) -> String {
         JobType::Preview => JOB_TYPE_PREVIEW,
         JobType::Studio => JOB_TYPE_STUDIO,
         JobType::StudioPreview => JOB_TYPE_STUDIO_PREVIEW,
+        JobType::Batch => JOB_TYPE_BATCH,
         _ => JOB_TYPE_UNKNOWN,
     };
     get_message(id, lang)
@@ -690,6 +716,8 @@ mod tests {
             keycode: None,
             preview: None,
             studio: None,
+            batch: None,
+            batch_parent: None,
         }
     }
 

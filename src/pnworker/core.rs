@@ -13,6 +13,10 @@ use crate::pnworker::forwarding::{
     encode_forward_keys, forwarded_worker_for, is_forwardable_encode, mark_forwarded,
     persist_forwarded_wait, queued_encode_parent, sync_forwarded_jobs, sync_forwarded_state,
 };
+use crate::pnworker::batch::{
+    BatchRequest, batch_child_may_dispatch, batch_page_available, build_batch_child,
+    persist_batch_progress, store_batch_token,
+};
 use crate::pnworker::estimate::QueueEstimator;
 use crate::pnworker::frontend::Frontend;
 use crate::pnworker::heartbeat::core::{TypedShrine, Worker};
@@ -25,8 +29,8 @@ use crate::pnworker::lifecycle::{cleanup_job, render};
 use crate::pnworker::studio::{cleanup_expired_studios, cleanup_studios_startup};
 use crate::pnworker::messages::{
     ENCODE_CONCAT_PROG, ENCODE_PROG, ENCODE_WARNING, GITQUERY_BLOCKED, JOB_SETUP_FAIL,
-    MessagePayload, QUEUE_TOO_LONG, QUEUED, TORRENT_DUPLICATE_WAIT, UPLOAD_DONE, UPLOAD_PROG,
-    WORKER_ASSIGN,
+    MessagePayload, QUEUE_TOO_LONG, QUEUED, TORRENT_DUPLICATE_WAIT, TORRENT_FILE_DONE, UPLOAD_DONE,
+    UPLOAD_PROG, WORKER_ASSIGN,
 };
 use crate::pnworker::presence::{Presence, presence_from_queue};
 use crate::pnworker::progress::{drive_link_from_payload, persist_side_effects};
@@ -87,6 +91,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
     shrine.layer(Worker::Probe, pn_probeworker, 5, 50);
     let mut queue_estimator = QueueEstimator::new();
     let mut next_encode_dispatch_order = 1u64;
+    let mut encodes_since_batch = 0u64;
     let mut encode_reboot_epoch = shrine.reboot_epoch(&Worker::Encode);
     let mut gitquery: Option<HalfJob> = None;
     let mut next_cache_cleanup = tokio::time::Instant::now() + Duration::from_secs(1);
@@ -124,8 +129,10 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
             &mut queue,
             &mut shrine,
             &mut next_encode_dispatch_order,
+            &mut encodes_since_batch,
         )
         .await;
+        do_batch_parent_things(&db, &mut queue).await;
         if let Some(halfjob) = gitquery.take() {
             if encode_jobs_active(&queue) {
                 gitquery = Some(halfjob);
@@ -154,7 +161,9 @@ async fn do_queue_things(
                 decline_gitquery_blocked_encode(&mut job).await;
                 return true;
             }
-            if queue.len() > 4 {
+            // Batch children are spawned by the worker itself; counting them here would let one
+            // batch decline every other submission with "queue too long".
+            if queue.iter().filter(|job| job.batch_parent.is_none()).count() > 4 {
                 job.ready = Stage::Declined;
                 render(&mut job, MessagePayload::Static(QUEUE_TOO_LONG)).await;
                 if matches!(job.job_type, JobType::Studio | JobType::StudioPreview) {
@@ -171,6 +180,7 @@ async fn do_queue_things(
                 return true;
             }
             persist_keep_reserved(db, &job).await;
+            persist_batch_progress(db, &job).await;
             queue.push(job);
         }
         JobClass::HalfJob(halfjob) => {
@@ -181,7 +191,10 @@ async fn do_queue_things(
 }
 
 fn is_encode_job_type(job_type: JobType) -> bool {
-    matches!(job_type, JobType::Encode | JobType::Pancode | JobType::Keycode | JobType::Studio)
+    matches!(
+        job_type,
+        JobType::Encode | JobType::Pancode | JobType::Keycode | JobType::Studio | JobType::Batch
+    )
 }
 
 fn encode_jobs_active(queue: &[Job]) -> bool {
@@ -244,6 +257,7 @@ async fn queue_new_job(
         JobType::Encode => queue_encode_job(db, queue, shrine, job).await,
         JobType::Probe => queue_probe_job(db, queue, shrine, job).await,
         JobType::Pancode => queue_pancode_job(db, queue, shrine, job).await,
+        JobType::Batch => queue_batch_job(db, queue, shrine, job).await,
         JobType::Backup => queue_backup_job(db, queue, shrine, job).await,
         JobType::BackupAll => queue_backup_all_job(db, queue, shrine, job).await,
         JobType::Keycode => queue_keycode_job(db, queue, shrine, job).await,
@@ -362,7 +376,7 @@ async fn queue_encode_job(
         queue.push(job.clone());
         return true;
     }
-    queue_download_job(db, queue, shrine, job, None, false).await
+    queue_download_job(db, queue, shrine, job, Vec::new(), false).await
 }
 
 async fn queue_probe_job(
@@ -437,7 +451,47 @@ async fn queue_pancode_job(
         return true;
     }
 
-    queue_download_job(db, queue, shrine, job, job.probe_file_index, false).await
+    queue_download_job(db, queue, shrine, job, job.probe_file_index.into_iter().collect(), false).await
+}
+
+// A batch owns one download of many files. Its own work directory only ever holds the torrent —
+// the per-episode subtitle goes to the child job that the finished file is handed to, so nothing
+// here writes `contents/subtitle.ass`.
+async fn queue_batch_job(
+    db: &JobDb,
+    queue: &[Job],
+    shrine: &mut TypedShrine<WorkerMsg>,
+    job: &mut Job,
+) -> bool {
+    let Some(batch) = job.batch.clone() else {
+        decline_job_setup(job, "batch selection missing").await;
+        return true;
+    };
+    if batch.entries.is_empty() {
+        decline_job_setup(job, "batch selection is empty").await;
+        return true;
+    }
+    if let Err(reason) = prepare_queued_job(job, "dwl-pending", false).await {
+        decline_job_setup(job, &reason).await;
+        return true;
+    }
+
+    let probe_dir = env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("DB")
+        .join("work")
+        .join(batch.probe_job_id.to_string());
+    let torrent_src = probe_dir.join("contents").join("fetch.torrent");
+    let torrent_dst = job.directory.join("contents").join("fetch.torrent");
+    if tokio::fs::copy(&torrent_src, &torrent_dst).await.is_err()
+        && job.torrent.get().trim().is_empty()
+    {
+        decline_job_setup(job, "probe torrent data is no longer available").await;
+        return true;
+    }
+
+    store_batch_token(&batch.token, job.job_id).await;
+    queue_download_job(db, queue, shrine, job, batch.file_indices(), true).await
 }
 
 async fn queue_backup_job(
@@ -476,7 +530,7 @@ async fn queue_backup_job(
             return true;
         }
     }
-    queue_download_job(db, queue, shrine, job, job.probe_file_index, false).await
+    queue_download_job(db, queue, shrine, job, job.probe_file_index.into_iter().collect(), false).await
 }
 
 async fn queue_keycode_job(
@@ -733,7 +787,7 @@ async fn queue_backup_all_job(
             job.directory.clone(),
             job.torrent.clone(),
             job.job_id,
-            None,
+            Vec::new(),
             true,
         )),
         job,
@@ -766,7 +820,7 @@ async fn queue_preview_job(
         decline_job_setup(job, &reason).await;
         return true;
     }
-    queue_download_job(db, queue, shrine, job, None, false).await
+    queue_download_job(db, queue, shrine, job, Vec::new(), false).await
 }
 
 async fn queue_studio_job(
@@ -841,17 +895,21 @@ async fn queue_download_job(
     queue: &[Job],
     shrine: &mut TypedShrine<WorkerMsg>,
     job: &mut Job,
-    file_index: Option<u64>,
+    file_indices: Vec<u64>,
     preserve_all: bool,
 ) -> bool {
-    if use_cache_or_wait(db, job, queue).await {
+    // Both shortcuts below hand back a single `input.mkv`. A batch needs its own multi-file
+    // download or no per-file completion ever fires and it produces nothing, so it always runs its
+    // own transfer; a torrent genuinely locked elsewhere fails it visibly instead.
+    let batch = job.batch.is_some();
+    if !batch && use_cache_or_wait(db, job, queue).await {
         job.frontend
             .set_presence(Presence::Downloading {
                 idx: queue.len(),
                 total: queue.len() + 1,
             })
             .await;
-    } else if wait_for_active_torrent_download(db, job, queue).await {
+    } else if !batch && wait_for_active_torrent_download(db, job, queue).await {
         job.frontend
             .set_presence(Presence::Downloading {
                 idx: queue.len(),
@@ -865,7 +923,7 @@ async fn queue_download_job(
             job.directory.clone(),
             job.torrent.clone(),
             job.job_id,
-            file_index,
+            file_indices,
             preserve_all,
         )),
         job,
@@ -898,6 +956,7 @@ fn active_torrent_download_source(job: &Job, queue: &[Job]) -> Option<PathBuf> {
                 && (other.requested_at < job.requested_at
                     || (other.requested_at == job.requested_at && other.job_id < job.job_id));
             other.forward_parent.is_none()
+                && other.batch.is_none()
                 && other.job_id != job.job_id
                 && (active_download || earlier_queued_wait)
                 && jobs_share_source(job, other)
@@ -936,6 +995,19 @@ async fn handle_half_job(
                 .iter()
                 .position(|i| halfjob.job_id == i.job_id && halfjob.author == i.author)
             {
+                // Cancelling the batch has to reach the episodes it already handed to the encoder;
+                // they are ordinary jobs by then and nothing else would stop them.
+                if queue[pos].batch.is_some() {
+                    let parent_id = queue[pos].job_id;
+                    let children: Vec<PathBuf> = queue
+                        .iter()
+                        .filter(|job| job.batch_parent == Some(parent_id))
+                        .map(|job| job.directory.clone())
+                        .collect();
+                    for directory in children {
+                        File::create(directory.join("CANCEL")).await.ok();
+                    }
+                }
                 let disposition = cancel_disposition(&queue[pos]);
                 if let Err(e) = File::create(queue[pos].directory.join("CANCEL")).await {
                     if disposition == CancelDisposition::CancelFile {
@@ -1168,6 +1240,7 @@ fn job_type_label(job_type: JobType) -> &'static str {
         JobType::Preview => "preview",
         JobType::Studio => "studio",
         JobType::StudioPreview => "studio-preview",
+        JobType::Batch => "batch",
     }
 }
 
@@ -1361,6 +1434,14 @@ async fn do_worker_message_things(
                 queue[pos].encode_total = args.get(1).and_then(|s| s.parse().ok());
                 queue[pos].encode_fps = args.get(2).and_then(|s| s.parse().ok());
             }
+            if *id == TORRENT_FILE_DONE {
+                let index = args.get(0).and_then(|value| value.parse::<u64>().ok());
+                let relative = args.get(1).cloned().unwrap_or_default();
+                if let Some(index) = index {
+                    spawn_batch_child(db, queue, pos, index, &relative).await;
+                }
+                return true;
+            }
             if *id == TORRENT_DUPLICATE_WAIT {
                 if let Some(path) = args.get(0) {
                     queue[pos].duplicate_source = Some(duplicate_path_to_container(path));
@@ -1436,6 +1517,11 @@ async fn do_worker_message_things(
             }
         }
 
+        if let (Some(parent_id), Some(stage)) = (queue[pos].batch_parent, stage) {
+            let child_id = queue[pos].job_id;
+            update_batch_parent(db, queue, parent_id, child_id, stage).await;
+        }
+
         let parent_worker = queue
             .iter()
             .find(|job| job.job_id == commdata.0)
@@ -1474,6 +1560,197 @@ async fn do_worker_message_things(
         fe.set_presence(presence_from_queue(queue)).await;
     }
     false
+}
+
+// One file of a batch has landed. It becomes an encode job right away rather than waiting for the
+// rest of the torrent, which is the whole point of downloading the selection in one process.
+async fn spawn_batch_child(
+    db: &JobDb,
+    queue: &mut Vec<Job>,
+    pos: usize,
+    file_index: u64,
+    relative: &str,
+) {
+    let parent = queue[pos].clone();
+    let Some(batch) = parent.batch.clone() else {
+        return;
+    };
+    let Some(entry) = batch.entry_for(file_index).cloned() else {
+        return;
+    };
+    if entry.job_id.is_some() {
+        return;
+    }
+    let source = parent
+        .directory
+        .join("contents")
+        .join("torrent")
+        .join(relative);
+    let Some(mut child) = build_batch_child(&parent, &entry, &source).await else {
+        if let Some(batch) = queue[pos].batch.as_mut() {
+            batch.failed += 1;
+        }
+        persist_batch_progress(db, &queue[pos]).await;
+        render_batch_parent(&mut queue[pos]).await;
+        return;
+    };
+    // With an output page the batch speaks through one message; without one, every episode needs
+    // somewhere of its own to report.
+    if !batch_page_available() {
+        child.frontend = parent.frontend.spawn_child_message("...").await;
+    }
+    if let Err(e) = db.insert_job(&child).await {
+        eprintln!("[Pandora Batch] child {} insert failed: {}", child.job_id, e);
+        remove_dir_all(&child.directory).await.ok();
+        if let Some(batch) = queue[pos].batch.as_mut() {
+            batch.failed += 1;
+        }
+        persist_batch_progress(db, &queue[pos]).await;
+        render_batch_parent(&mut queue[pos]).await;
+        return;
+    }
+    let child_id = child.job_id;
+    render(
+        &mut child,
+        MessagePayload::Progress(
+            crate::pnworker::messages::BATCH_EPISODE,
+            vec![parent.job_id.to_string(), entry.file_label.clone()],
+        ),
+    )
+    .await;
+    if let Some(batch) = queue[pos].batch.as_mut() {
+        if let Some(entry) = batch
+            .entries
+            .iter_mut()
+            .find(|entry| entry.file_index == file_index)
+        {
+            entry.job_id = Some(child_id);
+        }
+        batch.current = entry.file_label.clone();
+    }
+    persist_batch_progress(db, &queue[pos]).await;
+    render_batch_parent(&mut queue[pos]).await;
+    queue.push(child);
+}
+
+async fn render_batch_parent(job: &mut Job) {
+    let Some(batch) = job.batch.clone() else {
+        return;
+    };
+    let current = if batch.current.is_empty() {
+        "-".to_string()
+    } else {
+        batch.current.clone()
+    };
+    render(
+        job,
+        MessagePayload::Progress(
+            crate::pnworker::messages::BATCH_PROG,
+            vec![
+                (batch.finished + batch.failed).to_string(),
+                batch.total().to_string(),
+                current,
+            ],
+        ),
+    )
+    .await;
+}
+
+// A child's stage change is the parent's only progress signal, so the parent is re-rendered on the
+// transitions worth a message edit rather than on every encode progress tick.
+async fn update_batch_parent(
+    db: &JobDb,
+    queue: &mut Vec<Job>,
+    parent_id: u64,
+    child_id: u64,
+    stage: Stage,
+) {
+    let Some(pos) = queue.iter().position(|job| job.job_id == parent_id) else {
+        return;
+    };
+    let Some(batch) = queue[pos].batch.as_mut() else {
+        return;
+    };
+    let label = batch.label_for_job(child_id);
+    match stage {
+        Stage::Uploaded => batch.finished += 1,
+        Stage::Failed | Stage::Cancelled | Stage::Declined => batch.failed += 1,
+        _ => {}
+    }
+    if !label.is_empty() && matches!(stage, Stage::Encoding | Stage::Uploading) {
+        batch.current = label;
+    }
+    persist_batch_progress(db, &queue[pos]).await;
+    render_batch_parent(&mut queue[pos]).await;
+}
+
+// The parent outlives its download: it stays in the queue reporting the children until the last
+// episode is terminal, then reports the batch as a whole.
+async fn do_batch_parent_things(db: &JobDb, queue: &mut Vec<Job>) {
+    let settled: Vec<u64> = queue
+        .iter()
+        .filter(|job| {
+            job.ready == Stage::Downloaded
+                && job
+                    .batch
+                    .as_ref()
+                    .is_some_and(|batch| !batch.download_settled)
+        })
+        .map(|job| job.job_id)
+        .collect();
+    for job_id in settled {
+        let Some(pos) = queue.iter().position(|job| job.job_id == job_id) else {
+            continue;
+        };
+        if queue[pos]
+            .batch
+            .as_mut()
+            .is_some_and(|batch| batch.settle_download())
+        {
+            persist_batch_progress(db, &queue[pos]).await;
+        }
+    }
+    let complete: Vec<u64> = queue
+        .iter()
+        .filter(|job| {
+            job.batch
+                .as_ref()
+                .is_some_and(|batch| batch.complete() && !batch.entries.is_empty())
+                && matches!(job.ready, Stage::Downloaded | Stage::Downloading)
+        })
+        .map(|job| job.job_id)
+        .collect();
+    for job_id in complete {
+        let Some(pos) = queue.iter().position(|job| job.job_id == job_id) else {
+            continue;
+        };
+        let Some(batch) = queue[pos].batch.clone() else {
+            continue;
+        };
+        queue[pos].ready = Stage::Uploaded;
+        queue[pos].worker = "que-main".to_string();
+        db.update_stage(job_id, Stage::Uploaded).await.ok();
+        db.update_worker(job_id, "que-main").await.ok();
+        persist_batch_progress(db, &queue[pos]).await;
+        render(
+            &mut queue[pos],
+            MessagePayload::Progress(
+                crate::pnworker::messages::BATCH_DONE,
+                vec![batch.finished.to_string(), batch.total().to_string()],
+            ),
+        )
+        .await;
+        let directory = queue[pos].directory.clone();
+        let frontend = queue[pos].frontend.clone();
+        db.archive_job(job_id).await.ok();
+        cleanup_job(
+            &directory,
+            &PathBuf::from("DB").join("saved_data").join(job_id.to_string()),
+        )
+        .await;
+        queue.retain(|job| job.job_id != job_id);
+        frontend.set_presence(presence_from_queue(queue)).await;
+    }
 }
 
 async fn requeue_duplicate_waiter(db: &JobDb, job: &mut Job) {
@@ -1594,7 +1871,7 @@ async fn do_queued_download_waiting_things(
         }
         let snapshot = queue.clone();
         let file_index = queue[pos].probe_file_index;
-        if queue_download_job(db, &snapshot, shrine, &mut queue[pos], file_index, false).await {
+        if queue_download_job(db, &snapshot, shrine, &mut queue[pos], file_index.into_iter().collect(), false).await {
             dead.push(id);
         }
     }
@@ -1606,8 +1883,25 @@ async fn do_job_progression_things(
     queue: &mut Vec<Job>,
     shrine: &mut TypedShrine<WorkerMsg>,
     next_encode_dispatch_order: &mut u64,
+    encodes_since_batch: &mut u64,
 ) {
     let qlen = queue.len();
+    // A batch child holds the encoder alone, and only takes it once two ordinary encodes that were
+    // ready to run have gone ahead of it.
+    let mut batch_in_flight = queue.iter().any(|job| {
+        job.batch_parent.is_some()
+            && job.encode_dispatched
+            && matches!(job.ready, Stage::Downloaded | Stage::Encoding)
+    });
+    let others_waiting = queue.iter().any(|job| {
+        job.batch_parent.is_none()
+            && job.batch.is_none()
+            && job.forward_parent.is_none()
+            && is_encode_job_type(job.job_type)
+            && !job.encode_dispatched
+            && (job.ready == Stage::Downloaded
+                || (job.job_type == JobType::Keycode && job.ready == Stage::Queued))
+    });
     let mut dead: Vec<u64> = vec![];
     let mut forwarded_state_updates: Vec<(u64, Stage, String)> = vec![];
     let mut active_encode_sources: HashMap<String, PathBuf> = HashMap::new();
@@ -1651,6 +1945,11 @@ async fn do_job_progression_things(
     }
     for (idx, job) in queue.iter_mut().enumerate() {
         if job.forward_parent.is_some() {
+            continue;
+        }
+        // A batch parent never encodes anything itself; its download feeds the child jobs and
+        // do_batch_parent_things owns the rest of its life.
+        if job.batch.is_some() {
             continue;
         }
         if job.ready == Stage::Probed {
@@ -1829,6 +2128,15 @@ async fn do_job_progression_things(
                     .await;
                     continue;
                 }
+                if job.batch_parent.is_some()
+                    && !batch_child_may_dispatch(
+                        batch_in_flight,
+                        others_waiting,
+                        *encodes_since_batch,
+                    )
+                {
+                    continue;
+                }
                 job.worker = "enc-main".to_string();
                 db.update_worker(job.job_id, &job.worker).await.ok();
                 if !dispatch_or_kill(
@@ -1852,6 +2160,12 @@ async fn do_job_progression_things(
                     continue;
                 }
                 mark_encode_dispatched(job, next_encode_dispatch_order);
+                if job.batch_parent.is_some() {
+                    batch_in_flight = true;
+                    *encodes_since_batch = 0;
+                } else {
+                    *encodes_since_batch = encodes_since_batch.saturating_add(1);
+                }
                 for key in cache_keys {
                     active_encode_sources
                         .entry(key)
@@ -2114,6 +2428,7 @@ pub enum JobType {
     Preview = 013,
     Studio = 014,
     StudioPreview = 015,
+    Batch = 016,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -2364,6 +2679,10 @@ pub struct Job {
     pub keycode: Option<KeycodeRequest>,
     pub preview: Option<PreviewRequest>,
     pub studio: Option<StudioJobRequest>,
+    // Set on the parent that owns the multi-file download; `batch_parent` is set on the per-episode
+    // encodes it spawns. Exactly one of the two is ever populated.
+    pub batch: Option<BatchRequest>,
+    pub batch_parent: Option<u64>,
 }
 
 impl PartialEq for Job {
@@ -2391,7 +2710,7 @@ impl Job {
             .unwrap_or(Duration::from_secs(0));
         let settings = load_server_settings(server_id);
         let preset = match job_type {
-            JobType::Encode | JobType::Pancode => settings.preset.clone(),
+            JobType::Encode | JobType::Pancode | JobType::Batch => settings.preset.clone(),
             JobType::Keycode => match settings.preset {
                 Preset::PseudoLossless(candidates)
                 | Preset::Dummy(candidates)
@@ -2414,7 +2733,10 @@ impl Job {
             torrent,
             display_link: None,
             attachment,
-            server_watermark: if matches!(job_type, JobType::Encode | JobType::Pancode) {
+            server_watermark: if matches!(
+                job_type,
+                JobType::Encode | JobType::Pancode | JobType::Batch
+            ) {
                 settings.watermark
             } else {
                 None
@@ -2450,6 +2772,8 @@ impl Job {
             keycode: None,
             preview: None,
             studio: None,
+            batch: None,
+            batch_parent: None,
         }
     }
 
@@ -2471,7 +2795,7 @@ impl Job {
             .unwrap_or(0);
         let settings = load_server_settings(server_id);
         let preset = match job_type {
-            JobType::Encode | JobType::Pancode => settings.preset.clone(),
+            JobType::Encode | JobType::Pancode | JobType::Batch => settings.preset.clone(),
             JobType::Keycode => match settings.preset {
                 Preset::PseudoLossless(candidates)
                 | Preset::Dummy(candidates)
@@ -2494,7 +2818,10 @@ impl Job {
             torrent,
             display_link: None,
             attachment,
-            server_watermark: if matches!(job_type, JobType::Encode | JobType::Pancode) {
+            server_watermark: if matches!(
+                job_type,
+                JobType::Encode | JobType::Pancode | JobType::Batch
+            ) {
                 settings.watermark
             } else {
                 None
@@ -2530,6 +2857,8 @@ impl Job {
             keycode: None,
             preview: None,
             studio: None,
+            batch: None,
+            batch_parent: None,
         }
     }
 }

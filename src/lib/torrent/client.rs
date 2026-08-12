@@ -137,7 +137,109 @@ pub enum DownloadEvent {
         total_bytes: u64,
         percent: f64,
     },
+    FileComplete {
+        index: u64,
+        path: PathBuf,
+        bytes: u64,
+    },
     Complete,
+}
+
+// One selected file's share of the piece map. A batch download announces a file the moment its
+// last piece lands instead of waiting for the whole torrent, which is what lets the encoder start
+// on episode 1 while episode 12 is still transferring.
+struct FileProgress {
+    index: u64,
+    path: PathBuf,
+    length: u64,
+    first_piece: usize,
+    last_piece: usize,
+    remaining: usize,
+    done: bool,
+}
+
+fn file_progress(metainfo: &Metainfo, selected: Option<&HashSet<u64>>) -> Vec<FileProgress> {
+    metainfo
+        .files
+        .iter()
+        .filter(|file| selected.is_none_or(|selection| selection.contains(&file.index)))
+        .map(|file| {
+            let (first_piece, last_piece, remaining) = if file.length == 0 {
+                (0, 0, 0)
+            } else {
+                let first = (file.offset / metainfo.piece_length) as usize;
+                let last = ((file.offset + file.length - 1) / metainfo.piece_length) as usize;
+                (first, last, last - first + 1)
+            };
+            FileProgress {
+                index: file.index,
+                path: file.path.clone(),
+                length: file.length,
+                first_piece,
+                last_piece,
+                remaining,
+                done: file.length == 0,
+            }
+        })
+        .collect()
+}
+
+// Writing a verified piece, charging it against every file it overlaps, and announcing the files
+// it finished. Shared by the drain and the select arm of the download loop so both paths keep the
+// same accounting.
+#[allow(clippy::too_many_arguments)]
+async fn write_completed_piece<F>(
+    piece: CompletedPiece,
+    metainfo: &Metainfo,
+    storage: &mut Storage,
+    files: &mut [FileProgress],
+    written: &mut HashSet<usize>,
+    written_pieces: &mut usize,
+    downloaded_bytes: &mut u64,
+    required_bytes: u64,
+    event: &mut F,
+) -> Result<()>
+where
+    F: FnMut(DownloadEvent),
+{
+    if !written.insert(piece.index) {
+        return Ok(());
+    }
+    let offset = (piece.index as u64)
+        .checked_mul(metainfo.piece_length)
+        .ok_or_else(|| TorrentError::metainfo("piece write offset overflow"))?;
+    storage.write_piece(offset, &piece.data).await?;
+    *written_pieces += 1;
+    *downloaded_bytes = downloaded_bytes
+        .checked_add(piece.data.len() as u64)
+        .ok_or_else(|| TorrentError::metainfo("download progress overflow"))?;
+    let percent = if required_bytes == 0 {
+        100.0
+    } else {
+        (*downloaded_bytes as f64 * 100.0 / required_bytes as f64).min(100.0)
+    };
+    event(DownloadEvent::Progress {
+        downloaded_bytes: *downloaded_bytes,
+        total_bytes: required_bytes,
+        percent,
+    });
+    for file in files.iter_mut() {
+        if file.done || piece.index < file.first_piece || piece.index > file.last_piece {
+            continue;
+        }
+        file.remaining = file.remaining.saturating_sub(1);
+        if file.remaining > 0 {
+            continue;
+        }
+        file.done = true;
+        storage.flush_file(file.index).await?;
+        event(DownloadEvent::FileComplete {
+            index: file.index,
+            path: file.path.clone(),
+            bytes: file.length,
+        });
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -266,6 +368,7 @@ impl TorrentClient {
                     .ok_or_else(|| TorrentError::metainfo("selected byte count overflow"))
             })?;
         let mut storage = Storage::create(destination, &metainfo, selected.as_ref()).await?;
+        let mut files = file_progress(&metainfo, selected.as_ref());
         let scheduler = Arc::new(PieceScheduler::new(required));
         if scheduler.required_count() == 0 {
             storage.finish().await?;
@@ -322,6 +425,13 @@ impl TorrentClient {
         let mut written_pieces = 0usize;
         let mut downloaded_bytes = 0u64;
         let mut written = HashSet::new();
+        for file in files.iter().filter(|file| file.done) {
+            event(DownloadEvent::FileComplete {
+                index: file.index,
+                path: file.path.clone(),
+                bytes: file.length,
+            });
+        }
 
         while written_pieces < scheduler.required_count() {
             if *cancel.borrow() {
@@ -330,27 +440,18 @@ impl TorrentClient {
             }
             if tasks.is_empty() {
                 while let Ok(piece) = piece_receiver.try_recv() {
-                    if !written.insert(piece.index) {
-                        continue;
-                    }
-                    let offset = (piece.index as u64)
-                        .checked_mul(metainfo.piece_length)
-                        .ok_or_else(|| TorrentError::metainfo("piece write offset overflow"))?;
-                    storage.write_piece(offset, &piece.data).await?;
-                    written_pieces += 1;
-                    downloaded_bytes = downloaded_bytes
-                        .checked_add(piece.data.len() as u64)
-                        .ok_or_else(|| TorrentError::metainfo("download progress overflow"))?;
-                    let percent = if required_bytes == 0 {
-                        100.0
-                    } else {
-                        (downloaded_bytes as f64 * 100.0 / required_bytes as f64).min(100.0)
-                    };
-                    event(DownloadEvent::Progress {
-                        downloaded_bytes,
-                        total_bytes: required_bytes,
-                        percent,
-                    });
+                    write_completed_piece(
+                        piece,
+                        &metainfo,
+                        &mut storage,
+                        &mut files,
+                        &mut written,
+                        &mut written_pieces,
+                        &mut downloaded_bytes,
+                        required_bytes,
+                        event,
+                    )
+                    .await?;
                 }
                 if written_pieces >= scheduler.required_count() {
                     break;
@@ -422,27 +523,18 @@ impl TorrentClient {
                     let Some(piece) = piece else {
                         return Err(TorrentError::peer("all piece workers stopped unexpectedly"));
                     };
-                    if !written.insert(piece.index) {
-                        continue;
-                    }
-                    let offset = (piece.index as u64)
-                        .checked_mul(metainfo.piece_length)
-                        .ok_or_else(|| TorrentError::metainfo("piece write offset overflow"))?;
-                    storage.write_piece(offset, &piece.data).await?;
-                    written_pieces += 1;
-                    downloaded_bytes = downloaded_bytes
-                        .checked_add(piece.data.len() as u64)
-                        .ok_or_else(|| TorrentError::metainfo("download progress overflow"))?;
-                    let percent = if required_bytes == 0 {
-                        100.0
-                    } else {
-                        (downloaded_bytes as f64 * 100.0 / required_bytes as f64).min(100.0)
-                    };
-                    event(DownloadEvent::Progress {
-                        downloaded_bytes,
-                        total_bytes: required_bytes,
-                        percent,
-                    });
+                    write_completed_piece(
+                        piece,
+                        &metainfo,
+                        &mut storage,
+                        &mut files,
+                        &mut written,
+                        &mut written_pieces,
+                        &mut downloaded_bytes,
+                        required_bytes,
+                        event,
+                    )
+                    .await?;
                 }
                 task = tasks.join_next(), if !tasks.is_empty() => {
                     match task {
@@ -806,6 +898,31 @@ mod tests {
             selection_set(FileSelection::Only(vec![1, 1, 2])).unwrap(),
             HashSet::from([1, 2])
         );
+    }
+
+    // A batch hands each finished file to an encoder, so the piece span a file occupies — including
+    // the piece it shares with its neighbour — has to be exact.
+    #[test]
+    fn file_progress_spans_every_piece_a_file_touches() {
+        let info = b"d5:filesld6:lengthi3e4:pathl5:a.mkveed6:lengthi3e4:pathl5:b.mkveee4:name4:root12:piece lengthi4e6:pieces40:0000000000000000000011111111111111111111e";
+        let meta = Metainfo::from_info_bytes(info, vec![], None).unwrap();
+        let files = file_progress(&meta, None);
+        assert_eq!(files.len(), 2);
+        assert_eq!((files[0].first_piece, files[0].last_piece), (0, 0));
+        assert_eq!(files[0].remaining, 1);
+        // The second file starts inside piece 0 and ends in piece 1.
+        assert_eq!((files[1].first_piece, files[1].last_piece), (0, 1));
+        assert_eq!(files[1].remaining, 2);
+    }
+
+    #[test]
+    fn file_progress_only_tracks_the_selected_files() {
+        let info = b"d5:filesld6:lengthi3e4:pathl5:a.mkveed6:lengthi3e4:pathl5:b.mkveee4:name4:root12:piece lengthi4e6:pieces40:0000000000000000000011111111111111111111e";
+        let meta = Metainfo::from_info_bytes(info, vec![], None).unwrap();
+        let selected = HashSet::from([1]);
+        let files = file_progress(&meta, Some(&selected));
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].index, 1);
     }
 
     #[test]

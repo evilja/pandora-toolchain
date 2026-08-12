@@ -6,10 +6,11 @@ use crate::pnworker::core::Stage;
 use crate::pnworker::core::{CommData, WorkerMsg};
 use crate::pnworker::messages::{
     CTORRENT_DONE, CTORRENT_FAIL, JOB_CANCELLED, MessagePayload, TORRENT_DONE,
-    TORRENT_DUPLICATE_WAIT, TORRENT_FAIL, TORRENT_PROG, TORRENT_PROG_SELECT, WORKER_ASSIGN,
+    TORRENT_DUPLICATE_WAIT, TORRENT_FAIL, TORRENT_FILE_DONE, TORRENT_PROG, TORRENT_PROG_SELECT,
+    WORKER_ASSIGN,
 };
 use crate::pnworker::tools::{
-    PNCURL_DIRECT, PNCURL_GSCRAPE, PNCURL_TORRENT, PNP2P_SELECT, PNP2P_TORRENT,
+    PNCURL_DIRECT, PNCURL_GSCRAPE, PNCURL_TORRENT, PNP2P_SELECT, PNP2P_SELECTS, PNP2P_TORRENT,
 };
 use crate::pnworker::util::PathValue;
 use crate::pnworker::util::string_byte_to_mb;
@@ -21,7 +22,10 @@ use tokio::fs::{create_dir_all, rename};
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::time::{Duration, Instant, sleep};
 
-pub type DownloadData = (PathBuf, TorrentType, u64, Option<u64>, bool);
+// The index list is empty for a whole-torrent download, one entry for `/encode pan`, and one entry
+// per episode for a batch — a batch runs as a single pnp2p process because the info-hash lock
+// admits exactly one downloader per torrent.
+pub type DownloadData = (PathBuf, TorrentType, u64, Vec<u64>, bool);
 
 pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, pulse: Sender<()>) {
     let env = get_pandora_env();
@@ -74,7 +78,7 @@ async fn run_download_job(
     tx: Sender<CommData>,
     worker_name: String,
 ) {
-    let (directory, torrent, job_id, file_index, preserve_all) = data;
+    let (directory, torrent, job_id, file_indices, preserve_all) = data;
     let mut proto = Protocol::new(vec![1]);
     let worker_key = format!("pn-download-{}", worker_name);
     tx.try_send((
@@ -418,7 +422,7 @@ async fn run_download_job(
         .unwrap();
         return;
     }
-    let result = match file_index {
+    let result = match file_indices.split_first() {
         None => {
             run_tool(
                 &pnp2p_path,
@@ -478,7 +482,90 @@ async fn run_download_job(
             )
             .await
         }
-        Some(idx) => {
+        Some((idx, rest)) if !rest.is_empty() => {
+            let list = std::iter::once(*idx)
+                .chain(rest.iter().copied())
+                .map(|index| index.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            run_tool(
+                &pnp2p_path,
+                PNP2P_SELECTS,
+                &HashMap::from([
+                    ("OPCODE", PathValue::from(arg_opcode.clone())),
+                    (
+                        "TORRENTTYPE",
+                        PathValue::from(format!("--{}", torrent.get_arg())),
+                    ),
+                    ("NEGKEY", PathValue::from(worker_key.clone())),
+                    ("SAVE", PathValue::from(torrent_dir.display().to_string())),
+                    ("INDEXES", PathValue::from(list)),
+                    (
+                        "CANCELFILE",
+                        PathValue::from(directory.join("CANCEL").display().to_string()),
+                    ),
+                ]),
+                job_id,
+                &mut proto,
+                |data| {
+                    let out: u16 = match data.get(0).and_then(|v| v.parse()) {
+                        Some(v) => v,
+                        None => return None,
+                    };
+                    match out {
+                        0 => {
+                            let payload = data.get(1).and_then(|v| v.as_multi())?;
+                            let percent = payload.get(0).and_then(|v| v.as_str()).unwrap_or("0");
+                            let progmb = payload.get(1).and_then(|v| v.as_str()).unwrap_or("0");
+                            let totlmb = payload.get(2).and_then(|v| v.as_str()).unwrap_or("0");
+                            tx.try_send((
+                                job_id,
+                                MessagePayload::Progress(
+                                    TORRENT_PROG,
+                                    vec![
+                                        percent.to_string(),
+                                        string_byte_to_mb(progmb).to_string(),
+                                        string_byte_to_mb(totlmb).to_string(),
+                                    ],
+                                ),
+                                None,
+                            ))
+                            .ok();
+                        }
+                        1 => return Some(ToolResult::Success),
+                        2 => return Some(ToolResult::Fail),
+                        3 => return Some(ToolResult::Cancel),
+                        // A finished file cannot wait for the rest of the torrent: it is sent
+                        // upstream immediately so its encode can be queued.
+                        6 => {
+                            let payload = data.get(1).and_then(|v| v.as_multi())?;
+                            let index = payload.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                            let name = payload.get(1).and_then(|v| v.as_str()).unwrap_or("");
+                            if !index.is_empty() && !name.is_empty() {
+                                tx.try_send((
+                                    job_id,
+                                    MessagePayload::Progress(
+                                        TORRENT_FILE_DONE,
+                                        vec![index.to_string(), name.to_string()],
+                                    ),
+                                    None,
+                                ))
+                                .ok();
+                            }
+                        }
+                        5 => {
+                            duplicate_save_path =
+                                data.get(2).and_then(|v| v.as_str()).map(|s| s.to_string());
+                            return Some(ToolResult::Fail);
+                        }
+                        _ => {}
+                    }
+                    None
+                },
+            )
+            .await
+        }
+        Some((idx, _)) => {
             run_tool(
                 &pnp2p_path,
                 PNP2P_SELECT,

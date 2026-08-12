@@ -621,3 +621,43 @@ args = 2
 [REFRESHCACHE_FAIL]
 text = "{}: 更新に失敗したため、キャッシュされたコピーを保持します — {}"
 args = 2
+
+[BATCH_PROG]
+text = "話数 `{}/{}` 完了 • 現在 `{}`"
+args = 3
+
+[BATCH_DONE]
+text = "`{}/{}` 話が完了しました。"
+args = 2
+
+[BATCH_EPISODE]
+text = "バッチ `{}` • `{}`"
+args = 2
+
+[BATCH_CONFIRM]
+text = "📚 バッチエンコード"
+args = 0
+
+[BATCH_CONFIRM_BODY]
+text = "`{}` 話をこれらの字幕でエンコードします。\n確認しますか？"
+args = 1
+
+[BATCH_CONFIRM_EXPIRED]
+text = "このバッチ確認は利用できなくなりました。"
+args = 0
+
+[BATCH_CANCELLED]
+text = "バッチエンコードを中止しました。"
+args = 0
+
+[BATCH_MISMATCH]
+text = "`{}` ファイルと `{}` 字幕: 最初の `{}` 組のみエンコードします。"
+args = 3
+
+[FIELD_OUTPUT]
+text = "出力"
+args = 0
+
+[JOB_TYPE_BATCH]
+text = "📚 バッチエンコードジョブ"
+args = 0

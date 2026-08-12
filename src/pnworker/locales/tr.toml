@@ -621,3 +621,43 @@ args = 2
 [REFRESHCACHE_FAIL]
 text = "{}: yenileme başarısız, önbellekteki kopya korunuyor — {}"
 args = 2
+
+[BATCH_PROG]
+text = "Bölümler `{}/{}` bitti • şimdi `{}`"
+args = 3
+
+[BATCH_DONE]
+text = "`{}/{}` bölüm tamamlandı."
+args = 2
+
+[BATCH_EPISODE]
+text = "Toplu iş `{}` • `{}`"
+args = 2
+
+[BATCH_CONFIRM]
+text = "📚 Toplu encode"
+args = 0
+
+[BATCH_CONFIRM_BODY]
+text = "`{}` bölüm bu altyazılarla encode edilecek.\nOnaylıyor musun?"
+args = 1
+
+[BATCH_CONFIRM_EXPIRED]
+text = "Bu toplu encode onayı artık geçerli değil."
+args = 0
+
+[BATCH_CANCELLED]
+text = "Toplu encode iptal edildi."
+args = 0
+
+[BATCH_MISMATCH]
+text = "`{}` dosya ve `{}` altyazı: yalnızca ilk `{}` eşleşme encode edilecek."
+args = 3
+
+[FIELD_OUTPUT]
+text = "Çıktı"
+args = 0
+
+[JOB_TYPE_BATCH]
+text = "📚 Toplu encode işi"
+args = 0

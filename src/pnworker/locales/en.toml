@@ -621,3 +621,43 @@ args = 2
 [REFRESHCACHE_FAIL]
 text = "{}: refresh failed, keeping the cached copy — {}"
 args = 2
+
+[BATCH_PROG]
+text = "Episodes `{}/{}` finished • now `{}`"
+args = 3
+
+[BATCH_DONE]
+text = "`{}/{}` episodes finished."
+args = 2
+
+[BATCH_EPISODE]
+text = "Batch `{}` • `{}`"
+args = 2
+
+[BATCH_CONFIRM]
+text = "📚 Batch encode"
+args = 0
+
+[BATCH_CONFIRM_BODY]
+text = "`{}` episodes will be encoded with these subtitles.\nDo you confirm?"
+args = 1
+
+[BATCH_CONFIRM_EXPIRED]
+text = "This batch confirmation is no longer available."
+args = 0
+
+[BATCH_CANCELLED]
+text = "Batch encode cancelled."
+args = 0
+
+[BATCH_MISMATCH]
+text = "`{}` files and `{}` subtitles: only the first `{}` pairs will be encoded."
+args = 3
+
+[FIELD_OUTPUT]
+text = "Output"
+args = 0
+
+[JOB_TYPE_BATCH]
+text = "📚 Batch encode job"
+args = 0

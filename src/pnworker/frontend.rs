@@ -76,6 +76,28 @@ impl Frontend {
         }
     }
 
+    // A batch with no output page reports every episode separately, so each child job needs its own
+    // message in the channel the batch was requested from.
+    pub async fn spawn_child_message(&self, content: &str) -> Frontend {
+        match self {
+            Frontend::Discord { ctx, msg } => match msg
+                .channel_id
+                .say(&ctx.http, content.to_string())
+                .await
+            {
+                Ok(message) => Frontend::Discord {
+                    ctx: ctx.clone(),
+                    msg: message,
+                },
+                Err(error) => {
+                    eprintln!("[Pandora Batch] child message could not be created: {error}");
+                    Frontend::None
+                }
+            },
+            Frontend::Web | Frontend::None => Frontend::None,
+        }
+    }
+
     pub async fn set_text(&mut self, text: &str) {
         match self {
             Frontend::Discord { ctx, msg } => {

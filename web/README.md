@@ -10,6 +10,9 @@ Four self-contained pages (no build step, no dependencies) drive the pndc HTTP A
   inspector, draggable audio clips, and multitrack timeline. It intentionally has its own
   professional editor design rather than inheriting the console theme. `studio-sw.js` bridges
   authenticated byte-range video requests; Web Audio performs preview mixing in the browser.
+- **`batch.html`** — the read-only output page for a `/encode batch` job: every episode's
+  stage, pairing, and upload links as near-plaintext, fetched with `no-store` so Cloudflare
+  cannot serve a stale view of a running batch.
 - **`../kagami-trace/web/index.html`** — the Kagami raster-to-vector lab served at `/trace`, with bearer-protected tracing and zipped libkagami ASS export.
 
 Auth is the same bearer token as the API (mint one with `/gentoken`, stored in
@@ -31,6 +34,7 @@ When `api_port` is set in `env.pandora`, the bot listens on that port and answer
 - `GET /git`         → the git console (`git.html`)
 - `GET /studio`      → the Studio Cutroom (`studio.html`)
 - `GET /trace`       → the Kagami Trace lab (`../kagami-trace/web/index.html`)
+- `GET /batch/<token>` → a batch encode's output page (`batch.html`), authorized by the token in the URL rather than a bearer token, since the link is posted to Discord
 - `GET /studio-sw.js` → Studio authenticated-stream service worker
 - `GET/POST /api/v1/...` → the bearer-protected API (same origin, so no CORS)
 - `GET /health`      → liveness

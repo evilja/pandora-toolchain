@@ -167,7 +167,10 @@ fn queued_duplicate_source(job: &Job, queue: &[Job]) -> Option<PathBuf> {
     queue
         .iter()
         .find(|other| {
+            // A batch parent downloads many files and never produces an `input.mkv` of its own,
+            // so nothing may wait on its directory for one.
             other.forward_parent.is_none()
+                && other.batch.is_none()
                 && other.job_id != job.job_id
                 && input_cache_keys(other)
                     .iter()
@@ -311,6 +314,8 @@ mod tests {
             keycode: None,
             preview: None,
             studio: None,
+            batch: None,
+            batch_parent: None,
         }
     }
 

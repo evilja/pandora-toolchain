@@ -11,13 +11,14 @@ Key consts in `lib::env/standard.rs`:
 - `api_port` enables the API server when set and non-zero;
 - `api_host` is the bind address (defaults to `0.0.0.0`, set `127.0.0.1` to keep it loopback-only behind a proxy);
 - `api_author_id` is the Discord user id stamped as author on API-submitted jobs;
+- `api_public_url` is the public origin Pandora is reachable on (the Cloudflare tunnel hostname, no trailing slash). It is what makes a batch encode a one-message job: with it set, `/encode batch` links its output page instead of posting a Discord message per episode — see [WORKER.md](WORKER.md#batch-encodes);
 - `api_rate_limit` (`API_RATE_LIMIT`, default `30`) and `api_rate_window_secs` (`API_RATE_WINDOW_SECS`, default `60`) configure the per-token write-request rate limit.
 
 API bearer tokens live one-per-line in `DB/config/global/environment/api.pandora` (`API_TOKENS_PATH`); blank lines and `;`-prefixed lines are ignored. Mint tokens with `/gentoken`. Not committed.
 
 ## Auth
 
-- `Authorization: Bearer <token>` checked against the lines of `api.pandora` (blanks and `;` comments ignored) by an axum middleware layered on the `/api/v1` routes. The page routes (`GET /`, `/encode`, `/git`, `/studio`, `/trace`, `/favicon`, `/favicon.ico`) and `/health` are unauthenticated; every operation they submit, including tracing and ASS export, is protected. `GET`/`HEAD /lumiere/v1/files/:token/:filename` is separately authorized by a memory-only 256-bit capability, restricted to the exact registered file, range-capable, non-cacheable, and removed when the corresponding upload ends.
+- `Authorization: Bearer <token>` checked against the lines of `api.pandora` (blanks and `;` comments ignored) by an axum middleware layered on the `/api/v1` routes. The page routes (`GET /`, `/encode`, `/git`, `/studio`, `/trace`, `/favicon`, `/favicon.ico`) and `/health` are unauthenticated; every operation they submit, including tracing and ASS export, is protected. `GET /batch/:token` and `GET /batch/:token/output` are authorized by the 256-bit capability in the path — the link is posted to Discord, where nobody holds an API token — and expose nothing but that one batch; `GET`/`HEAD /lumiere/v1/files/:token/:filename` is separately authorized by a memory-only 256-bit capability, restricted to the exact registered file, range-capable, non-cacheable, and removed when the corresponding upload ends.
 - **Rate limit**: the same `auth` middleware rate-limits **write** requests only (any method that isn't `GET`/`HEAD`, so status polling is never throttled), keyed by an md5 of the token (`ApiRateLimiter` in `core.rs`). Default `30` requests per `60`s sliding window, configurable via `api_rate_limit` / `api_rate_window_secs`. On exceed it returns `429` with a `Retry-After` header (seconds until the window resets) and body `"rate limit exceeded"`. The web consoles read `Retry-After` and render a friendly "rate limit hit — try again in Ns" notice on `429`.
 - **Local tokens**: a token line in `api.pandora` may be `<token>|local|<server_id>` (mint with `/gentoken local`). `api_auth_for_token` parses it into `ApiAuth { local_server_id }`; `effective_server_id` makes a local token force its `server_id` onto job submits. The **git endpoints require a local token** — `require_local(&auth)` returns `403` for a plain token, since repo ops need a server to resolve the Forgejo org config and per-channel meta. API cancel also requires a local token and only allows cancelling non-terminal `Encode` jobs whose persisted DB `server_id` equals the token's `local_server_id`.
 
@@ -81,6 +82,7 @@ API jobs are built with `Job::new_api(...)` → `Frontend::Web`, so they run thr
 All dependency-free, `include_str!`/`include_bytes!`-baked into `pndc`, same origin as `/api/v1` so no CORS; editing any requires rebuilding `pndc`):
 
 - `GET /` → desktop shell (`web/desktop.html`)
+- `GET /batch/:token` → batch output page (`web/batch.html`), capability-authorized
 - `GET /encode` → encode console (`web/index.html`)
 - `GET /git` → git console (`web/git.html`)
 - `GET /studio` → browser-native nonlinear Studio editor (`web/studio.html`)
@@ -89,6 +91,12 @@ All dependency-free, `include_str!`/`include_bytes!`-baked into `pndc`, same ori
 - `GET /favicon` (+ `/favicon.ico`) → site icon
 
 The consoles fetch relative `/api/v1` paths. Details in `web/README.md`.
+
+## Batch output page
+
+`GET /batch/<token>` serves `web/batch.html` and `GET /batch/<token>/output` serves its data; both are unauthenticated but require the batch's 256-bit token, minted per batch job and mapped to the parent job id under `DB/config/global/batch/<token>`, so the link survives a `pndc` restart. The token is validated (64 hex chars, known mapping) before either route answers, and an unknown token is a `404` on both.
+
+The page is deliberately static HTML that fetches its data separately with `cache: 'no-store'`, and the data route sets `Cache-Control: no-store`: Cloudflare will happily cache an HTML document for a job that is still running. `/output` returns the parent's stage and counters plus one entry per episode — label, paired subtitle name, child `job_id`, and the child's live `stage`, `worker`, `progress`, and `uploaded_links` joined from the jobs table — so a finished episode keeps showing its links after the batch itself is archived. The page renders that as near-plaintext, colours the stage, and polls every 5s until every episode is terminal.
 
 ## Desktop shell
 

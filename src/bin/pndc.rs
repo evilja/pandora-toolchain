@@ -220,6 +220,7 @@ async fn handle_encode_command(
             job.keycode = Some(KeycodeRequest { keywords });
             tx.send(JobClass::Job(job)).await.unwrap();
         }
+        "batch" => handle_batch(ctx, command).await,
         other => command_error(ctx, command, format!("Unknown encode subcommand `{}`.", other)).await,
     }
 }
@@ -679,8 +680,8 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "encode",
             name: "encode",
             summary: "Encode, locally keep, or join video outputs.",
-            usage: "/encode do|pan|link|keep|key ... (preset and intro come from /edit)",
-            details: "`do` encodes with an attached ASS; `pan` selects a file from `/probe`; `link` fetches the ASS from a URL; `keep` encodes an attachment and stores the output under a keyword; `key` joins kept keyword outputs.",
+            usage: "/encode do|pan|batch|link|keep|key ... (preset and intro come from /edit)",
+            details: "`do` encodes with an attached ASS; `pan` selects a file from `/probe`; `batch` pairs a `/probe` selection with a subtitle zip in order and encodes every episode after you confirm the pairing; `link` fetches the ASS from a URL; `keep` encodes an attachment and stores the output under a keyword; `key` joins kept keyword outputs.",
         },
         HelpCommand {
             section: "encode",
@@ -2238,6 +2239,8 @@ impl EventHandler for Handler {
                 handle_help_component(&ctx, &component).await;
             } else if component.data.custom_id.starts_with("pnprobe:") {
                 handle_probe_component(&ctx, &component).await;
+            } else if component.data.custom_id.starts_with("pnbatch:") {
+                handle_batch_component(&ctx, &component, &self.tx).await;
             }
         }
     }
@@ -2324,6 +2327,21 @@ impl EventHandler for Handler {
                             .required(true)
                     )
                     .add_sub_option(keyword_option.clone())
+            )
+            .add_option(
+                CreateCommandOption::new(CommandOptionType::SubCommand, "batch", "Encode several probed episodes from one subtitle archive")
+                    .add_sub_option(
+                        CreateCommandOption::new(CommandOptionType::String, "job_id", "Job ID from /probe result")
+                            .required(true)
+                    )
+                    .add_sub_option(
+                        CreateCommandOption::new(CommandOptionType::Attachment, "subtitles", "ZIP of subtitle files, paired with the episodes in order")
+                            .required(true)
+                    )
+                    .add_sub_option(
+                        CreateCommandOption::new(CommandOptionType::String, "indexes", "Probe indexes to encode, e.g. 1,3,5-9; omit for every file")
+                            .required(false)
+                    )
             )
             .add_option(
                 CreateCommandOption::new(CommandOptionType::SubCommand, "key", "Join kept keyword outputs and upload")

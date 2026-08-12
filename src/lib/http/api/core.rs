@@ -16,6 +16,7 @@ use tokio::sync::{Mutex, mpsc::Sender};
 
 use crate::pnworker::core::{HalfJob, Job, JobClass, JobType, KeepRequest, KeycodeRequest, SmartcodeDriveName, Stage};
 use crate::pnworker::acix::confirm_acix;
+use crate::pnworker::batch::batch_job_for_token;
 use crate::lib::http::acix::{AnimeCix, MediaType, MixedUpload};
 use crate::lib::db::core::{JobDb, JobStatus};
 use crate::lib::git::{
@@ -191,6 +192,8 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/favicon", get(favicon))
         .route("/favicon.ico", get(favicon))
         .route("/health", get(health))
+        .route("/batch/:token", get(batch_page))
+        .route("/batch/:token/output", get(batch_output))
         .route(
             "/lumiere/v1/files/:token/:filename",
             get(crate::lumiere_broker::serve_transfer),
@@ -235,6 +238,85 @@ async fn studio_service_worker() -> Response {
         ],
         STUDIO_SERVICE_WORKER,
     ).into_response()
+}
+
+const BATCH_HTML: &str = include_str!("../../../../web/batch.html");
+
+// The batch page and its data are authorized by the token in the path, the same capability shape
+// the Lumiere transfer routes use: the link is posted to Discord, where nobody has an API token.
+async fn batch_page(Path(token): Path<String>) -> Response {
+    if batch_job_for_token(&token).await.is_none() {
+        return (StatusCode::NOT_FOUND, "no such batch").into_response();
+    }
+    (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        BATCH_HTML,
+    )
+        .into_response()
+}
+
+// Cloudflare caches HTML far more eagerly than it caches XHR, so the page ships static and asks
+// for this separately with no-store rather than being rendered server-side.
+async fn batch_output(State(st): State<AppState>, Path(token): Path<String>) -> Response {
+    let Some(job_id) = batch_job_for_token(&token).await else {
+        return (StatusCode::NOT_FOUND, "no such batch").into_response();
+    };
+    let parent = match st.db.get_job(job_id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => return (StatusCode::NOT_FOUND, "no such batch").into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let progress: serde_json::Value = parent
+        .progress
+        .as_deref()
+        .and_then(|value| serde_json::from_str(value).ok())
+        .unwrap_or_else(|| json!({}));
+    let mut episodes = Vec::new();
+    if let Some(entries) = progress.get("entries").and_then(|value| value.as_array()) {
+        for entry in entries {
+            let child = match entry
+                .get("job_id")
+                .and_then(|value| value.as_str())
+                .and_then(|value| value.parse::<u64>().ok())
+            {
+                Some(child_id) => st.db.get_job(child_id).await.ok().flatten(),
+                None => None,
+            };
+            episodes.push(json!({
+                "index": entry.get("index"),
+                "label": entry.get("label"),
+                "subtitle": entry.get("subtitle"),
+                "job_id": entry.get("job_id"),
+                "stage": child.as_ref().map(|row| crate::lib::db::core::stage_label(row.stage)),
+                "worker": child.as_ref().map(|row| row.worker.clone()),
+                "progress": child
+                    .as_ref()
+                    .and_then(|row| row.progress.as_deref())
+                    .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok()),
+                "links": child
+                    .as_ref()
+                    .and_then(|row| row.uploaded_links.as_deref())
+                    .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok()),
+            }));
+        }
+    }
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(json!({
+            "job_id": parent.job_id.to_string(),
+            "stage": crate::lib::db::core::stage_label(parent.stage),
+            "source": parent.link,
+            "total": progress.get("total"),
+            "finished": progress.get("finished"),
+            "failed": progress.get("failed"),
+            "current": progress.get("current"),
+            "episodes": episodes,
+        })),
+    )
+        .into_response()
 }
 
 const FAVICON_PNG: &[u8] = include_bytes!("../../../../web/favicon.png");

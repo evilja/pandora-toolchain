@@ -11,6 +11,7 @@ const MAX_OPEN_FILES: usize = 64;
 
 struct StoredFile {
     file: Option<File>,
+    index: u64,
     path: PathBuf,
     offset: u64,
     length: u64,
@@ -59,6 +60,7 @@ impl Storage {
             file.set_len(torrent_file.length).await?;
             files.push(StoredFile {
                 file: None,
+                index: torrent_file.index,
                 path,
                 offset: torrent_file.offset,
                 length: torrent_file.length,
@@ -99,6 +101,19 @@ impl Storage {
                 .ok_or_else(|| TorrentError::metainfo("storage file did not open"))?;
             file.seek(SeekFrom::Start(file_offset)).await?;
             file.write_all(&data[data_start..data_end]).await?;
+        }
+        Ok(())
+    }
+
+    // A batch download hands a finished file to the encoder while its siblings are still
+    // downloading, so that file's bytes have to be on disk before the completion is announced.
+    pub(crate) async fn flush_file(&mut self, index: u64) -> Result<()> {
+        let Some(position) = self.files.iter().position(|file| file.index == index) else {
+            return Ok(());
+        };
+        if let Some(file) = self.files[position].file.as_mut() {
+            file.flush().await?;
+            file.sync_data().await?;
         }
         Ok(())
     }

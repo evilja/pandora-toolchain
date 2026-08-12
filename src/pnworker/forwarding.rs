@@ -249,6 +249,8 @@ mod tests {
             keycode: None,
             preview: None,
             studio: None,
+            batch: None,
+            batch_parent: None,
         }
     }
 

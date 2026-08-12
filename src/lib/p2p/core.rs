@@ -120,6 +120,21 @@ impl P2p {
                     total_bytes,
                     &mut last_progress,
                 ),
+                // Opcode 6 is the per-file completion a batch download rides on: the file is on
+                // disk and its encode can start while the rest of the selection transfers.
+                DownloadEvent::FileComplete { index, path, .. } => {
+                    let name = portable_path(&path);
+                    println!(
+                        "{}",
+                        lib_pn_emit!(
+                            protocol = proto,
+                            negkey = &neg,
+                            schema = [leaf, [leaf, leaf]],
+                            data = ["6", [index, name]]
+                        )
+                        .unwrap()
+                    );
+                }
                 DownloadEvent::Complete => emit_done(proto, &neg),
                 DownloadEvent::Metadata { .. } => {}
             })
@@ -159,7 +174,9 @@ impl P2p {
                     &mut last_progress,
                 ),
                 DownloadEvent::Complete => emit_done(proto, &neg),
-                DownloadEvent::Metadata { .. } | DownloadEvent::FileSelected { .. } => {}
+                DownloadEvent::Metadata { .. }
+                | DownloadEvent::FileSelected { .. }
+                | DownloadEvent::FileComplete { .. } => {}
             })
             .await;
         finish_download(result, proto, &neg)

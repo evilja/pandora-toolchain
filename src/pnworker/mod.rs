@@ -21,4 +21,5 @@ mod cache;
 mod forwarding;
 mod estimate;
 pub mod keep;
+pub mod batch;
 pub mod studio;

@@ -43,8 +43,28 @@ struct Args {
     #[arg(long)]
     select: Option<u64>, // file index chosen by user
 
+    // Batch selection: every listed index is downloaded by this one process, and each file is
+    // announced with opcode 6 as soon as its last piece lands.
+    #[arg(long)]
+    selects: Option<String>,
+
     #[arg(long)]
     tag: Option<String>,
+}
+
+// `--select` stays a single index for the existing worker call; `--selects` adds the comma list a
+// batch uses. Duplicates are dropped so one file is never scheduled twice.
+fn parse_selection(select: Option<u64>, selects: Option<&str>) -> Vec<u64> {
+    let mut indices: Vec<u64> = select.into_iter().collect();
+    for value in selects.unwrap_or("").split(',') {
+        let Ok(index) = value.trim().parse::<u64>() else {
+            continue;
+        };
+        if !indices.contains(&index) {
+            indices.push(index);
+        }
+    }
+    indices
 }
 
 fn emit_error(proto: &Protocol, neg: &str, err: &str) {
@@ -151,12 +171,13 @@ async fn main() {
         return;
     }
 
-    let result = if let Some(index) = args.select {
+    let selection = parse_selection(args.select, args.selects.as_deref());
+    let result = if !selection.is_empty() {
         p2pcp
             .download_selected(
                 &args.opcode,
                 &args.save.unwrap(),
-                vec![index],
+                selection,
                 &proto,
                 neg.clone(),
                 !args.nomagnet && args.magnet,
@@ -186,5 +207,25 @@ async fn main() {
         emit_error(&proto, &neg, &e.to_string());
         eprintln!("[pnp2p] failed: {}", e);
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_selection;
+
+    #[test]
+    fn a_single_select_still_downloads_one_file() {
+        assert_eq!(parse_selection(Some(4), None), vec![4]);
+        assert!(parse_selection(None, None).is_empty());
+    }
+
+    #[test]
+    fn batch_selection_parses_a_list_and_drops_duplicates_and_junk() {
+        assert_eq!(
+            parse_selection(None, Some("3, 4,4, x, 9")),
+            vec![3, 4, 9]
+        );
+        assert_eq!(parse_selection(Some(3), Some("3,5")), vec![3, 5]);
     }
 }

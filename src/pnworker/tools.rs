@@ -302,6 +302,26 @@ pub const PNP2P_SELECT: &[CliParam] = &[
     CliParam::Path("CANCELFILE"),
 ];
 
+pub const PNP2P_SELECTS: &[CliParam] = &[
+    CliParam::Literal("--opcode"),
+    CliParam::Path("OPCODE"),
+    CliParam::Path("TORRENTTYPE"),
+    CliParam::Literal("--save"),
+    CliParam::Path("SAVE"),
+    CliParam::Literal("--selects"),
+    CliParam::Path("INDEXES"),
+    CliParam::Literal("--tag"),
+    CliParam::JobId("pandora-job-"),
+    CliParam::Literal("--negkey"),
+    CliParam::Path("NEGKEY"),
+    CliParam::Literal("--negotiator"),
+    CliParam::Literal("PNdloadworker"),
+    CliParam::Literal("--negver"),
+    CliParam::NegVer("1"),
+    CliParam::Literal("--cancelfile"),
+    CliParam::Path("CANCELFILE"),
+];
+
 pub const PNASS_LAYER: &[CliParam] = &[
     CliParam::Literal("--input"),
     CliParam::Path("INPUT"),
