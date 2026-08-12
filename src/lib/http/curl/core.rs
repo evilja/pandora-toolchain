@@ -2,7 +2,7 @@ use crate::{
     lib::env::{
         core::get_env,
         standard::{
-            ABYSS, CLIENT_ID, CLIENT_SECRET, DOODSTREAM, LULU, PARENTID, REFRESH_TOKEN, TOKEN_URL,
+            CLIENT_ID, CLIENT_SECRET, LULU, PARENTID, REFRESH_TOKEN, TOKEN_URL,
             VOESX,
         },
     },
@@ -149,10 +149,8 @@ async fn get_access_token(
 #[derive(Clone, Debug)]
 pub enum Host {
     Drive,
-    Doodstream,
     Lulu,
     VoeSx,
-    Abyss,
 }
 pub enum RpbData {
     Initializing(String, Host),
@@ -295,7 +293,7 @@ impl Req {
         &self,
         api_key: String,
         server_endpoint: String,
-        key_field: &str, // "api_key" for dood/uq, "key" for lulu
+        key_field: &str, // "api_key" for uqload, "key" for lulu
         link_fn: impl Fn(&str) -> String,
         host: Host,
         outfile: Option<String>,
@@ -461,126 +459,6 @@ impl Req {
         result
     }
 
-    pub async fn abyssupload(
-        &self,
-        envpath: String,
-        outfile: Option<String>,
-        tx: UnboundedSender<RpbData>,
-    ) -> bool {
-        if is_cancelled(&self.cfile) {
-            tx.send(RpbData::Cancel(Host::Abyss)).ok();
-            return false;
-        }
-        println!("[abyss] abyssupload started");
-        tx.send(RpbData::Initializing(
-            "Connecting to Abyss".to_string(),
-            Host::Abyss,
-        )).ok();
-        let env = get_env(&envpath);
-        println!(
-            "[abyss] env len: {}, credential configured: {}",
-            env.len(),
-            env.get(ABYSS)
-                .map(|value| !value.is_empty())
-                .unwrap_or(false)
-        );
-        let api_key = env.get(ABYSS).cloned().unwrap_or_default();
-
-        let client = Client::builder()
-            .connect_timeout(Duration::from_secs(60))
-            .build()
-            .unwrap();
-
-        let upload_name = outfile.unwrap_or(self.target.clone());
-        println!(
-            "[abyss] upload_name: {upload_name}, target: {}",
-            self.target
-        );
-
-        let file = match tokio::fs::File::open(&self.target).await {
-            Ok(f) => {
-                println!("[abyss] file opened");
-                f
-            }
-            Err(a) => {
-                println!("[abyss] failed to open file: {a}");
-                tx.send(RpbData::Fail(Host::Abyss)).ok();
-                return false;
-            }
-        };
-
-        let total_size = file.metadata().await.unwrap().len();
-        println!(
-            "[abyss] total_size: {total_size} bytes ({:.2}MB)",
-            total_size as f64 / 1_048_576.0
-        );
-
-        let reader = ProgressReader::new(
-            file,
-            total_size,
-            tx.clone(),
-            Host::Abyss,
-            self.cfile.clone(),
-        );
-        let stream = ReaderStream::with_capacity(reader, UPLOAD_STREAM_CAPACITY);
-        let body = reqwest::Body::wrap_stream(stream);
-
-        let file_part = multipart::Part::stream_with_length(body, total_size)
-            .file_name(upload_name.clone())
-            .mime_str("video/mp4")
-            .unwrap();
-
-        let form = multipart::Form::new().part("file", file_part);
-
-        let upload_url = format!("https://up.abyss.to/{api_key}");
-        println!("[abyss] uploading to {upload_url}...");
-
-        let resp = match send_upload_unlimited(client.post(&upload_url).multipart(form)).await {
-            Ok(r) => {
-                println!("[abyss] response status: {}", r.status());
-                r
-            }
-            Err(a) => {
-                println!("[abyss] request failed: {a}");
-                if is_cancelled(&self.cfile) {
-                    tx.send(RpbData::Cancel(Host::Abyss)).ok();
-                    return false;
-                }
-                tx.send(RpbData::Fail(Host::Abyss)).ok();
-                return false;
-            }
-        };
-
-        let json: serde_json::Value = match resp.json().await {
-            Ok(j) => {
-                println!("[abyss] response: {j}");
-                j
-            }
-            Err(a) => {
-                println!("[abyss] failed to parse response: {a}");
-                tx.send(RpbData::Fail(Host::Abyss)).ok();
-                return false;
-            }
-        };
-
-        let link = json["urlIframe"]
-            .as_str()
-            .map(|s| s.to_string())
-            .or_else(|| {
-                json["slug"]
-                    .as_str()
-                    .map(|s| format!("https://abyss.to/r/{s}"))
-            })
-            .unwrap_or_default();
-
-        if link.is_empty() {
-            println!("[abyss] no link in response: {json}");
-            tx.send(RpbData::Fail(Host::Abyss)).ok();
-            return false;
-        }
-        tx.send(RpbData::Done(link, Host::Abyss, None)).ok();
-        true
-    }
 
     pub async fn luluwrapupload(
         &self,
@@ -614,35 +492,6 @@ impl Req {
         result
     }
 
-    pub async fn doodwrapupload(
-        &self,
-        envpath: String,
-        outfile: Option<String>,
-        tx: UnboundedSender<RpbData>,
-    ) -> bool {
-        let env = get_env(&envpath);
-        let api_key = env.get(DOODSTREAM).cloned().unwrap_or_default();
-        self.filehost_upload(
-            api_key,
-            "https://doodapi.co/api/upload/server".to_string(),
-            "api_key",
-            |text| {
-                println!("[dood] upload response: {text}");
-                serde_json::from_str::<serde_json::Value>(text)
-                    .ok()
-                    .and_then(|j| {
-                        j["result"][0]["filecode"]
-                            .as_str()
-                            .map(|s| format!("https://playmogo.com/e/{s}"))
-                    })
-                    .unwrap_or_default()
-            },
-            Host::Doodstream,
-            outfile,
-            tx,
-        )
-        .await
-    }
 
     pub async fn gdupload(
         &self,
@@ -957,10 +806,8 @@ impl Req {
 fn upload_host_name(host: &Host) -> &'static str {
     match host {
         Host::Drive => "Google Drive",
-        Host::Doodstream => "Doodstream",
         Host::Lulu => "Lulustream",
         Host::VoeSx => "Voe",
-        Host::Abyss => "Abyss",
     }
 }
 

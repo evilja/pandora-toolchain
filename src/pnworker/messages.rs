@@ -754,10 +754,10 @@ mod tests {
             UPLOAD_DONE,
             vec![
                 "https://drive.example/file".to_string(),
-                "Doodstream Başarısız".to_string(),
+                "Byse Başarısız".to_string(),
                 "https://lulu.example/e/file".to_string(),
                 "Voe Başarısız".to_string(),
-                "Abyss Başarısız".to_string(),
+                String::new(),
             ],
         );
         assert_eq!(

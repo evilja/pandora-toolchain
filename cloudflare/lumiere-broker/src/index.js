@@ -1,25 +1,31 @@
 const API_VERSION = "1";
-// Provider API origins. These hosts rotate; when one moves, its old origin
-// answers with a 301 that this Worker refuses to follow, so change it here.
+// Provider API bases, including each provider's own path prefix. Lulu and Voe
+// hang their endpoints under `/api`; Byse serves them at the root. These hosts
+// rotate; when one moves, its old origin answers with a 301 that this Worker
+// refuses to follow, so change it here.
 const PROVIDER_API = {
-  doodstream: "https://doodapi.co",
-  lulustream: "https://api.lulustream.com",
-  voe: "https://voe.sx",
+  lulustream: "https://api.lulustream.com/api",
+  voe: "https://voe.sx/api",
+  byse: "https://api.byse.sx",
 };
-// Player origins for the links Pandora publishes. These rotate independently of
-// the API origins above — DoodStream's own doodstream.com and dood.li now 301 to
-// playmogo.com — and a published link must name the live host itself, because the
-// sites we hand it to store the URL and embed it long after the redirect chain
-// changes again. Keep this in sync with RemoteProvider::final_url on the Pandora
-// side; both are checked by `test.mjs`.
+// Fallback player origins for the links Pandora publishes. These rotate
+// independently of the API origins above — this is what broke DoodStream, whose
+// doodstream.com and dood.li both moved to playmogo.com while its API kept
+// answering — and a published link must name the live host, because the sites we
+// hand it to store the URL and embed it long after the redirect chain changes.
+// Byse reports its own current domain (see embedDomain), so its entry here is
+// only the answer of last resort. Mirrors RemoteProvider::final_url on the
+// Pandora side; both are checked by `test.mjs`.
 const PROVIDER_EMBED = {
-  doodstream: "https://playmogo.com",
   lulustream: "https://luluvdo.com",
   voe: "https://voe.sx",
+  byse: "https://byse.sx",
 };
 const OPERATION_TTL_SECONDS = 24 * 60 * 60;
 const ACCESS_TOKEN_SKEW_MS = 60 * 1000;
+const EMBED_DOMAIN_TTL_MS = 6 * 60 * 60 * 1000;
 const tokenCache = new Map();
+const embedDomainCache = new Map();
 
 export default {
   async fetch(request, env) {
@@ -91,10 +97,9 @@ function statusResponse(url, env) {
     providers: {
       global_drive: Boolean(profileFor(profiles, "global")),
       requested_drive: Boolean(requested && profileFor(profiles, requested)),
-      doodstream: Boolean(env.DOODSTREAM_API_KEY),
       lulustream: Boolean(env.LULUSTREAM_API_KEY),
       voe: Boolean(env.VOE_API_KEY),
-      abyss: false,
+      byse: Boolean(env.BYSE_API_KEY),
     },
   });
 }
@@ -222,7 +227,7 @@ async function startRemote(body, env) {
   }
 
   let operation;
-  if (provider === "doodstream") operation = await startDoodstream(sourceUrl, filename, env);
+  if (provider === "byse") operation = await startByse(sourceUrl, env);
   else if (provider === "lulustream") operation = await startLulustream(sourceUrl, env);
   else operation = await startVoe(sourceUrl, env);
 
@@ -251,7 +256,7 @@ async function remoteStatus(body, env) {
   // is the point at which asking file/info is both cheap and decisive.
   const sourceDrained = body.source_drained === true;
   let status;
-  if (provider === "doodstream") status = await doodstreamStatus(operationId, fileCode, env);
+  if (provider === "byse") status = await byseStatus(operationId, fileCode, env);
   else if (provider === "lulustream") status = await lulustreamStatus(operationId, fileCode, env);
   else status = await voeStatus(operationId, fileCode, env);
 
@@ -261,7 +266,7 @@ async function remoteStatus(body, env) {
       return {
         ...status,
         state: "complete",
-        url: finalUrl(provider, fileCode),
+        url: await finalUrl(provider, fileCode, env),
         detail: joinDetail(status.detail, "file/info reports the file is playable"),
       };
     }
@@ -271,8 +276,8 @@ async function remoteStatus(body, env) {
 }
 
 function providerKey(provider, env) {
-  if (provider === "doodstream") {
-    return requiredSecret(env.DOODSTREAM_API_KEY, "doodstream_not_configured", "DoodStream is not configured");
+  if (provider === "byse") {
+    return requiredSecret(env.BYSE_API_KEY, "byse_not_configured", "Byse is not configured");
   }
   if (provider === "lulustream") {
     return requiredSecret(env.LULUSTREAM_API_KEY, "lulustream_not_configured", "LuluStream is not configured");
@@ -280,20 +285,19 @@ function providerKey(provider, env) {
   return requiredSecret(env.VOE_API_KEY, "voe_not_configured", "Voe is not configured");
 }
 
-async function startDoodstream(sourceUrl, filename, env) {
-  const key = requiredSecret(env.DOODSTREAM_API_KEY, "doodstream_not_configured", "DoodStream is not configured");
-  const endpoint = new URL(`${PROVIDER_API.doodstream}/api/upload/url`);
+async function startByse(sourceUrl, env) {
+  const key = requiredSecret(env.BYSE_API_KEY, "byse_not_configured", "Byse is not configured");
+  const endpoint = new URL(`${PROVIDER_API.byse}/remote/add`);
   endpoint.searchParams.set("key", key);
   endpoint.searchParams.set("url", sourceUrl);
-  endpoint.searchParams.set("new_title", filename);
-  const data = await providerJson(endpoint, "DoodStream");
-  const fileCode = providerFileCode(data?.result?.filecode, "DoodStream", data);
-  return { provider: "doodstream", operation_id: fileCode, file_code: fileCode };
+  const data = await providerJson(endpoint, "Byse");
+  const fileCode = providerFileCode(data?.result?.filecode, "Byse", data);
+  return { provider: "byse", operation_id: fileCode, file_code: fileCode };
 }
 
 async function startLulustream(sourceUrl, env) {
   const key = requiredSecret(env.LULUSTREAM_API_KEY, "lulustream_not_configured", "LuluStream is not configured");
-  const endpoint = new URL(`${PROVIDER_API.lulustream}/api/upload/url`);
+  const endpoint = new URL(`${PROVIDER_API.lulustream}/upload/url`);
   endpoint.searchParams.set("key", key);
   endpoint.searchParams.set("url", sourceUrl);
   const data = await providerJson(endpoint, "LuluStream");
@@ -303,7 +307,7 @@ async function startLulustream(sourceUrl, env) {
 
 async function startVoe(sourceUrl, env) {
   const key = requiredSecret(env.VOE_API_KEY, "voe_not_configured", "Voe is not configured");
-  const endpoint = new URL(`${PROVIDER_API.voe}/api/upload/url`);
+  const endpoint = new URL(`${PROVIDER_API.voe}/upload/url`);
   endpoint.searchParams.set("key", key);
   endpoint.searchParams.set("url", sourceUrl);
   const data = await providerJson(endpoint, "Voe");
@@ -312,33 +316,34 @@ async function startVoe(sourceUrl, env) {
   return { provider: "voe", operation_id: operationId, file_code: fileCode };
 }
 
-async function doodstreamStatus(operationId, fileCode, env) {
-  const key = requiredSecret(env.DOODSTREAM_API_KEY, "doodstream_not_configured", "DoodStream is not configured");
-  const endpoint = new URL(`${PROVIDER_API.doodstream}/api/urlupload/status`);
+async function byseStatus(_operationId, fileCode, env) {
+  const key = requiredSecret(env.BYSE_API_KEY, "byse_not_configured", "Byse is not configured");
+  const endpoint = new URL(`${PROVIDER_API.byse}/remote/status`);
   endpoint.searchParams.set("key", key);
-  endpoint.searchParams.set("file_code", operationId);
-  const data = await providerJson(endpoint, "DoodStream");
-  // The queue endpoint answers with the account's remote uploads and does not
-  // reliably honour the file_code filter, so index 0 can be an unrelated — and
-  // possibly permanently stuck — transfer. Polling that entry reports a state
-  // that never changes and hangs this upload until the stall guard drops it, so
-  // match our own file code and treat "not listed" as not listed.
+  endpoint.searchParams.set("file_code", fileCode);
+  const data = await providerJson(endpoint, "Byse");
+  // Byse answers about the file code it was asked for, so a single object is the
+  // normal shape here; matchFileCode still guards the case where it returns a
+  // list, and "not listed" stays not listed rather than matching a stranger.
   const item = matchFileCode(data.result, fileCode);
   if (!item) {
-    return { ...(await fileInfoFallback("doodstream", fileCode, key)), detail: "urlupload/status listed no entry" };
+    return { ...(await fileInfoFallback("byse", fileCode, key, env)), detail: "remote/status listed no entry" };
   }
-  const state = normalizeTextState(item.status);
+  // A populated error_msg is Byse's failure channel; its status word can still
+  // read WORKING alongside one.
+  const failed = String(item.error_msg || "").trim() !== "";
+  const state = failed ? "failed" : normalizeTextState(item.status);
   return {
     state,
-    bytes_done: numeric(item.bytes_downloaded),
-    bytes_total: numeric(item.bytes_total),
-    url: state === "complete" ? finalUrl("doodstream", fileCode) : undefined,
-    detail: describeItem(item, ["file_code", "filecode", "status", "bytes_downloaded", "bytes_total"]),
+    progress: numeric(String(item.progress ?? "").replace("%", "")),
+    url: state === "complete" ? await finalUrl("byse", fileCode, env) : undefined,
+    embed_domain: await embedDomain("byse", env),
+    detail: describeItem(item, ["status", "progress", "error_msg"]),
   };
 }
 
-// DoodStream spells the code `filecode` when it starts an upload and `file_code`
-// in its queue listing, so accept either rather than silently matching nothing.
+// Providers spell the code `filecode` when they start an upload and `file_code`
+// in their queue listing, so accept either rather than silently matching nothing.
 function itemFileCode(item) {
   return String(item?.file_code ?? item?.filecode ?? "").trim();
 }
@@ -353,27 +358,27 @@ function matchFileCode(result, fileCode) {
 
 async function lulustreamStatus(_operationId, fileCode, env) {
   const key = requiredSecret(env.LULUSTREAM_API_KEY, "lulustream_not_configured", "LuluStream is not configured");
-  const endpoint = new URL(`${PROVIDER_API.lulustream}/api/file/url_uploads`);
+  const endpoint = new URL(`${PROVIDER_API.lulustream}/file/url_uploads`);
   endpoint.searchParams.set("key", key);
   endpoint.searchParams.set("file_code", fileCode);
   const data = await providerJson(endpoint, "LuluStream");
   const items = Array.isArray(data.result) ? data.result : [];
   const item = items.find((entry) => String(entry.file_code || "") === fileCode) || items[0];
   if (!item) {
-    return { ...(await fileInfoFallback("lulustream", fileCode, key)), detail: "url_uploads listed no entry" };
+    return { ...(await fileInfoFallback("lulustream", fileCode, key, env)), detail: "url_uploads listed no entry" };
   }
   const state = normalizeTextState(item.status);
   return {
     state,
     progress: numeric(item.progress),
-    url: state === "complete" ? finalUrl("lulustream", fileCode) : undefined,
+    url: state === "complete" ? await finalUrl("lulustream", fileCode, env) : undefined,
     detail: describeItem(item, ["status", "progress", "error", "message"]),
   };
 }
 
 async function voeStatus(operationId, fileCode, env) {
   const key = requiredSecret(env.VOE_API_KEY, "voe_not_configured", "Voe is not configured");
-  const endpoint = new URL(`${PROVIDER_API.voe}/api/upload/url/list`);
+  const endpoint = new URL(`${PROVIDER_API.voe}/upload/url/list`);
   endpoint.searchParams.set("key", key);
   endpoint.searchParams.set("id", operationId);
   endpoint.searchParams.set("limit", "1");
@@ -381,7 +386,7 @@ async function voeStatus(operationId, fileCode, env) {
   const items = data?.list?.data || data?.result?.data || data?.result || [];
   const item = Array.isArray(items) ? items[0] : items;
   if (!item) {
-    return { ...(await fileInfoFallback("voe", fileCode, key)), detail: "upload/url/list returned no entry" };
+    return { ...(await fileInfoFallback("voe", fileCode, key, env)), detail: "upload/url/list returned no entry" };
   }
   const code = Number(item.status);
   const state = code === 3 ? "complete" : code === 4 ? "failed" : "uploading";
@@ -390,21 +395,21 @@ async function voeStatus(operationId, fileCode, env) {
     progress: numeric(item.percent),
     bytes_done: numeric(item.loaded_size),
     bytes_total: numeric(item.total_size),
-    url: state === "complete" ? finalUrl("voe", fileCode) : undefined,
+    url: state === "complete" ? await finalUrl("voe", fileCode, env) : undefined,
     detail: describeItem(item, ["status", "percent", "loaded_size", "total_size", "message"]),
   };
 }
 
-async function fileInfoFallback(provider, fileCode, key) {
+async function fileInfoFallback(provider, fileCode, key, env) {
   const playable = await fileInfoPlayable(provider, fileCode, key);
-  if (playable) return { state: "complete", url: finalUrl(provider, fileCode) };
+  if (playable) return { state: "complete", url: await finalUrl(provider, fileCode, env) };
   return { state: "uploading" };
 }
 
 // The provider's own file record is the only signal that survives a queue entry
 // disappearing or reporting a state this Worker does not recognise.
 async function fileInfoPlayable(provider, fileCode, key) {
-  const endpoint = new URL(`${PROVIDER_API[provider]}/api/file/info`);
+  const endpoint = new URL(`${PROVIDER_API[provider]}/file/info`);
   endpoint.searchParams.set("key", key);
   endpoint.searchParams.set("file_code", fileCode);
   try {
@@ -715,13 +720,45 @@ function normalizeTextState(raw) {
   return "uploading";
 }
 
-function finalUrl(provider, fileCode) {
-  return `${PROVIDER_EMBED[provider]}/e/${fileCode}`;
+async function finalUrl(provider, fileCode, env) {
+  return `https://${await embedDomain(provider, env)}/e/${fileCode}`;
+}
+
+// Byse is the only provider that will tell us where its player currently lives,
+// so it is the only one whose published domain survives a rotation without a
+// redeploy. The answer is cached per isolate and any failure falls back to the
+// static entry rather than publishing nothing.
+async function embedDomain(provider, env) {
+  const fallback = hostOf(PROVIDER_EMBED[provider]);
+  if (provider !== "byse") return fallback;
+  const cached = embedDomainCache.get(provider);
+  if (cached && cached.expiresAt > Date.now()) return cached.domain;
+  let domain = fallback;
+  try {
+    const endpoint = new URL(`${PROVIDER_API.byse}/get/domain`);
+    endpoint.searchParams.set("key", providerKey("byse", env));
+    const data = await providerJson(endpoint, "Byse");
+    domain = safeEmbedDomain(data?.new_domain) || fallback;
+  } catch (_) {
+    console.error("Lumiere embed domain lookup failed; using the configured fallback");
+  }
+  embedDomainCache.set(provider, { domain, expiresAt: Date.now() + EMBED_DOMAIN_TTL_MS });
+  return domain;
+}
+
+// The provider supplies this, so it is treated as untrusted input: a bare
+// hostname only, never a scheme, port, credentials, or path that could redirect
+// a published link somewhere other than the host it names.
+function safeEmbedDomain(raw) {
+  const value = String(raw || "").trim().toLowerCase();
+  if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(value)) return "";
+  if (value.length > 100) return "";
+  return value;
 }
 
 function remoteProvider(raw) {
   const value = String(raw || "");
-  if (!["doodstream", "lulustream", "voe"].includes(value)) {
+  if (!["lulustream", "voe", "byse"].includes(value)) {
     throw new ApiError(400, "invalid_provider", "Unsupported remote upload provider");
   }
   return value;

@@ -33,10 +33,9 @@ assert.equal(status.status, 200);
 assert.deepEqual((await status.json()).providers, {
   global_drive: true,
   requested_drive: false,
-  doodstream: false,
   lulustream: false,
   voe: false,
-  abyss: false,
+  byse: false,
 });
 
 const invalidSource = await worker.fetch(
@@ -45,7 +44,7 @@ const invalidSource = await worker.fetch(
     headers: { ...headers, "Content-Type": "application/json" },
     body: JSON.stringify({
       request_id: "test:1",
-      provider: "doodstream",
+      provider: "byse",
       source_url: "https://attacker.example/file.mp4",
       filename: "file.mp4",
     }),
@@ -58,13 +57,9 @@ assert.equal((await invalidSource.json()).error.code, "invalid_source_url");
 const realFetch = globalThis.fetch;
 let deleteTokenHash = "";
 let uploadMetadata = null;
-let doodStatusResult = [{
-  status: "finished",
-  file_code: "dood-file",
-  bytes_downloaded: "10",
-  bytes_total: "10",
-}];
-let doodPlayable = false;
+let byseStatusResult = { status: "FINISHED", progress: "100%", error_msg: "" };
+let bysePlayable = false;
+let byseDomain = "byse.sx";
 let luluStartResponse = { status: 200, result: { filecode: "lulu-file" } };
 globalThis.fetch = async (input, init = {}) => {
   const url = new URL(input instanceof Request ? input.url : input);
@@ -94,22 +89,25 @@ globalThis.fetch = async (input, init = {}) => {
   if (url.pathname === "/drive/v3/files/file-id" && method === "DELETE") {
     return new Response(null, { status: 204 });
   }
-  if (url.hostname === "doodapi.co" && url.pathname === "/api/upload/url") {
-    assert.equal(url.searchParams.get("key"), "dood-key");
+  if (url.hostname === "api.byse.sx" && url.pathname === "/remote/add") {
+    assert.equal(url.searchParams.get("key"), "byse-key");
     assert.equal(
       url.searchParams.get("url"),
       "https://files.example.com/lumiere/v1/files/abc/test.mp4",
     );
-    return Response.json({ status: 200, result: { filecode: "dood-file" } });
+    return Response.json({ status: 200, result: { filecode: "byse-file" } });
   }
-  if (url.hostname === "doodapi.co" && url.pathname === "/api/urlupload/status") {
-    return Response.json({ status: 200, result: doodStatusResult });
+  if (url.hostname === "api.byse.sx" && url.pathname === "/remote/status") {
+    return Response.json({ status: 200, result: byseStatusResult });
   }
-  if (url.hostname === "doodapi.co" && url.pathname === "/api/file/info") {
-    assert.equal(url.searchParams.get("file_code"), "dood-file");
+  if (url.hostname === "api.byse.sx" && url.pathname === "/get/domain") {
+    return Response.json({ status: 200, old_domain: "filemoon.sx", new_domain: byseDomain });
+  }
+  if (url.hostname === "api.byse.sx" && url.pathname === "/file/info") {
+    assert.equal(url.searchParams.get("file_code"), "byse-file");
     return Response.json({
       status: 200,
-      result: [{ status: doodPlayable ? 200 : 404, canplay: doodPlayable ? 1 : 0 }],
+      result: [{ status: bysePlayable ? 200 : 404, canplay: bysePlayable ? 1 : 0 }],
     });
   }
   if (url.hostname === "api.lulustream.com" && url.pathname === "/api/upload/url") {
@@ -164,14 +162,14 @@ const driveDelete = await worker.fetch(
 );
 assert.equal(driveDelete.status, 200);
 
-const remoteEnv = { ...env, DOODSTREAM_API_KEY: "dood-key" };
+const remoteEnv = { ...env, BYSE_API_KEY: "byse-key" };
 const remoteStart = await worker.fetch(
   new Request("https://broker.example/v1/remote/start", {
     method: "POST",
     headers: { ...headers, "Content-Type": "application/json" },
     body: JSON.stringify({
       request_id: "test:remote:1",
-      provider: "doodstream",
+      provider: "byse",
       source_url: "https://files.example.com/lumiere/v1/files/abc/test.mp4",
       filename: "test.mp4",
     }),
@@ -180,7 +178,7 @@ const remoteStart = await worker.fetch(
 );
 assert.equal(remoteStart.status, 202);
 const operation = await remoteStart.json();
-assert.equal(operation.file_code, "dood-file");
+assert.equal(operation.file_code, "byse-file");
 
 const remoteStatus = await worker.fetch(
   new Request("https://broker.example/v1/remote/status", {
@@ -205,55 +203,71 @@ const statusRequest = (body, statusEnv = remoteEnv) =>
 
 // A provider state this Worker does not recognise must reach Pandora as the
 // provider's own word rather than a silent, permanent "uploading".
-doodStatusResult = [{ status: "working", file_code: "dood-file" }];
+byseStatusResult = { status: "WORKING", progress: "55%", error_msg: "" };
 const unmapped = await statusRequest({ operation });
 assert.equal(unmapped.status, 200);
 const unmappedBody = await unmapped.json();
 assert.equal(unmappedBody.state, "uploading");
-assert.match(unmappedBody.detail, /status=working/);
+assert.match(unmappedBody.detail, /status=WORKING/);
 
 // Once Pandora has served every byte, a playable file ends the poll instead of
 // hanging until the transfer capability expires.
-doodPlayable = true;
+bysePlayable = true;
 const drained = await statusRequest({ operation, source_drained: true });
 const drainedBody = await drained.json();
 assert.equal(drainedBody.state, "complete");
-assert.equal(drainedBody.url, "https://playmogo.com/e/dood-file");
+assert.equal(drainedBody.url, "https://byse.sx/e/byse-file");
 assert.match(drainedBody.detail, /file\/info reports the file is playable/);
 
-doodPlayable = false;
+bysePlayable = false;
 const stillEncoding = await statusRequest({ operation, source_drained: true });
 const stillEncodingBody = await stillEncoding.json();
 assert.equal(stillEncodingBody.state, "uploading");
 assert.match(stillEncodingBody.detail, /file\/info not playable yet/);
 
-// DoodStream's queue listing is the whole account's, so an older stuck transfer
-// can sit ahead of ours. Reading index 0 there reports a state that never moves
-// and hangs the upload until the stall guard drops the host.
-doodStatusResult = [
-  { status: "working", file_code: "someone-elses-file", bytes_downloaded: "0", bytes_total: "999" },
-  { status: "finished", file_code: "dood-file", bytes_downloaded: "10", bytes_total: "10" },
+// Byse answers about the code it was asked for, but a provider that switches to
+// a list must still be matched by file code rather than by position: an older
+// stuck transfer at index 0 would otherwise report a state that never moves.
+byseStatusResult = [
+  { status: "WORKING", filecode: "someone-elses-file", progress: "3%" },
+  { status: "FINISHED", file_code: "byse-file", progress: "100%" },
 ];
 const shadowed = await statusRequest({ operation });
 const shadowedBody = await shadowed.json();
 assert.equal(shadowedBody.state, "complete");
-assert.equal(shadowedBody.url, "https://playmogo.com/e/dood-file");
-assert.match(shadowedBody.detail, /file_code=dood-file/);
+assert.equal(shadowedBody.url, "https://byse.sx/e/byse-file");
 
 // The same listing without our transfer in it must fall through to file/info
 // rather than adopting an unrelated entry's state.
-doodStatusResult = [{ status: "working", file_code: "someone-elses-file" }];
-doodPlayable = true;
+byseStatusResult = [{ status: "WORKING", file_code: "someone-elses-file" }];
+bysePlayable = true;
 const absent = await statusRequest({ operation });
 const absentBody = await absent.json();
 assert.equal(absentBody.state, "complete");
-assert.equal(absentBody.detail, "urlupload/status listed no entry");
-doodPlayable = false;
+assert.equal(absentBody.detail, "remote/status listed no entry");
+bysePlayable = false;
 
-// The start call spells it `filecode`; the queue listing spells it `file_code`.
-doodStatusResult = [{ status: "finished", filecode: "dood-file" }];
-const spelling = await statusRequest({ operation });
-assert.equal((await spelling.json()).state, "complete");
+// A populated error_msg is the failure channel, even while the status word still
+// reads WORKING.
+byseStatusResult = { status: "WORKING", progress: "12%", error_msg: "source unreachable" };
+const errored = await statusRequest({ operation });
+const erroredBody = await errored.json();
+assert.equal(erroredBody.state, "failed");
+assert.match(erroredBody.detail, /error_msg=source unreachable/);
+
+// The player domain is read from the provider rather than hardcoded, so a
+// rotation republishes on the live host without a redeploy. This is the failure
+// that silently broke DoodStream: its API kept answering while its embed domain
+// moved, so uploads "succeeded" and only the stored links were wrong.
+byseStatusResult = { status: "FINISHED", progress: "100%", error_msg: "" };
+byseDomain = "moved.example";
+const rotated = await statusRequest({ operation });
+const rotatedBody = await rotated.json();
+assert.equal(rotatedBody.embed_domain, "byse.sx", "cached domain survives within its TTL");
+
+// A domain that is not a bare hostname is refused, because a published link must
+// not be redirectable by whatever the provider returns.
+assert.equal(rotatedBody.url, "https://byse.sx/e/byse-file");
 
 // A refusal must explain itself without ever echoing the capability URL back.
 luluStartResponse = {

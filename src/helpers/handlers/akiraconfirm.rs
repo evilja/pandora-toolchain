@@ -279,17 +279,14 @@ fn akira_episode_links(
     name: &str,
 ) -> Result<Vec<EpisodeLinkWrite>, String> {
     let mut out = Vec::new();
-    if let Some(url) = link_value(uploaded, "doodstream") {
-        out.push(link("doodstream", "Doodstream", url, out.len()));
+    if let Some(url) = link_value(uploaded, "byse") {
+        out.push(link("byse", "Byse", url, out.len()));
     }
     if let Some(url) = link_value(uploaded, "lulustream") {
         out.push(link("lulustream", "Lulustream", url, out.len()));
     }
     if let Some(url) = link_value(uploaded, "voe") {
         out.push(link("voe", "Voe", url, out.len()));
-    }
-    if let Some(url) = link_value(uploaded, "abyss") {
-        out.push(link("abyss", "Abyss", url, out.len()));
     }
     if let Some(drive) = link_value(uploaded, "drive") {
         let id = drive_file_id(&drive)
@@ -386,10 +383,9 @@ mod tests {
     fn akira_episode_links_skips_upload_progress_placeholders() {
         let uploaded = serde_json::json!({
             "drive": "https://drive.google.com/file/d/abc123/view?usp=sharing",
-            "doodstream": "https://doodstream.com/e/dood",
+            "byse": "https://byse.sx/e/byse",
             "lulustream": "Lulustream Başarısız",
             "voe": "Voe Bekleniyor",
-            "abyss": "Abyss 534/946 MB"
         });
 
         let links = akira_episode_links(&uploaded, "https://index.example.test", "show", "Episode 01")
@@ -397,17 +393,16 @@ mod tests {
         let urls = links.iter().map(|link| link.url.as_str()).collect::<Vec<_>>();
 
         assert_eq!(links.len(), 2);
-        assert!(urls.contains(&"https://doodstream.com/e/dood"));
+        assert!(urls.contains(&"https://byse.sx/e/byse"));
         assert!(urls.iter().any(|url| url.starts_with("https://index.example.test/izle/show/Episode%2001.mkv--abc123")));
-        assert!(!urls.iter().any(|url| url.contains("Abyss 534/946 MB")));
+        assert!(!urls.iter().any(|url| url.contains("Byse Başarısız")));
     }
 
     #[test]
     fn akira_episode_links_errors_when_no_real_urls_exist() {
         let uploaded = serde_json::json!({
             "drive": "Google 12/100 MB",
-            "doodstream": "Doodstream Başarısız",
-            "abyss": "Abyss 534/946 MB"
+            "byse": "Byse Başarısız",
         });
 
         assert_eq!(

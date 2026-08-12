@@ -8,7 +8,7 @@ use serenity::builder::CreateAutocompleteResponse;
 
 // Anizm players are website embeds, so the Drive link is not published here — only the public
 // streaming mirrors, in the order the episode page lists them.
-const EMBED_LINK_KEYS: &[&str] = &["doodstream", "lulustream", "voe", "abyss"];
+const EMBED_LINK_KEYS: &[&str] = &["byse", "lulustream", "voe"];
 const MAX_ANIME_CHOICES: usize = 25;
 const MAX_CHOICE_LABEL_CHARS: usize = 100;
 
@@ -467,14 +467,14 @@ mod tests {
     fn only_streaming_embeds_are_published_and_placeholders_are_ignored() {
         let uploaded = serde_json::json!({
             "drive": "https://drive.google.com/file/d/abc/view",
-            "doodstream": "https://doodstream.com/e/dood",
+            "byse": "https://byse.sx/e/byse",
             "lulustream": "Lulustream Başarısız",
             "voe": "https://voe.example/e/voe"
         });
         assert_eq!(
             job_embed_links(&uploaded),
             vec![
-                ("doodstream".to_string(), "https://doodstream.com/e/dood".to_string()),
+                ("byse".to_string(), "https://byse.sx/e/byse".to_string()),
                 ("voe".to_string(), "https://voe.example/e/voe".to_string()),
             ]
         );
@@ -507,7 +507,7 @@ mod tests {
             &option(187, "Naruto"),
             &option(57948, "12. Bölüm"),
             "Akira Subs",
-            &["doodstream".to_string()],
+            &["byse".to_string()],
             &["created episode `12`".to_string()],
             &[],
         );

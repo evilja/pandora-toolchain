@@ -55,14 +55,9 @@ pub async fn handle_providers(ctx: &Context, command: &serenity::all::CommandInt
             "Server policy: all configured providers".to_string()
         },
         attached_line_with_note("Google Drive", active_server_gdrive || global_gdrive, gdrive_label),
-        policy_provider_line("Doodstream (via Lumiere)", broker_status.doodstream, drive_only),
+        policy_provider_line("Byse (via Lumiere)", broker_status.byse, drive_only),
         policy_provider_line("LuluStream (via Lumiere)", broker_status.lulustream, drive_only),
         policy_provider_line("Voe (via Lumiere)", broker_status.voe, drive_only),
-        if drive_only {
-            policy_provider_line("Abyss", broker_status.abyss, true)
-        } else {
-            attached_line_with_note("Abyss", broker_status.abyss, "remote API unsupported")
-        },
     ].join("\n");
 
     let distribution_lines = vec![
@@ -146,9 +141,9 @@ mod tests {
     #[test]
     fn drive_only_policy_overrides_configured_provider_status() {
         assert_eq!(
-            policy_provider_line("Doodstream", true, true),
-            "— Doodstream (disabled by server policy)",
+            policy_provider_line("Byse", true, true),
+            "— Byse (disabled by server policy)",
         );
-        assert_eq!(policy_provider_line("Doodstream", true, false), "✅ Doodstream");
+        assert_eq!(policy_provider_line("Byse", true, false), "✅ Byse");
     }
 }

@@ -6,7 +6,7 @@ use pandora_toolchain::pnworker::server_config::{read_server_fansub, FansubSite}
 
 // Ordered the way the OpenAnime episode page lists sources: the Drive index first, then the public
 // streaming mirrors.
-const UPLOAD_LINK_KEYS: &[&str] = &["drive", "doodstream", "lulustream", "voe", "abyss"];
+const UPLOAD_LINK_KEYS: &[&str] = &["drive", "byse", "lulustream", "voe"];
 
 pub async fn handle_openanimeconfirm(ctx: &Context, command: &serenity::all::CommandInteraction) {
     let job_id = match option_str(command, "job_id").and_then(|s| s.trim().parse::<u64>().ok()) {
@@ -361,9 +361,8 @@ mod tests {
         let uploaded = serde_json::json!({
             "drive": "https://drive.google.com/file/d/abc123/view?usp=sharing",
             "lulustream": "https://lulustream.com/e/xyz",
-            "doodstream": "https://doodstream.com/e/dood",
-            "voe": "Voe Bekleniyor",
-            "abyss": "Abyss 534/946 MB"
+            "byse": "https://byse.sx/e/byse",
+            "voe": "Voe Bekleniyor"
         });
 
         let (players, skipped) = plan_players(&uploaded, Resolutions::hd()).unwrap();
@@ -374,14 +373,14 @@ mod tests {
         assert_eq!(labels, vec!["drive", "lulustream"]);
         assert_eq!(players[0].1.number(), 7);
         assert_eq!(players[1].1.number(), 9);
-        assert_eq!(skipped, vec!["doodstream (no OpenAnime player adapter)".to_string()]);
+        assert_eq!(skipped, vec!["byse (no OpenAnime player adapter)".to_string()]);
     }
 
     #[test]
     fn upload_progress_placeholders_never_become_players() {
         let uploaded = serde_json::json!({
             "drive": "Google 12/100 MB",
-            "doodstream": "Doodstream Başarısız"
+            "byse": "Byse Başarısız"
         });
         let error = plan_players(&uploaded, Resolutions::hd()).unwrap_err();
         assert!(error.contains("no links OpenAnime can publish"), "{}", error);
@@ -405,11 +404,11 @@ mod tests {
             7,
             "Akira Subs",
             &["drive".to_string()],
-            &["doodstream (no OpenAnime player adapter)".to_string()],
+            &["byse (no OpenAnime player adapter)".to_string()],
             &["lulustream: HTTP 500".to_string()],
         );
         assert!(text.starts_with("Partially published job `5`"), "{}", text);
-        assert!(text.contains("Skipped: doodstream"), "{}", text);
+        assert!(text.contains("Skipped: byse"), "{}", text);
         assert!(text.contains("Failed: lulustream: HTTP 500"), "{}", text);
     }
 }

@@ -23,6 +23,7 @@ pub async fn handle_addapi(
             | "lulu"
             | "voesx"
             | "abyss"
+            | "byse"
     ) {
         command_error(
             ctx,

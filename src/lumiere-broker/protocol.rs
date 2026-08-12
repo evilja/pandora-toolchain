@@ -40,32 +40,65 @@ pub(crate) struct DriveDeleteRequest {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoteProvider {
-    Doodstream,
     Lulustream,
     Voe,
+    Byse,
 }
 
 impl RemoteProvider {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Doodstream => "Doodstream",
             Self::Lulustream => "Lulustream",
             Self::Voe => "Voe",
+            Self::Byse => "Byse",
         }
     }
 
-    // Player origins rotate independently of the provider API origins. DoodStream's
-    // doodstream.com and dood.li both 301 to playmogo.com, and a published link has
-    // to name the live host itself because AnimeciX/OpenAnime/Anizm store it and
-    // embed it long after the redirect chain moves again. Mirrors PROVIDER_EMBED in
+    // Player origins rotate independently of the provider API origins, and a
+    // published link has to name the live host itself because AnimeciX/OpenAnime/
+    // Anizm store it and embed it long after the redirect chain moves again. This
+    // is the fallback host; when the broker reports a current one, `final_url_on`
+    // composes the link from that instead. Mirrors PROVIDER_EMBED in
     // cloudflare/lumiere-broker/src/index.js.
     pub fn final_url(self, file_code: &str) -> String {
-        match self {
-            Self::Doodstream => format!("https://playmogo.com/e/{file_code}"),
-            Self::Lulustream => format!("https://luluvdo.com/e/{file_code}"),
-            Self::Voe => format!("https://voe.sx/e/{file_code}"),
+        let host = match self {
+            Self::Lulustream => "luluvdo.com",
+            Self::Voe => "voe.sx",
+            Self::Byse => "byse.sx",
+        };
+        format!("https://{host}/e/{file_code}")
+    }
+
+    // The broker reports the provider's current player domain as a bare hostname.
+    // Pandora composes the URL itself rather than publishing whatever string the
+    // provider handed back, so a compromised or confused provider can still only
+    // move the link to a host it names — never add a path, port, or credentials.
+    pub fn final_url_on(self, domain: Option<&str>, file_code: &str) -> String {
+        match domain.and_then(valid_embed_domain) {
+            Some(host) => format!("https://{host}/e/{file_code}"),
+            None => self.final_url(file_code),
         }
     }
+}
+
+fn valid_embed_domain(raw: &str) -> Option<&str> {
+    let value = raw.trim();
+    if value.is_empty() || value.len() > 100 {
+        return None;
+    }
+    let labelled = value.split('.').collect::<Vec<_>>();
+    if labelled.len() < 2 {
+        return None;
+    }
+    let usable = labelled.iter().all(|label| {
+        !label.is_empty()
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    });
+    usable.then_some(value)
 }
 
 #[derive(Debug, Serialize)]
@@ -104,6 +137,10 @@ pub(crate) enum RemoteState {
 #[derive(Debug, Deserialize)]
 pub(crate) struct RemoteStatusResponse {
     pub state: RemoteState,
+    // The provider's current player domain, as a bare hostname. Absent for
+    // providers whose embed origin is still a constant on both sides.
+    #[serde(default)]
+    pub embed_domain: Option<String>,
     #[serde(default)]
     pub progress: Option<f64>,
     #[serde(default)]
@@ -125,13 +162,11 @@ pub struct ProviderStatus {
     #[serde(default)]
     pub requested_drive: bool,
     #[serde(default)]
-    pub doodstream: bool,
-    #[serde(default)]
     pub lulustream: bool,
     #[serde(default)]
     pub voe: bool,
     #[serde(default)]
-    pub abyss: bool,
+    pub byse: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,4 +183,45 @@ pub(crate) struct ErrorEnvelope {
 pub(crate) struct BrokerErrorBody {
     pub code: String,
     pub message: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_reported_domain_replaces_the_fallback_host() {
+        assert_eq!(
+            RemoteProvider::Byse.final_url_on(Some("moved.example"), "abc123"),
+            "https://moved.example/e/abc123"
+        );
+        assert_eq!(
+            RemoteProvider::Byse.final_url_on(None, "abc123"),
+            "https://byse.sx/e/abc123"
+        );
+    }
+
+    // The provider supplies this string, so anything that could point a published
+    // link somewhere other than the host it names has to fall back instead.
+    #[test]
+    fn only_a_bare_hostname_is_accepted() {
+        for rejected in [
+            "https://evil.example",
+            "evil.example/path",
+            "evil.example:8443",
+            "user@evil.example",
+            "evil",
+            "",
+            "-evil.example",
+            "evil-.example",
+            "EVIL.example",
+        ] {
+            assert_eq!(
+                RemoteProvider::Byse.final_url_on(Some(rejected), "abc"),
+                "https://byse.sx/e/abc",
+                "{rejected} must not reach a published link"
+            );
+        }
+        assert_eq!(valid_embed_domain("a-b.c-d.example"), Some("a-b.c-d.example"));
+    }
 }

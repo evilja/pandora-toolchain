@@ -513,7 +513,9 @@ impl LumiereClient {
                     }
                     match status.state {
                         RemoteState::Complete => {
-                            let expected_url = spec.provider.final_url(operation.file_code.trim());
+                            let expected_url = spec
+                                .provider
+                                .final_url_on(status.embed_domain.as_deref(), operation.file_code.trim());
                             let url = status
                                 .url
                                 .filter(|url| url == &expected_url)
@@ -1141,6 +1143,7 @@ mod tests {
     fn status(state: RemoteState, progress: Option<f64>, bytes_done: Option<u64>) -> RemoteStatusResponse {
         RemoteStatusResponse {
             state,
+            embed_domain: None,
             progress,
             bytes_done,
             bytes_total: Some(100),

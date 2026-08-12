@@ -3,8 +3,9 @@
 Lumiere removes reusable upload-provider credentials from the Pandora VDS. The Cloudflare Worker performs only authenticated control-plane calls:
 
 - Google Drive: the Worker creates a resumable session; Pandora sends all file bytes directly from the VDS to Google.
-- DoodStream, LuluStream, and Voe: the Worker starts a remote upload; each provider downloads the bytes from a temporary capability URL served by `pndc` on the VDS.
-- Abyss: disabled/fail-closed until its authenticated remote-upload API is documented.
+- Byse, LuluStream, and Voe: the Worker starts a remote upload; each provider downloads the bytes from a temporary capability URL served by `pndc` on the VDS.
+
+DoodStream and Abyss were removed in August 2026 — DoodStream after a second player-domain rotation, Abyss because its only documented upload is a push to `up.abyss.to/<api_key>`, which puts the credential back on the VDS and so cannot be brokered at all.
 
 The Worker never receives a video body. If `lumiere_public_url` is a Cloudflare Tunnel hostname, file bytes traverse Cloudflare Tunnel/CDN transport but do not execute in the Worker.
 
@@ -17,7 +18,7 @@ Use separate hostnames when possible:
 
 In **Zero Trust > Networks > Tunnels > your tunnel > Public Hostnames**, add `pandora-files.example.com` with service `http://pndc:8787`. The Compose `cloudflared` container and `pndc` already share the `pandora` network.
 
-The file hostname must not require Cloudflare Access login because DoodStream/LuluStream/Voe cannot provide Access credentials. Lumiere URLs contain a random 256-bit capability, expire, are held only in memory, and are removed when the upload task ends. Configure Cloudflare to bypass cache and browser/Bot challenges for `/lumiere/v1/files/*`; provider fetchers must receive the file rather than an HTML challenge.
+The file hostname must not require Cloudflare Access login because Byse/LuluStream/Voe cannot provide Access credentials. Lumiere URLs contain a random 256-bit capability, expire, are held only in memory, and are removed when the upload task ends. Configure Cloudflare to bypass cache and browser/Bot challenges for `/lumiere/v1/files/*`; provider fetchers must receive the file rather than an HTML challenge.
 
 If Cloudflare must not carry file bytes at all, expose an HTTPS origin on the VDS directly and use that origin as `lumiere_public_url` instead of a Tunnel hostname.
 
@@ -131,12 +132,12 @@ Paste compact JSON when prompted. Cloudflare Worker variables/secrets are limite
 Set only the providers in use:
 
 ```sh
-npx wrangler secret put DOODSTREAM_API_KEY
+npx wrangler secret put BYSE_API_KEY
 npx wrangler secret put LULUSTREAM_API_KEY
 npx wrangler secret put VOE_API_KEY
 ```
 
-There is intentionally no Abyss secret binding yet.
+There are intentionally no DoodStream or Abyss secret bindings: both hosts were removed.
 
 ## 6. Deploy and route the Worker
 
@@ -200,15 +201,15 @@ Set `lumiere_log_verbose|pntools|true` in `env.pandora` and restart `pndc` to ad
 
 What the common failures look like:
 
-- **A host never fetches the file.** `Doodstream has not requested https://… in 2m00s` with no matching `xfer` download line means the provider's fetcher cannot reach the file hostname. Check that `/lumiere/v1/files/*` bypasses Cloudflare Access, bot challenges, and caching, and that `lumiere_public_url` resolves to this `pndc`.
+- **A host never fetches the file.** `Byse has not requested https://… in 2m00s` with no matching `xfer` download line means the provider's fetcher cannot reach the file hostname. Check that `/lumiere/v1/files/*` bypasses Cloudflare Access, bot challenges, and caching, and that `lumiere_public_url` resolves to this `pndc`.
 - **A host fetches and then stalls.** `Voe still Uploading after 5m00s: we served 1.42GB of 1.42GB, provider reports 41.0%` is a provider-side queue, not a Pandora problem. If nothing moves for `lumiere_remote_stall_secs`, the host is dropped with `has not moved in 15m00s … giving up on this host` and the other hosts still publish; with the guard disabled it instead runs to `expired after … the host never finished pulling the file`.
-- **A host polls someone else's transfer.** DoodStream's `urlupload/status` answers with the account's whole remote-upload queue and does not reliably honour the `file_code` filter, so the Worker matches our own code (either spelling) instead of taking the first entry; an older stuck transfer at the head of that list would otherwise report a state that never moves until the stall guard drops the host. The heartbeat's detail names the entry actually read (`file_code=… status=…`), and `urlupload/status listed no entry` means our transfer is not in the listing at all and the verdict came from `file/info`.
-- **A host finished but its queue entry never says so.** Each poll after we have served the whole file asks the provider's `file/info`, and the log shows the provider's own words plus the verdict: `Doodstream state Uploading -> Complete after 43m33s (status=working; file/info reports the file is playable)`. A trailing `file/info not playable yet` means the provider really is still transcoding.
+- **A host polls someone else's transfer.** Byse answers `remote/status` about the file code it was asked for, but the Worker still matches our own code (either spelling) rather than taking the first entry, because a provider that switches to returning the account's whole queue would otherwise park us on an older stuck transfer whose state never moves. `remote/status listed no entry` means our transfer is not in the listing at all and the verdict came from `file/info`.
+- **A host finished but its queue entry never says so.** Each poll after we have served the whole file asks the provider's `file/info`, and the log shows the provider's own words plus the verdict: `Byse state Uploading -> Complete after 43m33s (status=WORKING; file/info reports the file is playable)`. A trailing `file/info not playable yet` means the provider really is still transcoding.
 - **A host disconnects mid-pull.** `… disconnected after 812.0MB of 1.42GB in 3m18s` — the provider hung up. Providers usually retry with a `Range` request, which appears as a fresh download line for the same `xfer` scope.
 - **A host is refused at the broker.** `broker | v1/remote/start rejected: HTTP 400 provider_disabled — …` means the Worker has no secret for that provider, or the source origin does not match `LUMIERE_SOURCE_ORIGIN`.
 - **A host moved its API.** `provider_moved — LuluStream redirected its API to api.lulustream.com; update PROVIDER_API` means that provider's origin now 301s. The Worker never follows a provider redirect (a redirect target is attacker-controlled input), so fix the origin in the `PROVIDER_API` map at the top of `cloudflare/lumiere-broker/src/index.js` and redeploy. Only the new hostname is reported, because the `Location` echoes the provider API key back in its query string. This is what silently broke LuluStream in August 2026: `lulustream.com/api/*` moved to `api.lulustream.com`, and every call failed as `provider_protocol` until the origin was updated.
-- **A host moved its player domain.** The upload succeeds and the job publishes a link, but the link redirects (or is refused by a site that stores it). Player origins rotate separately from the API origins: `curl -sI https://<host>/e/<code>` showing a `301` to another host means the published domain is stale. Fix it in the `PROVIDER_EMBED` map in `cloudflare/lumiere-broker/src/index.js` **and** in `RemoteProvider::final_url` (`src/lumiere-broker/protocol.rs`) — both mint the same link — then add the retired host to the normalizer in `src/pnworker/progress.rs` so already-stored links are republished on the live domain. This is what broke DoodStream in August 2026: `doodstream.com/e/*` and `dood.li/e/*` both moved to `playmogo.com/e/*` while `doodapi.co` kept answering normally, so uploads reported success and only the links were wrong.
-- **Everything is silent.** `job 81: still waiting after 300s on Voe, Abyss` names the hosts that have produced no result at all; Abyss is expected there until its remote API is supported.
+- **A host moved its player domain.** The upload succeeds and the job publishes a link, but the link redirects (or is refused by a site that stores it). This is what broke DoodStream twice in August 2026 — `doodstream.com/e/*` and `dood.li/e/*` moved to `playmogo.com/e/*` while `doodapi.co` kept answering normally, so uploads reported success and only the links were wrong — and it is why DoodStream is gone. **Byse fixes this class of failure itself**: the Worker reads `get/domain` (cached 6h per isolate) and reports the current host to Pandora as `embed_domain`, which `RemoteProvider::final_url_on` validates as a bare hostname before composing the link, falling back to the compiled-in `PROVIDER_EMBED`/`final_url` host if the lookup fails or the answer is not a plain hostname. For LuluStream and Voe the domain is still a constant in both places, so a rotation there means editing `PROVIDER_EMBED` in `cloudflare/lumiere-broker/src/index.js` **and** `RemoteProvider::final_url` (`src/lumiere-broker/protocol.rs`), then adding the retired host to the normalizer in `src/pnworker/progress.rs` so already-stored links are republished on the live domain. Byse's normalizer deliberately rewrites only the retired Filemoon hosts, never a current one, because pinning a live link back to the fallback would undo the runtime lookup.
+- **Everything is silent.** `job 81: still waiting after 300s on Voe, Byse` names the hosts that have produced no result at all.
 - **Drive stalls or retries.** `Drive returned HTTP 503 at offset …`, `chunk 12 acknowledged … no progress`, and `resuming Drive upload from 640.0MB` trace the resumable session; `drive verification failed: md5 expected … got …` means the finished file was rejected and deleted through its deletion capability.
 
 ## 8. Smoke test before deleting local credentials
@@ -218,7 +219,7 @@ Use a small, non-sensitive file and a provider account where creating a test fil
 Verify:
 
 1. Google Drive progress is produced by the VDS and the final file size and MD5 match.
-2. DoodStream/LuluStream/Voe fetch `/lumiere/v1/files/...` successfully, including `HEAD`, `GET`, retries, and byte ranges.
+2. Byse/LuluStream/Voe fetch `/lumiere/v1/files/...` successfully, including `HEAD`, `GET`, retries, and byte ranges.
 3. Capability URLs return `404` after the upload task finishes.
 4. Worker logs contain no bearer token, provider key, Google session URI, or capability URL.
 5. Smartcode replacement deletes the previous Drive file through its per-file Lumiere deletion capability. The first replacement of a pre-Lumiere state intentionally requires manual cleanup because legacy state has no such capability.
@@ -228,8 +229,7 @@ Verify:
 Only after a successful smoke test and an offline recovery backup:
 
 - Remove or blank global `gdrive_client_id`, `gdrive_client_secret`, `gdrive_refresh_token`, `gdrive_token_url`, and `gdrive_parent_id`.
-- Remove or blank `doodstream`, `lulu`, and `voesx`.
-- Preserve the Abyss key offline until a supported broker API exists, then remove it from the VDS. Pandora currently marks Abyss unavailable.
+- Remove or blank `doodstream`, `lulu`, `voesx`, and `abyss`. All four are legacy VDS keys; the two surviving hosts plus Byse are configured only as Worker secrets. The keyvault scrub still recognises the retired names on purpose — that is what clears them off an existing install.
 - In each `DB/config/<guild>/meta.pandora`, blank legacy lines 4-7 and 10 while preserving line positions. Lines 4-6 were OAuth credentials; lines 7/10 were roots now stored in the Worker profile.
 
 The recommended automated flow is the hard Witch-only two-phase keyvault command. Generate an age identity only on the trusted administration machine, then run `/keyvault prepare recipient:<age1...>`. Prepare purges nothing. Download and decrypt the attachment locally:
@@ -293,7 +293,7 @@ The command performs logical removal, not guaranteed forensic erasure; filesyste
 
 ## API and security properties
 
-- `POST /v1/remote/status` takes `{operation, source_drained}`. `source_drained` is set once the provider has pulled every byte from the capability URL; only then does the Worker spend a second provider call on `file/info`, and a playable file is reported as `complete` even when the provider's queue entry still says otherwise. Every status response carries a `detail` string echoing the provider's own status fields, sanitised: URLs are replaced with `<url>` so a provider that quotes the source back at us cannot leak the capability token into a log.
+- `POST /v1/remote/status` takes `{operation, source_drained}`. `source_drained` is set once the provider has pulled every byte from the capability URL; only then does the Worker spend a second provider call on `file/info`, and a playable file is reported as `complete` even when the provider's queue entry still says otherwise. Every status response carries a `detail` string echoing the provider's own status fields, sanitised: URLs are replaced with `<url>` so a provider that quotes the source back at us cannot leak the capability token into a log. Byse responses also carry `embed_domain`, the provider's current player host as a bare name; Pandora composes the published link from it rather than publishing a URL the provider chose, so a compromised provider can still only move a link to a host it names.
 - The Worker accepts only typed Drive/session/delete and three remote-upload operations.
 - Provider endpoints and source origin are hard-coded/allowlisted.
 - KV stores idempotency records containing temporary source URLs and provider operation IDs for 24 hours; it never stores provider credentials.

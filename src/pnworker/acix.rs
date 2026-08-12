@@ -5,7 +5,7 @@ use crate::lib::db::core::JobDb;
 use crate::lib::http::acix::{AnimeCix, MixedUpload};
 use crate::pnworker::core::{AcixCredits, AcixPublish};
 
-const PUBLIC_LINK_KEYS: &[&str] = &["drive", "doodstream", "lulustream", "voe", "abyss"];
+const PUBLIC_LINK_KEYS: &[&str] = &["drive", "byse", "lulustream", "voe"];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -461,10 +461,9 @@ mod tests {
     fn extracts_ordered_public_links_and_ignores_internal_fields() {
         let json = serde_json::json!({
             "drive": "https://drive.example/video",
-            "doodstream": "https://dood.example/video",
+            "byse": "https://byse.example/video",
             "lulustream": null,
             "voe": "https://voe.example/video",
-            "abyss": "upload failed",
             "drive_file_id": "internal-id",
             "warnings": ["warning"]
         }).to_string();
@@ -472,7 +471,7 @@ mod tests {
             public_uploaded_links("https://drive.example/video", Some(&json)).unwrap(),
             vec![
                 "https://drive.example/video".to_string(),
-                "https://dood.example/video".to_string(),
+                "https://byse.example/video".to_string(),
                 "https://voe.example/video".to_string(),
             ]
         );

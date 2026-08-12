@@ -179,13 +179,12 @@ impl LumiereClient {
                 info(
                     BROKER_SCOPE,
                     format!(
-                        "provider status: global drive={} requested drive={} doodstream={} lulustream={} voe={} abyss={}",
+                        "provider status: global drive={} requested drive={} lulustream={} voe={} byse={}",
                         providers.global_drive,
                         providers.requested_drive,
-                        providers.doodstream,
                         providers.lulustream,
                         providers.voe,
-                        providers.abyss
+                        providers.byse
                     ),
                 );
             })

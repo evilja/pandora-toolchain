@@ -111,12 +111,13 @@ pub(crate) async fn persist_side_effects(
 
 fn upload_links_json(args: &[String], encode_warnings: &[String]) -> serde_json::Value {
     let display_args = upload_display_args(args);
+    // Index 4 is a retired host slot: it is still emitted so the Drive metadata
+    // that follows keeps its positions, but it names no host and so gets no key.
     let mut v = serde_json::json!({
         "drive": display_args.get(0),
-        "doodstream": display_args.get(1).map(|s| normalize_doodstream_link(s)),
+        "byse": display_args.get(1).map(|s| normalize_byse_link(s)),
         "lulustream": display_args.get(2).map(|s| normalize_lulu_link(s)),
         "voe": display_args.get(3).map(|s| normalize_voe_link(s)),
-        "abyss": display_args.get(4),
     });
     if let Some(obj) = v.as_object_mut() {
         if let Some(file_id) = args.get(5).map(|s| s.trim()).filter(|s| !s.is_empty()) {
@@ -151,12 +152,13 @@ fn normalize_lulu_link(link: &str) -> String {
     trimmed.to_string()
 }
 
-// DoodStream keeps its retired domains alive as redirects, so links stored before
-// a move still arrive here on the old host; canonicalize every known one onto the
-// live player origin rather than republishing a redirect.
-fn normalize_doodstream_link(link: &str) -> String {
+// Byse was Filemoon, and links stored under the old brand still arrive here.
+// Only the *known retired* hosts are rewritten: the live domain is resolved per
+// upload by the broker, so a link already on a current host must be left exactly
+// as it is rather than pinned back to the compiled-in fallback.
+fn normalize_byse_link(link: &str) -> String {
     let trimmed = link.trim();
-    for host in ["playmogo.com", "doodstream.com", "dood.li"] {
+    for host in ["filemoon.sx", "filemoon.to", "filemoon.com"] {
         for scheme in ["https://", "http://"] {
             let Some(rest) = trimmed.strip_prefix(&format!("{}{}/", scheme, host)) else {
                 continue;
@@ -167,7 +169,7 @@ fn normalize_doodstream_link(link: &str) -> String {
                 .unwrap_or(rest)
                 .trim_matches('/');
             if !code.is_empty() && !code.contains('/') {
-                return format!("https://playmogo.com/e/{}", code);
+                return format!("https://byse.sx/e/{}", code);
             }
         }
     }
@@ -308,18 +310,21 @@ mod tests {
     }
 
     #[test]
-    fn normalize_doodstream_link_converts_file_codes_to_embed_urls() {
+    fn normalize_byse_link_rewrites_only_the_retired_filemoon_hosts() {
         assert_eq!(
-            normalize_doodstream_link("https://doodstream.com/d/abc123"),
-            "https://playmogo.com/e/abc123",
+            normalize_byse_link("https://filemoon.sx/d/abc123"),
+            "https://byse.sx/e/abc123",
         );
         assert_eq!(
-            normalize_doodstream_link("https://dood.li/e/abc123"),
-            "https://playmogo.com/e/abc123",
+            normalize_byse_link("https://filemoon.to/e/abc123"),
+            "https://byse.sx/e/abc123",
         );
+        // The broker resolves the live domain per upload, so a link already on a
+        // current host must survive untouched rather than being pinned back to
+        // the compiled-in fallback.
         assert_eq!(
-            normalize_doodstream_link("https://playmogo.com/e/abc123"),
-            "https://playmogo.com/e/abc123",
+            normalize_byse_link("https://moved.example/e/abc123"),
+            "https://moved.example/e/abc123",
         );
     }
 
@@ -339,10 +344,10 @@ mod tests {
     fn upload_links_json_keeps_drive_ids_but_display_args_hide_them() {
         let args = vec![
             "https://drive.google.com/file/d/file123/view?usp=sharing".to_string(),
-            "https://doodstream.com/e/dood".to_string(),
+            "https://byse.sx/e/byse".to_string(),
             "https://luluvdo.com/e/lulu".to_string(),
             "https://voe.sx/e/voe".to_string(),
-            "https://abyss.to/a".to_string(),
+            String::new(),
             "file123".to_string(),
             "folder456".to_string(),
             "guild:1".to_string(),

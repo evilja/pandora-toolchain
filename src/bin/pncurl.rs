@@ -123,18 +123,12 @@ async fn main() {
     } else if let Some(a) = args.env {
         let (tx, mut rx): (UnboundedSender<RpbData>, UnboundedReceiver<RpbData>) = mpsc::unbounded_channel();
 
-        let tx2 = tx.clone();
-        let tx4 = tx.clone(); let tx5 = tx.clone(); let tx6 = tx.clone();
-        let env2 = a.clone();
-        let env4 = a.clone(); let env5 = a.clone(); let env6 = a.clone();
-        let opcode2 = args.opcode.clone();
-        let opcode4 = args.opcode.clone(); let opcode5 = args.opcode.clone(); let opcode6 = args.opcode.clone();
-        let link2 = args.link.clone();
-        let link4 = args.link.clone(); let link5 = args.link.clone(); let link6 = args.link.clone();
-        let log2 = request.log.clone();
-        let log4 = request.log.clone(); let log5 = request.log.clone(); let log6 = request.log.clone();
-        let cfile2 = request.cfile.clone();
-        let cfile4 = request.cfile.clone(); let cfile5 = request.cfile.clone(); let cfile6 = request.cfile.clone();
+        let tx4 = tx.clone(); let tx5 = tx.clone();
+        let env4 = a.clone(); let env5 = a.clone();
+        let opcode4 = args.opcode.clone(); let opcode5 = args.opcode.clone();
+        let link4 = args.link.clone(); let link5 = args.link.clone();
+        let log4 = request.log.clone(); let log5 = request.log.clone();
+        let cfile4 = request.cfile.clone(); let cfile5 = request.cfile.clone();
 
         let drive_folder = args.drive_folder.clone();
         let drive_opcode = args.drive_opcode.clone().unwrap_or_else(|| args.opcode.clone());
@@ -143,10 +137,6 @@ async fn main() {
         });
         if !args.backup {
             tokio::spawn(async move {
-                let req2 = Req { target: link2, log: log2, cfile: cfile2 };
-                req2.doodwrapupload(env2, Some(opcode2), tx2).await;
-            });
-            tokio::spawn(async move {
                 let req4 = Req { target: link4, log: log4, cfile: cfile4 };
                 req4.luluwrapupload(env4, Some(opcode4), tx4).await;
             });
@@ -154,30 +144,20 @@ async fn main() {
                 let req5 = Req { target: link5, log: log5, cfile: cfile5 };
                 req5.voewrapupload(env5, Some(opcode5), tx5).await;
             });
-            tokio::spawn(async move {
-                let req6 = Req { target: link6, log: log6, cfile: cfile6 };
-                req6.abyssupload(env6, Some(opcode6), tx6).await;
-            });
         }
 
         let mut total_size = 0u64;
         let mut gd_done = 0u64;
         let mut gd_ext = 0u64;
-        let mut dood_done = 0u64;
-        let mut dood_ext = 0u64;
         let mut lulu_done = 0u64;
         let mut lulu_ext = 0u64;
         let mut voesx_done = 0u64;
         let mut voesx_ext = 0u64;
-        let mut abyss_done = 0u64;
-        let mut abyss_ext = 0u64;
         let mut last: Option<Instant> = None;
 
         let mut gd_result: Option<Result<String, ()>> = None;
-        let mut dood_result: Option<Result<String, ()>> = None;
         let mut lulu_result: Option<Result<String, ()>> = None;
         let mut voesx_result: Option<Result<String, ()>> = None;
-        let mut abyss_result: Option<Result<String, ()>> = None;
 
         while let Some(val) = rx.recv().await {
             match val {
@@ -199,22 +179,8 @@ async fn main() {
                         pn_emit!(
                             protocol = proto,
                             negkey = &neg,
-                            schema = [leaf, leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
-                            data   = ["0", total_size, [gd_done, gd_ext], [dood_done, dood_ext], [lulu_done, lulu_ext], [voesx_done, voesx_ext], [abyss_done, abyss_ext]]
-                        ).unwrap()
-                    );
-                }
-                RpbData::Progress(done, total, extensions, Host::Doodstream) => {
-                    if total != 0 { total_size = total; }
-                    dood_done = done; dood_ext = extensions;
-                    if last.map(|t| t.elapsed() < Duration::from_secs(5)).unwrap_or(false) { continue; }
-                    last = Some(Instant::now());
-                    println!("{}",
-                        pn_emit!(
-                            protocol = proto,
-                            negkey = &neg,
-                            schema = [leaf, leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
-                            data   = ["0", total_size, [gd_done, gd_ext], [dood_done, dood_ext], [lulu_done, lulu_ext], [voesx_done, voesx_ext], [abyss_done, abyss_ext]]
+                            schema = [leaf, leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf]],
+                            data   = ["0", total_size, [gd_done, gd_ext], [lulu_done, lulu_ext], [voesx_done, voesx_ext]]
                         ).unwrap()
                     );
                 }
@@ -227,8 +193,8 @@ async fn main() {
                         pn_emit!(
                             protocol = proto,
                             negkey = &neg,
-                            schema = [leaf, leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
-                            data   = ["0", total_size, [gd_done, gd_ext], [dood_done, dood_ext], [lulu_done, lulu_ext], [voesx_done, voesx_ext], [abyss_done, abyss_ext]]
+                            schema = [leaf, leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf]],
+                            data   = ["0", total_size, [gd_done, gd_ext], [lulu_done, lulu_ext], [voesx_done, voesx_ext]]
                         ).unwrap()
                     );
                 }
@@ -241,22 +207,8 @@ async fn main() {
                         pn_emit!(
                             protocol = proto,
                             negkey = &neg,
-                            schema = [leaf, leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
-                            data   = ["0", total_size, [gd_done, gd_ext], [dood_done, dood_ext], [lulu_done, lulu_ext], [voesx_done, voesx_ext], [abyss_done, abyss_ext]]
-                        ).unwrap()
-                    );
-                }
-                RpbData::Progress(done, total, extensions, Host::Abyss) => {
-                    if total != 0 { total_size = total; }
-                    abyss_done = done; abyss_ext = extensions;
-                    if last.map(|t| t.elapsed() < Duration::from_secs(5)).unwrap_or(false) { continue; }
-                    last = Some(Instant::now());
-                    println!("{}",
-                        pn_emit!(
-                            protocol = proto,
-                            negkey = &neg,
-                            schema = [leaf, leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf], [leaf, leaf]],
-                            data   = ["0", total_size, [gd_done, gd_ext], [dood_done, dood_ext], [lulu_done, lulu_ext], [voesx_done, voesx_ext], [abyss_done, abyss_ext]]
+                            schema = [leaf, leaf, [leaf, leaf], [leaf, leaf], [leaf, leaf]],
+                            data   = ["0", total_size, [gd_done, gd_ext], [lulu_done, lulu_ext], [voesx_done, voesx_ext]]
                         ).unwrap()
                     );
                 }
@@ -265,11 +217,6 @@ async fn main() {
                     let folder_id = folder_id.unwrap_or_default();
                     println!("{}", pn_emit!(protocol = proto, negkey = &neg,
                         schema = [leaf, leaf, leaf, leaf], data = ["1", "1", url, folder_id]).unwrap());
-                }
-                RpbData::Done(url, Host::Doodstream, _) => {
-                    dood_result = Some(Ok(url.clone()));
-                    println!("{}", pn_emit!(protocol = proto, negkey = &neg,
-                        schema = [leaf, leaf, leaf], data = ["1", "2", url]).unwrap());
                 }
                 RpbData::Done(url, Host::Lulu, _) => {
                     lulu_result = Some(Ok(url.clone()));
@@ -281,18 +228,11 @@ async fn main() {
                     println!("{}", pn_emit!(protocol = proto, negkey = &neg,
                         schema = [leaf, leaf, leaf], data = ["1", "5", url]).unwrap());
                 }
-                RpbData::Done(url, Host::Abyss, _) => {
-                    abyss_result = Some(Ok(url.clone()));
-                    println!("{}", pn_emit!(protocol = proto, negkey = &neg,
-                        schema = [leaf, leaf, leaf], data = ["1", "6", url]).unwrap());
-                }
                 RpbData::Fail(host) => {
                     match &host {
                         Host::Drive => gd_result = Some(Err(())),
-                        Host::Doodstream => dood_result = Some(Err(())),
                         Host::Lulu => lulu_result = Some(Err(())),
                         Host::VoeSx => voesx_result = Some(Err(())),
-                        Host::Abyss => abyss_result = Some(Err(())),
                     }
                     let host_id = upload_host_id(&host);
                     println!("{}", pn_emit!(
@@ -309,7 +249,7 @@ async fn main() {
                 }
             }
 
-            if (args.backup && gd_result.is_some()) || (gd_result.is_some() && dood_result.is_some() &&  voesx_result.is_some() && lulu_result.is_some() && abyss_result.is_some()) {
+            if (args.backup && gd_result.is_some()) || (gd_result.is_some() && voesx_result.is_some() && lulu_result.is_some()) {
                 break;
             }
         }
@@ -319,9 +259,7 @@ async fn main() {
 fn upload_host_id(host: &Host) -> &'static str {
     match host {
         Host::Drive => "1",
-        Host::Doodstream => "2",
         Host::Lulu => "4",
         Host::VoeSx => "5",
-        Host::Abyss => "6",
     }
 }

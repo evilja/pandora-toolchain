@@ -78,10 +78,9 @@ pub async fn pn_uloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LumiereHost {
     Drive,
-    Doodstream,
+    Byse,
     Lulustream,
     Voe,
-    Abyss,
 }
 
 enum LumiereUploadEvent {
@@ -216,7 +215,7 @@ async fn run_lumiere_single_upload(
     ));
     if remote_uploads_enabled(release, drive_only) {
         for (host, provider) in [
-            (LumiereHost::Doodstream, RemoteProvider::Doodstream),
+            (LumiereHost::Byse, RemoteProvider::Byse),
             (LumiereHost::Lulustream, RemoteProvider::Lulustream),
             (LumiereHost::Voe, RemoteProvider::Voe),
         ] {
@@ -237,12 +236,6 @@ async fn run_lumiere_single_upload(
                 event_tx.clone(),
             ));
         }
-        event_tx
-            .send(LumiereUploadEvent::Failed(
-                LumiereHost::Abyss,
-                "Abyss remote upload API is not supported yet".to_string(),
-            ))
-            .ok();
     }
     drop(event_tx);
 
@@ -257,12 +250,11 @@ async fn run_lumiere_single_upload(
     let mut completed = 0usize;
     let mut any_success = false;
     let mut gd_link = "Google Bekleniyor".to_string();
-    let mut dood_link = if drive_only { String::new() } else { "Doodstream Bekleniyor".to_string() };
+    let mut byse_link = if drive_only { String::new() } else { "Byse Bekleniyor".to_string() };
     let mut lulu_link = if drive_only { String::new() } else { "Lulustream Bekleniyor".to_string() };
     let mut voe_link = if drive_only { String::new() } else { "Voe Bekleniyor".to_string() };
-    let mut abyss_link = if drive_only { String::new() } else { "Abyss Bekleniyor".to_string() };
-    let mut done = [false; 5];
-    let mut last_progress = [None; 5];
+    let mut done = [false; 4];
+    let mut last_progress = [None; 4];
     let mut drive_meta: Option<(String, String, String, String)> = None;
     let track_smartcode = smartcode_drive_name.is_some();
     let mut cancelled = false;
@@ -308,10 +300,9 @@ async fn run_lumiere_single_upload(
                     host,
                     text,
                     &mut gd_link,
-                    &mut dood_link,
+                    &mut byse_link,
                     &mut lulu_link,
                     &mut voe_link,
-                    &mut abyss_link,
                 );
             }
             LumiereUploadEvent::Done(host, url, result) => {
@@ -332,10 +323,9 @@ async fn run_lumiere_single_upload(
                     host,
                     url,
                     &mut gd_link,
-                    &mut dood_link,
+                    &mut byse_link,
                     &mut lulu_link,
                     &mut voe_link,
-                    &mut abyss_link,
                 );
                 if let Some(result) = result
                     && track_smartcode
@@ -368,10 +358,9 @@ async fn run_lumiere_single_upload(
                     host,
                     format!("{} Başarısız", lumiere_host_label(host)),
                     &mut gd_link,
-                    &mut dood_link,
+                    &mut byse_link,
                     &mut lulu_link,
                     &mut voe_link,
-                    &mut abyss_link,
                 );
             }
             LumiereUploadEvent::Cancelled => {
@@ -394,10 +383,9 @@ async fn run_lumiere_single_upload(
                 release,
                 UPLOAD_PROG,
                 &gd_link,
-                &dood_link,
+                &byse_link,
                 &lulu_link,
                 &voe_link,
-                &abyss_link,
                 drive_meta.clone(),
                 None,
             ))
@@ -415,10 +403,9 @@ async fn run_lumiere_single_upload(
         );
         for host in [
             LumiereHost::Drive,
-            LumiereHost::Doodstream,
+            LumiereHost::Byse,
             LumiereHost::Lulustream,
             LumiereHost::Voe,
-            LumiereHost::Abyss,
         ]
         .into_iter()
         .take(expected_hosts)
@@ -428,10 +415,9 @@ async fn run_lumiere_single_upload(
                 host,
                 format!("{} Başarısız", lumiere_host_label(host)),
                 &mut gd_link,
-                &mut dood_link,
+                &mut byse_link,
                 &mut lulu_link,
                 &mut voe_link,
-                &mut abyss_link,
             );
         }
     }
@@ -443,10 +429,9 @@ async fn run_lumiere_single_upload(
                 release,
                 JOB_CANCELLED,
                 &gd_link,
-                &dood_link,
+                &byse_link,
                 &lulu_link,
                 &voe_link,
-                &abyss_link,
                 drive_meta,
                 Some(Stage::Cancelled),
             ))
@@ -467,10 +452,9 @@ async fn run_lumiere_single_upload(
             release,
             UPLOAD_DONE,
             &gd_link,
-            &dood_link,
+            &byse_link,
             &lulu_link,
             &voe_link,
-            &abyss_link,
             drive_meta,
             Some(Stage::Uploaded),
         ))
@@ -496,13 +480,12 @@ async fn run_lumiere_single_upload(
 
 // The event loop only hears from hosts that finish; naming the silent ones is the
 // point of the wait heartbeat.
-fn pending_host_labels(done: &[bool; 5], expected_hosts: usize) -> String {
+fn pending_host_labels(done: &[bool; 4], expected_hosts: usize) -> String {
     let pending = [
         LumiereHost::Drive,
-        LumiereHost::Doodstream,
+        LumiereHost::Byse,
         LumiereHost::Lulustream,
         LumiereHost::Voe,
-        LumiereHost::Abyss,
     ]
     .into_iter()
     .take(expected_hosts)
@@ -799,26 +782,27 @@ fn remote_uploads_enabled(release: bool, drive_only: bool) -> bool {
 }
 
 fn expected_lumiere_hosts(release: bool, drive_only: bool) -> usize {
-    if remote_uploads_enabled(release, drive_only) { 5 } else { 1 }
+    if remote_uploads_enabled(release, drive_only) { 4 } else { 1 }
 }
 
+// Payload positions, not a host count: index 4 is a retired slot that no host
+// occupies any more, and it stays present-but-empty so the Drive metadata that
+// follows it keeps the positions already stored against finished jobs.
 fn lumiere_host_index(host: LumiereHost) -> usize {
     match host {
         LumiereHost::Drive => 0,
-        LumiereHost::Doodstream => 1,
+        LumiereHost::Byse => 1,
         LumiereHost::Lulustream => 2,
         LumiereHost::Voe => 3,
-        LumiereHost::Abyss => 4,
     }
 }
 
 fn lumiere_host_label(host: LumiereHost) -> &'static str {
     match host {
         LumiereHost::Drive => "Google",
-        LumiereHost::Doodstream => "Doodstream",
+        LumiereHost::Byse => "Byse",
         LumiereHost::Lulustream => "Lulustream",
         LumiereHost::Voe => "Voe",
-        LumiereHost::Abyss => "Abyss",
     }
 }
 
@@ -827,17 +811,15 @@ fn set_lumiere_link(
     host: LumiereHost,
     value: String,
     drive: &mut String,
-    doodstream: &mut String,
+    byse: &mut String,
     lulustream: &mut String,
     voe: &mut String,
-    abyss: &mut String,
 ) {
     match host {
         LumiereHost::Drive => *drive = value,
-        LumiereHost::Doodstream => *doodstream = value,
+        LumiereHost::Byse => *byse = value,
         LumiereHost::Lulustream => *lulustream = value,
         LumiereHost::Voe => *voe = value,
-        LumiereHost::Abyss => *abyss = value,
     }
 }
 
@@ -847,10 +829,9 @@ fn lumiere_upload_payload(
     release: bool,
     message_id: &'static str,
     gd_link: &str,
-    dood_link: &str,
+    byse_link: &str,
     lulu_link: &str,
     voe_link: &str,
-    abyss_link: &str,
     drive_meta: Option<(String, String, String, String)>,
     stage: Option<Stage>,
 ) -> CommData {
@@ -862,10 +843,9 @@ fn lumiere_upload_payload(
         release,
         message_id,
         gd_link,
-        dood_link,
+        byse_link,
         lulu_link,
         voe_link,
-        abyss_link,
         visible_meta,
         stage,
     );
@@ -1081,7 +1061,7 @@ mod tests {
     fn drive_only_release_schedules_only_drive() {
         assert_eq!(expected_lumiere_hosts(true, true), 1);
         assert!(!remote_uploads_enabled(true, true));
-        assert_eq!(expected_lumiere_hosts(true, false), 5);
+        assert_eq!(expected_lumiere_hosts(true, false), 4);
         assert!(remote_uploads_enabled(true, false));
         assert_eq!(expected_lumiere_hosts(false, false), 1);
         assert!(!remote_uploads_enabled(false, false));
@@ -1094,7 +1074,6 @@ mod tests {
             true,
             UPLOAD_DONE,
             "https://drive.google.com/file/d/file/view",
-            "",
             "",
             "",
             "",
@@ -1112,6 +1091,7 @@ mod tests {
         };
         assert_eq!(args.len(), 9);
         assert!(args[1..5].iter().all(|arg| arg.is_empty()));
+        // Index 4 is the retired host slot: present, empty, and never occupied.
         assert_eq!(args[5], "file");
         assert_eq!(args[6], "folder");
         assert_eq!(args[7], "guild:1");
@@ -1125,10 +1105,9 @@ mod tests {
             true,
             UPLOAD_DONE,
             "drive",
-            "dood",
+            "byse",
             "lulu",
             "voe",
-            "abyss",
             Some((
                 "file".to_string(),
                 "folder".to_string(),
@@ -1144,6 +1123,9 @@ mod tests {
             panic!("expected progress payload");
         };
         assert_eq!(args.len(), 9);
+        // A retired host still costs its position so Drive metadata stays at 5+.
+        assert_eq!(args[1], "byse");
+        assert_eq!(args[4], "");
         assert_eq!(args[7], "guild:1");
         assert_eq!(args[8], "delete-token");
     }
@@ -1155,20 +1137,23 @@ fn upload_payload(
     release: bool,
     message_id: &'static str,
     gd_link: &str,
-    dood_link: &str,
+    byse_link: &str,
     lulu_link: &str,
     voesx_link: &str,
-    abyss_link: &str,
     drive_meta: Option<(String, String)>,
     stage: Option<Stage>,
 ) -> CommData {
     if release {
         let mut args = vec![
             gd_link.to_string(),
-            dood_link.to_string(),
+            byse_link.to_string(),
             lulu_link.to_string(),
             voesx_link.to_string(),
-            abyss_link.to_string(),
+            // Index 4 held a host that no longer exists. The slot stays present
+            // and empty because the Drive metadata appended below is read by
+            // position, and rows written before the host was retired are still
+            // being served from the database.
+            String::new(),
         ];
         if let Some((file_id, folder_id)) = drive_meta {
             args.push(file_id);
