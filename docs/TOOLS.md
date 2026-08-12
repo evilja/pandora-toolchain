@@ -55,6 +55,14 @@ For JSON downloaded from the trace lab, call `trace_json_to_ass(&json, &options)
 - `--drive --backup`: legacy Drive-only compatibility mode with the same upload behavior and credential restriction.
 - `--gscrape`: Google Drive scraper. Parses the file id from the link, GETs the confirm page, extracts the `uuid` from the form, then GETs the final URL with `confirm=t&uuid=...` and streams chunks to `--opcode`. Client timeout 600s.
 
+## `pnmpeg --extractsubs`
+
+`pnmpeg --extractsubs --input <video> --output <dir>` writes every text subtitle track of a container to `<dir>` and reports one opcode `4` row per track as `[ordinal, language, title, codec, filename, detail]`. `ordinal` is the position among subtitle streams — what `-map 0:s:N` selects — not the global stream index, which counts video and audio too. A row with an empty `filename` was skipped and `detail` says why; a row with a filename was extracted and `detail` is empty. Opcode `1` ends the run even when nothing was extractable, so a container of image-only tracks explains itself instead of failing.
+
+Codec mapping lives in `lib::mpeg::subs`: `ass`/`ssa` → `.ass`, `subrip`/`text` → `.srt`, `webvtt` → `.vtt`, `microdvd` → `.sub`, and `mov_text` → `.srt`. Everything is stream-copied except `mov_text`, which is MP4's own text format and has to be transcoded on the way out. Image-based codecs (`hdmv_pgs_subtitle`, `dvd_subtitle`, …) map to nothing and are skipped. ffmpeg exits 0 on an empty track, so a zero-byte result is deleted and reported as skipped rather than handed on as a usable subtitle.
+
+Filenames are `<ordinal>.<language>.<title-slug>[.forced].<ext>`. The ordinal leads because it is the only guaranteed-unique part, and language and title are reduced to an alphanumeric slug — they are metadata inside someone else's file, so they are never allowed to reach the filesystem unfiltered.
+
 ## `pnmpeg` intro concat mode
 
 `pnmpeg --concat --input <episode.mp4> --intro-dir <group-folder> --output <video.mp4>` discovers the retained intro variants in the group folder. If one has the same H.264/AAC concat properties as the encoded episode (dimensions, pixel format, sample aspect ratio, frame rate, sample rate, and channel count), both files are joined with video/audio stream copy. Otherwise, only the best source intro is transcoded to those properties as `pnmpeg_compat_<signature>.mp4` in the group folder; that retained variant is then stream-copied and automatically reused by later compatible encodes. Existing `/touchintro` variants remain untouched.

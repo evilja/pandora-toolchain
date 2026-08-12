@@ -661,3 +661,23 @@ args = 0
 [JOB_TYPE_BATCH]
 text = "📚 Toplu encode işi"
 args = 0
+
+[SUBS_DONE]
+text = "`{}` altyazı izi çıkarıldı.\n{}"
+args = 2
+
+[SUBS_NONE]
+text = "Çıkarılabilecek metin altyazı izi yok.\n{}"
+args = 1
+
+[SUBS_FAIL]
+text = "Altyazı çıkarma başarısız: {}"
+args = 1
+
+[SUBS_ATTACHMENT_MISSING]
+text = "Çıkarılan altyazılar eklenemedi."
+args = 0
+
+[JOB_TYPE_SUBS]
+text = "💬 Altyazı çıkarma"
+args = 0

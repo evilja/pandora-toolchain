@@ -60,6 +60,10 @@ pub const PROBE_FAIL: &str = "PROBE_FAIL";
 pub const PROBE_ROW: &str = "PROBE_ROW";
 pub const PROBE_PAGE: &str = "PROBE_PAGE";
 pub const PROBE_PAGE_EXPIRED: &str = "PROBE_PAGE_EXPIRED";
+pub const SUBS_DONE: &str = "SUBS_DONE";
+pub const SUBS_NONE: &str = "SUBS_NONE";
+pub const SUBS_FAIL: &str = "SUBS_FAIL";
+pub const SUBS_ATTACHMENT_MISSING: &str = "SUBS_ATTACHMENT_MISSING";
 pub const PREVIEW_DONE: &str = "PREVIEW_DONE";
 pub const PREVIEW_FAIL: &str = "PREVIEW_FAIL";
 pub const STUDIO_PREVIEW_DONE: &str = "STUDIO_PREVIEW_DONE";
@@ -144,6 +148,7 @@ pub const JOB_TYPE_PREVIEW: &str = "JOB_TYPE_PREVIEW";
 pub const JOB_TYPE_STUDIO: &str = "JOB_TYPE_STUDIO";
 pub const JOB_TYPE_STUDIO_PREVIEW: &str = "JOB_TYPE_STUDIO_PREVIEW";
 pub const JOB_TYPE_BATCH: &str = "JOB_TYPE_BATCH";
+pub const JOB_TYPE_SUBS: &str = "JOB_TYPE_SUBS";
 pub const JOB_TYPE_UNKNOWN: &str = "JOB_TYPE_UNKNOWN";
 pub const VALUE_NONE: &str = "VALUE_NONE";
 pub const VALUE_NOT_AVAILABLE: &str = "VALUE_NOT_AVAILABLE";
@@ -645,6 +650,7 @@ pub fn get_job_type_text(job_type: JobType, lang: &str) -> String {
         JobType::Studio => JOB_TYPE_STUDIO,
         JobType::StudioPreview => JOB_TYPE_STUDIO_PREVIEW,
         JobType::Batch => JOB_TYPE_BATCH,
+        JobType::Subs => JOB_TYPE_SUBS,
         _ => JOB_TYPE_UNKNOWN,
     };
     get_message(id, lang)

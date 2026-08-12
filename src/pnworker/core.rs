@@ -69,6 +69,7 @@ pub enum WorkerMsg {
     Keycode(KeycodeData),
     Upload(UploadData),
     UploadAll(UploadAllData),
+    Subs(SubsData),
 }
 
 pub const STRUCT: [&str; 3] = ["contents", "work", "log"];
@@ -256,6 +257,7 @@ async fn queue_new_job(
     match job.job_type {
         JobType::Encode => queue_encode_job(db, queue, shrine, job).await,
         JobType::Probe => queue_probe_job(db, queue, shrine, job).await,
+        JobType::Subs => queue_subs_job(db, queue, shrine, job).await,
         JobType::Pancode => queue_pancode_job(db, queue, shrine, job).await,
         JobType::Batch => queue_batch_job(db, queue, shrine, job).await,
         JobType::Backup => queue_backup_job(db, queue, shrine, job).await,
@@ -452,6 +454,45 @@ async fn queue_pancode_job(
     }
 
     queue_download_job(db, queue, shrine, job, job.probe_file_index.into_iter().collect(), false).await
+}
+
+// Extraction needs the video and nothing else — no subtitle attachment, no
+// preset — so it queues straight to the downloader and picks a probed file index
+// when one was supplied.
+async fn queue_subs_job(
+    db: &JobDb,
+    queue: &[Job],
+    shrine: &mut TypedShrine<WorkerMsg>,
+    job: &mut Job,
+) -> bool {
+    if let Err(reason) = prepare_queued_job(job, "dwl-pending", false).await {
+        decline_job_setup(job, &reason).await;
+        return true;
+    }
+    if let Some(probe_id) = job.probe_job_id {
+        let probe_dir = env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join("DB")
+            .join("work")
+            .join(probe_id.to_string());
+        let torrent_src = probe_dir.join("contents").join("fetch.torrent");
+        let torrent_dst = job.directory.join("contents").join("fetch.torrent");
+        if tokio::fs::copy(&torrent_src, &torrent_dst).await.is_err()
+            && job.torrent.get().trim().is_empty()
+        {
+            decline_job_setup(job, "probe torrent data is no longer available").await;
+            return true;
+        }
+    }
+    queue_download_job(
+        db,
+        queue,
+        shrine,
+        job,
+        job.probe_file_index.into_iter().collect(),
+        false,
+    )
+    .await
 }
 
 // A batch owns one download of many files. Its own work directory only ever holds the torrent —
@@ -1241,6 +1282,7 @@ fn job_type_label(job_type: JobType) -> &'static str {
         JobType::Studio => "studio",
         JobType::StudioPreview => "studio-preview",
         JobType::Batch => "batch",
+        JobType::Subs => "subs",
     }
 }
 
@@ -1969,7 +2011,28 @@ async fn do_job_progression_things(
         }
 
         if job.ready == Stage::Downloaded {
-            if job.job_type == JobType::Preview {
+            if job.job_type == JobType::Subs {
+                job.worker = "prw-pending".to_string();
+                db.update_worker(job.job_id, &job.worker).await.ok();
+                if !dispatch_or_kill(
+                    shrine,
+                    &Worker::Probe,
+                    WorkerMsg::Subs((job.directory.clone(), job.job_id)),
+                    job,
+                    db,
+                    false,
+                )
+                .await
+                {
+                    dead.push(job.job_id);
+                    continue;
+                }
+                job.ready = Stage::Encoding;
+                db.update_stage(job.job_id, Stage::Encoding).await.ok();
+                job.frontend
+                    .set_presence(Presence::Encoding { idx, total: qlen })
+                    .await;
+            } else if job.job_type == JobType::Preview {
                 let Some(preview) = job.preview.clone() else {
                     job.ready = Stage::Failed;
                     db.update_stage(job.job_id, Stage::Failed).await.ok();
@@ -2429,6 +2492,7 @@ pub enum JobType {
     Studio = 014,
     StudioPreview = 015,
     Batch = 016,
+    Subs = 017,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]

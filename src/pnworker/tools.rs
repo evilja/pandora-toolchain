@@ -424,3 +424,17 @@ pub const PNASS_MERGE_TL_ONLY: &[CliParam] = &[
     CliParam::Literal("--negver"),
     CliParam::Literal("0.1.1"),
 ];
+
+pub const PNMPEG_EXTRACT_SUBS: &[CliParam] = &[
+    CliParam::Literal("--extractsubs"),
+    CliParam::Literal("--input"),
+    CliParam::Path("INPUT"),
+    CliParam::Literal("--output"),
+    CliParam::Path("OUTPUT"),
+    CliParam::Literal("--negkey"),
+    CliParam::Path("NEGKEY"),
+    CliParam::Literal("--negotiator"),
+    CliParam::Literal("PNprobeworker"),
+    CliParam::Literal("--negver"),
+    CliParam::NegVer("1"),
+];

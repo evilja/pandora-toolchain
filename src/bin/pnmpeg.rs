@@ -12,6 +12,7 @@ use tokio::{fs::File, io::AsyncWriteExt, time::{Duration, Instant}};
 use pandora_toolchain::{pn_data, pn_emit, pn_schema};
 use pandora_toolchain::lib::mpeg::core::RpbData;
 use pandora_toolchain::lib::mpeg::studio::{studio_ffmpeg_params, write_ffconcat, StudioRenderManifest};
+use pandora_toolchain::lib::mpeg::subs::{ExtractOutcome, extract_subtitle, ffprobe_subtitle_streams};
 use pandora_toolchain::lib::protocol::core::{Protocol, Schema, ToolInfo};
 use std::str::FromStr;
 use clap::Parser;
@@ -51,6 +52,10 @@ struct Args {
     /// Render a serialized Pandora Studio manifest.
     #[arg(long)]
     studio: bool,
+
+    /// Extract every text subtitle track of --input into the --output directory.
+    #[arg(long)]
+    extractsubs: bool,
 
     #[arg(long)]
     legacyconcat: bool,
@@ -110,6 +115,19 @@ struct Args {
 #[inline]
 fn wrap(a: &str) -> String { return String::from(a) }
 
+fn emit_extract_failure(proto: &Protocol, neg: &str) {
+    println!(
+        "{}",
+        pn_emit!(
+            protocol = proto,
+            negkey = neg,
+            schema = [leaf, leaf],
+            data = ["2", "ERROR"]
+        )
+        .unwrap()
+    );
+}
+
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -128,6 +146,58 @@ async fn main() {
                   });
 
     let encoder = FFmpeg::new();
+
+    // Extraction reads the container and writes sidecar files; it shares nothing
+    // with the encode pipeline below, so it answers and exits on its own.
+    if args.extractsubs {
+        let input = PathBuf::from(&args.input);
+        let output_dir = PathBuf::from(&args.output);
+        if let Err(e) = tokio::fs::create_dir_all(&output_dir).await {
+            eprintln!("[pnmpeg] subtitle output directory failed: {e}");
+            emit_extract_failure(&proto, &neg);
+            std::process::exit(1);
+        }
+        let streams = ffprobe_subtitle_streams(&input);
+        for stream in &streams {
+            let outcome = extract_subtitle(&input, &output_dir, stream);
+            let (path, detail) = match &outcome {
+                ExtractOutcome::Extracted(extracted) => (
+                    extracted
+                        .path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                    String::new(),
+                ),
+                ExtractOutcome::Skipped { reason, .. } => (String::new(), reason.clone()),
+            };
+            let ordinal = stream.ordinal.to_string();
+            let language = stream.language.clone().unwrap_or_default();
+            let title = stream.title.clone().unwrap_or_default();
+            let codec = stream.codec.clone();
+            println!(
+                "{}",
+                pn_emit!(
+                    protocol = proto,
+                    negkey = &neg,
+                    schema = [leaf, [leaf, leaf, leaf, leaf, leaf, leaf]],
+                    data = ["4", [ordinal, language, title, codec, path, detail]]
+                )
+                .unwrap()
+            );
+        }
+        println!(
+            "{}",
+            pn_emit!(
+                protocol = proto,
+                negkey = &neg,
+                schema = [leaf, leaf],
+                data = ["1", "DONE"]
+            )
+            .unwrap()
+        );
+        return;
+    }
 
     if args.studio {
         let manifest_bytes = match tokio::fs::read(&args.input).await {

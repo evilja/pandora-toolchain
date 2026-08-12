@@ -661,3 +661,23 @@ args = 0
 [JOB_TYPE_BATCH]
 text = "📚 Batch encode job"
 args = 0
+
+[SUBS_DONE]
+text = "Extracted `{}` subtitle track(s).\n{}"
+args = 2
+
+[SUBS_NONE]
+text = "No text subtitle track could be extracted.\n{}"
+args = 1
+
+[SUBS_FAIL]
+text = "Subtitle extraction failed: {}"
+args = 1
+
+[SUBS_ATTACHMENT_MISSING]
+text = "The extracted subtitles could not be attached."
+args = 0
+
+[JOB_TYPE_SUBS]
+text = "💬 Subtitle extraction"
+args = 0

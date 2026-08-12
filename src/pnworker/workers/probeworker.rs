@@ -8,11 +8,12 @@ use crate::libkagami::core::{SubstationAlpha, find_fonts_with_roots};
 use crate::pnworker::core::Stage;
 use crate::pnworker::core::{CommData, WorkerMsg};
 use crate::pnworker::messages::{
+    SUBS_DONE, SUBS_FAIL, SUBS_NONE,
     CTORRENT_DONE, CTORRENT_FAIL, ENCODE_PROG, ENCODE_START, ENCODE_WARNING, JOB_CANCELLED, MessagePayload, PREVIEW_DONE, PREVIEW_FAIL,
     PROBE_FAIL, PROBE_ROW, STUDIO_PREVIEW_DONE, STUDIO_PREVIEW_FAIL, WORKER_ASSIGN,
 };
 use crate::pnworker::preview::{compose_preview, merge_previews};
-use crate::pnworker::tools::{PNCURL_TORRENT, PNP2P_PROBE, PNMPEG_STUDIO};
+use crate::pnworker::tools::{PNCURL_TORRENT, PNMPEG_EXTRACT_SUBS, PNMPEG_STUDIO, PNP2P_PROBE};
 use crate::pnworker::util::PathValue;
 use crate::pnworker::util::{
     ToolResult, WorkerNamePool, job_cancelled, run_tool, string_byte_to_mb,
@@ -26,6 +27,7 @@ use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::time::{Duration, Instant, sleep};
 
 pub type ProbeData = (PathBuf, TorrentType, u64);
+pub type SubsData = (PathBuf, u64);
 pub type PreviewData = (
     PathBuf,
     Vec<(u64, String)>,
@@ -60,7 +62,13 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             pool.release(&name);
         }
         while let Ok(msg) = rx.try_recv() {
-            if matches!(msg, WorkerMsg::Probe(_) | WorkerMsg::Preview(_) | WorkerMsg::StudioPreview(_)) {
+            if matches!(
+                msg,
+                WorkerMsg::Probe(_)
+                    | WorkerMsg::Preview(_)
+                    | WorkerMsg::StudioPreview(_)
+                    | WorkerMsg::Subs(_)
+            ) {
                 pending.push_back(msg);
             }
         }
@@ -82,7 +90,8 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 let job_id = match &msg {
                     WorkerMsg::Probe((_, _, job_id))
                     | WorkerMsg::Preview((_, _, _, _, job_id, _))
-                    | WorkerMsg::StudioPreview((_, _, job_id)) => *job_id,
+                    | WorkerMsg::StudioPreview((_, _, job_id))
+                    | WorkerMsg::Subs((_, job_id)) => *job_id,
                     _ => unreachable!(),
                 };
                 tx2.send((
@@ -118,6 +127,9 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     }
                     WorkerMsg::StudioPreview((directory, manifest, job_id)) => {
                         run_studio_preview_job(directory, manifest, job_id, &pnmpeg_path2, &tx2).await;
+                    }
+                    WorkerMsg::Subs((directory, job_id)) => {
+                        run_subs_job(directory, job_id, &pnmpeg_path2, &tx2, &pulse2).await;
                     }
                     _ => unreachable!(),
                 }
@@ -487,6 +499,186 @@ async fn run_preview_job(
     ))
     .await
     .ok();
+}
+
+// Extraction runs on the preview pool because it is the same shape of work: a
+// downloaded input, one tool invocation, and files attached back to the message.
+// pnmpeg reports one row per track, so a container whose tracks are all
+// image-based still explains itself instead of failing silently.
+async fn run_subs_job(
+    directory: PathBuf,
+    job_id: u64,
+    pnmpeg_path: &str,
+    tx: &Sender<CommData>,
+    pulse: &Sender<()>,
+) {
+    if job_cancelled(&directory) {
+        tx.send((job_id, MessagePayload::Static(JOB_CANCELLED), Some(Stage::Cancelled)))
+            .await
+            .ok();
+        return;
+    }
+    let input = directory.join("contents").join("torrent").join("input.mkv");
+    let out_dir = directory.join("work").join("subs");
+    let mut proto = Protocol::new(vec![1]);
+    let mut extracted: Vec<(String, PathBuf)> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+
+    let result = run_tool(
+        pnmpeg_path,
+        PNMPEG_EXTRACT_SUBS,
+        &HashMap::from([
+            ("INPUT", PathValue::from(input.display().to_string())),
+            ("OUTPUT", PathValue::from(out_dir.display().to_string())),
+            ("NEGKEY", PathValue::from(format!("pn-probe-{}", job_id))),
+        ]),
+        job_id,
+        &mut proto,
+        |data| {
+            let out: u16 = match data.get(0).and_then(|v| v.parse()) {
+                Some(v) => v,
+                None => return None,
+            };
+            match out {
+                1 => return Some(ToolResult::Success),
+                2 => return Some(ToolResult::Fail),
+                3 => return Some(ToolResult::Cancel),
+                4 => {
+                    let payload = data.get(1).and_then(|v| v.as_multi())?;
+                    let field = |index: usize| {
+                        payload
+                            .get(index)
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string()
+                    };
+                    let ordinal = field(0);
+                    let language = field(1);
+                    let title = field(2);
+                    let codec = field(3);
+                    let filename = field(4);
+                    let detail = field(5);
+                    let label = subtitle_track_label(&ordinal, &language, &title, &codec);
+                    if filename.is_empty() {
+                        skipped.push(format!("{} — {}", label, detail));
+                    } else {
+                        extracted.push((label, out_dir.join(filename)));
+                    }
+                }
+                _ => {}
+            }
+            None
+        },
+    )
+    .await;
+    pulse.try_send(()).ok();
+
+    match result {
+        ToolResult::Cancel => {
+            tx.send((job_id, MessagePayload::Static(JOB_CANCELLED), Some(Stage::Cancelled)))
+                .await
+                .ok();
+            return;
+        }
+        ToolResult::Fail => {
+            tx.send((
+                job_id,
+                MessagePayload::Progress(SUBS_FAIL, vec!["ffmpeg could not read the file".to_string()]),
+                Some(Stage::Failed),
+            ))
+            .await
+            .ok();
+            return;
+        }
+        ToolResult::Success => {}
+    }
+
+    if extracted.is_empty() {
+        let reason = if skipped.is_empty() {
+            "no subtitle tracks".to_string()
+        } else {
+            skipped.join("\n")
+        };
+        tx.send((
+            job_id,
+            MessagePayload::Progress(SUBS_NONE, vec![reason]),
+            Some(Stage::Failed),
+        ))
+        .await
+        .ok();
+        return;
+    }
+
+    // One track travels as itself; several are bundled so the message carries a
+    // single attachment instead of a column of them.
+    let attachment = if extracted.len() == 1 {
+        extracted[0].1.clone()
+    } else {
+        let archive = directory.join("work").join(format!("subs-{}.zip", job_id));
+        match zip_subtitles(&archive, &extracted).await {
+            Ok(()) => archive,
+            Err(e) => {
+                eprintln!("[Pandora Subs] job {} could not be bundled: {}", job_id, e);
+                extracted[0].1.clone()
+            }
+        }
+    };
+
+    let mut args = vec![
+        extracted.len().to_string(),
+        attachment.display().to_string(),
+        extracted
+            .iter()
+            .map(|(label, _)| label.clone())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    ];
+    if !skipped.is_empty() {
+        args.push(skipped.join("\n"));
+    }
+    tx.send((job_id, MessagePayload::Progress(SUBS_DONE, args), Some(Stage::Uploaded)))
+        .await
+        .ok();
+}
+
+// `0 · eng · Signs & Songs · ass` — enough for a human to tell two English
+// tracks apart, which is the whole reason for extracting them separately.
+fn subtitle_track_label(ordinal: &str, language: &str, title: &str, codec: &str) -> String {
+    let mut parts = vec![format!("`{}`", ordinal)];
+    if !language.is_empty() {
+        parts.push(language.to_string());
+    }
+    if !title.is_empty() {
+        parts.push(title.to_string());
+    }
+    if !codec.is_empty() {
+        parts.push(codec.to_string());
+    }
+    parts.join(" · ")
+}
+
+async fn zip_subtitles(archive: &Path, files: &[(String, PathBuf)]) -> Result<(), String> {
+    use async_zip::base::write::ZipFileWriter;
+    use async_zip::{Compression, ZipEntryBuilder};
+
+    let mut buffer = Vec::new();
+    let mut writer = ZipFileWriter::new(&mut buffer);
+    for (_, path) in files {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .ok_or_else(|| "extracted subtitle has no filename".to_string())?;
+        let bytes = tokio::fs::read(path).await.map_err(|e| e.to_string())?;
+        let entry = ZipEntryBuilder::new(name.into(), Compression::Deflate);
+        writer
+            .write_entry_whole(entry, &bytes)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    writer.close().await.map_err(|e| e.to_string())?;
+    tokio::fs::write(archive, buffer)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 async fn run_studio_preview_job(

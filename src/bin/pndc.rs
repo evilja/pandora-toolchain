@@ -465,6 +465,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("encode", 0),
     ("studio", 0),
     ("probe", 0),
+    ("subs", 0),
     ("backup", 0),
     ("backupall", 0),
     ("smartcode", 0),
@@ -689,6 +690,13 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Edit kept videos with mixed, replacement, or ducking audio tracks.",
             usage: "/studio create|details|switch|extend|keywords|insert|override|duck|edittrack|move|cut|remove|preview|timeline|done|disown|reown ...",
             details: "Create and retain multiple Studios from ordered comma-separated keep keywords, then use switch to select which one commands edit. Details shows source, video, track, collaborator, and expiry information. Extend permanently changes the selected Studio's active inactivity timeout from 24 hours to 7 days. Insert overlays audio; override mutes source audio for that track's interval. Duck mixes its input while fading every other audio source to a target percentage and back. Move accepts absolute or +/- relative seconds, MM:SS, HH:MM:SS, and frame offsets ending in f. Keywords atomically replaces the selected Studio's ordered source keeps. Edittrack changes a track's own volume, type, and Duck settings. Cut cumulatively trims decimal seconds from the start, end, or both sides of a track. Share the Studio ID so guild collaborators can reown it. A Studio with no collaborators expires after 30 minutes.",
+        },
+        HelpCommand {
+            section: "encode",
+            name: "subs",
+            summary: "Extract the subtitle tracks embedded in a video.",
+            usage: "/subs torrent:<link> | /subs job_id:<probe id> index:<n>",
+            details: "Downloads the video and writes every text subtitle track it carries to a file, named by track ordinal, language, and title. One track comes back on its own; several come back as a zip. Image-based tracks (PGS, VobSub) are reported as skipped because they hold bitmaps rather than text. Pass `torrent` for a single video, or a `/probe` job id plus `index` to pick one file out of a pack.",
         },
         HelpCommand {
             section: "encode",
@@ -1940,6 +1948,11 @@ impl EventHandler for Handler {
                         self.tx.send(JobClass::Job(job)).await.unwrap();
                     }
                 }
+                "subs" => {
+                    if let Some(job) = handle_subs(&ctx, &command).await {
+                        self.tx.send(JobClass::Job(job)).await.unwrap();
+                    }
+                }
                 "backup" => {
                     let keep = match keep_request_from_options(&ctx, &command).await {
                         Some(keep) => keep,
@@ -2464,6 +2477,20 @@ impl EventHandler for Handler {
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent URL or magnet link")
                         .required(true)
+                ),
+            CreateCommand::new("subs")
+                .description("Extract the subtitle tracks embedded in a video")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent URL, magnet link, Google Drive link, or direct video link")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "job_id", "Job ID from /probe result; use with index")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "index", "File index from probe results")
+                        .required(false)
                 ),
             CreateCommand::new("gitsync")
                 .description("Sync with the git repo"),

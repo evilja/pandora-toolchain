@@ -661,3 +661,23 @@ args = 0
 [JOB_TYPE_BATCH]
 text = "📚 バッチエンコードジョブ"
 args = 0
+
+[SUBS_DONE]
+text = "`{}` 本の字幕トラックを抽出しました。\n{}"
+args = 2
+
+[SUBS_NONE]
+text = "抽出できるテキスト字幕トラックがありません。\n{}"
+args = 1
+
+[SUBS_FAIL]
+text = "字幕の抽出に失敗しました: {}"
+args = 1
+
+[SUBS_ATTACHMENT_MISSING]
+text = "抽出した字幕を添付できませんでした。"
+args = 0
+
+[JOB_TYPE_SUBS]
+text = "💬 字幕抽出"
+args = 0

@@ -6,7 +6,7 @@ use crate::pnworker::core::Job;
 use crate::pnworker::messages::{
     get_message, MessagePayload, create_job_embed, PREVIEW_ATTACHMENT_MISSING,
     PREVIEW_ATTACHMENT_REJECTED, PREVIEW_DONE, PROBE_ROW, STUDIO_PREVIEW_ATTACHMENT_MISSING,
-    STUDIO_PREVIEW_DONE,
+    STUDIO_PREVIEW_DONE, SUBS_ATTACHMENT_MISSING, SUBS_DONE,
 };
 use crate::pnworker::presence::{change_presence_job, global_context, Presence};
 use crate::pnworker::probe_pages::{probe_page_components, probe_page_count};
@@ -46,6 +46,8 @@ impl Frontend {
                         None => {
                             let id = if is_studio_preview_done(payload) {
                                 STUDIO_PREVIEW_ATTACHMENT_MISSING
+                            } else if is_subs_done(payload) {
+                                SUBS_ATTACHMENT_MISSING
                             } else {
                                 PREVIEW_ATTACHMENT_MISSING
                             };
@@ -186,8 +188,12 @@ fn is_studio_preview_done(payload: &MessagePayload) -> bool {
     matches!(payload, MessagePayload::Progress(id, _) if *id == STUDIO_PREVIEW_DONE)
 }
 
+fn is_subs_done(payload: &MessagePayload) -> bool {
+    matches!(payload, MessagePayload::Progress(id, _) if *id == SUBS_DONE)
+}
+
 fn is_attachment_done(payload: &MessagePayload) -> bool {
-    is_preview_done(payload) || is_studio_preview_done(payload)
+    is_preview_done(payload) || is_studio_preview_done(payload) || is_subs_done(payload)
 }
 
 // Probe file lists longer than one embed field get prev/next buttons; every other payload sends an
@@ -207,8 +213,25 @@ async fn preview_done_edit(job: &Job, payload: &MessagePayload) -> Option<EditMe
     let MessagePayload::Progress(id, args) = payload else {
         return None;
     };
-    if *id != PREVIEW_DONE && *id != STUDIO_PREVIEW_DONE {
+    if *id != PREVIEW_DONE && *id != STUDIO_PREVIEW_DONE && *id != SUBS_DONE {
         return None;
+    }
+    // Extraction always answers with exactly one attachment: the single track, or
+    // the archive the worker bundled the tracks into.
+    if *id == SUBS_DONE {
+        let path = args.get(1)?;
+        return match CreateAttachment::path(path).await {
+            Ok(attachment) => Some(
+                EditMessage::new()
+                    .content("")
+                    .embed(create_job_embed(job, payload))
+                    .new_attachment(attachment),
+            ),
+            Err(e) => {
+                eprintln!("[Pandora Subs] failed to attach `{}`: {}", path, e);
+                None
+            }
+        };
     }
     if *id == STUDIO_PREVIEW_DONE {
         let path = args.first()?;
