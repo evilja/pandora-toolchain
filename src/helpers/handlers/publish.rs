@@ -1,4 +1,5 @@
 use super::anizmconfirm::{credit, job_embed_links, resolve_or_create_translation};
+use super::fansubs::FansubOption;
 use super::openanimeconfirm::{channel_credits, link_value, plan_players};
 use super::*;
 use pandora_toolchain::lib::db::core::JobDb;
@@ -67,6 +68,69 @@ impl CreditOverride {
     }
 }
 
+// One `/publish` can name the fansub a site publishes under instead of using that server's `/edit`
+// selection. Naming any site at all makes the whole set exclusive: a site that was not named is not
+// published. A release that goes out under a different group on one site is a different release, so
+// the two sites nobody mentioned must not keep going out under the server default.
+#[derive(Default)]
+struct FansubOverrides {
+    animecix: Option<FansubOption>,
+    openanime: Option<FansubOption>,
+    anizm: Option<FansubOption>,
+}
+
+// What one site publishes under.
+enum SiteFansub<'a> {
+    ServerDefault,
+    Overridden(&'a FansubOption),
+    Excluded,
+}
+
+impl FansubOverrides {
+    // Every named fansub is resolved against its site's own directory before anything publishes, so
+    // a typo or an unreachable directory stops the command instead of publishing two sites and
+    // failing the third.
+    async fn resolve(command: &serenity::all::CommandInteraction) -> Result<Self, String> {
+        let mut overrides = Self::default();
+        for site in FansubSite::ALL {
+            let Some(value) = option_trimmed(command, site.option_name()) else {
+                continue;
+            };
+            let option = resolve_fansub_selection(site, &value).await?;
+            match site {
+                FansubSite::AnimeciX => overrides.animecix = Some(option),
+                FansubSite::OpenAnime => overrides.openanime = Some(option),
+                FansubSite::Anizm => overrides.anizm = Some(option),
+            }
+        }
+        Ok(overrides)
+    }
+
+    fn is_active(&self) -> bool {
+        self.animecix.is_some() || self.openanime.is_some() || self.anizm.is_some()
+    }
+
+    fn site(&self, site: FansubSite) -> SiteFansub<'_> {
+        let selected = match site {
+            FansubSite::AnimeciX => self.animecix.as_ref(),
+            FansubSite::OpenAnime => self.openanime.as_ref(),
+            FansubSite::Anizm => self.anizm.as_ref(),
+        };
+        match selected {
+            Some(option) => SiteFansub::Overridden(option),
+            None if self.is_active() => SiteFansub::Excluded,
+            None => SiteFansub::ServerDefault,
+        }
+    }
+}
+
+fn excluded_outcome(site: FansubSite) -> Outcome {
+    Outcome::Skipped(format!(
+        "a fansub override is active and `{}:` was not part of it; name one to publish here too",
+        site.option_name()
+    ))
+}
+
 // What a single site publish ended as. Everything is reported, so one site that cannot be published
 // never hides the two that could.
 enum Outcome {
@@ -92,13 +156,22 @@ impl Outcome {
     }
 }
 
+// `/publish` autocompletes the anime against AnimeciX and each fansub override against that site's
+// own directory, so the focused option decides which one is searched.
 pub async fn handle_publish_autocomplete(
     ctx: &Context,
     interaction: &serenity::all::CommandInteraction,
 ) {
-    let partial = interaction
-        .data
-        .autocomplete()
+    let focused = interaction.data.autocomplete();
+    let site = focused
+        .as_ref()
+        .and_then(|option| FansubSite::from_option_name(option.name));
+    if let Some(site) = site {
+        let partial = focused.map(|option| option.value.to_string()).unwrap_or_default();
+        fansub_autocomplete(ctx, interaction, site, &partial).await;
+        return;
+    }
+    let partial = focused
         .filter(|option| option.name == "anime")
         .map(|option| option.value.trim().to_string())
         .unwrap_or_default();
@@ -284,6 +357,14 @@ pub async fn handle_publish(ctx: &Context, command: &serenity::all::CommandInter
         }
     };
 
+    let overrides = match FansubOverrides::resolve(command).await {
+        Ok(overrides) => overrides,
+        Err(e) => {
+            publish_response(ctx, command, format!("Error: {}", e)).await;
+            return;
+        }
+    };
+
     // A smartcode job queued its own AnimeciX record at upload time, so it already carries the
     // anime, season, and episode this command would otherwise have to ask for.
     let mut notes = Vec::new();
@@ -379,13 +460,31 @@ pub async fn handle_publish(ctx: &Context, command: &serenity::all::CommandInter
         episode,
         extra,
         pending.is_some(),
+        overrides.site(FansubSite::AnimeciX),
     )
     .await;
     let openanime = publish_openanime(
-        server_id, &uploaded, &meta, &credits, mal_id, &name, season, episode,
+        server_id,
+        &uploaded,
+        &meta,
+        &credits,
+        mal_id,
+        &name,
+        season,
+        episode,
+        overrides.site(FansubSite::OpenAnime),
     )
     .await;
-    let anizm = publish_anizm(server_id, &uploaded, &meta, &credits, &name, episode).await;
+    let anizm = publish_anizm(
+        server_id,
+        &uploaded,
+        &meta,
+        &credits,
+        &name,
+        episode,
+        overrides.site(FansubSite::Anizm),
+    )
+    .await;
 
     let mut lines = vec![format!(
         "Publish of job `{}` — **{}** (MAL {}) S{:02}E{:02}",
@@ -402,7 +501,9 @@ pub async fn handle_publish(ctx: &Context, command: &serenity::all::CommandInter
 
 // AnimeciX publishes from the record queued at upload time. A job that never queued one (anything
 // that was not a smartcode) gets an equivalent record built from the resolved anime and this
-// server's fansub template, so the same confirm path runs for both.
+// server's fansub template, so the same confirm path runs for both. An overridden fansub replaces
+// that template on either route — on the queued record it is a pre-publish edit, so the confirm
+// path refuses it once a half has already reached AnimeciX.
 #[allow(clippy::too_many_arguments)]
 async fn publish_acix(
     db: &JobDb,
@@ -416,9 +517,29 @@ async fn publish_acix(
     episode: i64,
     extra: Option<String>,
     has_pending: bool,
+    fansub: SiteFansub<'_>,
 ) -> Outcome {
+    let overridden = match fansub {
+        SiteFansub::Excluded => return excluded_outcome(FansubSite::AnimeciX),
+        SiteFansub::ServerDefault => None,
+        SiteFansub::Overridden(option) => {
+            match option.value.trim().parse::<i64>().ok().filter(|id| *id > 0) {
+                Some(template) => Some((template, option.display())),
+                None => {
+                    return Outcome::Failed(format!(
+                        "`{}` is not an AnimeciX fansub template id",
+                        option.value
+                    ))
+                }
+            }
+        }
+    };
     if !has_pending {
-        let template = match read_server_acix_template(server_id) {
+        let template = match overridden
+            .as_ref()
+            .map(|(template, _)| *template)
+            .or_else(|| read_server_acix_template(server_id))
+        {
             Some(template) => template,
             None => {
                 return Outcome::Skipped(
@@ -464,9 +585,18 @@ async fn publish_acix(
         Ok(overrides) => overrides,
         Err(e) => return Outcome::Failed(e),
     };
+    // A record queued at upload time carries the fansub it was queued with, so an override has to
+    // rewrite it — the record built just above already holds the overridden template.
+    let overrides = match (&overridden, has_pending) {
+        (Some((template, _)), true) => overrides.with_template(*template),
+        _ => overrides,
+    };
     match confirm_acix_with_overrides(db, job_id, overrides).await {
         Ok(value) => {
-            let detail = "multishare, multiple".to_string();
+            let detail = match &overridden {
+                Some((_, display)) => format!("multishare, multiple as {}", display),
+                None => "multishare, multiple".to_string(),
+            };
             if value.get("status").and_then(|status| status.as_str()) == Some("partial") {
                 Outcome::Partial(detail)
             } else {
@@ -491,14 +621,28 @@ async fn publish_openanime(
     name: &str,
     season: i64,
     episode: i64,
+    fansub: SiteFansub<'_>,
 ) -> Outcome {
-    let secure_name = match read_server_fansub(server_id, FansubSite::OpenAnime) {
-        Some(secure_name) => secure_name,
-        None => {
-            return Outcome::Skipped(
-                "this server has no OpenAnime fansub. Set one with `/edit openanime_fansub:`"
-                    .to_string(),
-            )
+    // A named fansub was already resolved against the directory; a stored secure name is re-checked
+    // here, because publishing under a name that no longer exists silently creates an orphan source
+    // on OpenAnime.
+    let fansub = match fansub {
+        SiteFansub::Excluded => return excluded_outcome(FansubSite::OpenAnime),
+        SiteFansub::Overridden(option) => option.clone(),
+        SiteFansub::ServerDefault => {
+            let secure_name = match read_server_fansub(server_id, FansubSite::OpenAnime) {
+                Some(secure_name) => secure_name,
+                None => {
+                    return Outcome::Skipped(
+                        "this server has no OpenAnime fansub. Set one with `/edit openanime_fansub:`"
+                            .to_string(),
+                    )
+                }
+            };
+            match resolve_fansub_selection(FansubSite::OpenAnime, &secure_name).await {
+                Ok(fansub) => fansub,
+                Err(e) => return Outcome::Failed(e),
+            }
         }
     };
     let (season, episode) = match (u32::try_from(season), u32::try_from(episode)) {
@@ -508,12 +652,6 @@ async fn publish_openanime(
     let client = match OpenAnime::from_env() {
         Ok(client) => client,
         Err(e) => return Outcome::Failed(format!("client error: {}", e)),
-    };
-    // The stored secure name is re-checked against the live directory: publishing under a name that
-    // no longer exists silently creates an orphan source on OpenAnime.
-    let fansub = match resolve_fansub_selection(FansubSite::OpenAnime, &secure_name).await {
-        Ok(fansub) => fansub,
-        Err(e) => return Outcome::Failed(e),
     };
     let anime = match client.resolve_mal_id(mal_id as u64, name).await {
         Ok(anime) => anime,
@@ -575,16 +713,35 @@ async fn publish_anizm(
     credits: &CreditOverride,
     name: &str,
     episode: i64,
+    fansub: SiteFansub<'_>,
 ) -> Outcome {
-    let fansub_id = match read_server_fansub(server_id, FansubSite::Anizm)
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .filter(|id| *id > 0)
-    {
-        Some(fansub_id) => fansub_id,
-        None => {
-            return Outcome::Skipped(
-                "this server has no Anizm fansub. Set one with `/edit anizm_fansub:`".to_string(),
-            )
+    let overridden = matches!(fansub, SiteFansub::Overridden(_));
+    let fansub_id = match fansub {
+        SiteFansub::Excluded => return excluded_outcome(FansubSite::Anizm),
+        SiteFansub::Overridden(option) => {
+            match option.value.trim().parse::<u64>().ok().filter(|id| *id > 0) {
+                Some(fansub_id) => fansub_id,
+                None => {
+                    return Outcome::Failed(format!(
+                        "`{}` is not an Anizm fansub id",
+                        option.value
+                    ))
+                }
+            }
+        }
+        SiteFansub::ServerDefault => {
+            match read_server_fansub(server_id, FansubSite::Anizm)
+                .and_then(|value| value.trim().parse::<u64>().ok())
+                .filter(|id| *id > 0)
+            {
+                Some(fansub_id) => fansub_id,
+                None => {
+                    return Outcome::Skipped(
+                        "this server has no Anizm fansub. Set one with `/edit anizm_fansub:`"
+                            .to_string(),
+                    )
+                }
+            }
         }
     };
     let embeds = job_embed_links(uploaded);
@@ -605,8 +762,13 @@ async fn publish_anizm(
         Some(fansub) => fansub,
         None => {
             return Outcome::Failed(format!(
-                "fansub id `{}` is no longer offered by this account. Reselect it with `/edit anizm_fansub:`",
-                fansub_id
+                "fansub id `{}` is no longer offered by this account. {}",
+                fansub_id,
+                if overridden {
+                    "Pick another one for `anizm_fansub:`"
+                } else {
+                    "Reselect it with `/edit anizm_fansub:`"
+                }
             ))
         }
     };
@@ -865,6 +1027,50 @@ mod tests {
 
         let text = site_outcome("`slug` as Akira Subs", &[], &[], &failed).render("OpenAnime");
         assert!(text.starts_with("**OpenAnime** — Failed:"), "{}", text);
+    }
+
+    fn fansub(value: &str, name: &str) -> FansubOption {
+        FansubOption::new(value.to_string(), name.to_string(), None, &[])
+    }
+
+    #[test]
+    fn without_an_override_every_site_uses_the_server_selection() {
+        let overrides = FansubOverrides::default();
+        assert!(!overrides.is_active());
+        for site in FansubSite::ALL {
+            assert!(matches!(overrides.site(site), SiteFansub::ServerDefault), "{:?}", site);
+        }
+    }
+
+    #[test]
+    fn naming_one_site_excludes_the_ones_that_were_not_named() {
+        let overrides = FansubOverrides {
+            openanime: Some(fansub("akira-subs", "Akira Subs")),
+            ..FansubOverrides::default()
+        };
+        assert!(overrides.is_active());
+        match overrides.site(FansubSite::OpenAnime) {
+            SiteFansub::Overridden(option) => assert_eq!(option.value, "akira-subs"),
+            _ => panic!("the named site publishes under the named fansub"),
+        }
+        assert!(matches!(overrides.site(FansubSite::AnimeciX), SiteFansub::Excluded));
+        assert!(matches!(overrides.site(FansubSite::Anizm), SiteFansub::Excluded));
+    }
+
+    #[test]
+    fn naming_two_sites_leaves_only_the_third_blank() {
+        let overrides = FansubOverrides {
+            animecix: Some(fansub("218", "Akira Fansub")),
+            openanime: Some(fansub("akira-subs", "Akira Subs")),
+            anizm: None,
+        };
+        assert!(matches!(overrides.site(FansubSite::AnimeciX), SiteFansub::Overridden(_)));
+        assert!(matches!(overrides.site(FansubSite::OpenAnime), SiteFansub::Overridden(_)));
+        assert!(matches!(overrides.site(FansubSite::Anizm), SiteFansub::Excluded));
+
+        let text = excluded_outcome(FansubSite::Anizm).render("Anizm");
+        assert!(text.starts_with("**Anizm** — Skipped:"), "{}", text);
+        assert!(text.contains("`anizm_fansub:`"), "{}", text);
     }
 
     #[test]

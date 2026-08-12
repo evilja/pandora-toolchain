@@ -20,7 +20,7 @@ pub struct FansubOption {
 }
 
 impl FansubOption {
-    fn new(value: String, name: String, suffix: Option<String>, extra_terms: &[&str]) -> Self {
+    pub fn new(value: String, name: String, suffix: Option<String>, extra_terms: &[&str]) -> Self {
         let mut terms = vec![value.to_lowercase(), name.to_lowercase()];
         terms.extend(
             extra_terms

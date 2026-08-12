@@ -22,6 +22,7 @@ pub struct CreditOverrides {
     tlc: Option<Option<String>>,
     ts: Option<Option<String>>,
     qc: Option<Option<String>>,
+    template: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,15 +69,24 @@ impl CreditOverrides {
             tlc: role_override(tlc),
             ts: role_override(ts),
             qc: role_override(qc),
+            template: None,
         })
     }
 
+    // Publishing under a fansub other than the one queued at upload time is the same kind of
+    // pre-publish edit as a credit line: it rewrites the queued record, so it is refused once either
+    // half has reached AnimeciX rather than sending the second half under a different group.
+    pub fn with_template(mut self, template: i64) -> Self {
+        self.template = Some(template);
+        self
+    }
+
     fn has_any(&self) -> bool {
-        self.extra.is_some()
-            || self.tl.is_some()
-            || self.tlc.is_some()
-            || self.ts.is_some()
-            || self.qc.is_some()
+        self.extra.is_some() || self.template.is_some() || self.has_role_override()
+    }
+
+    fn has_role_override(&self) -> bool {
+        self.tl.is_some() || self.tlc.is_some() || self.ts.is_some() || self.qc.is_some()
     }
 }
 
@@ -155,18 +165,26 @@ impl AcixPending {
         self.refresh_status();
     }
 
-    fn apply_credit_overrides(&mut self, overrides: &CreditOverrides) -> Result<(), String> {
+    fn apply_overrides(&mut self, overrides: &CreditOverrides) -> Result<(), String> {
         if !overrides.has_any() {
             return Ok(());
         }
         if self.multishare_status == Some(PublishState::Published)
             || self.multiple_status == Some(PublishState::Published)
         {
-            return Err("credit overrides cannot be changed after a partial AnimeciX publish; retry without overrides".to_string());
+            return Err("credit and fansub overrides cannot be changed after a partial AnimeciX publish; retry without overrides".to_string());
+        }
+        if let Some(template) = overrides.template {
+            self.acix.template = template;
         }
         if let Some(extra) = &overrides.extra {
             self.acix.extra = extra.clone();
             self.acix.credits = None;
+            return Ok(());
+        }
+        // A fansub-only override leaves the queued credits alone, so freeform ones are never parsed
+        // and never refused for a publish that was not editing them in the first place.
+        if !overrides.has_role_override() {
             return Ok(());
         }
 
@@ -334,7 +352,7 @@ pub async fn confirm_acix_with_overrides(
         return Err("this job was already published to AnimeciX multishare and multiple".to_string());
     }
     if overrides.has_any() {
-        pending.apply_credit_overrides(&overrides)?;
+        pending.apply_overrides(&overrides)?;
         persist_pending(db, job_id, &mut pending).await?;
     }
 
@@ -520,7 +538,7 @@ mod tests {
             Some("Typesetter".to_string()),
             Some("-".to_string()),
         ).unwrap();
-        pending.apply_credit_overrides(&overrides).unwrap();
+        pending.apply_overrides(&overrides).unwrap();
         assert_eq!(pending.acix.extra, "Translator & New Editor & Typesetter");
     }
 
@@ -537,7 +555,7 @@ mod tests {
             None,
             Some("-".to_string()),
         ).unwrap();
-        pending.apply_credit_overrides(&overrides).unwrap();
+        pending.apply_overrides(&overrides).unwrap();
         assert_eq!(pending.acix.extra, "New Translator & Editor & Typesetter");
     }
 
@@ -582,6 +600,26 @@ mod tests {
             None,
             None,
         ).unwrap();
-        assert!(pending.apply_credit_overrides(&overrides).is_err());
+        assert!(pending.apply_overrides(&overrides).is_err());
+    }
+
+    #[test]
+    fn a_fansub_override_republishes_under_another_template_without_touching_credits() {
+        let mut publish = acix();
+        publish.extra = "freeform credits".to_string();
+        publish.credits = None;
+        let queued = publish.template;
+        let mut pending = AcixPending::new(publish, "https://drive.example/video".to_string());
+
+        let overrides = CreditOverrides::from_values(None, None, None, None, None)
+            .unwrap()
+            .with_template(queued + 1);
+        pending.apply_overrides(&overrides).unwrap();
+        assert_eq!(pending.acix.template, queued + 1);
+        // Freeform credits are only refused when a role override actually asked to edit them.
+        assert_eq!(pending.acix.extra, "freeform credits");
+
+        pending.multiple_status = Some(PublishState::Published);
+        assert!(pending.apply_overrides(&overrides).is_err());
     }
 }

@@ -982,8 +982,8 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "publish",
             name: "publish",
             summary: "Publish a finished encode to AnimeciX, OpenAnime and Anizm at once.",
-            usage: "/publish job_id:<id> [anime:<search>] [season:<number>] [episode:<number>] [extra:<text>]",
-            details: "Runs the three site publishes from one command and reports each as published, skipped, or failed. A smartcode job already recorded its anime, season, and episode, so only `job_id` is needed; anything else takes `anime` from the AnimeciX search plus `season`/`episode`. The selected MyAnimeList id drives AnimeciX and OpenAnime, while Anizm is matched by title and skipped when that match is not unique. `extra` replaces the complete credit line on every site — AnimeciX's Extra, OpenAnime's contributors, and Anizm's translator — and `-` clears it; the TL/TLC/TS/QC role fields stay on `/acixconfirm`. Anizm's encoder is always `Pandora`.",
+            usage: "/publish job_id:<id> [anime:<search>] [season:<number>] [episode:<number>] [extra:<text>] [animecix_fansub] [openanime_fansub] [anizm_fansub]",
+            details: "Runs the three site publishes from one command and reports each as published, skipped, or failed. A smartcode job already recorded its anime, season, and episode, so only `job_id` is needed; anything else takes `anime` from the AnimeciX search plus `season`/`episode`. The selected MyAnimeList id drives AnimeciX and OpenAnime, while Anizm is matched by title and skipped when that match is not unique. `extra` replaces the complete credit line on every site — AnimeciX's Extra, OpenAnime's contributors, and Anizm's translator — and `-` clears it; the TL/TLC/TS/QC role fields stay on `/acixconfirm`. Anizm's encoder is always `Pandora`. The three `*_fansub` options publish one site under a fansub other than this server's `/edit` selection, and naming any of them skips every site left unnamed — an override releases exactly the sites it lists.",
         },
         HelpCommand {
             section: "fonts",
@@ -3127,6 +3127,18 @@ impl EventHandler for Handler {
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "extra", "Replace the credit line on all three sites; `-` clears it")
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "animecix_fansub", "Publish AnimeciX under this fansub; naming any site skips the sites left unnamed")
+                        .set_autocomplete(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "openanime_fansub", "Publish OpenAnime under this fansub; naming any site skips the sites left unnamed")
+                        .set_autocomplete(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "anizm_fansub", "Publish Anizm under this fansub; naming any site skips the sites left unnamed")
+                        .set_autocomplete(true)
                 ),
             CreateCommand::new("font")
                 .description("Download a font zip and install it for this server")
