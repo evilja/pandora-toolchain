@@ -8,19 +8,20 @@ use pandora_toolchain::lib::http::anizm::{
     episode_not_listed, fetch_publishing_catalog, find_episode_option, find_option, Anizm,
     SelectOption, TranslationCreate, VideoCreate,
 };
-use pandora_toolchain::lib::http::openanime::{EpisodeSource, OpenAnime, Resolutions};
+use pandora_toolchain::lib::http::openanime::{
+    anime_titles, search_title, Anime, EpisodeSource, OpenAnime, Resolutions,
+};
 use pandora_toolchain::pnworker::acix::{confirm_acix_with_overrides, AcixPending, CreditOverrides};
 use pandora_toolchain::pnworker::core::{AcixCredits, AcixPublish};
 use serenity::builder::CreateAutocompleteResponse;
 
 const MAX_ANIME_CHOICES: usize = 25;
 const MAX_CHOICE_CHARS: usize = 100;
-const ANIME_SEARCH_LIMIT: u32 = 25;
-// Two characters is where an AnimeciX title search stops returning the whole catalog, so shorter
-// input is not sent at all instead of making every keystroke a request that cannot be useful.
+// Two characters is where a title search stops returning the whole catalog, so shorter input is not
+// sent at all instead of making every keystroke a request that cannot be useful.
 const MIN_ANIME_SEARCH_CHARS: usize = 2;
-// The `<mal id>|<title>` separator. AnimeciX titles never contain it, and it keeps the submitted
-// value self-describing so the title can be re-searched without a second round trip.
+// The `<slug>|<title>` separator. Neither an OpenAnime slug nor its titles contain it, and it keeps
+// the submitted value self-describing while making a hand-typed title fail to parse.
 const ANIME_VALUE_SEPARATOR: char = '|';
 // Same sentinel `/edit`'s fansub selectors use: a failed lookup still has to be a selectable choice
 // with a non-empty value, or Discord drops the whole autocomplete response.
@@ -29,12 +30,29 @@ const LOOKUP_FAILED_VALUE: &str = "__lookup_failed__";
 // rather than defaulting to the fansub the way the translator credit does.
 const ANIZM_ENCODER: &str = "Pandora";
 
-// AnimeciX and OpenAnime are both keyed by MyAnimeList id, so one selection drives both. Anizm's
-// staff panel exposes nothing but its own opaque ids, so the same selection's title is matched
-// against its option list and the site is skipped whenever that match is not unique.
+// What the operator picked out of the OpenAnime search. OpenAnime answers a title search but has no
+// MyAnimeList lookup, so its slug is the only handle that addresses its catalog exactly; the id the
+// other two sites are keyed by is read back off the entry rather than carried in the selection.
 struct AnimeSelection {
+    slug: String,
+    title: String,
+}
+
+// What the three sites publish against, resolved once. Searching OpenAnime and reading its
+// MyAnimeList id back is what makes both halves exact: OpenAnime is addressed by the slug the
+// operator picked instead of by a title guess, and AnimeciX by an id instead of by that title.
+struct ResolvedAnime {
     mal_id: i64,
+    // The title AnimeciX and Anizm are addressed by — AnimeciX's own catalog name whenever the MAL
+    // id reached an entry there, so the record stored for `/acixconfirm` re-resolves the way it
+    // always has and Anizm's title match keeps the kind of input it was written against.
     name: String,
+    // Present only for a search selection: the exact catalog entry, so OpenAnime is never asked to
+    // re-resolve a slug it already answered.
+    openanime: Option<Anime>,
+    // Why the MyAnimeList id reached no AnimeciX entry. AnimeciX being unreachable, unconfigured, or
+    // simply missing the anime is reported on that site's own line instead of stopping the other two.
+    acix_error: Option<String>,
 }
 
 // `extra` is the one credit override /publish offers, and it means the same thing everywhere: the
@@ -156,7 +174,7 @@ impl Outcome {
     }
 }
 
-// `/publish` autocompletes the anime against AnimeciX and each fansub override against that site's
+// `/publish` autocompletes the anime against OpenAnime and each fansub override against that site's
 // own directory, so the focused option decides which one is searched.
 pub async fn handle_publish_autocomplete(
     ctx: &Context,
@@ -199,28 +217,40 @@ pub async fn handle_publish_autocomplete(
 }
 
 async fn anime_choices(partial: &str) -> Result<Vec<(String, String)>, String> {
-    let client = AnimeCix::from_token_env()?;
-    let hits = client.search(partial, ANIME_SEARCH_LIMIT).await?;
+    let client = OpenAnime::catalog()?;
+    let hits = client.search(partial).await?;
     Ok(hits
         .into_iter()
-        // An entry with no MyAnimeList id cannot be verified on either MAL-keyed site, so it is
-        // never offered as a choice.
-        .filter_map(|hit| hit.mal_id.map(|mal_id| (hit.name, mal_id)))
+        // A result nobody can read, or whose slug leaves no room for a title beside it in the
+        // 100-character value, is dropped rather than offered as a choice Discord would reject.
+        .filter(|hit| {
+            let slug = hit.slug.trim();
+            !slug.is_empty() && slug.chars().count() < MAX_CHOICE_CHARS
+        })
+        .filter_map(|hit| search_title(&hit).map(|title| (hit.slug, title)))
         .take(MAX_ANIME_CHOICES)
-        .map(|(name, mal_id)| (anime_choice_label(&name, mal_id), anime_choice_value(&name, mal_id)))
+        .map(|(slug, title)| {
+            (
+                anime_choice_label(&title, &slug),
+                anime_choice_value(&title, &slug),
+            )
+        })
         .collect())
 }
 
-fn anime_choice_label(name: &str, mal_id: i64) -> String {
-    let suffix = format!(" (MAL {})", mal_id);
+// Two OpenAnime entries can share a title, so the slug that tells them apart stays on the label.
+fn anime_choice_label(title: &str, slug: &str) -> String {
+    let suffix = truncate_chars(&format!(" ({})", slug), MAX_CHOICE_CHARS);
     let available = MAX_CHOICE_CHARS.saturating_sub(suffix.chars().count());
-    format!("{}{}", truncate_chars(name, available), suffix)
+    format!("{}{}", truncate_chars(title, available), suffix)
 }
 
-fn anime_choice_value(name: &str, mal_id: i64) -> String {
-    let prefix = format!("{}{}", mal_id, ANIME_VALUE_SEPARATOR);
+// The slug is never truncated — it is the handle the entry is fetched by. The title rides along only
+// to keep the value self-describing; the full titles come off the entry itself at submit time.
+fn anime_choice_value(title: &str, slug: &str) -> String {
+    let prefix = format!("{}{}", slug, ANIME_VALUE_SEPARATOR);
     let available = MAX_CHOICE_CHARS.saturating_sub(prefix.chars().count());
-    format!("{}{}", prefix, truncate_chars(name, available))
+    format!("{}{}", prefix, truncate_chars(title, available))
 }
 
 fn truncate_chars(value: &str, max: usize) -> String {
@@ -228,7 +258,7 @@ fn truncate_chars(value: &str, max: usize) -> String {
 }
 
 fn lookup_failed_label(error: &str) -> String {
-    const PREFIX: &str = "⚠ AnimeciX lookup failed: ";
+    const PREFIX: &str = "⚠ OpenAnime lookup failed: ";
     let available = MAX_CHOICE_CHARS.saturating_sub(PREFIX.chars().count());
     let reason = error.split_whitespace().collect::<Vec<_>>().join(" ");
     if reason.chars().count() <= available {
@@ -242,25 +272,76 @@ fn lookup_failed_label(error: &str) -> String {
 }
 
 // The submitted value is the choice's own payload, never a free-typed title: a hand-written name
-// carries no MyAnimeList id and would leave every site guessing.
+// carries no OpenAnime slug and would leave every site guessing.
 fn parse_anime_option(value: &str) -> Result<AnimeSelection, String> {
-    let (mal_id, name) = value
+    let (slug, title) = value
         .split_once(ANIME_VALUE_SEPARATOR)
         .ok_or_else(|| "Error: pick `anime` from the search results.".to_string())?;
-    let mal_id = mal_id
-        .trim()
-        .parse::<i64>()
-        .ok()
-        .filter(|id| *id > 0)
-        .ok_or_else(|| "Error: pick `anime` from the search results.".to_string())?;
-    let name = name.trim();
-    if name.is_empty() {
+    let slug = slug.trim();
+    let title = title.trim();
+    if slug.is_empty() || title.is_empty() {
         return Err("Error: pick `anime` from the search results.".to_string());
     }
     Ok(AnimeSelection {
-        mal_id,
-        name: name.to_string(),
+        slug: slug.to_string(),
+        title: title.to_string(),
     })
+}
+
+// OpenAnime carries the MyAnimeList id but cannot be searched by it, and AnimeciX cannot be searched
+// without a title its own catalog uses. Reading the id off the picked OpenAnime entry and searching
+// AnimeciX under every alias that entry lists turns both lookups into exact ones. AnimeciX not
+// answering is carried rather than raised, so it never takes the other two sites down with it.
+async fn resolve_selection(selection: &AnimeSelection) -> Result<ResolvedAnime, String> {
+    let anime = OpenAnime::catalog()?
+        .anime(&selection.slug)
+        .await
+        .map_err(|e| format!("Error: OpenAnime has no entry `{}`: {}", selection.slug, e))?;
+    let Some(mal_id) = anime
+        .mal_id
+        .and_then(|id| i64::try_from(id).ok())
+        .filter(|id| *id > 0)
+    else {
+        return Err(format!(
+            "Error: OpenAnime's `{}` records no MyAnimeList id, so AnimeciX cannot be resolved from it. Publish OpenAnime alone with `/openanimeconfirm`.",
+            selection.slug
+        ));
+    };
+    let titles = anime_titles(&anime);
+    let hit = match AnimeCix::from_token_env() {
+        Ok(client) => client.resolve_by_mal_id_aliases(&titles, mal_id).await,
+        Err(e) => Err(e),
+    };
+    let (name, acix_error) = match hit {
+        Ok(Some(hit)) => (hit.name, None),
+        Ok(None) => (
+            fallback_name(&titles, selection),
+            Some(format!(
+                "no AnimeciX entry for MAL id {} under {}",
+                mal_id,
+                titles
+                    .iter()
+                    .map(|title| format!("`{}`", title))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        ),
+        Err(e) => (fallback_name(&titles, selection), Some(e)),
+    };
+    Ok(ResolvedAnime {
+        mal_id,
+        name,
+        openanime: Some(anime),
+        acix_error,
+    })
+}
+
+// AnimeciX never answered, so Anizm and the reply header fall back to the entry's own leading title.
+fn fallback_name(titles: &[String], selection: &AnimeSelection) -> String {
+    titles
+        .first()
+        .cloned()
+        .unwrap_or_else(|| selection.title.clone())
 }
 
 pub async fn handle_publish(ctx: &Context, command: &serenity::all::CommandInteraction) {
@@ -379,36 +460,60 @@ pub async fn handle_publish(ctx: &Context, command: &serenity::all::CommandInter
         None => None,
     };
 
-    let (mal_id, name) = match (&selected, pending.as_ref()) {
-        (Some(selection), _) => (selection.mal_id, selection.name.clone()),
-        (None, Some(pending)) => (pending.acix.mal_id, pending.acix.name.clone()),
-        (None, None) => match (meta.mal_id, meta.name.clone()) {
-            (Some(mal_id), Some(name)) => (mal_id as i64, name),
-            _ => {
+    let resolved = match &selected {
+        Some(selection) => match resolve_selection(selection).await {
+            Ok(resolved) => resolved,
+            Err(e) => {
+                publish_response(ctx, command, e).await;
+                return;
+            }
+        },
+        // Nothing was picked, so the anime comes from what was already recorded and each site keeps
+        // resolving it the way it did before this command existed.
+        None => {
+            let (mal_id, name) = match pending.as_ref() {
+                Some(pending) => (pending.acix.mal_id, pending.acix.name.clone()),
+                None => match (meta.mal_id, meta.name.clone()) {
+                    (Some(mal_id), Some(name)) => (mal_id as i64, name),
+                    _ => {
+                        publish_response(
+                            ctx,
+                            command,
+                            "Error: this job did not record an anime and this channel is not attached to one. Pass `anime`.",
+                        )
+                        .await;
+                        return;
+                    }
+                },
+            };
+            // Both MAL-keyed sites address the anime by this id, so a job or channel that recorded a
+            // placeholder is stopped here rather than resolving onto whatever the id wraps to.
+            if mal_id <= 0 {
                 publish_response(
                     ctx,
                     command,
-                    "Error: this job did not record an anime and this channel is not attached to one. Pass `anime`.",
+                    format!(
+                        "Error: `{}` is recorded with MAL id {}, which no site can resolve. Pass `anime`.",
+                        name, mal_id
+                    ),
                 )
                 .await;
                 return;
             }
-        },
+            ResolvedAnime {
+                mal_id,
+                name,
+                openanime: None,
+                acix_error: None,
+            }
+        }
     };
-    // Both MAL-keyed sites address the anime by this id, so a job or channel that recorded a
-    // placeholder is stopped here rather than resolving onto whatever the id wraps to.
-    if mal_id <= 0 {
-        publish_response(
-            ctx,
-            command,
-            format!(
-                "Error: `{}` is recorded with MAL id {}, which no site can resolve. Pass `anime`.",
-                name, mal_id
-            ),
-        )
-        .await;
-        return;
-    }
+    let ResolvedAnime {
+        mal_id,
+        name,
+        openanime,
+        acix_error,
+    } = resolved;
     let season = season_option
         .or_else(|| pending.as_ref().and_then(|pending| pending.acix.season_num))
         .or(if meta.season >= 1 {
@@ -460,6 +565,7 @@ pub async fn handle_publish(ctx: &Context, command: &serenity::all::CommandInter
         episode,
         extra,
         pending.is_some(),
+        acix_error,
         overrides.site(FansubSite::AnimeciX),
     )
     .await;
@@ -470,6 +576,7 @@ pub async fn handle_publish(ctx: &Context, command: &serenity::all::CommandInter
         &credits,
         mal_id,
         &name,
+        openanime.as_ref(),
         season,
         episode,
         overrides.site(FansubSite::OpenAnime),
@@ -517,6 +624,7 @@ async fn publish_acix(
     episode: i64,
     extra: Option<String>,
     has_pending: bool,
+    unresolved: Option<String>,
     fansub: SiteFansub<'_>,
 ) -> Outcome {
     let overridden = match fansub {
@@ -534,6 +642,12 @@ async fn publish_acix(
             }
         }
     };
+    // The selection's MyAnimeList id already failed to reach an AnimeciX entry, so nothing is queued
+    // here: a record built on a title AnimeciX does not carry would only fail again at confirm time,
+    // and `/acixunpublish` would then be needed to clear it.
+    if let Some(reason) = unresolved {
+        return Outcome::Failed(reason);
+    }
     if !has_pending {
         let template = match overridden
             .as_ref()
@@ -608,9 +722,10 @@ async fn publish_acix(
     }
 }
 
-// OpenAnime is keyed by MyAnimeList id, so the resolved anime is accepted only when the catalog
-// entry reports the same id. The season/episode must already exist there — this command creates
-// nothing on OpenAnime.
+// An anime picked from the search arrives already resolved, because that search was OpenAnime's own.
+// Anything recorded by a job or a channel still has to come back through the MyAnimeList id, which
+// OpenAnime answers only by title alias and accepts only when the entry reports the same id. The
+// season/episode must already exist there either way — this command creates nothing on OpenAnime.
 #[allow(clippy::too_many_arguments)]
 async fn publish_openanime(
     server_id: u64,
@@ -619,6 +734,7 @@ async fn publish_openanime(
     credits: &CreditOverride,
     mal_id: i64,
     name: &str,
+    resolved: Option<&Anime>,
     season: i64,
     episode: i64,
     fansub: SiteFansub<'_>,
@@ -653,14 +769,17 @@ async fn publish_openanime(
         Ok(client) => client,
         Err(e) => return Outcome::Failed(format!("client error: {}", e)),
     };
-    let anime = match client.resolve_mal_id(mal_id as u64, name).await {
-        Ok(anime) => anime,
-        Err(e) => return Outcome::Failed(format!("no entry for MAL id {}: {}", mal_id, e)),
+    let slug = match resolved {
+        Some(anime) => anime.slug.clone(),
+        None => match client.resolve_mal_id(mal_id as u64, name).await {
+            Ok(anime) => anime.slug,
+            Err(e) => return Outcome::Failed(format!("no entry for MAL id {}: {}", mal_id, e)),
+        },
     };
-    if let Err(e) = client.episode(&anime.slug, season, episode).await {
+    if let Err(e) = client.episode(&slug, season, episode).await {
         return Outcome::Failed(format!(
             "`{}` has no season {} episode {}: {}",
-            anime.slug, season, episode, e
+            slug, season, episode, e
         ));
     }
     let (players, skipped) = match plan_players(uploaded, Resolutions::new(true, false, false)) {
@@ -683,7 +802,7 @@ async fn publish_openanime(
             source = source.contributors(contributors.clone());
         }
         match client
-            .publish_episode(&anime.slug, season, episode, &source)
+            .publish_episode(&slug, season, episode, &source)
             .await
         {
             Ok(_) => published.push(label),
@@ -696,7 +815,7 @@ async fn publish_openanime(
         vec![format!("skipped {}", skipped.join(", "))]
     };
     site_outcome(
-        &format!("`{}` as {}", anime.slug, fansub.display()),
+        &format!("`{}` as {}", slug, fansub.display()),
         &published,
         &notes,
         &failed,
@@ -940,27 +1059,28 @@ mod tests {
 
     #[test]
     fn anime_choices_round_trip_through_the_submitted_value() {
-        let value = anime_choice_value("Naruto", 20);
+        let value = anime_choice_value("Naruto", "naruto");
         let selection = parse_anime_option(&value).unwrap();
-        assert_eq!(selection.mal_id, 20);
-        assert_eq!(selection.name, "Naruto");
+        assert_eq!(selection.slug, "naruto");
+        assert_eq!(selection.title, "Naruto");
     }
 
     #[test]
-    fn anime_choice_label_and_value_fit_the_discord_limit_and_keep_the_mal_id() {
+    fn anime_choice_label_and_value_fit_the_discord_limit_and_keep_the_slug() {
         let long = "x".repeat(200);
-        let label = anime_choice_label(&long, 1234567);
+        let label = anime_choice_label(&long, "some-long-slug");
         assert!(label.chars().count() <= MAX_CHOICE_CHARS);
-        assert!(label.ends_with("(MAL 1234567)"));
+        assert!(label.ends_with("(some-long-slug)"));
 
-        let value = anime_choice_value(&long, 1234567);
+        // The title is what gets cut: the slug is the handle the entry is fetched by.
+        let value = anime_choice_value(&long, "some-long-slug");
         assert!(value.chars().count() <= MAX_CHOICE_CHARS);
-        assert_eq!(parse_anime_option(&value).unwrap().mal_id, 1234567);
+        assert_eq!(parse_anime_option(&value).unwrap().slug, "some-long-slug");
     }
 
     #[test]
     fn hand_typed_anime_titles_are_refused() {
-        for value in ["Naruto", "20", "0|Naruto", "20|", LOOKUP_FAILED_VALUE] {
+        for value in ["Naruto", "20", "|Naruto", "naruto|", LOOKUP_FAILED_VALUE] {
             assert!(parse_anime_option(value).is_err(), "{}", value);
         }
     }
@@ -984,8 +1104,8 @@ mod tests {
 
     #[test]
     fn lookup_failures_are_reported_inside_the_label_limit() {
-        let short = lookup_failed_label("AnimeCix email is empty.");
-        assert_eq!(short, "⚠ AnimeciX lookup failed: AnimeCix email is empty.");
+        let short = lookup_failed_label("HTTP request failed.");
+        assert_eq!(short, "⚠ OpenAnime lookup failed: HTTP request failed.");
 
         let long = lookup_failed_label(&"detail ".repeat(60));
         assert!(long.chars().count() <= MAX_CHOICE_CHARS, "{}", long);

@@ -8,7 +8,8 @@ use crate::lib::env::standard::{OPENANIME_EMAIL, OPENANIME_PASSWORD};
 use crate::lib::http::directory::{self, MemoryCache};
 
 pub use capella::openanime::{
-    Anime, EpisodeSource, Error as OpenAnimeError, Player, PlayerProvider, Resolutions,
+    Anime, AnimeSearchResult, EpisodeSource, Error as OpenAnimeError, Player, PlayerProvider,
+    Resolutions,
 };
 
 const DIRECTORY_SITE: &str = "openanime";
@@ -83,6 +84,18 @@ impl OpenAnime {
         )
     }
 
+    // Catalog reads are unauthenticated, so a search keystroke does not have to wait on — or fail
+    // on — the publishing credentials. Only publishing needs `from_env`.
+    pub fn catalog() -> Result<Self, String> {
+        Ok(Self {
+            client: OpenAnimeClient::new().map_err(stringify)?,
+        })
+    }
+
+    pub async fn search(&self, query: &str) -> Result<Vec<AnimeSearchResult>, String> {
+        self.client.search(query).await.map_err(stringify)
+    }
+
     // Pandora publishes through the admin dashboard's episode form, which searches the whole
     // directory (`GET /fansub/all`) rather than the fansub panel's `GET /user/fansubs`, so every
     // fansub is selectable and not just the ones the account is a member of. Narrowing to the
@@ -129,6 +142,41 @@ impl OpenAnime {
     }
 }
 
+// OpenAnime keeps one title per language and none of them is authoritative, so every alias is
+// offered rather than one guess. Romaji leads because the catalogs that have to be searched by title
+// are built from TMDB, and the native script trails because a search for it rarely matches there.
+pub fn anime_titles(anime: &Anime) -> Vec<String> {
+    let mut titles: Vec<String> = Vec::new();
+    for title in [
+        &anime.romaji,
+        &anime.english,
+        &anime.turkish,
+        &anime.japanese,
+    ] {
+        let Some(title) = title.as_deref().map(str::trim).filter(|t| !t.is_empty()) else {
+            continue;
+        };
+        if !titles.iter().any(|kept| kept.eq_ignore_ascii_case(title)) {
+            titles.push(title.to_string());
+        }
+    }
+    titles
+}
+
+// The title a search result is offered under. Same preference as `anime_titles` minus the native
+// script, which a search response does not carry anyway.
+pub fn search_title(result: &AnimeSearchResult) -> Option<String> {
+    [&result.romaji, &result.english, &result.turkish]
+        .into_iter()
+        .find_map(|title| {
+            title
+                .as_deref()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(str::to_string)
+        })
+}
+
 fn fansub_choices(fansubs: Vec<Fansub>) -> Vec<FansubChoice> {
     fansubs
         .into_iter()
@@ -151,9 +199,66 @@ fn stringify(error: OpenAnimeError) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{fansub_choices, FansubChoice};
-    use capella::openanime::Fansub;
+    use super::{anime_titles, fansub_choices, search_title, FansubChoice};
+    use capella::openanime::{Anime, AnimeSearchResult, Fansub};
     use serde_json::json;
+
+    fn anime(romaji: Option<&str>, english: Option<&str>, turkish: Option<&str>, japanese: Option<&str>) -> Anime {
+        Anime {
+            id: None,
+            slug: "slug".to_string(),
+            mal_id: None,
+            english: english.map(str::to_string),
+            turkish: turkish.map(str::to_string),
+            japanese: japanese.map(str::to_string),
+            romaji: romaji.map(str::to_string),
+            media_type: None,
+            number_of_episodes: None,
+            raw: json!({}),
+        }
+    }
+
+    fn search_result(
+        romaji: Option<&str>,
+        english: Option<&str>,
+        turkish: Option<&str>,
+    ) -> AnimeSearchResult {
+        AnimeSearchResult {
+            id: None,
+            slug: "slug".to_string(),
+            english: english.map(str::to_string),
+            turkish: turkish.map(str::to_string),
+            romaji: romaji.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn every_alias_is_offered_once_in_search_order() {
+        assert_eq!(
+            anime_titles(&anime(
+                Some("Shingeki no Kyojin"),
+                Some("Attack on Titan"),
+                Some("  "),
+                Some("進撃の巨人"),
+            )),
+            vec!["Shingeki no Kyojin", "Attack on Titan", "進撃の巨人"]
+        );
+        // A catalog that repeats one title across languages must not make the same search twice.
+        assert_eq!(
+            anime_titles(&anime(Some("Naruto"), Some("naruto"), None, None)),
+            vec!["Naruto"]
+        );
+        assert!(anime_titles(&anime(None, None, None, None)).is_empty());
+    }
+
+    #[test]
+    fn a_search_result_without_a_readable_title_is_not_offerable() {
+        assert_eq!(
+            search_title(&search_result(None, Some("Attack on Titan"), Some("Titan"))),
+            Some("Attack on Titan".to_string())
+        );
+        assert_eq!(search_title(&search_result(Some("  "), None, None)), None);
+    }
 
     fn fansub(name: &str, secure_name: Option<&str>) -> Fansub {
         Fansub {

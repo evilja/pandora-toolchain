@@ -297,6 +297,30 @@ impl AnimeCix {
             })
             .map_err(|e| e.to_string())
     }
+
+    // AnimeciX reaches a MyAnimeList id only through its own title search, so an anime named by
+    // another catalog is searched under each of its aliases until one of them returns the id. A
+    // failed request is not a missing entry: the error is only reported when no alias got an answer
+    // at all, so one bad search cannot report a title AnimeciX simply does not carry as an outage.
+    pub async fn resolve_by_mal_id_aliases(
+        &self,
+        titles: &[String],
+        mal_id: i64,
+    ) -> Result<Option<SearchHit>, String> {
+        let mut searched = false;
+        let mut last_error = None;
+        for title in titles {
+            match self.resolve_by_mal_id(title, mal_id).await {
+                Ok(Some(hit)) => return Ok(Some(hit)),
+                Ok(None) => searched = true,
+                Err(e) => last_error = Some(e),
+            }
+        }
+        match last_error {
+            Some(e) if !searched => Err(e),
+            _ => Ok(None),
+        }
+    }
 }
 
 fn authenticated_client(

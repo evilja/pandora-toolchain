@@ -983,7 +983,7 @@ fn help_catalog() -> &'static [HelpCommand] {
             name: "publish",
             summary: "Publish a finished encode to AnimeciX, OpenAnime and Anizm at once.",
             usage: "/publish job_id:<id> [anime:<search>] [season:<number>] [episode:<number>] [extra:<text>] [animecix_fansub] [openanime_fansub] [anizm_fansub]",
-            details: "Runs the three site publishes from one command and reports each as published, skipped, or failed. A smartcode job already recorded its anime, season, and episode, so only `job_id` is needed; anything else takes `anime` from the AnimeciX search plus `season`/`episode`. The selected MyAnimeList id drives AnimeciX and OpenAnime, while Anizm is matched by title and skipped when that match is not unique. `extra` replaces the complete credit line on every site — AnimeciX's Extra, OpenAnime's contributors, and Anizm's translator — and `-` clears it; the TL/TLC/TS/QC role fields stay on `/acixconfirm`. Anizm's encoder is always `Pandora`. The three `*_fansub` options publish one site under a fansub other than this server's `/edit` selection, and naming any of them skips every site left unnamed — an override releases exactly the sites it lists.",
+            details: "Runs the three site publishes from one command and reports each as published, skipped, or failed. A smartcode job already recorded its anime, season, and episode, so only `job_id` is needed; anything else takes `anime` from the OpenAnime search plus `season`/`episode`. OpenAnime is then addressed by the exact slug that was picked, and the MyAnimeList id read off that entry resolves AnimeciX by searching each of the entry's title aliases; Anizm is matched by title and skipped when that match is not unique. `extra` replaces the complete credit line on every site — AnimeciX's Extra, OpenAnime's contributors, and Anizm's translator — and `-` clears it; the TL/TLC/TS/QC role fields stay on `/acixconfirm`. Anizm's encoder is always `Pandora`. The three `*_fansub` options publish one site under a fansub other than this server's `/edit` selection, and naming any of them skips every site left unnamed — an override releases exactly the sites it lists.",
         },
         HelpCommand {
             section: "fonts",
@@ -3114,7 +3114,7 @@ impl EventHandler for Handler {
                         .required(true)
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "anime", "Type to search AnimeciX; only needed when the job did not record one")
+                    CreateCommandOption::new(CommandOptionType::String, "anime", "Type to search OpenAnime; only needed when the job did not record one")
                         .set_autocomplete(true)
                 )
                 .add_option(
