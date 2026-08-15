@@ -3,7 +3,7 @@ use super::fansubs::FansubOption;
 use super::openanimeconfirm::{channel_credits, link_value, plan_players};
 use super::*;
 use pandora_toolchain::lib::db::core::JobDb;
-use pandora_toolchain::lib::http::acix::AnimeCix;
+use pandora_toolchain::lib::http::acix::{AliasMatch, AnimeCix, SearchHit};
 use pandora_toolchain::lib::http::anizm::{
     episode_not_listed, fetch_publishing_catalog, find_episode_option, find_option, Anizm,
     SelectOption, TranslationCreate, VideoCreate,
@@ -17,6 +17,9 @@ use serenity::builder::CreateAutocompleteResponse;
 
 const MAX_ANIME_CHOICES: usize = 25;
 const MAX_CHOICE_CHARS: usize = 100;
+// Enough AnimeciX near-misses to show which id it files the anime under without turning one site's
+// line into a catalog dump.
+const MAX_ACIX_CANDIDATES: usize = 3;
 // Two characters is where a title search stops returning the whole catalog, so shorter input is not
 // sent at all instead of making every keystroke a request that cannot be useful.
 const MIN_ANIME_SEARCH_CHARS: usize = 2;
@@ -313,18 +316,10 @@ async fn resolve_selection(selection: &AnimeSelection) -> Result<ResolvedAnime, 
         Err(e) => Err(e),
     };
     let (name, acix_error) = match hit {
-        Ok(Some(hit)) => (hit.name, None),
-        Ok(None) => (
+        Ok(AliasMatch::Found(hit)) => (hit.name, None),
+        Ok(AliasMatch::NotFound(candidates)) => (
             fallback_name(&titles, selection),
-            Some(format!(
-                "no AnimeciX entry for MAL id {} under {}",
-                mal_id,
-                titles
-                    .iter()
-                    .map(|title| format!("`{}`", title))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )),
+            Some(acix_missing(mal_id, &titles, &candidates)),
         ),
         Err(e) => (fallback_name(&titles, selection), Some(e)),
     };
@@ -342,6 +337,37 @@ fn fallback_name(titles: &[String], selection: &AnimeSelection) -> String {
         .first()
         .cloned()
         .unwrap_or_else(|| selection.title.clone())
+}
+
+// The usual reason a MyAnimeList id reaches no AnimeciX entry is not that AnimeciX lacks the anime
+// but that it files it under a different id — one entry covering several seasons, or an id that
+// belongs to something else entirely. Naming what its search did return is the difference between an
+// operator who can see that in one line and one who goes looking for an outage.
+fn acix_missing(mal_id: i64, titles: &[String], candidates: &[SearchHit]) -> String {
+    let searched = titles
+        .iter()
+        .map(|title| format!("`{}`", title))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if candidates.is_empty() {
+        return format!(
+            "no AnimeciX entry for MAL id {}, and its search returns nothing under {}",
+            mal_id, searched
+        );
+    }
+    let near = candidates
+        .iter()
+        .take(MAX_ACIX_CANDIDATES)
+        .map(|hit| match hit.mal_id {
+            Some(id) => format!("`{}` (MAL {})", hit.name, id),
+            None => format!("`{}` (no MAL id)", hit.name),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "no AnimeciX entry for MAL id {} under {} — its search returns {}, so the two catalogs disagree on the id and nothing was queued here",
+        mal_id, searched, near
+    )
 }
 
 pub async fn handle_publish(ctx: &Context, command: &serenity::all::CommandInteraction) {

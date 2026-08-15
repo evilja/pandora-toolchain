@@ -12,6 +12,9 @@ pub use capella::animecix::{
     MediaType, TmdbImportResult as TmdbResolve, VideoPayload as MixedUpload,
 };
 
+// What Capella's own `resolve_mal_id` asks for, kept the same so an alias search sees the same page
+// of results a single-title resolve would have.
+const ALIAS_SEARCH_LIMIT: u32 = 20;
 const SESSION_PATH: &str = "DB/config/global/environment/animecix.session";
 const SESSION_FALLBACK_TTL_SECS: u64 = 30 * 24 * 60 * 60;
 const DIRECTORY_SITE: &str = "animecix";
@@ -51,12 +54,21 @@ impl FansubTemplate {
     }
 }
 
-#[derive(serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct SearchHit {
     pub acix_id: i64,
     pub mal_id: Option<i64>,
     pub tmdb_id: Option<i64>,
     pub name: String,
+}
+
+// The outcome of searching AnimeciX under every title an anime is known by. The two catalogs Pandora
+// publishes to disagree on the id often enough — one AnimeciX entry covering several MyAnimeList
+// seasons, or an entry recording an id that belongs to something else — that "AnimeciX does not
+// carry this anime" and "AnimeciX carries it under another id" have to be told apart in a report.
+pub enum AliasMatch {
+    Found(SearchHit),
+    NotFound(Vec<SearchHit>),
 }
 
 pub struct AnimeCix {
@@ -306,19 +318,24 @@ impl AnimeCix {
         &self,
         titles: &[String],
         mal_id: i64,
-    ) -> Result<Option<SearchHit>, String> {
+    ) -> Result<AliasMatch, String> {
+        let mut candidates = Vec::new();
         let mut searched = false;
         let mut last_error = None;
         for title in titles {
-            match self.resolve_by_mal_id(title, mal_id).await {
-                Ok(Some(hit)) => return Ok(Some(hit)),
-                Ok(None) => searched = true,
+            match self.search(title, ALIAS_SEARCH_LIMIT).await {
+                Ok(hits) => {
+                    searched = true;
+                    if let Some(hit) = take_mal_match(hits, mal_id, &mut candidates) {
+                        return Ok(AliasMatch::Found(hit));
+                    }
+                }
                 Err(e) => last_error = Some(e),
             }
         }
         match last_error {
             Some(e) if !searched => Err(e),
-            _ => Ok(None),
+            _ => Ok(AliasMatch::NotFound(candidates)),
         }
     }
 }
@@ -333,6 +350,26 @@ fn authenticated_client(
         builder = builder.session(session.connect_sid.clone(), session.xsrf_token.clone());
     }
     builder.build().map_err(|e| e.to_string())
+}
+
+// Scans one alias search for the requested id. Everything else is kept as a candidate — deduplicated
+// across aliases, which overlap heavily — so a miss can still report what AnimeciX does carry.
+fn take_mal_match(
+    hits: Vec<SearchHit>,
+    mal_id: i64,
+    candidates: &mut Vec<SearchHit>,
+) -> Option<SearchHit> {
+    let mut found = None;
+    for hit in hits {
+        if found.is_none() && hit.mal_id == Some(mal_id) {
+            found = Some(hit);
+            continue;
+        }
+        if !candidates.iter().any(|kept| kept.acix_id == hit.acix_id) {
+            candidates.push(hit);
+        }
+    }
+    found
 }
 
 fn fansub_template(template: TranslatorTemplate) -> FansubTemplate {
@@ -386,4 +423,55 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{take_mal_match, SearchHit};
+
+    fn hit(acix_id: i64, mal_id: Option<i64>, name: &str) -> SearchHit {
+        SearchHit {
+            acix_id,
+            mal_id,
+            tmdb_id: None,
+            name: name.to_string(),
+        }
+    }
+
+    #[test]
+    fn the_requested_id_wins_and_everything_else_is_kept_as_a_candidate() {
+        let mut candidates = Vec::new();
+        let found = take_mal_match(
+            vec![
+                hit(1, Some(43608), "Kaguya-sama wa Kokurasetai"),
+                hit(2, Some(37999), "Kaguya-sama S1"),
+                hit(3, None, "Unlinked"),
+            ],
+            37999,
+            &mut candidates,
+        );
+        assert_eq!(found.unwrap().acix_id, 2);
+        assert_eq!(
+            candidates.iter().map(|hit| hit.acix_id).collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+    }
+
+    #[test]
+    fn aliases_that_return_the_same_entries_do_not_repeat_them() {
+        let mut candidates = Vec::new();
+        // The romaji and English searches of one anime overlap almost completely, so the report must
+        // not name the same AnimeciX entry once per alias.
+        assert!(take_mal_match(vec![hit(1, Some(3006), "SPY×FAMILY")], 50265, &mut candidates).is_none());
+        assert!(take_mal_match(
+            vec![hit(1, Some(3006), "SPY×FAMILY"), hit(2, Some(57435), "CODE: White")],
+            50265,
+            &mut candidates
+        )
+        .is_none());
+        assert_eq!(
+            candidates.iter().map(|hit| hit.acix_id).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    }
 }
