@@ -14,7 +14,5 @@
 /tmp0
 /DB
 /acix.txt
-# Internal agent review reports. Kept locally, never committed — they describe
-# unfixed weaknesses, so the repository is the wrong place for them.
-/*_ROADMAP.md
-/*_FALSE.md
+# Internal-only working documents. See CLAUDE.md / AGENTS.md before writing here.
+/lumiere-internal/
