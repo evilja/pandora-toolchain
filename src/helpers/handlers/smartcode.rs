@@ -215,6 +215,9 @@ async fn build_acix_publish(
         template,
         extra: credits.extra(),
         credits: Some(credits),
+        // Smartcode records the anime from AnimeciX's own catalog, so its MyAnimeList id resolves
+        // there by definition and confirm keeps looking it up the way it always has.
+        acix_id: None,
     })
 }
 

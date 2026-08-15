@@ -364,28 +364,33 @@ pub async fn confirm_acix_with_overrides(
             return Err(e);
         }
     };
-    let hit = match client.resolve_by_mal_id(&pending.acix.name, pending.acix.mal_id).await {
-        Ok(Some(hit)) => hit,
-        Ok(None) => {
-            let e = format!(
-                "no AnimeciX match for mal_id {} ({})",
-                pending.acix.mal_id, pending.acix.name,
-            );
-            mark_shared_failure(&mut pending, &e);
-            persist_pending(db, job_id, &mut pending).await?;
-            return Err(e);
-        }
-        Err(e) => {
-            mark_shared_failure(&mut pending, &e);
-            persist_pending(db, job_id, &mut pending).await?;
-            return Err(e);
-        }
+    // A record that already carries the AnimeciX title id was resolved by something the MyAnimeList
+    // id cannot reach, so searching for it again here would only fail the way it did then.
+    let acix_id = match pending.acix.acix_id {
+        Some(acix_id) => acix_id,
+        None => match client.resolve_by_mal_id(&pending.acix.name, pending.acix.mal_id).await {
+            Ok(Some(hit)) => hit.acix_id,
+            Ok(None) => {
+                let e = format!(
+                    "no AnimeciX match for mal_id {} ({})",
+                    pending.acix.mal_id, pending.acix.name,
+                );
+                mark_shared_failure(&mut pending, &e);
+                persist_pending(db, job_id, &mut pending).await?;
+                return Err(e);
+            }
+            Err(e) => {
+                mark_shared_failure(&mut pending, &e);
+                persist_pending(db, job_id, &mut pending).await?;
+                return Err(e);
+            }
+        },
     };
     let up = MixedUpload::new(
         pending.acix.extra.clone(),
         pending.drive.clone(),
         pending.acix.template,
-        hit.acix_id,
+        acix_id,
         pending.acix.season_num,
         pending.acix.episode_num,
     );
@@ -457,6 +462,27 @@ mod tests {
     use super::{public_uploaded_links, AcixPending, AcixResetScope, CreditOverrides, PublishState};
     use crate::pnworker::core::{AcixCredits, AcixPublish};
 
+    // Every record queued before `/publish` could resolve an AnimeciX id has to keep loading, and it
+    // has to keep resolving by MyAnimeList id the way it was queued to.
+    #[test]
+    fn a_record_stored_without_an_acix_id_still_loads_and_asks_for_the_mal_search() {
+        let stored = r#"{"status":"pending","acix":{"name":"Anime","mal_id":20,"season_num":1,"episode_num":2,"template":50,"extra":"Translator"},"drive":"https://drive"}"#;
+        let pending: AcixPending = serde_json::from_str(stored).unwrap();
+        assert_eq!(pending.acix.acix_id, None);
+        assert_eq!(pending.acix.mal_id, 20);
+    }
+
+    // A TMDB-resolved id has to survive the round trip, or confirm would fall back to the very
+    // MyAnimeList search that could not find the anime in the first place.
+    #[test]
+    fn a_resolved_acix_id_round_trips_through_the_stored_record() {
+        let mut publish = acix();
+        publish.acix_id = Some(9383);
+        let json = serde_json::to_string(&AcixPending::new(publish, "https://drive".to_string())).unwrap();
+        let pending: AcixPending = serde_json::from_str(&json).unwrap();
+        assert_eq!(pending.acix.acix_id, Some(9383));
+    }
+
     fn acix() -> AcixPublish {
         let credits = AcixCredits {
             tl: Some("Translator".to_string()),
@@ -472,6 +498,7 @@ mod tests {
             template: 50,
             extra: credits.extra(),
             credits: Some(credits),
+            acix_id: None,
         }
     }
 

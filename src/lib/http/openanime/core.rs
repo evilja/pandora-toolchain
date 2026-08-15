@@ -163,6 +163,26 @@ pub fn anime_titles(anime: &Anime) -> Vec<String> {
     titles
 }
 
+// The TMDB id OpenAnime built the entry from, and whether it is a movie. Capella does not model
+// `tmdbID`, so it is read off the retained raw response. This is the id that actually joins the two
+// catalogs: both OpenAnime and AnimeciX import from TMDB, while their MyAnimeList ids disagree
+// whenever AnimeciX files several seasons under one entry or records an unrelated id.
+pub fn tmdb_reference(anime: &Anime) -> Option<(String, bool)> {
+    let tmdb_id = anime.raw.get("tmdbID").and_then(|value| match value {
+        Value::String(text) => Some(text.trim().to_string()),
+        Value::Number(number) => number.as_i64().map(|id| id.to_string()),
+        _ => None,
+    })?;
+    if tmdb_id.is_empty() || !tmdb_id.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let is_movie = anime
+        .media_type
+        .as_deref()
+        .is_some_and(|kind| kind.eq_ignore_ascii_case("movie"));
+    Some((tmdb_id, is_movie))
+}
+
 // The title a search result is offered under. Same preference as `anime_titles` minus the native
 // script, which a search response does not carry anyway.
 pub fn search_title(result: &AnimeSearchResult) -> Option<String> {
@@ -199,7 +219,7 @@ fn stringify(error: OpenAnimeError) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{anime_titles, fansub_choices, search_title, FansubChoice};
+    use super::{anime_titles, fansub_choices, search_title, tmdb_reference, FansubChoice};
     use capella::openanime::{Anime, AnimeSearchResult, Fansub};
     use serde_json::json;
 
@@ -249,6 +269,27 @@ mod tests {
             vec!["Naruto"]
         );
         assert!(anime_titles(&anime(None, None, None, None)).is_empty());
+    }
+
+    #[test]
+    fn the_tmdb_reference_reads_either_json_shape_and_refuses_anything_else() {
+        let mut anime = anime(Some("Frieren"), None, None, None);
+        anime.raw = json!({ "tmdbID": 209867 });
+        assert_eq!(
+            tmdb_reference(&anime),
+            Some(("209867".to_string(), false))
+        );
+
+        // OpenAnime has returned the id as a string as well, and the import only accepts digits.
+        anime.raw = json!({ "tmdbID": " 83121 " });
+        assert_eq!(tmdb_reference(&anime), Some(("83121".to_string(), false)));
+        anime.media_type = Some("movie".to_string());
+        assert_eq!(tmdb_reference(&anime), Some(("83121".to_string(), true)));
+
+        for raw in [json!({}), json!({ "tmdbID": "" }), json!({ "tmdbID": "tt0903747" })] {
+            anime.raw = raw;
+            assert_eq!(tmdb_reference(&anime), None);
+        }
     }
 
     #[test]

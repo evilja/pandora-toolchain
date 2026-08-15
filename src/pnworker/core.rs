@@ -2658,6 +2658,12 @@ pub struct AcixPublish {
     pub extra: String,
     #[serde(default)]
     pub credits: Option<AcixCredits>,
+    // The AnimeciX title id, when it was already resolved by something the MyAnimeList id cannot
+    // reach — `/publish` resolving a TMDB import because the two catalogs file the anime under
+    // different MAL ids. Confirm uses it instead of searching, which would fail the same way again.
+    // Absent on every record queued before this existed and on the ordinary MAL-resolvable path.
+    #[serde(default)]
+    pub acix_id: Option<i64>,
 }
 
 #[derive(Clone, Debug)]

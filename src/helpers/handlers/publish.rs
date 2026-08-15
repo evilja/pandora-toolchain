@@ -3,13 +3,13 @@ use super::fansubs::FansubOption;
 use super::openanimeconfirm::{channel_credits, link_value, plan_players};
 use super::*;
 use pandora_toolchain::lib::db::core::JobDb;
-use pandora_toolchain::lib::http::acix::{AliasMatch, AnimeCix, SearchHit};
+use pandora_toolchain::lib::http::acix::{AliasMatch, AnimeCix, MediaType, SearchHit};
 use pandora_toolchain::lib::http::anizm::{
     episode_not_listed, fetch_publishing_catalog, find_episode_option, find_option, Anizm,
     SelectOption, TranslationCreate, VideoCreate,
 };
 use pandora_toolchain::lib::http::openanime::{
-    anime_titles, search_title, Anime, EpisodeSource, OpenAnime, Resolutions,
+    anime_titles, search_title, tmdb_reference, Anime, EpisodeSource, OpenAnime, Resolutions,
 };
 use pandora_toolchain::pnworker::acix::{confirm_acix_with_overrides, AcixPending, CreditOverrides};
 use pandora_toolchain::pnworker::core::{AcixCredits, AcixPublish};
@@ -50,6 +50,9 @@ struct ResolvedAnime {
     // id reached an entry there, so the record stored for `/acixconfirm` re-resolves the way it
     // always has and Anizm's title match keeps the kind of input it was written against.
     name: String,
+    // The AnimeciX title id, resolved here whenever the selection route ran. Carried into the queued
+    // record so confirm does not repeat a MyAnimeList search that a TMDB import had to settle.
+    acix_id: Option<i64>,
     // Present only for a search selection: the exact catalog entry, so OpenAnime is never asked to
     // re-resolve a slug it already answered.
     openanime: Option<Anime>,
@@ -315,20 +318,53 @@ async fn resolve_selection(selection: &AnimeSelection) -> Result<ResolvedAnime, 
         Ok(client) => client.resolve_by_mal_id_aliases(&titles, mal_id).await,
         Err(e) => Err(e),
     };
-    let (name, acix_error) = match hit {
-        Ok(AliasMatch::Found(hit)) => (hit.name, None),
-        Ok(AliasMatch::NotFound(candidates)) => (
-            fallback_name(&titles, selection),
-            Some(acix_missing(mal_id, &titles, &candidates)),
-        ),
-        Err(e) => (fallback_name(&titles, selection), Some(e)),
+    let (name, acix_id, acix_error) = match hit {
+        Ok(AliasMatch::Found(hit)) => (hit.name, Some(hit.acix_id), None),
+        // The MyAnimeList ids disagree, which is the ordinary case rather than a broken one, so the
+        // id the two catalogs are actually built from settles it instead.
+        Ok(AliasMatch::NotFound(candidates)) => match resolve_by_tmdb(&anime).await {
+            Ok(Some(acix_id)) => (fallback_name(&titles, selection), Some(acix_id), None),
+            Ok(None) => (
+                fallback_name(&titles, selection),
+                None,
+                Some(acix_missing(mal_id, &titles, &candidates, None)),
+            ),
+            Err(e) => (
+                fallback_name(&titles, selection),
+                None,
+                Some(acix_missing(mal_id, &titles, &candidates, Some(&e))),
+            ),
+        },
+        Err(e) => (fallback_name(&titles, selection), None, Some(e)),
     };
     Ok(ResolvedAnime {
         mal_id,
         name,
+        acix_id,
         openanime: Some(anime),
         acix_error,
     })
+}
+
+// AnimeciX's own import resolves a TMDB id to the title it files it under, so it answers the one
+// question its title search cannot: which entry is this, when the MyAnimeList ids disagree. The
+// import is idempotent by provider id — an anime AnimeciX already carries comes back as that entry —
+// but it is still a write, so it runs only after the read-only search has failed. It is also how the
+// title gets created at all when AnimeciX does not carry it yet, which is exactly what a publish of
+// a new season needs.
+async fn resolve_by_tmdb(anime: &Anime) -> Result<Option<i64>, String> {
+    let Some((tmdb_id, is_movie)) = tmdb_reference(anime) else {
+        return Ok(None);
+    };
+    let media_type = if is_movie {
+        MediaType::Movies
+    } else {
+        MediaType::Series
+    };
+    AnimeCix::from_env()?
+        .tmdb_to_acix(&tmdb_id, media_type)
+        .await
+        .map(|result| result.acix_id)
 }
 
 // AnimeciX never answered, so Anizm and the reply header fall back to the entry's own leading title.
@@ -343,7 +379,18 @@ fn fallback_name(titles: &[String], selection: &AnimeSelection) -> String {
 // but that it files it under a different id — one entry covering several seasons, or an id that
 // belongs to something else entirely. Naming what its search did return is the difference between an
 // operator who can see that in one line and one who goes looking for an outage.
-fn acix_missing(mal_id: i64, titles: &[String], candidates: &[SearchHit]) -> String {
+fn acix_missing(
+    mal_id: i64,
+    titles: &[String],
+    candidates: &[SearchHit],
+    import_error: Option<&str>,
+) -> String {
+    // The TMDB import is what should have settled the id disagreement, so why it did not is the
+    // useful half of this report — the title search missing is only how it got here.
+    let import = match import_error {
+        Some(e) => format!(" and its TMDB import failed ({})", e),
+        None => ", and OpenAnime records no TMDB id to import it by".to_string(),
+    };
     let searched = titles
         .iter()
         .map(|title| format!("`{}`", title))
@@ -351,8 +398,8 @@ fn acix_missing(mal_id: i64, titles: &[String], candidates: &[SearchHit]) -> Str
         .join(", ");
     if candidates.is_empty() {
         return format!(
-            "no AnimeciX entry for MAL id {}, and its search returns nothing under {}",
-            mal_id, searched
+            "no AnimeciX entry for MAL id {}, its search returns nothing under {}{}",
+            mal_id, searched, import
         );
     }
     let near = candidates
@@ -365,8 +412,8 @@ fn acix_missing(mal_id: i64, titles: &[String], candidates: &[SearchHit]) -> Str
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "no AnimeciX entry for MAL id {} under {} — its search returns {}, so the two catalogs disagree on the id and nothing was queued here",
-        mal_id, searched, near
+        "no AnimeciX entry for MAL id {} under {} — its search returns {}, so the two catalogs disagree on the id{}",
+        mal_id, searched, near, import
     )
 }
 
@@ -529,6 +576,7 @@ pub async fn handle_publish(ctx: &Context, command: &serenity::all::CommandInter
             ResolvedAnime {
                 mal_id,
                 name,
+                acix_id: None,
                 openanime: None,
                 acix_error: None,
             }
@@ -537,6 +585,7 @@ pub async fn handle_publish(ctx: &Context, command: &serenity::all::CommandInter
     let ResolvedAnime {
         mal_id,
         name,
+        acix_id,
         openanime,
         acix_error,
     } = resolved;
@@ -591,6 +640,7 @@ pub async fn handle_publish(ctx: &Context, command: &serenity::all::CommandInter
         episode,
         extra,
         pending.is_some(),
+        acix_id,
         acix_error,
         overrides.site(FansubSite::AnimeciX),
     )
@@ -650,6 +700,7 @@ async fn publish_acix(
     episode: i64,
     extra: Option<String>,
     has_pending: bool,
+    acix_id: Option<i64>,
     unresolved: Option<String>,
     fansub: SiteFansub<'_>,
 ) -> Outcome {
@@ -710,6 +761,7 @@ async fn publish_acix(
             template,
             extra: credits.extra(),
             credits: Some(credits),
+            acix_id,
         };
         let pending = AcixPending::new(publish, drive);
         let json = match serde_json::to_string(&pending) {
