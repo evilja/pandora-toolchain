@@ -69,8 +69,15 @@ Any API token may use the tracing routes; a local token is not required. `POST /
 - `POST /api/v1/jobs/:id/cancel`
 - `GET /api/v1/jobs/:id/logs`, `GET /api/v1/jobs/:id/logs.zip`, `GET /api/v1/jobs/:id/logs/:name` (PNwitch token only — see [Job logs](#job-logs))
 - `GET /api/v1/workers` (PNwitch token only — see [Worker snapshot](#worker-snapshot))
+- `POST /api/v1/token/revoke` (any token — see [Token revocation](#token-revocation))
 
 Subtitles travel as base64 (`subtitle_b64`), decoded by a local `base64_decode_bytes`; `gitcode` fetches the subtitle from `subtitle_url` (GitHub blob links auto-rewritten to raw). Either may carry ASS or any text subtitle format ffmpeg can read — the worker normalises it to ASS when the job is queued (see [DISCORD.md](DISCORD.md#subtitle-formats)); image-based or non-UTF-8 payloads decline the job with that reason instead of failing later in the encoder. `pancode` takes `probe_job_id` as a **string** (job ids exceed JS's safe-integer range) + a `file_index`, looks up the probe job's torrent from the DB, and builds a `Pancode` job. Encode, pancode, git-smartcode, and Studio requests do not accept preset/concat controls: local-token jobs derive them from the bound server's `/edit` settings, while jobs without a server id use Standard with no intro. Submits return `202 { job_id }`. Cancel first DB-checks the target: it requires a local token, refuses cross-server jobs (`row.server_id != token.local_server_id`), accepts `Encode`, `Studio`, and `StudioPreview` jobs, refuses archived/terminal jobs, then sends `HalfJob(Cancel)` and returns `202`. Exposed over the API: encode/backup/probe/pancode/gitcode (jobs), the full Studio workflow (local-token only), init/attach/source/detach/destruct/smartcode (git, local-token only — see above), and `gitsync` (`POST /api/v1/gitsync`). **Not** exposed: `/configure`, `/edit`, `/job`, `/hearts`, translation commands, `!auth`/`!ban` — they need richer Discord guild context, Discord attachments, or the live shrine handle.
+
+## Token revocation
+
+`POST /api/v1/token/revoke` — **any token**, no label or local binding required. It revokes the token the request presents, and only that one: being able to prove you hold a token is the whole authority needed to throw it away, so a token issued for one piece of work can be handed back without `/gentoken` rights or a hand-edit of `api.pandora`.
+
+It deletes the token's line from `api.pandora` **and the `;` label comment directly above it** — `parse_token_file` reads that comment as the token's label, so leaving it behind would silently relabel whichever token came next. A `<token>|local|<server_id>` line is matched on its token part. Returns `200 { "revoked": true, "lines_removed": N }`. Because `api_auth_for_token` caches on the file's mtime, the very next request with that token is `401`; every other token is untouched.
 
 ## Worker snapshot
 

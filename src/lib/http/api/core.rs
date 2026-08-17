@@ -45,8 +45,19 @@ pub(super) struct AppState {
 #[derive(Clone)]
 pub(super) struct ApiAuth {
     pub(super) local_server_id: Option<u64>,
+    // The token as presented. Request-scoped and never logged or serialised; the self-revoke route
+    // needs the value itself, since the token file stores tokens and not their hashes.
+    token: String,
     token_hash: String,
     label: Option<String>,
+}
+
+pub(super) fn presented_token(auth: &ApiAuth) -> Option<String> {
+    if auth.token.is_empty() {
+        None
+    } else {
+        Some(auth.token.clone())
+    }
 }
 
 struct ApiRateLimiter {
@@ -134,6 +145,7 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/jobs/keycode", post(submit_keycode))
         .route("/jobs/:id/cancel", post(cancel_job))
         .route("/workers", get(super::workers::workers))
+        .route("/token/revoke", post(super::token::revoke))
         .route("/jobs/:id/logs", get(super::logs::list_logs))
         .route("/jobs/:id/logs.zip", get(super::logs::download_logs))
         .route("/jobs/:id/logs/:name", get(super::logs::read_log))
@@ -452,6 +464,7 @@ fn api_auth_for_token(token: &str) -> Option<ApiAuth> {
     let entry = guard.1.get(token)?;
     Some(ApiAuth {
         local_server_id: entry.local_server_id,
+        token: token.to_string(),
         token_hash: format!("{:x}", md5::compute(token.as_bytes())),
         label: entry.label.clone(),
     })
