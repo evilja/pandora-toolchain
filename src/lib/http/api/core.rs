@@ -133,6 +133,7 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/jobs/gitcode", post(submit_gitcode))
         .route("/jobs/keycode", post(submit_keycode))
         .route("/jobs/:id/cancel", post(cancel_job))
+        .route("/workers", get(super::workers::workers))
         .route("/jobs/:id/logs", get(super::logs::list_logs))
         .route("/jobs/:id/logs.zip", get(super::logs::download_logs))
         .route("/jobs/:id/logs/:name", get(super::logs::read_log))

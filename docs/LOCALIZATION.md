@@ -4,6 +4,7 @@ User-facing strings (status updates, embed fields, stage labels, job types, and 
 
 - `src/pnworker/messages.rs` defines string IDs as `&'static str` consts (`pub const TORRENT_DONE: &str = "TORRENT_DONE";` etc.) — never as `usize` indices.
 - `SERVER_EFFECTS_FAIL` is emitted when the post-download server-scoped subtitle effects step cannot probe the input or inject the configured watermark.
+- `ENCODE_STALLED` (1 arg: minutes) is emitted by the worker loop, not by a worker: it is what a job says when the encode stall watchdog gives up on it (see [WORKER.md](WORKER.md#encode-stall-watchdog)).
 - `MessagePayload` enum is what workers send over `CommData`:
   ```rust
   pub enum MessagePayload {

@@ -462,7 +462,7 @@ fn candidates_to_db(candidates: &Option<String>) -> Option<String> {
     candidates.clone()
 }
 
-fn stage_to_int(stage: Stage) -> i64 {
+pub fn stage_to_int(stage: Stage) -> i64 {
     match stage {
         Stage::Queued      => 0,
         Stage::Downloading => 1,

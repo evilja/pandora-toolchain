@@ -28,7 +28,7 @@ use crate::pnworker::keep::{
 use crate::pnworker::lifecycle::{cleanup_job, render};
 use crate::pnworker::studio::{cleanup_expired_studios, cleanup_studios_startup};
 use crate::pnworker::messages::{
-    ENCODE_CONCAT_PROG, ENCODE_PROG, ENCODE_WARNING, GITQUERY_BLOCKED, JOB_SETUP_FAIL,
+    ENCODE_CONCAT_PROG, ENCODE_PROG, ENCODE_STALLED, ENCODE_WARNING, GITQUERY_BLOCKED, JOB_SETUP_FAIL,
     MessagePayload, QUEUE_TOO_LONG, QUEUED, TORRENT_DUPLICATE_WAIT, TORRENT_FILE_DONE, UPLOAD_DONE,
     UPLOAD_PROG, WORKER_ASSIGN,
 };
@@ -97,9 +97,16 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
     let mut gitquery: Option<HalfJob> = None;
     let mut next_cache_cleanup = tokio::time::Instant::now() + Duration::from_secs(1);
     let mut next_studio_cleanup = tokio::time::Instant::now() + Duration::from_secs(60);
+    let mut next_snapshot = tokio::time::Instant::now();
 
     loop {
         sleep(Duration::from_millis(50)).await;
+
+        // Once a second is plenty for something a human is reading, and keeps the loop's own cost flat.
+        if tokio::time::Instant::now() >= next_snapshot {
+            crate::pnworker::snapshot::publish(&shrine, &queue, gitquery.is_some());
+            next_snapshot = tokio::time::Instant::now() + Duration::from_secs(1);
+        }
 
         shrine.drain_heartbeats().await;
         check_encode_reboot_epoch(&shrine, &mut encode_reboot_epoch, &mut queue);
@@ -118,6 +125,8 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
             continue;
         }
         do_probe_timeout_things(&db, &mut queue).await;
+        do_encode_stall_things(&db, &mut queue, &mut shrine).await;
+        check_encode_reboot_epoch(&shrine, &mut encode_reboot_epoch, &mut queue);
         if do_worker_message_things(&db, &mut queue, &mut shrine).await {
             check_encode_reboot_epoch(&shrine, &mut encode_reboot_epoch, &mut queue);
             continue;
@@ -225,13 +234,21 @@ async fn decline_job_setup(job: &mut Job, reason: &str) {
     let _ = remove_dir_all(&job.directory).await;
 }
 
-fn reset_encode_dispatches_after_reboot(queue: &mut [Job]) {
+// A rebooted layer starts with an empty inbox, so whatever was queued for the old one is gone and
+// has to be dispatched again. Only jobs handed to a *previous* layer qualify: `shrine.send` reboots
+// an expired layer before sending, so without the epoch check the job dispatched microseconds ago
+// would be cleared and sent a second time, putting two encoders on one work directory.
+fn reset_encode_dispatches_after_reboot(queue: &mut [Job], epoch: u32) {
     for job in queue {
+        if job.encode_dispatch_epoch >= epoch {
+            continue;
+        }
         if job.ready == Stage::Downloaded
             || (job.job_type == JobType::Keycode && job.ready == Stage::Queued)
         {
             job.encode_dispatched = false;
             job.encode_dispatch_order = None;
+            job.encode_dispatched_at = None;
         }
     }
 }
@@ -243,7 +260,7 @@ fn check_encode_reboot_epoch(
 ) {
     let current_encode_reboot_epoch = shrine.reboot_epoch(&Worker::Encode);
     if current_encode_reboot_epoch != *encode_reboot_epoch {
-        reset_encode_dispatches_after_reboot(queue);
+        reset_encode_dispatches_after_reboot(queue, current_encode_reboot_epoch);
         *encode_reboot_epoch = current_encode_reboot_epoch;
     }
 }
@@ -692,7 +709,12 @@ async fn dispatch_keycode_ready(
     {
         return KeycodeDispatch::Failed;
     }
-    mark_encode_dispatched(job, next_encode_dispatch_order);
+    // Read the epoch after the send: `shrine.send` may have rebooted an expired layer on its way in.
+    mark_encode_dispatched(
+        job,
+        next_encode_dispatch_order,
+        shrine.reboot_epoch(&Worker::Encode),
+    );
     KeycodeDispatch::Dispatched
 }
 
@@ -1426,6 +1448,96 @@ async fn do_probe_timeout_things(db: &JobDb, queue: &mut Vec<Job>) {
     }
 }
 
+// A dispatched encode that has gone this long without a progress frame is not slow, it is wedged:
+// the layer took the message and stopped talking. The heartbeat watchdog reboots such a layer and
+// `reset_encode_dispatches_after_reboot` hands the job straight back to the new one, so on its own
+// that pair retries a poisoned job forever — silently, with no terminal state and no message. This
+// is the thing that turns one stuck job into a bot that looks frozen.
+const ENCODE_STALL_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+
+fn encode_stalled(job: &Job, now: Duration) -> bool {
+    if job.forward_parent.is_some()
+        || !is_encode_job_type(job.job_type)
+        || !job.encode_dispatched
+        || !matches!(job.ready, Stage::Downloaded | Stage::Encoding)
+    {
+        return false;
+    }
+    // Before the first frame the dispatch itself is the clock; after it, every frame resets it.
+    let last = job
+        .encode_last_frame_at
+        .or(job.encode_dispatched_at)
+        .unwrap_or(job.requested_at);
+    now.saturating_sub(last) > ENCODE_STALL_TIMEOUT
+}
+
+async fn do_encode_stall_things(
+    db: &JobDb,
+    queue: &mut Vec<Job>,
+    shrine: &mut TypedShrine<WorkerMsg>,
+) {
+    let now = unix_now();
+    let stalled: Vec<u64> = queue
+        .iter()
+        .filter(|job| encode_stalled(job, now))
+        .map(|job| job.job_id)
+        .collect();
+    if stalled.is_empty() {
+        return;
+    }
+    // The worker is what is stuck, not only this job, so restart it before anything else is
+    // dispatched into the same silent task. `kill_on_drop` in `run_tool` takes its tool down with it.
+    eprintln!("[Pandora] encode stall detected — rebooting the Encode layer");
+    shrine.force_reboot(&Worker::Encode).await;
+    let minutes = (ENCODE_STALL_TIMEOUT.as_secs() / 60).to_string();
+    for job_id in stalled {
+        let Some(pos) = queue.iter().position(|job| job.job_id == job_id) else {
+            continue;
+        };
+        eprintln!(
+            "[Pandora] job {} made no encode progress for {} minutes — failing it",
+            job_id, minutes
+        );
+        let payload = MessagePayload::Progress(ENCODE_STALLED, vec![minutes.clone()]);
+        queue[pos].ready = Stage::Failed;
+        queue[pos].encode_dispatched = false;
+        queue[pos].encode_dispatch_order = None;
+        db.update_stage(job_id, Stage::Failed).await.ok();
+        if let Some(keep) = &queue[pos].keep {
+            mark_output_failed(&scope(queue[pos].server_id), keep).await.ok();
+        }
+        persist_side_effects(
+            db,
+            job_id,
+            &payload,
+            Some(Stage::Failed),
+            &queue[pos].encode_warnings,
+        )
+        .await;
+        render(&mut queue[pos], payload.clone()).await;
+        let parent_worker = forwarded_worker_for(&queue[pos].worker);
+        sync_forwarded_jobs(db, queue, job_id, Some(Stage::Failed), &payload, &parent_worker).await;
+        let Some(pos) = queue.iter().position(|job| job.job_id == job_id) else {
+            continue;
+        };
+        let directory = queue[pos].directory.clone();
+        let frontend = queue[pos].frontend.clone();
+        if let Some(parent_id) = queue[pos].batch_parent {
+            update_batch_parent(db, queue, parent_id, job_id, Stage::Failed).await;
+        }
+        db.archive_job(job_id).await.ok();
+        cleanup_job(
+            &directory,
+            &PathBuf::from("DB")
+                .join("saved_data")
+                .join(job_id.to_string()),
+        )
+        .await;
+        queue.retain(|job| job.job_id != job_id);
+        frontend.set_presence(presence_from_queue(queue)).await;
+    }
+}
+
 async fn do_worker_message_things(
     db: &JobDb,
     queue: &mut Vec<Job>,
@@ -1470,11 +1582,13 @@ async fn do_worker_message_things(
                 queue[pos].encode_frame = args.get(1).and_then(|s| s.parse().ok());
                 queue[pos].encode_total = args.get(2).and_then(|s| s.parse().ok());
                 queue[pos].encode_fps = args.get(3).and_then(|s| s.parse().ok());
+                queue[pos].encode_last_frame_at = Some(unix_now());
             }
             if *id == ENCODE_CONCAT_PROG {
                 queue[pos].encode_frame = args.get(0).and_then(|s| s.parse().ok());
                 queue[pos].encode_total = args.get(1).and_then(|s| s.parse().ok());
                 queue[pos].encode_fps = args.get(2).and_then(|s| s.parse().ok());
+                queue[pos].encode_last_frame_at = Some(unix_now());
             }
             if *id == TORRENT_FILE_DONE {
                 let index = args.get(0).and_then(|value| value.parse::<u64>().ok());
@@ -2222,7 +2336,11 @@ async fn do_job_progression_things(
                     dead.push(job.job_id);
                     continue;
                 }
-                mark_encode_dispatched(job, next_encode_dispatch_order);
+                mark_encode_dispatched(
+                    job,
+                    next_encode_dispatch_order,
+                    shrine.reboot_epoch(&Worker::Encode),
+                );
                 if job.batch_parent.is_some() {
                     batch_in_flight = true;
                     *encodes_since_batch = 0;
@@ -2302,10 +2420,19 @@ async fn do_job_progression_things(
     queue.retain(|j| !dead.contains(&j.job_id));
 }
 
-fn mark_encode_dispatched(job: &mut Job, next_encode_dispatch_order: &mut u64) {
+fn mark_encode_dispatched(job: &mut Job, next_encode_dispatch_order: &mut u64, epoch: u32) {
     job.encode_dispatched = true;
     job.encode_dispatch_order = Some(*next_encode_dispatch_order);
+    job.encode_dispatched_at = Some(unix_now());
+    job.encode_last_frame_at = None;
+    job.encode_dispatch_epoch = epoch;
     *next_encode_dispatch_order = next_encode_dispatch_order.saturating_add(1);
+}
+
+fn unix_now() -> Duration {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::from_secs(0))
 }
 
 async fn finish_keep_job(db: &JobDb, job: &mut Job, kind: KeepKind) -> bool {
@@ -2742,6 +2869,13 @@ pub struct Job {
     pub encode_warnings: Vec<String>,
     pub encode_dispatched: bool,
     pub encode_dispatch_order: Option<u64>,
+    // Unix time of the dispatch and of the last encoder progress frame, plus the Encode layer's
+    // reboot count at dispatch. The first two are what the stall watchdog measures against; the
+    // third is how a reboot tells apart the jobs that were lost with the old layer from the one
+    // that was just handed to the new one.
+    pub encode_dispatched_at: Option<Duration>,
+    pub encode_last_frame_at: Option<Duration>,
+    pub encode_dispatch_epoch: u32,
     pub encode_frame: Option<u64>,
     pub encode_total: Option<u64>,
     pub encode_fps: Option<f64>,
@@ -2835,6 +2969,9 @@ impl Job {
             encode_warnings: Vec::new(),
             encode_dispatched: false,
             encode_dispatch_order: None,
+            encode_dispatched_at: None,
+            encode_last_frame_at: None,
+            encode_dispatch_epoch: 0,
             encode_frame: None,
             encode_total: None,
             encode_fps: None,
@@ -2920,6 +3057,9 @@ impl Job {
             encode_warnings: Vec::new(),
             encode_dispatched: false,
             encode_dispatch_order: None,
+            encode_dispatched_at: None,
+            encode_last_frame_at: None,
+            encode_dispatch_epoch: 0,
             encode_frame: None,
             encode_total: None,
             encode_fps: None,
@@ -2943,3 +3083,88 @@ HashMap::from([
     ...
 ])
 */
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lib::p2p::nyaaise::TorrentType;
+
+    fn dispatched_encode(now: Duration) -> Job {
+        let mut job = Job::new_api(
+            0,
+            0,
+            JobType::Encode,
+            TorrentType::Link("https://example.invalid/input.torrent".to_string()),
+            Vec::new(),
+            "EN".to_string(),
+            None,
+        );
+        job.ready = Stage::Downloaded;
+        job.encode_dispatched = true;
+        job.encode_dispatched_at = Some(now);
+        job.encode_dispatch_epoch = 1;
+        job
+    }
+
+    #[test]
+    fn a_dispatched_encode_stalls_only_after_the_timeout() {
+        let dispatched_at = Duration::from_secs(10_000);
+        let job = dispatched_encode(dispatched_at);
+        assert!(!encode_stalled(&job, dispatched_at + ENCODE_STALL_TIMEOUT));
+        assert!(encode_stalled(
+            &job,
+            dispatched_at + ENCODE_STALL_TIMEOUT + Duration::from_secs(1)
+        ));
+    }
+
+    #[test]
+    fn each_progress_frame_restarts_the_stall_clock() {
+        let dispatched_at = Duration::from_secs(10_000);
+        let mut job = dispatched_encode(dispatched_at);
+        job.ready = Stage::Encoding;
+        let long_after = dispatched_at + ENCODE_STALL_TIMEOUT * 4;
+        job.encode_last_frame_at = Some(long_after);
+        assert!(!encode_stalled(&job, long_after + Duration::from_secs(60)));
+        assert!(encode_stalled(
+            &job,
+            long_after + ENCODE_STALL_TIMEOUT + Duration::from_secs(1)
+        ));
+    }
+
+    #[test]
+    fn an_undispatched_or_forwarded_job_never_counts_as_stalled() {
+        let dispatched_at = Duration::from_secs(10_000);
+        let now = dispatched_at + ENCODE_STALL_TIMEOUT * 2;
+
+        let mut waiting = dispatched_encode(dispatched_at);
+        waiting.encode_dispatched = false;
+        assert!(!encode_stalled(&waiting, now));
+
+        let mut forwarded = dispatched_encode(dispatched_at);
+        forwarded.forward_parent = Some(7);
+        assert!(!encode_stalled(&forwarded, now));
+
+        // A finished job keeps its dispatch timestamp; only the live stages are watched.
+        let mut uploading = dispatched_encode(dispatched_at);
+        uploading.ready = Stage::Uploading;
+        assert!(!encode_stalled(&uploading, now));
+    }
+
+    #[test]
+    fn a_reboot_resets_only_jobs_dispatched_into_the_previous_layer() {
+        let now = Duration::from_secs(10_000);
+        let mut lost = dispatched_encode(now);
+        lost.job_id = 1;
+        lost.encode_dispatch_epoch = 1;
+        // Dispatched *during* the reboot that `shrine.send` performed on its way in.
+        let mut fresh = dispatched_encode(now);
+        fresh.job_id = 2;
+        fresh.encode_dispatch_epoch = 2;
+        let mut queue = vec![lost, fresh];
+
+        reset_encode_dispatches_after_reboot(&mut queue, 2);
+
+        assert!(!queue[0].encode_dispatched, "job from the dead layer must be re-sent");
+        assert!(queue[1].encode_dispatched, "job just handed to the new layer must not be re-sent");
+    }
+}

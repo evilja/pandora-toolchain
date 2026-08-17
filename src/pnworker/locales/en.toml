@@ -86,6 +86,10 @@ args = 0
 text = "The video could not be encoded."
 args = 0
 
+[ENCODE_STALLED]
+text = "The encoder stopped responding: no progress for {} minutes. The job was cancelled and the encoder restarted — please try again."
+args = 1
+
 [SERVER_EFFECTS_FAIL]
 text = "Server subtitle effects failed: {}"
 args = 1

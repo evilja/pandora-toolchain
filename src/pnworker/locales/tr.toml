@@ -86,6 +86,10 @@ args = 0
 text = "Video encode edilemedi."
 args = 0
 
+[ENCODE_STALLED]
+text = "Encoder yanıt vermeyi bıraktı: {} dakikadır ilerleme yok. İş iptal edildi ve encoder yeniden başlatıldı — lütfen tekrar deneyin."
+args = 1
+
 [SERVER_EFFECTS_FAIL]
 text = "Sunucu altyazı efektleri uygulanamadı: {}"
 args = 1

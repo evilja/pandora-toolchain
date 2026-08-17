@@ -133,6 +133,10 @@ where
     }
     cmd.stderr(Stdio::null());
     cmd.stdout(Stdio::piped());
+    // The shrine aborts a layer whose heartbeat expired, which drops this future wherever it is
+    // parked. Without kill_on_drop the tool keeps running with nobody reading it, and every reboot
+    // of a wedged worker leaves another encoder behind competing for the machine.
+    cmd.kill_on_drop(true);
     let mut child = cmd.spawn().expect("Failed to spawn tool");
     let stdout = child.stdout.take().expect("No stdout");
     let reader = BufReader::new(stdout);

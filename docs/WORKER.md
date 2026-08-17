@@ -19,7 +19,8 @@ Worker runtime, tool orchestration, torrent routing, and cache/duplicate behavio
 - **Smartcode Drive cleanup**: named local smartcode uploads append hidden Drive file/folder/profile IDs plus a per-file deletion capability to the in-memory upload completion payload. `progress.rs` strips the capability from API-visible progress, while `core.rs` stores it in mode-`0600` `DB/config/<server>/<channel>/smartcode_drive/<episode>.json`; when a later named upload for that episode completes, the Worker verifies its hash from the file's private Drive `appProperties` before deleting. Pre-Lumiere state has no deletion capability and therefore fails closed to manual cleanup on its first replacement.
 - **Shrine supervisor (`pnworker/heartbeat/`)**: `TypedShrine` reboots a layer when its task finishes (panicked or returned) or when it goes **>160s without a heartbeat**. A heartbeat is either an explicit `pulse.try_send(())` or *any* upstream `CommData` (`TypedLayer::try_recv` refreshes `last_heartbeat`). This 160s watchdog is the whole point of Shrine — it exists to catch a wedged encode/probe, not just a crashed one.
 - **Heartbeat behavior**: `enc-main` runs synchronously and relies on its `CommData` progress stream while busy. Download, probe/preview, and upload layers spawn per-job tasks and pulse every 200ms, so their shrine liveness is independent of individual job progress.
-- **Reboot is intentionally non-resuming**: `reboot()` brings the layer back with an empty queue and does **not** replay the last message (the replay block is left commented out on purpose). The job that was mid-flight is dropped/orphaned by design — it stays in `pn_worker`'s in-memory `queue` at its last stage and is not re-dispatched. Phantom-active rows are reconciled by `fail_stale_active()` at the next `pn_worker` startup, not live.
+- **Reboot is intentionally non-resuming**: `reboot()` brings the layer back with an empty queue and does **not** replay the last message (the replay block is left commented out on purpose). The job that was mid-flight is dropped/orphaned by design. Encode jobs are the exception: `check_encode_reboot_epoch` → `reset_encode_dispatches_after_reboot` clears `encode_dispatched` so the queue re-sends them to the new layer. That reset skips any job whose `encode_dispatch_epoch` is already the current one — `shrine.send` reboots an expired layer *before* sending, so without the guard the job dispatched microseconds earlier would be cleared and sent again, putting two encoders on one work directory. Phantom-active rows are reconciled by `fail_stale_active()` at the next `pn_worker` startup, not live.
+- **`run_tool` sets `kill_on_drop(true)`**: aborting a wedged layer drops the future wherever it is parked, and without this the tool process keeps running with nobody reading its stdout. Since a stall reboots the same layer every 160s, each cycle would otherwise leave another encoder behind competing for the machine.
 - **`Job`** carries a `lang: String` field. It's set at job creation in `pndc.rs` by reading `DB/config/<guild_id>/meta.pandora` line 0 and flowing through every worker call. The `lang` is what `create_job_embed` and `format_payload` use to look up strings.
 - **`Job.frontend: Frontend`** (in `pnworker/frontend.rs`) is the originating surface — `Discord { ctx, msg }`, `Web`, or `None` — replacing the old raw serenity context tuple. All status output goes through it (`update` / `set_text` / `mark_failed` / `set_presence` / `notify_recompiling`); `Web`/`None` variants are no-ops, so the worker pipeline is frontend-agnostic. Because a method borrows `frontend` mutably while reading the rest of the job, `core.rs`'s `render()` helper does `std::mem::replace(&mut job.frontend, Frontend::None)`, calls `update`, then restores it. Discord jobs use the normal constructor; API jobs use `Job::new_api(...)`, which sets `Frontend::Web`, `response_id = 0`, and a nanosecond `job_id`. `Job` also carries `server_id: Option<u64>` (originating guild, used by the upload workers), `worker: String` (shown in embeds instead of owner), and `duplicate_source: Option<PathBuf>` (used while waiting on duplicate/cached inputs).
 
@@ -58,6 +59,36 @@ Worker runtime, tool orchestration, torrent routing, and cache/duplicate behavio
 `Job::new` / `Job::new_api` snapshot the server's line-11 preset, line-12 concat group folder, and optional `DB/config/<server_id>/watermark.ass`. Missing or invalid preset values fall back to Standard; missing intro groups disable concat. Encode forwarding keys include the watermark hash, so jobs with different server-effect snapshots never share an encode. The encode worker passes the intro folder to `pnmpeg`; `pnmpeg` stream-copies a matching retained variant or transcodes only the intro into a reusable compatibility variant in that folder before stream-copy concat.
 
 After an Encode/Pancode input reaches `Downloaded`, `pn_encdeworker` calls `server_effects` before pnmpeg. When a watermark exists, it probes the downloaded input duration, invokes pnass injection into a separate generated ASS, and passes that output to pnmpeg. Injection appends watermark events after main subtitle events, performs the normal PlayRes/aspect-ratio and colliding-style checks, and maps `[all]` to the full input duration. `[precise]` and any other/empty Effect preserve their own timings. Failure terminates the job with `SERVER_EFFECTS_FAIL`; cancellation remains cancellation. The untouched uploaded subtitle is retained so encoder reboot/retry cannot duplicate effects.
+
+## Encode stall watchdog
+
+The 160s shrine watchdog rescues the *layer*, not the job: it reboots a silent encoder and the epoch
+reset hands the same job straight back to the new one. On a job that wedges the encoder every time —
+an input ffmpeg will not finish, a tool that never emits — that pair is an infinite retry, silent,
+with no terminal state and no message to the user, while the queue behind it never moves. Encode
+stalls observed in production were all this shape.
+
+`do_encode_stall_things` (`pnworker/core.rs`, run once per loop pass) closes it. A job is stalled
+when it is a non-forwarded encode-type job, `encode_dispatched`, sitting at `Downloaded` or
+`Encoding`, and its clock has run past `ENCODE_STALL_TIMEOUT` (**20 minutes**). The clock is
+`encode_last_frame_at`, falling back to `encode_dispatched_at` before the first frame — so a slow
+encode that keeps reporting frames is never touched, while one that goes quiet is caught whether it
+died before `ENCODE_START` or halfway through.
+
+On a stall the layer is force-rebooted first (so nothing else is dispatched into the same silent
+task, and `kill_on_drop` takes the wedged tool down with it), then each stalled job fails with
+`ENCODE_STALLED`: stage `Failed`, keep reservations released, forwarded children synced through
+`sync_forwarded_jobs`, batch parent counters updated, archived and cleaned up like any other terminal
+job. Its logs survive in `DB/saved_data/<job_id>/log`, readable with `/catlogs` or
+`GET /api/v1/jobs/:id/logs` — a stalled job is now the *one* case that reliably keeps them, since a
+job that stays in the queue loses them to the next `/gitsync`.
+
+## Worker snapshot
+
+The queue is a `Vec<Job>` owned by `pn_worker` and shrine heartbeats are in-memory, so none of the
+state a stall lives in reaches the database. Once a second the loop publishes a JSON snapshot of both
+to `pnworker/snapshot.rs` (a `RwLock` behind a `OnceLock`, one writer, no channel that could block
+the loop); `GET /api/v1/workers` serves it. See [API.md](API.md#worker-snapshot).
 
 ## Encode forwarding
 

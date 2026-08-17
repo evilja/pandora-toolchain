@@ -45,6 +45,7 @@ pub const ENCODE_WARNING: &str = "ENCODE_WARNING";
 pub const SERVER_EFFECTS_FAIL: &str = "SERVER_EFFECTS_FAIL";
 pub const ENCODE_DONE: &str = "ENCODE_DONE";
 pub const ENCODE_FAIL: &str = "ENCODE_FAIL";
+pub const ENCODE_STALLED: &str = "ENCODE_STALLED";
 pub const UPLOAD_PROG: &str = "UPLOAD_PROG";
 pub const UPLOAD_DONE: &str = "UPLOAD_DONE";
 pub const UPLOAD_FAIL: &str = "UPLOAD_FAIL";
@@ -715,6 +716,9 @@ mod tests {
             encode_warnings: Vec::new(),
             encode_dispatched: false,
             encode_dispatch_order: None,
+            encode_dispatched_at: None,
+            encode_last_frame_at: None,
+            encode_dispatch_epoch: 0,
             encode_frame: None,
             encode_total: None,
             encode_fps: None,
