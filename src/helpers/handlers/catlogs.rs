@@ -1,4 +1,5 @@
 use super::*;
+use pandora_toolchain::lib::joblog::{JobLogLocation, find_job_logs, zip_log_files};
 use serenity::builder::CreateAttachment;
 
 const MAX_LOG_ARCHIVE_BYTES: usize = 24 * 1024 * 1024;
@@ -113,117 +114,21 @@ pub async fn handle_catlogs(
         .ok();
 }
 
+// The lookup and the zip live in `lib::joblog` so `/catlogs` and the API's
+// `/jobs/:id/logs*` routes cannot drift apart; this only adds the Discord
+// wording for where the logs were found.
 async fn find_log_archive(job_id: u64) -> Result<Option<LogArchive>, String> {
-    let mut last_error = None;
-    for (directory, location_id) in [
-        (
-            PathBuf::from("DB").join("work").join(job_id.to_string()).join("log"),
-            CATLOGS_ACTIVE,
-        ),
-        (
-            PathBuf::from("DB")
-                .join("saved_data")
-                .join(job_id.to_string())
-                .join("log"),
-            CATLOGS_ARCHIVED,
-        ),
-    ] {
-        let files = match log_files(&directory).await {
-            Ok(files) => files,
-            Err(error) => {
-                last_error = Some(error);
-                continue;
-            }
-        };
-        if files.is_empty() {
-            continue;
-        }
-        let bytes = match zip_log_files(&files).await {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                last_error = Some(error);
-                continue;
-            }
-        };
-        return Ok(Some(LogArchive {
-            bytes,
-            files: files.len(),
-            location_id,
-        }));
-    }
-    match last_error {
-        Some(error) => Err(error),
-        None => Ok(None),
-    }
-}
-
-async fn log_files(directory: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut entries = match tokio::fs::read_dir(directory).await {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error.to_string()),
+    let logs = match find_job_logs(job_id).await? {
+        Some(logs) => logs,
+        None => return Ok(None),
     };
-    let mut files = Vec::new();
-    while let Some(entry) = entries.next_entry().await.map_err(|error| error.to_string())? {
-        let kind = entry.file_type().await.map_err(|error| error.to_string())?;
-        if kind.is_file() {
-            files.push(entry.path());
-        }
-    }
-    files.sort();
-    Ok(files)
-}
-
-async fn zip_log_files(files: &[PathBuf]) -> Result<Vec<u8>, String> {
-    let mut out = Vec::new();
-    {
-        let mut writer = async_zip::base::write::ZipFileWriter::new(&mut out);
-        for path in files {
-            let name = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .ok_or_else(|| format!("invalid log filename: {}", path.display()))?;
-            let bytes = tokio::fs::read(path)
-                .await
-                .map_err(|error| format!("{}: {}", path.display(), error))?;
-            let entry = async_zip::ZipEntryBuilder::new(
-                name.to_string().into(),
-                async_zip::Compression::Deflate,
-            );
-            writer
-                .write_entry_whole(entry, &bytes)
-                .await
-                .map_err(|error| error.to_string())?;
-        }
-        writer.close().await.map_err(|error| error.to_string())?;
-    }
-    Ok(out)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn log_archive_collects_only_files_and_writes_zip() {
-        let root = std::env::temp_dir().join(format!(
-            "pandora-catlogs-test-{}",
-            std::process::id()
-        ));
-        tokio::fs::remove_dir_all(&root).await.ok();
-        tokio::fs::create_dir_all(root.join("nested")).await.unwrap();
-        tokio::fs::write(root.join("encode.log"), b"encode log")
-            .await
-            .unwrap();
-        tokio::fs::write(root.join("upload.log"), b"upload log")
-            .await
-            .unwrap();
-
-        let files = log_files(&root).await.unwrap();
-        assert_eq!(files.len(), 2);
-        let archive = zip_log_files(&files).await.unwrap();
-        assert!(archive.starts_with(b"PK"));
-
-        tokio::fs::remove_dir_all(root).await.ok();
-    }
+    let bytes = zip_log_files(&logs.files).await?;
+    Ok(Some(LogArchive {
+        bytes,
+        files: logs.files.len(),
+        location_id: match logs.location {
+            JobLogLocation::Active => CATLOGS_ACTIVE,
+            JobLogLocation::Archived => CATLOGS_ARCHIVED,
+        },
+    }))
 }

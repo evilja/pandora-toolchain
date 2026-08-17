@@ -4,6 +4,7 @@ pub mod env;
 pub mod git;
 pub mod http;
 pub mod image;
+pub mod joblog;
 pub mod logging;
 pub mod mpeg;
 pub mod p2p;

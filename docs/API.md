@@ -20,6 +20,7 @@ API bearer tokens live one-per-line in `DB/config/global/environment/api.pandora
 
 - `Authorization: Bearer <token>` checked against the lines of `api.pandora` (blanks and `;` comments ignored) by an axum middleware layered on the `/api/v1` routes. The page routes (`GET /`, `/encode`, `/git`, `/studio`, `/trace`, `/favicon`, `/favicon.ico`) and `/health` are unauthenticated; every operation they submit, including tracing and ASS export, is protected. `GET /batch/:token` and `GET /batch/:token/output` are authorized by the 256-bit capability in the path — the link is posted to Discord, where nobody holds an API token — and expose nothing but that one batch; `GET`/`HEAD /lumiere/v1/files/:token/:filename` is separately authorized by a memory-only 256-bit capability, restricted to the exact registered file, range-capable, non-cacheable, and removed when the corresponding upload ends.
 - **Rate limit**: the same `auth` middleware rate-limits **write** requests only (any method that isn't `GET`/`HEAD`, so status polling is never throttled), keyed by an md5 of the token (`ApiRateLimiter` in `core.rs`). Default `30` requests per `60`s sliding window, configurable via `api_rate_limit` / `api_rate_window_secs`. On exceed it returns `429` with a `Retry-After` header (seconds until the window resets) and body `"rate limit exceeded"`. The web consoles read `Retry-After` and render a friendly "rate limit hit — try again in Ns" notice on `429`.
+- **PNwitch tokens**: `parse_token_file` also keeps the `;` comment line preceding a token as its **label** (`/gentoken label:<note>` writes `; <label> (added <unix>)`), and `require_pnwitch` restricts the operator-only endpoints — `POST /gitsync`, `POST /acix/publish`, and the job-log routes — to a token labelled exactly `PNwitch`. It is the API's stand-in for the Discord Witch tier; every other token gets `403 PNwitch token required`.
 - **Local tokens**: a token line in `api.pandora` may be `<token>|local|<server_id>` (mint with `/gentoken local`). `api_auth_for_token` parses it into `ApiAuth { local_server_id }`; `effective_server_id` makes a local token force its `server_id` onto job submits. The **git endpoints require a local token** — `require_local(&auth)` returns `403` for a plain token, since repo ops need a server to resolve the Forgejo org config and per-channel meta. API cancel also requires a local token and only allows cancelling non-terminal `Encode` jobs whose persisted DB `server_id` equals the token's `local_server_id`.
 
 ## Git routes
@@ -58,7 +59,7 @@ Any API token may use the tracing routes; a local token is not required. `POST /
 
 ## Routes
 
-- `GET /api/v1/jobs` (all non-archived; `?status=ongoing` filters to non-terminal — used by the console's job dropdowns)
+- `GET /api/v1/jobs` (all non-archived; `?status=ongoing` filters to non-terminal — used by the console's job dropdowns; `?status=recent` returns the last 50 jobs including archived ones, which is how you find the id of a job that already ended)
 - `GET /api/v1/jobs/:id`
 - `POST /api/v1/jobs/encode`
 - `POST /api/v1/jobs/backup`
@@ -66,8 +67,19 @@ Any API token may use the tracing routes; a local token is not required. `POST /
 - `POST /api/v1/jobs/pancode`
 - `POST /api/v1/jobs/gitcode`
 - `POST /api/v1/jobs/:id/cancel`
+- `GET /api/v1/jobs/:id/logs`, `GET /api/v1/jobs/:id/logs.zip`, `GET /api/v1/jobs/:id/logs/:name` (PNwitch token only — see [Job logs](#job-logs))
 
 Subtitles travel as base64 (`subtitle_b64`), decoded by a local `base64_decode_bytes`; `gitcode` fetches the subtitle from `subtitle_url` (GitHub blob links auto-rewritten to raw). Either may carry ASS or any text subtitle format ffmpeg can read — the worker normalises it to ASS when the job is queued (see [DISCORD.md](DISCORD.md#subtitle-formats)); image-based or non-UTF-8 payloads decline the job with that reason instead of failing later in the encoder. `pancode` takes `probe_job_id` as a **string** (job ids exceed JS's safe-integer range) + a `file_index`, looks up the probe job's torrent from the DB, and builds a `Pancode` job. Encode, pancode, git-smartcode, and Studio requests do not accept preset/concat controls: local-token jobs derive them from the bound server's `/edit` settings, while jobs without a server id use Standard with no intro. Submits return `202 { job_id }`. Cancel first DB-checks the target: it requires a local token, refuses cross-server jobs (`row.server_id != token.local_server_id`), accepts `Encode`, `Studio`, and `StudioPreview` jobs, refuses archived/terminal jobs, then sends `HalfJob(Cancel)` and returns `202`. Exposed over the API: encode/backup/probe/pancode/gitcode (jobs), the full Studio workflow (local-token only), init/attach/source/detach/destruct/smartcode (git, local-token only — see above), and `gitsync` (`POST /api/v1/gitsync`). **Not** exposed: `/configure`, `/edit`, `/job`, `/hearts`, translation commands, `!auth`/`!ban` — they need richer Discord guild context, Discord attachments, or the live shrine handle.
+
+## Job logs
+
+The HTTP counterpart of Discord's `/catlogs` (see [DISCORD.md](DISCORD.md)), for reading a job's tool logs when it is stuck or failed. All three routes require a **PNwitch-labelled token** — logs carry filesystem paths, torrent names, and upload URLs, so they sit at the same tier as the Discord command — and all are `GET`, so they are never rate-limited.
+
+Both frontends share `lib::joblog`: `find_job_logs` looks in `DB/work/<job_id>/log` first (`"location": "active"`) and falls back to `DB/saved_data/<job_id>/log` (`"archived"`) for a job whose lifecycle already moved it, takes plain files only (no subdirectories), and sorts them by name. A job with neither directory — or with an empty one — is a `404 no logs for this job` on every route.
+
+- `GET /api/v1/jobs/:id/logs` — the listing: `{ job_id (string), location, total_bytes, files: [{ name, bytes, modified (unix seconds) }], job }`. `job` is the same `JobStatus` object `GET /jobs/:id` returns (stage, worker, progress, links) or `null` when the row is gone, so one request shows both where the job stopped and what it wrote.
+- `GET /api/v1/jobs/:id/logs/:name` — one log file as `text/plain; charset=utf-8`, `Cache-Control: no-store`. `:name` must equal a name from the listing — that exact-match lookup is also the path-traversal guard — otherwise `404`. Encoder logs are unbounded, so the read is **from the end**: `?max_bytes=` (default 1 MiB, capped at 8 MiB) seeks that far back and drops the partial first line, and `?tail=<lines>` further narrows it to the last N lines. `X-Pandora-Log-Bytes` is the full on-disk size and `X-Pandora-Log-Truncated` says whether the byte cap cut anything, so a caller can tell a short log from a trimmed one. Invalid UTF-8 is replaced, never an error.
+- `GET /api/v1/jobs/:id/logs.zip` — every log file of that job as `application/zip`, `Content-Disposition: attachment; filename="pandora-logs-<id>.zip"`, built by the same `zip_log_files` the Discord command uses. Unlike `/catlogs` there is no 24 MiB ceiling: that limit is a Discord attachment constraint, not a Pandora one.
 
 ## Progress & links
 

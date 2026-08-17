@@ -133,6 +133,9 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/jobs/gitcode", post(submit_gitcode))
         .route("/jobs/keycode", post(submit_keycode))
         .route("/jobs/:id/cancel", post(cancel_job))
+        .route("/jobs/:id/logs", get(super::logs::list_logs))
+        .route("/jobs/:id/logs.zip", get(super::logs::download_logs))
+        .route("/jobs/:id/logs/:name", get(super::logs::read_log))
         .route("/jobs/:id/acix/confirm", post(acix_confirm))
         .route("/studios", get(super::studio::list).post(super::studio::create))
         .route("/studios/current", get(super::studio::current))
@@ -469,7 +472,7 @@ fn parse_token_label(line: &str) -> Option<String> {
     }
 }
 
-fn require_pnwitch(auth: &ApiAuth) -> Result<(), Response> {
+pub(super) fn require_pnwitch(auth: &ApiAuth) -> Result<(), Response> {
     if auth.label.as_deref() == Some("PNwitch") {
         Ok(())
     } else {
