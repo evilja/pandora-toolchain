@@ -174,6 +174,36 @@ pub fn ffprobe_duration_centiseconds(path: &str) -> Option<u64> {
     duration_to_centiseconds(String::from_utf8(output.stdout).ok()?.trim())
 }
 
+// The async form for callers on the worker's task. `std::process` here would block the whole task
+// with no way out, so this uses tokio's Command with `kill_on_drop`: on timeout the future is
+// dropped and the ffprobe process goes with it, instead of both being stuck forever on an input
+// ffprobe cannot finish reading.
+pub async fn ffprobe_duration_centiseconds_timeout(
+    path: &str,
+    timeout: std::time::Duration,
+) -> Result<Option<u64>, String> {
+    let mut cmd = tokio::process::Command::new(resolve_runtime_binary("ffprobe"));
+    cmd.args([
+        "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        path,
+    ]);
+    cmd.kill_on_drop(true);
+    let output = match tokio::time::timeout(timeout, cmd.output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(e)) => return Err(format!("ffprobe could not be started: {}", e)),
+        Err(_) => {
+            return Err(format!(
+                "ffprobe did not answer within {}s",
+                timeout.as_secs()
+            ));
+        }
+    };
+    let text = String::from_utf8(output.stdout).map_err(|e| e.to_string())?;
+    Ok(duration_to_centiseconds(text.trim()))
+}
+
 fn duration_to_centiseconds(value: &str) -> Option<u64> {
     let seconds = value.parse::<f64>().ok()?;
     if !seconds.is_finite() || seconds <= 0.0 {

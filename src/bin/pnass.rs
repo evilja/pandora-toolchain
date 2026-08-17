@@ -56,11 +56,58 @@ struct Args {
 
     #[arg(long)]
     negver: Option<String>,
+
+    #[arg(long)]
+    logfile: Option<String>,
+}
+
+// pnass emits warnings over the protocol but says nothing about where it *is*, so a run that never
+// returns leaves no trace at all — the failure mode that made a stalled encode unreadable. Lines are
+// written and flushed as they happen, never buffered to the end, because the run that needs this log
+// is the one that never finishes.
+struct AssLog {
+    file: Option<std::fs::File>,
+    started: std::time::Instant,
+}
+
+impl AssLog {
+    fn open(path: Option<&str>) -> Self {
+        let file = path.and_then(|path| {
+            if let Some(parent) = std::path::Path::new(path).parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            match std::fs::File::create(path) {
+                Ok(file) => Some(file),
+                Err(e) => {
+                    eprintln!("pnass: could not open logfile {}: {}", path, e);
+                    None
+                }
+            }
+        });
+        Self {
+            file,
+            started: std::time::Instant::now(),
+        }
+    }
+
+    fn line(&mut self, message: &str) {
+        use std::io::Write;
+        let Some(file) = self.file.as_mut() else {
+            return;
+        };
+        let _ = writeln!(file, "[{:>8.3}s] {}", self.started.elapsed().as_secs_f64(), message);
+        let _ = file.flush();
+    }
 }
 
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
+    let mut log = AssLog::open(args.logfile.as_deref());
+    log.line(&format!(
+        "start input={} output={} merge={:?} inject={:?} duration_cs={:?}",
+        args.input, args.output, args.merge, args.inject, args.duration_centiseconds
+    ));
 
     let mut proto = Protocol::new(vec![1]);
     let neg = proto.request(
@@ -75,7 +122,13 @@ async fn main() {
 
     let wrap_style = parse_wrap_style_arg(args.wrap_style.as_deref());
     let adv_parsing = !args.no_adv_parsing;
+    log.line(&format!("loading input (adv_parsing={})", adv_parsing));
     let mut sub = SubstationAlpha::load(PathBuf::from(&args.input), adv_parsing).await;
+    log.line(&format!(
+        "input loaded: {} events, {} styles",
+        sub.events.len(),
+        sub.v4p_styles.len()
+    ));
 
     if let Some(t) = args.title {
         sub.script_info.title = t;
@@ -110,7 +163,9 @@ async fn main() {
         std::process::exit(1);
     }
     if let Some(merge_path) = args.merge.as_deref().or(args.inject.as_deref()) {
+        log.line(&format!("loading secondary {}", merge_path));
         let mut secondary = SubstationAlpha::load(PathBuf::from(merge_path), adv_parsing).await;
+        log.line(&format!("secondary loaded: {} events", secondary.events.len()));
         fill_script_info_defaults(&mut secondary.script_info, wrap_style);
         if args.inject.is_some() {
             let Some(duration) = args.duration_centiseconds else {
@@ -122,15 +177,19 @@ async fn main() {
                 std::process::exit(1);
             }
             apply_injection_timings(&mut secondary, duration);
+            log.line(&format!("injection timings applied for {}cs", duration));
         }
         if let Err(e) = normalize_merge_resolutions(&mut sub, &mut secondary) {
+            log.line(&format!("resolution normalisation failed: {}", e));
             println!("{}", pn_emit!(protocol = proto, negkey = &neg,
                 schema = [leaf, leaf], data = ["4", e]).unwrap());
             std::process::exit(1);
         }
         prepare_merge_styles(&mut sub, &mut secondary);
         append_sub(&mut sub, secondary);
+        log.line(&format!("merged: {} events total", sub.events.len()));
     }
+    log.line(&format!("scanning {} events for warnings", warning_event_count));
 
     let mut run_count: usize = 0;
     for (i, ev) in sub.events.iter().take(warning_event_count).enumerate() {
@@ -173,15 +232,19 @@ async fn main() {
     }
 
     if sub.events.is_empty() {
+        log.line("aborting: no dialogue lines left in the output");
         println!("{}", pn_emit!(protocol = proto, negkey = &neg,
             schema = [leaf, leaf], data = ["4", "ASS output has no dialogue lines"]).unwrap());
         std::process::exit(1);
     }
 
+    log.line(&format!("writing {} events to {}", sub.events.len(), args.output));
     if sub.dump_to_file(PathBuf::from(&args.output)).await.is_err() {
+        log.line("write failed");
         eprintln!("pnass: failed to write {}", args.output);
         std::process::exit(1);
     }
+    log.line("done");
 }
 
 fn visible_lines(line: &ASSLine) -> Vec<String> {

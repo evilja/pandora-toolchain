@@ -1,4 +1,4 @@
-use crate::lib::mpeg::probe::ffprobe_duration_centiseconds;
+use crate::lib::mpeg::probe::ffprobe_duration_centiseconds_timeout;
 use crate::lib::protocol::core::Protocol;
 use crate::pnworker::core::Preset;
 use crate::pnworker::tools::PNASS_INJECT;
@@ -16,6 +16,10 @@ pub struct AppliedServerEffects {
     pub subtitle: PathBuf,
     pub warnings: Vec<String>,
 }
+
+// This runs on the encode worker's own task, between the dispatch and ENCODE_START, so anything
+// that blocks here stops the encoder without ever reaching a stage the queue can see.
+const DURATION_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 pub fn load_server_settings(server_id: Option<u64>) -> ServerSettings {
     let Some(server_id) = server_id else {
@@ -82,7 +86,8 @@ pub async fn server_effects(
     let input = directory.join("contents").join("torrent").join("input.mkv");
     let output = directory.join("work").join("subtitle_server_effects.ass");
     let watermark_path = directory.join("contents").join("server_watermark.ass");
-    let duration = ffprobe_duration_centiseconds(&input.to_string_lossy())
+    let duration = ffprobe_duration_centiseconds_timeout(&input.to_string_lossy(), DURATION_PROBE_TIMEOUT)
+        .await?
         .ok_or_else(|| "could not determine downloaded video duration".to_string())?;
     if directory.join("CANCEL").try_exists().unwrap_or(false) {
         return Err("cancelled".to_string());
@@ -107,6 +112,16 @@ pub async fn server_effects(
             ),
             ("OUTPUT", PathValue::from(output.display().to_string())),
             ("DURATION", PathValue::from(duration.to_string())),
+            (
+                "LOGFILE",
+                PathValue::from(
+                    directory
+                        .join("log")
+                        .join(format!("PNass_Inject{}.log", job_id))
+                        .display()
+                        .to_string(),
+                ),
+            ),
         ]),
         job_id,
         &mut proto,

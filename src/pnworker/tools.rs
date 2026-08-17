@@ -364,6 +364,10 @@ pub const PNASS_INJECT: &[CliParam] = &[
     CliParam::Path("OUTPUT"),
     CliParam::Literal("--duration-centiseconds"),
     CliParam::Path("DURATION"),
+    // Injection runs between the encode dispatch and ENCODE_START, where nothing else writes to the
+    // job's log directory: without this the step is invisible on disk if it never returns.
+    CliParam::Literal("--logfile"),
+    CliParam::Path("LOGFILE"),
     CliParam::Literal("--negkey"),
     CliParam::Literal("PNassEffects"),
     CliParam::Literal("--negotiator"),
