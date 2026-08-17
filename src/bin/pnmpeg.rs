@@ -11,6 +11,7 @@ use pandora_toolchain::lib::mpeg::{
 use tokio::{fs::File, io::AsyncWriteExt, time::{Duration, Instant}};
 use pandora_toolchain::{pn_data, pn_emit, pn_schema};
 use pandora_toolchain::lib::mpeg::core::RpbData;
+use pandora_toolchain::lib::logging::tool::ToolLog;
 use pandora_toolchain::lib::mpeg::studio::{studio_ffmpeg_params, write_ffconcat, StudioRenderManifest};
 use pandora_toolchain::lib::mpeg::subs::{ExtractOutcome, extract_subtitle, ffprobe_subtitle_streams};
 use pandora_toolchain::lib::protocol::core::{Protocol, Schema, ToolInfo};
@@ -131,6 +132,18 @@ fn emit_extract_failure(proto: &Protocol, neg: &str) {
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
+    // Opened before anything else runs: everything below this line used to be invisible, because
+    // the --logfile transcript is only created once ffmpeg itself starts.
+    let mut log = ToolLog::beside(args.logfile.as_deref());
+    log.line(&format!(
+        "pnmpeg start input={} output={} ass={:?} lang={:?} intro_dir={:?} candidates={}",
+        args.input, args.output, args.ass, args.lang, args.intro_dir, args.candidate.len()
+    ));
+    log.line(&format!(
+        "mode gpu={} x264={} pseudolossless={} veryslow={} dummy={} concat={} legacyconcat={} joinconcat={} joinass={} studio={} extractsubs={}",
+        args.gpu, args.x264, args.pseudolossless, args.veryslow, args.dummy,
+        args.concat, args.legacyconcat, args.joinconcat, args.joinass, args.studio, args.extractsubs
+    ));
     let mut proto = Protocol::new(vec![1]);
     let neg = proto.request(ToolInfo { tool: match args.negotiator {
                         Some(ref negotiator) => negotiator,
@@ -157,7 +170,8 @@ async fn main() {
             emit_extract_failure(&proto, &neg);
             std::process::exit(1);
         }
-        let streams = ffprobe_subtitle_streams(&input);
+        let streams = log.step("ffprobe subtitle streams", || ffprobe_subtitle_streams(&input));
+        log.line(&format!("{} subtitle stream(s) found", streams.len()));
         for stream in &streams {
             let outcome = extract_subtitle(&input, &output_dir, stream);
             let (path, detail) = match &outcome {
@@ -229,7 +243,11 @@ async fn main() {
         let totalframe = (manifest.render_duration_ms() as f64
             * manifest.fps_num as f64 / manifest.fps_den.max(1) as f64 / 1000.0)
             .ceil() as u64;
-        run_with_progress(&mut proto, &neg, encoder, params, totalframe, args.cancelfile, args.logfile).await;
+        log.line(&format!(
+            "studio manifest: {} source(s), {}ms, {} frames",
+            manifest.sources.len(), manifest.total_duration_ms, totalframe
+        ));
+        run_with_progress(&mut proto, &neg, encoder, params, totalframe, args.cancelfile, args.logfile, &mut log).await;
         return;
     }
 
@@ -240,15 +258,20 @@ async fn main() {
 
     let intro_dir = args.intro_dir.as_deref().filter(|path| !path.trim().is_empty());
     let selected_subinput = match intro_dir {
-        Some(intro_dir) => match prepare_compatible_intro(Path::new(&args.input), Path::new(intro_dir)) {
+        Some(intro_dir) => match log.step(
+            &format!("prepare_compatible_intro from {} (may transcode the intro)", intro_dir),
+            || prepare_compatible_intro(Path::new(&args.input), Path::new(intro_dir)),
+        ) {
             Ok(path) => Some(path.display().to_string()),
             Err(e) => {
+                log.line(&format!("intro preparation failed: {}", e));
                 eprintln!("Intro preparation failed: {}", e);
                 std::process::exit(1);
             }
         },
-        None => select_subinput(&args.input, &args.candidate, &args.subinput),
+        None => log.step("select_subinput", || select_subinput(&args.input, &args.candidate, &args.subinput)),
     };
+    log.line(&format!("selected_subinput={:?}", selected_subinput));
 
     if args.joinconcat || args.joinass {
         let mut join_inputs = Vec::new();
@@ -269,8 +292,14 @@ async fn main() {
             .unwrap_or(parent)
             .join("PNmpeg_Keycode_Concat.txt");
         let mut file = File::create(&joinfile).await.unwrap();
+        log.line(&format!("join inputs: {:?}", join_inputs));
         for input in &join_inputs {
-            totalframe += ffprobe_frame(input).unwrap_or(0);
+            let counted = log.step(
+                &format!("ffprobe -count_packets {} (full demux)", input),
+                || ffprobe_frame(input),
+            );
+            log.line(&format!("{} -> {:?} frames", input, counted));
+            totalframe += counted.unwrap_or(0);
             let canon = PathBuf::from_str(input).unwrap()
                 .canonicalize()
                 .unwrap_or_else(|_| PathBuf::from(input))
@@ -311,14 +340,21 @@ async fn main() {
                 _ => {}
             }
         }
-        run_with_progress(&mut proto, &neg, encoder, params, totalframe, args.cancelfile, args.logfile).await;
+        log.line(&format!("join totalframe={}", totalframe));
+        run_with_progress(&mut proto, &neg, encoder, params, totalframe, args.cancelfile, args.logfile, &mut log).await;
         return;
     }
 
-    let use_legacy = args.concat && intro_dir.is_none() && !args.candidate.is_empty() && selected_subinput.as_ref().map(|p| {
-        ffprobe_framerate(p) != ffprobe_framerate(&args.input) ||
-        ffprobe_samplerate(p) != ffprobe_samplerate(&args.input)
-    }).unwrap_or(false);
+    let subinput_for_legacy = selected_subinput.clone();
+    let input_for_legacy = args.input.clone();
+    let use_legacy = args.concat && intro_dir.is_none() && !args.candidate.is_empty() && log.step(
+        "ffprobe framerate/samplerate compatibility check",
+        || subinput_for_legacy.as_ref().map(|p| {
+            ffprobe_framerate(p) != ffprobe_framerate(&input_for_legacy) ||
+            ffprobe_samplerate(p) != ffprobe_samplerate(&input_for_legacy)
+        }).unwrap_or(false),
+    );
+    log.line(&format!("use_legacy={}", use_legacy));
 
     let mut concfile = match args.concat && !use_legacy {
         true => Some(File::create(&concfilepath).await.unwrap()),
@@ -356,13 +392,19 @@ async fn main() {
         params = Vec::from(CPU_SANE_DEFAULTS);
     }
 
+    log.line(&format!("{} ffmpeg parameter(s) from the selected preset", params.len()));
     let audio_index = if !args.concat || args.legacyconcat {
-        args.lang.as_deref()
-            .and_then(|lang| ffprobe_lang(&args.input, lang).map(|idx| idx.to_string()))
-            .unwrap_or_else(|| wrap("a:0"))
+        let lang = args.lang.clone();
+        let input = args.input.clone();
+        log.step("ffprobe audio language streams", || {
+            lang.as_deref()
+                .and_then(|lang| ffprobe_lang(&input, lang).map(|idx| idx.to_string()))
+                .unwrap_or_else(|| wrap("a:0"))
+        })
     } else {
         wrap("1")
     };
+    log.line(&format!("audio_index={}", audio_index));
 
     let mut totalframe: u64 = 0;
     for i in params.iter_mut() {
@@ -385,7 +427,14 @@ async fn main() {
                         c = c.replace("CONCATFILEV", b);
                     }
                 }
-                totalframe += ffprobe_frame(&c).unwrap_or(0);
+                // The long pole before ffmpeg starts: -count_packets demuxes the whole file, and
+                // until this log existed a slow or hung count looked exactly like a dead encoder.
+                let counted = log.step(
+                    &format!("ffprobe -count_packets {} (full demux)", c),
+                    || ffprobe_frame(&c),
+                );
+                log.line(&format!("{} -> {:?} frames", c, counted));
+                totalframe += counted.unwrap_or(0);
                 *i = FfmpegParams::Input(Cow::Owned(c));
             },
             FfmpegParams::BasicFilter(a) => {
@@ -399,7 +448,7 @@ async fn main() {
             }
             FfmpegParams::R(a) => {
                 if a.contains("FPSV") {
-                    let fps = ffprobe_framerate(&args.input)
+                    let fps = log.step("ffprobe framerate", || ffprobe_framerate(&args.input))
                         .map(|(n, d)| format!("{}/{}", n, d))
                         .unwrap_or_else(|| "24".to_string());
                     *i = FfmpegParams::R(Cow::Owned(a.replace("FPSV", &fps)));
@@ -409,7 +458,8 @@ async fn main() {
         }
     }
 
-    run_with_progress(&mut proto, &neg, encoder, params, totalframe, args.cancelfile, args.logfile).await;
+    log.line(&format!("totalframe={} — handing off to ffmpeg", totalframe));
+    run_with_progress(&mut proto, &neg, encoder, params, totalframe, args.cancelfile, args.logfile, &mut log).await;
 }
 
 async fn run_with_progress(
@@ -420,7 +470,9 @@ async fn run_with_progress(
     totalframe: u64,
     cancelfile: Option<String>,
     logfile: Option<String>,
+    log: &mut ToolLog,
 ) {
+    log.line(&format!("spawning ffmpeg ({} expected frames)", totalframe));
     let (tx, mut rx): (UnboundedSender<RpbData>, UnboundedReceiver<RpbData>) = mpsc::unbounded_channel();
     let _thr = tokio::spawn(async move {
         do_comm_encode_ffmpeg(
@@ -434,9 +486,16 @@ async fn run_with_progress(
     });
 
     let mut last: Option<Instant> = None;
+    let mut first_progress = true;
     while let Some(val) = rx.recv().await {
         match val {
             RpbData::Progress(fps, frame, total, bitrate) => {
+                if first_progress {
+                    // The single most useful line in the file: everything before it is setup, and
+                    // a run that never reaches it never started encoding at all.
+                    log.line(&format!("first ffmpeg progress frame={} fps={}", frame, fps));
+                    first_progress = false;
+                }
                 if last.map(|t| t.elapsed() < Duration::from_secs(5)).unwrap_or(false) {
                     continue;
                 }
@@ -451,6 +510,7 @@ async fn run_with_progress(
                 )
             }
             RpbData::Warning(warning) => {
+                log.line(&format!("warning: {}", warning));
                 println!("{}",
                     pn_emit!(
                         protocol = proto,
@@ -461,6 +521,7 @@ async fn run_with_progress(
                 )
             }
             RpbData::Done(a) => {
+                log.line(&format!("ffmpeg done: {}", a));
                 println!("{}",
                     pn_emit!(
                         protocol = proto,
@@ -471,6 +532,7 @@ async fn run_with_progress(
                 )
             }
             RpbData::Fail => {
+                log.line("ffmpeg failed");
                 println!("{}",
                     pn_emit!(
                         protocol = proto,
@@ -481,6 +543,7 @@ async fn run_with_progress(
                 )
             }
             RpbData::CancelFile => {
+                log.line("ffmpeg cancelled");
                 println!("{}",
                     pn_emit!(
                         protocol = proto,

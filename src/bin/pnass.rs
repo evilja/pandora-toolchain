@@ -4,6 +4,7 @@ use pandora_toolchain::libkagami::complex::overrides::ASSOverride;
 use pandora_toolchain::libkagami::complex::types::AssTime;
 use pandora_toolchain::libkagami::tags::{ASSLine, ASSText};
 use pandora_toolchain::lib::protocol::core::{Protocol, Schema, ToolInfo};
+use pandora_toolchain::lib::logging::tool::ToolLog;
 use pandora_toolchain::{pn_data, pn_emit, pn_schema};
 use std::path::PathBuf;
 
@@ -61,49 +62,10 @@ struct Args {
     logfile: Option<String>,
 }
 
-// pnass emits warnings over the protocol but says nothing about where it *is*, so a run that never
-// returns leaves no trace at all — the failure mode that made a stalled encode unreadable. Lines are
-// written and flushed as they happen, never buffered to the end, because the run that needs this log
-// is the one that never finishes.
-struct AssLog {
-    file: Option<std::fs::File>,
-    started: std::time::Instant,
-}
-
-impl AssLog {
-    fn open(path: Option<&str>) -> Self {
-        let file = path.and_then(|path| {
-            if let Some(parent) = std::path::Path::new(path).parent() {
-                std::fs::create_dir_all(parent).ok();
-            }
-            match std::fs::File::create(path) {
-                Ok(file) => Some(file),
-                Err(e) => {
-                    eprintln!("pnass: could not open logfile {}: {}", path, e);
-                    None
-                }
-            }
-        });
-        Self {
-            file,
-            started: std::time::Instant::now(),
-        }
-    }
-
-    fn line(&mut self, message: &str) {
-        use std::io::Write;
-        let Some(file) = self.file.as_mut() else {
-            return;
-        };
-        let _ = writeln!(file, "[{:>8.3}s] {}", self.started.elapsed().as_secs_f64(), message);
-        let _ = file.flush();
-    }
-}
-
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
-    let mut log = AssLog::open(args.logfile.as_deref());
+    let mut log = ToolLog::open(args.logfile.as_deref());
     log.line(&format!(
         "start input={} output={} merge={:?} inject={:?} duration_cs={:?}",
         args.input, args.output, args.merge, args.inject, args.duration_centiseconds

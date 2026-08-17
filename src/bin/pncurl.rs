@@ -12,6 +12,7 @@ use clap::Parser;
 use tokio::sync::mpsc::{UnboundedSender, UnboundedReceiver, self};
 use pandora_toolchain::{pn_data, pn_emit, pn_schema};
 use pandora_toolchain::lib::protocol::core::{Protocol, Schema, ToolInfo};
+use pandora_toolchain::lib::logging::tool::ToolLog;
 
 
 #[derive(Parser, Debug)]
@@ -65,6 +66,13 @@ struct Args {
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
+    // Sits beside the transfer transcript: that file only starts once bytes move, so a request
+    // that stalls before the first byte leaves nothing behind without this.
+    let mut log = ToolLog::beside(args.logfile.as_deref());
+    log.line(&format!(
+        "pncurl start link={} opcode={} gscrape={} drive={} backup={} drive_folder={:?}",
+        args.link, args.opcode, args.gscrape, args.drive, args.backup, args.drive_folder
+    ));
     let mut proto = Protocol::new(vec![1]);
     let neg = proto.request(ToolInfo { tool: match args.negotiator {
                         Some(ref negotiator) => negotiator,
@@ -89,7 +97,9 @@ async fn main() {
             log: args.logfile.map(PathBuf::from),
             cfile: args.cancelfile.map(PathBuf::from),
         };
+        log.line("google drive scrape starting");
         let ok = scraper.send(args.opcode, &proto, &neg).await;
+        log.line(&format!("scrape finished ok={}", ok));
         let code = if ok { "1" } else { "2" };
         let msg = if ok { "DONE" } else { "FAIL" };
         println!("{}",
@@ -101,6 +111,7 @@ async fn main() {
             ).unwrap()
         )
     } else if !args.drive {
+        log.line("direct download starting");
         let status = request
             .send_with_progress(args.opcode, Some(&proto), Some(&neg))
             .await;
@@ -109,6 +120,7 @@ async fn main() {
             DownloadStatus::Fail => ("2", "FAIL", true),
             DownloadStatus::Cancel => ("3", "CANCELLED", false),
         };
+        log.line(&format!("direct download finished: {}", msg));
         println!("{}",
             pn_emit!(
                 protocol = proto,
@@ -132,6 +144,7 @@ async fn main() {
 
         let drive_folder = args.drive_folder.clone();
         let drive_opcode = args.drive_opcode.clone().unwrap_or_else(|| args.opcode.clone());
+        log.line("drive upload starting");
         tokio::spawn(async move {
             request.gdupload(a, Some(drive_opcode), drive_folder, tx).await;
         });

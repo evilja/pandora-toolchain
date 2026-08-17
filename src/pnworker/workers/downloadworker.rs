@@ -146,6 +146,16 @@ async fn run_download_job(
                         "CANCELFILE",
                         PathValue::from(directory.join("CANCEL").display().to_string()),
                     ),
+                    (
+                        "LOGFILE",
+                        PathValue::from(
+                            directory
+                                .join("log")
+                                .join(format!("PNp2p{}.log", job_id))
+                                .display()
+                                .to_string(),
+                        ),
+                    ),
                 ]),
                 job_id,
                 &mut proto,
@@ -261,6 +271,16 @@ async fn run_download_job(
                     (
                         "CANCELFILE",
                         PathValue::from(directory.join("CANCEL").display().to_string()),
+                    ),
+                    (
+                        "LOGFILE",
+                        PathValue::from(
+                            directory
+                                .join("log")
+                                .join(format!("PNp2pSelects{}.log", job_id))
+                                .display()
+                                .to_string(),
+                        ),
                     ),
                 ]),
                 job_id,
@@ -438,6 +458,16 @@ async fn run_download_job(
                     (
                         "CANCELFILE",
                         PathValue::from(directory.join("CANCEL").display().to_string()),
+                    ),
+                    (
+                        "LOGFILE",
+                        PathValue::from(
+                            directory
+                                .join("log")
+                                .join(format!("PNp2pSelect{}.log", job_id))
+                                .display()
+                                .to_string(),
+                        ),
                     ),
                 ]),
                 job_id,

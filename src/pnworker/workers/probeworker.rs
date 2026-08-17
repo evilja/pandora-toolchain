@@ -277,6 +277,16 @@ async fn run_probe_job(
                 PathValue::from(format!("--{}", torrent.get_arg())),
             ),
             ("NEGKEY", PathValue::from(worker_key)),
+            (
+                "LOGFILE",
+                PathValue::from(
+                    directory
+                        .join("log")
+                        .join(format!("PNp2pProbe{}.log", job_id))
+                        .display()
+                        .to_string(),
+                ),
+            ),
         ]),
         job_id,
         &mut proto,

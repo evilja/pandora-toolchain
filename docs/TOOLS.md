@@ -97,7 +97,7 @@ Always emits a pnprotocol negotiation line on stdout (`PNprotocol:PNdc@0.1.1@1:P
 - `--set-layer <N>` — when set, walks every `Event` and assigns `layer = N`.
 - `--smart-layer <N>` — sign-aware layer normalization for smartcode: only events whose style name does not contain `Sign` and whose parsed text contains only raw text plus basic bold/italic/underline/strikeout overrides get `layer = N`; events with positioning, drawings, clips, colours, transforms, reset tags, etc. keep their original layer.
 - `--split-signs <path>` — split sign-style events (style name contains `Sign`) from `--input` into a separate ASS at `<path>`, leaving non-sign events in `--output`; used by smartcode when the repo has TL but no TS.
-- `--logfile <path>` — optional write-through run log: one timestamped line per step (input/secondary load with their event counts, injection timings, merge result, warning scan, write, done) plus a line for any error path, flushed as it happens rather than buffered to the end, because the run worth reading is the one that never finishes. Parent directories are created. `PNASS_INJECT` passes `DB/work/<job_id>/log/PNass_Inject<job_id>.log`; the other pnass specs do not set it yet.
+- `--logfile <path>` — optional write-through run log (`lib::logging::tool::ToolLog`): one timestamped line per step (input/secondary load with their event counts, injection timings, merge result, warning scan, write, done) plus a line for any error path, flushed as it happens rather than buffered to the end, because the run worth reading is the one that never finishes. Parent directories are created. `PNASS_INJECT` passes `DB/work/<job_id>/log/PNass_Inject<job_id>.log`; the other pnass specs do not set it yet.
 - `--wrap-style <dont_touch|0|1|2|3>` — controls whether `ScriptInfo.wrap_style` is forced during pnass output. Missing/`dont_touch` preserves the loaded value; numeric values force that WrapStyle. `/configure` and `/edit` store this per server.
 - `--title <S>` — optional. When provided, overwrites `ScriptInfo.title`. When absent, the loaded title is preserved.
 - The other `ScriptInfo` fields (`ScriptType`, `ScaledBorderAndShadow`, `PlayResX/Y`, `YCbCr Matrix`, `LayoutResX/Y`) only get default-filled if they were missing/zero in the loaded file. `LayoutResX/Y` defaults to `PlayResX/Y` (not 1920/1080). `WrapStyle` is not forced unless `--wrap-style` is numeric.
@@ -128,3 +128,14 @@ Font name reads use `libkagami::core::cached_normalized_font_names`: an in-memor
 - A bare `{` appearing inside an existing block invalidates the entire block: the outer `{` and its matching `}` are dropped, yielding an empty event.
 - A lone `{` (no matching `}` to end of string) is a literal `{` (look-ahead via the `find_block_end` helper).
 - Raw text outside blocks and inside blocks (around tags) is `ASSLine::RawText(String)`. Override tags are `ASSLine::Override(ASSOverride::*)`.
+
+## Tool run logs
+
+Every tool now writes a **run log**: `ToolLog` in `src/lib/logging/tool.rs`, one line per step with the elapsed time since the tool started, each written *and flushed* as it happens. `LoggingHandle` buffers 5000 bytes and only ever held the subprocess transcript, so a tool that hung left nothing at all on disk — which is exactly what made a stalled encode unreadable. A run log that simply stops names the step that never returned.
+
+`ToolLog::beside(logfile)` derives `<name>.run.log` next to the tool's existing `--logfile` transcript, so pnmpeg and pncurl gained one without a new `CliParam`. pnass and pnp2p take `--logfile` directly (pnass has no subprocess transcript; pnp2p had no log at all).
+
+- **pnmpeg** → `PNmpeg_*<job_id>.run.log`. Args and mode, intro preparation (which may transcode), `select_subinput`, the framerate/samplerate compatibility probe, preset parameter count, the audio-language probe, **every `ffprobe -count_packets` with its duration** — a full demux of the input, the longest thing that runs before ffmpeg exists — then `handing off to ffmpeg`, `spawning ffmpeg`, the **first progress frame**, and the terminal warning/done/fail/cancel. Everything before "first ffmpeg progress" is setup a stalled run never got past.
+- **pnp2p** → `PNp2p*<job_id>.log`. Args, client initialisation, probe start/result count, the selection being downloaded, and the terminal result. Previously the torrent path wrote nothing to the job directory, so a stuck download and a download that never started were indistinguishable.
+- **pncurl** → `PNcurl*<job_id>.run.log`. Args, which mode started (scrape / direct / drive upload), and its outcome.
+- **pnass** → `PNass_Inject<job_id>.log`. See [`pnass` flags](#pnass-flags).

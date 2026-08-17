@@ -1,6 +1,7 @@
 use pandora_toolchain::lib::p2p::core::*;
 use pandora_toolchain::lib::protocol::core::*;
 use pandora_toolchain::lib::protocol::core::{Protocol, ToolInfo};
+use pandora_toolchain::lib::logging::tool::ToolLog;
 use pandora_toolchain::{pn_data, pn_emit, pn_schema};
 
 use clap::Parser;
@@ -50,6 +51,9 @@ struct Args {
 
     #[arg(long)]
     tag: Option<String>,
+
+    #[arg(long)]
+    logfile: Option<String>,
 }
 
 // `--select` stays a single index for the existing worker call; `--selects` adds the comma list a
@@ -97,6 +101,13 @@ fn emit_error(proto: &Protocol, neg: &str, err: &str) {
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
+    // pnp2p had no on-disk log of any kind: a torrent that never progressed left the job directory
+    // completely empty, so a stuck download and a download that was never started looked the same.
+    let mut log = ToolLog::open(args.logfile.as_deref());
+    log.line(&format!(
+        "pnp2p start opcode={} save={:?} magnet={} nomagnet={} probe={} select={:?} selects={:?} tag={:?}",
+        args.opcode, args.save, args.magnet, args.nomagnet, args.probe, args.select, args.selects, args.tag
+    ));
     let mut proto = Protocol::new(vec![1]);
     let neg = proto.request(
         ToolInfo {
@@ -121,17 +132,21 @@ async fn main() {
         },
     );
 
+    log.line("initialising the torrent client");
     let p2pcp = match P2p::new(args.cancelfile).await {
         Ok(client) => client,
         Err(error) => {
+            log.line(&format!("client initialisation failed: {}", error));
             emit_error(&proto, &neg, &error.to_string());
             eprintln!("[pnp2p] initialization failed: {error}");
             std::process::exit(1);
         }
     };
+    log.line("torrent client ready");
 
     if args.probe {
         // probe mode: list mkv files, emit them as protocol output
+        log.line("probing the torrent for its file list (fetches metadata from peers)");
         let files = match p2pcp
             .probe_torrent(
                 &args.opcode,
@@ -142,10 +157,12 @@ async fn main() {
         {
             Ok(files) => files,
             Err(e) => {
+                log.line(&format!("probe failed: {}", e));
                 emit_error(&proto, &neg, &e.to_string());
                 std::process::exit(1);
             }
         };
+        log.line(&format!("probe returned {} file(s)", files.len()));
         for (idx, name, size) in files {
             println!(
                 "{}",
@@ -172,6 +189,14 @@ async fn main() {
     }
 
     let selection = parse_selection(args.select, args.selects.as_deref());
+    log.line(&format!(
+        "starting download: {}",
+        if selection.is_empty() {
+            "whole torrent".to_string()
+        } else {
+            format!("selected indices {:?}", selection)
+        }
+    ));
     let result = if !selection.is_empty() {
         p2pcp
             .download_selected(
@@ -204,10 +229,12 @@ async fn main() {
     };
 
     if let Err(e) = result {
+        log.line(&format!("download failed: {}", e));
         emit_error(&proto, &neg, &e.to_string());
         eprintln!("[pnp2p] failed: {}", e);
         std::process::exit(1);
     }
+    log.line("download finished");
 }
 
 #[cfg(test)]

@@ -67,6 +67,8 @@ pub const PNP2P_TORRENT: &[CliParam] = &[
     CliParam::NegVer("1"),
     CliParam::Literal("--cancelfile"),
     CliParam::Path("CANCELFILE"),
+    CliParam::Literal("--logfile"),
+    CliParam::Path("LOGFILE"),
 ];
 
 pub const PNMPEG_STUDIO: &[CliParam] = &[
@@ -280,6 +282,8 @@ pub const PNP2P_PROBE: &[CliParam] = &[
     CliParam::Literal("--negver"),
     CliParam::NegVer("1"),
     CliParam::Literal("--probe"),
+    CliParam::Literal("--logfile"),
+    CliParam::Path("LOGFILE"),
 ];
 
 pub const PNP2P_SELECT: &[CliParam] = &[
@@ -300,6 +304,8 @@ pub const PNP2P_SELECT: &[CliParam] = &[
     CliParam::NegVer("1"),
     CliParam::Literal("--cancelfile"),
     CliParam::Path("CANCELFILE"),
+    CliParam::Literal("--logfile"),
+    CliParam::Path("LOGFILE"),
 ];
 
 pub const PNP2P_SELECTS: &[CliParam] = &[
@@ -320,6 +326,8 @@ pub const PNP2P_SELECTS: &[CliParam] = &[
     CliParam::NegVer("1"),
     CliParam::Literal("--cancelfile"),
     CliParam::Path("CANCELFILE"),
+    CliParam::Literal("--logfile"),
+    CliParam::Path("LOGFILE"),
 ];
 
 pub const PNASS_LAYER: &[CliParam] = &[
