@@ -51,7 +51,7 @@ use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::fs::{File, create_dir_all, remove_dir_all, write};
+use tokio::fs::{File, create_dir_all, remove_dir_all, rename, write};
 use tokio::sync::mpsc::Receiver;
 use tokio::time::Duration;
 use tokio::time::sleep;
@@ -1179,6 +1179,7 @@ async fn run_gitsync(mut frontend: Frontend, shrine: &mut TypedShrine<WorkerMsg>
         lines.extend(report.lines());
     }
     frontend.set_text(&lines.join("\n")).await;
+    preserve_work_logs().await;
     let _ = remove_dir_all(PathBuf::from("DB").join("work")).await;
     if rebuild_requested {
         tokio::time::sleep(Duration::from_secs(3600)).await;
@@ -1186,6 +1187,56 @@ async fn run_gitsync(mut frontend: Frontend, shrine: &mut TypedShrine<WorkerMsg>
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
     std::process::exit(0);
+}
+
+// `/gitsync` clears DB/work so the restart does not inherit half-finished scratch directories, but a
+// job's logs only reach DB/saved_data when it *archives*. Anything still running at sync time —
+// which includes every job that was stuck, the exact case worth reading afterwards — lost its logs
+// to that wipe. Move them out first; the scratch data still goes.
+async fn preserve_work_logs() {
+    let saved = preserve_logs_from(
+        &PathBuf::from("DB").join("work"),
+        &PathBuf::from("DB").join("saved_data"),
+    )
+    .await;
+    if saved > 0 {
+        println!("[Pandora] gitsync kept the logs of {} unfinished job(s)", saved);
+    }
+}
+
+async fn preserve_logs_from(work: &std::path::Path, saved_data: &std::path::Path) -> usize {
+    let Ok(mut entries) = tokio::fs::read_dir(work).await else {
+        return 0;
+    };
+    let mut saved = 0usize;
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let source = entry.path().join("log");
+        if !source.is_dir() {
+            continue;
+        }
+        // Job directories are named by job id; batch-pending and other scratch dirs are not, and
+        // have no logs to keep anyway.
+        let Some(job_id) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        let dest = saved_data.join(job_id.to_string());
+        if create_dir_all(&dest).await.is_err() {
+            continue;
+        }
+        let dest = dest.join("log");
+        // An archived job already moved its logs there; never overwrite the finished copy.
+        if dest.exists() {
+            continue;
+        }
+        if rename(&source, &dest).await.is_ok() {
+            saved += 1;
+        }
+    }
+    saved
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -3148,6 +3199,51 @@ mod tests {
         let mut uploading = dispatched_encode(dispatched_at);
         uploading.ready = Stage::Uploading;
         assert!(!encode_stalled(&uploading, now));
+    }
+
+    #[tokio::test]
+    async fn gitsync_keeps_unfinished_job_logs_and_never_clobbers_archived_ones() {
+        let root = std::env::temp_dir().join(format!("pandora-gitsync-logs-{}", std::process::id()));
+        tokio::fs::remove_dir_all(&root).await.ok();
+        let work = root.join("work");
+        let saved_data = root.join("saved_data");
+
+        // A running job with logs, an archived job that already moved its own, and scratch that is
+        // not a job directory at all.
+        tokio::fs::create_dir_all(work.join("111").join("log")).await.unwrap();
+        tokio::fs::write(work.join("111").join("log").join("PNmpeg_Encode111.log"), b"live")
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(work.join("222").join("log")).await.unwrap();
+        tokio::fs::write(work.join("222").join("log").join("stale.log"), b"stale")
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(saved_data.join("222").join("log")).await.unwrap();
+        tokio::fs::write(saved_data.join("222").join("log").join("real.log"), b"archived")
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(work.join("batch-pending").join("9").join("subs"))
+            .await
+            .unwrap();
+
+        assert_eq!(preserve_logs_from(&work, &saved_data).await, 1);
+
+        assert_eq!(
+            tokio::fs::read_to_string(saved_data.join("111").join("log").join("PNmpeg_Encode111.log"))
+                .await
+                .unwrap(),
+            "live"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(saved_data.join("222").join("log").join("real.log"))
+                .await
+                .unwrap(),
+            "archived"
+        );
+        assert!(!saved_data.join("222").join("log").join("stale.log").exists());
+        assert!(!saved_data.join("batch-pending").exists());
+
+        tokio::fs::remove_dir_all(root).await.ok();
     }
 
     #[test]
