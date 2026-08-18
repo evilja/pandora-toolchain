@@ -41,6 +41,25 @@ struct ScheduleState {
     in_flight: Vec<u8>,
     complete: Vec<bool>,
     complete_count: usize,
+    // Where a scan can start: every index below it is complete or was never wanted.
+    scan_start: usize,
+}
+
+impl ScheduleState {
+    // A piece only ever goes from wanted to complete, so the prefix of indices no scan can match
+    // again only grows. Advancing past it once keeps every later scan from rewalking it: without
+    // this, each claim restarts at index 0 and steps over every finished piece, which is
+    // quadratic in the piece count and happens while holding the lock that all the peer tasks
+    // contend for. Skipping is what the loops below would do anyway — an index is passed here only
+    // when `!required` or `complete`, and both loops test exactly those.
+    fn scan_from(&mut self, required: &[bool]) -> usize {
+        while self.scan_start < required.len()
+            && (!required[self.scan_start] || self.complete[self.scan_start])
+        {
+            self.scan_start += 1;
+        }
+        self.scan_start
+    }
 }
 
 pub(crate) struct PieceScheduler {
@@ -61,6 +80,7 @@ impl PieceScheduler {
                 in_flight: vec![0; length],
                 complete: vec![false; length],
                 complete_count: 0,
+                scan_start: 0,
             }),
             changed: Notify::new(),
         }
@@ -70,7 +90,8 @@ impl PieceScheduler {
     // slow owner so completion is not held hostage by the full peer timeout.
     fn claim(&self, available: &[bool]) -> Option<usize> {
         let mut state = self.state.lock().unwrap();
-        for index in 0..self.required.len() {
+        let scan_start = state.scan_from(&self.required);
+        for index in scan_start..self.required.len() {
             if self.required[index]
                 && available.get(index).copied().unwrap_or(false)
                 && state.in_flight[index] == 0
@@ -83,7 +104,7 @@ impl PieceScheduler {
         if state.complete_count > 0
             && self.required_count.saturating_sub(state.complete_count) <= ENDGAME_PIECES
         {
-            for index in 0..self.required.len() {
+            for index in scan_start..self.required.len() {
                 if self.required[index]
                     && available.get(index).copied().unwrap_or(false)
                     && !state.complete[index]
@@ -118,9 +139,10 @@ impl PieceScheduler {
     }
 
     fn has_compatible_piece(&self, available: &[bool]) -> bool {
-        let state = self.state.lock().unwrap();
-        self.required.iter().enumerate().any(|(index, required)| {
-            *required
+        let mut state = self.state.lock().unwrap();
+        let scan_start = state.scan_from(&self.required);
+        (scan_start..self.required.len()).any(|index| {
+            self.required[index]
                 && available.get(index).copied().unwrap_or(false)
                 && !state.complete[index]
         })
@@ -739,6 +761,38 @@ mod tests {
         scheduler.complete(first);
         scheduler.release(second);
         assert_eq!(scheduler.claim(&available), Some(second));
+    }
+
+    // Scans skip the prefix of pieces that are finished or were never wanted, so what is worth
+    // pinning is that skipping changes nothing: claims still come lowest-wanted-index first, and a
+    // piece nobody asked for is never offered.
+    #[test]
+    fn scheduler_skips_the_finished_prefix_without_changing_what_it_hands_out() {
+        let scheduler = PieceScheduler::new(vec![true, false, true, true, true]);
+        let available = vec![true; 5];
+        let mut order = Vec::new();
+        for _ in 0..4 {
+            let index = scheduler.claim(&available).unwrap();
+            order.push(index);
+            scheduler.complete(index);
+        }
+        assert_eq!(order, vec![0, 2, 3, 4]);
+        assert!(scheduler.is_complete());
+        assert!(scheduler.claim(&available).is_none());
+    }
+
+    // The one thing a scan cursor must not do: a released piece is neither complete nor unwanted,
+    // so it stays reachable however many pieces above it have finished.
+    #[test]
+    fn a_released_piece_stays_claimable_after_later_pieces_finish() {
+        let scheduler = PieceScheduler::new(vec![true, true, true]);
+        let available = vec![true; 3];
+        let first = scheduler.claim(&available).unwrap();
+        let second = scheduler.claim(&available).unwrap();
+        scheduler.complete(second);
+        scheduler.release(first);
+        assert_eq!(scheduler.claim(&available), Some(first));
+        assert!(scheduler.has_compatible_piece(&available));
     }
 
     #[test]
