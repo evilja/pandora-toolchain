@@ -430,6 +430,25 @@ async fn queue_probe_job(
     false
 }
 
+// A job built from a probe adopts the .torrent the probe already fetched instead of downloading it
+// again: the file index the caller picked is an index into that exact metainfo, so refetching risks
+// selecting against a different one. Returns whether the copy landed — what a miss means is the
+// caller's to decide, since most can still fall back to refetching from the link and a backup,
+// whose link is not necessarily still a torrent, cannot.
+async fn adopt_probe_torrent(job: &Job, probe_id: u64) -> bool {
+    let probe_dir = env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("DB")
+        .join("work")
+        .join(probe_id.to_string());
+    tokio::fs::copy(
+        probe_dir.join("contents").join("fetch.torrent"),
+        job.directory.join("contents").join("fetch.torrent"),
+    )
+    .await
+    .is_ok()
+}
+
 async fn queue_pancode_job(
     db: &JobDb,
     queue: &[Job],
@@ -440,11 +459,6 @@ async fn queue_pancode_job(
         decline_job_setup(job, "probe job id missing").await;
         return true;
     };
-    let probe_dir = env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("DB")
-        .join("work")
-        .join(probe_id.to_string());
     if !prepare_keep_job(job, KeepKind::Encode).await {
         render(
             job,
@@ -461,11 +475,7 @@ async fn queue_pancode_job(
         return true;
     }
 
-    let torrent_src = probe_dir.join("contents").join("fetch.torrent");
-    let torrent_dst = job.directory.join("contents").join("fetch.torrent");
-    if tokio::fs::copy(&torrent_src, &torrent_dst).await.is_err()
-        && job.torrent.get().trim().is_empty()
-    {
+    if !adopt_probe_torrent(job, probe_id).await && job.torrent.get().trim().is_empty() {
         decline_job_setup(job, "probe torrent data is no longer available").await;
         return true;
     }
@@ -487,16 +497,7 @@ async fn queue_subs_job(
         return true;
     }
     if let Some(probe_id) = job.probe_job_id {
-        let probe_dir = env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join("DB")
-            .join("work")
-            .join(probe_id.to_string());
-        let torrent_src = probe_dir.join("contents").join("fetch.torrent");
-        let torrent_dst = job.directory.join("contents").join("fetch.torrent");
-        if tokio::fs::copy(&torrent_src, &torrent_dst).await.is_err()
-            && job.torrent.get().trim().is_empty()
-        {
+        if !adopt_probe_torrent(job, probe_id).await && job.torrent.get().trim().is_empty() {
             decline_job_setup(job, "probe torrent data is no longer available").await;
             return true;
         }
@@ -534,16 +535,7 @@ async fn queue_batch_job(
         return true;
     }
 
-    let probe_dir = env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("DB")
-        .join("work")
-        .join(batch.probe_job_id.to_string());
-    let torrent_src = probe_dir.join("contents").join("fetch.torrent");
-    let torrent_dst = job.directory.join("contents").join("fetch.torrent");
-    if tokio::fs::copy(&torrent_src, &torrent_dst).await.is_err()
-        && job.torrent.get().trim().is_empty()
-    {
+    if !adopt_probe_torrent(job, batch.probe_job_id).await && job.torrent.get().trim().is_empty() {
         decline_job_setup(job, "probe torrent data is no longer available").await;
         return true;
     }
@@ -558,13 +550,6 @@ async fn queue_backup_job(
     shrine: &mut TypedShrine<WorkerMsg>,
     job: &mut Job,
 ) -> bool {
-    let probe_dir = job.probe_job_id.map(|id| {
-        env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join("DB")
-            .join("work")
-            .join(id.to_string())
-    });
     if !prepare_keep_job(job, KeepKind::Backup).await {
         render(
             job,
@@ -580,10 +565,8 @@ async fn queue_backup_job(
         decline_job_setup(job, &reason).await;
         return true;
     }
-    if let Some(probe_dir) = probe_dir {
-        let torrent_src = probe_dir.join("contents").join("fetch.torrent");
-        let torrent_dst = job.directory.join("contents").join("fetch.torrent");
-        if tokio::fs::copy(&torrent_src, &torrent_dst).await.is_err() {
+    if let Some(probe_id) = job.probe_job_id {
+        if !adopt_probe_torrent(job, probe_id).await {
             decline_job_setup(job, "probe torrent data is no longer available").await;
             return true;
         }
