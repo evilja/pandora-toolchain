@@ -320,6 +320,25 @@ impl JobDb {
             .await
     }
 
+    // One query for a batch's children instead of one per episode. The batch output page polls every
+    // five seconds and a two-cour batch is fifty sequential round-trips through a five-connection
+    // pool, so the whole page waited on latency it never needed to pay. Chunked because SQLite binds
+    // each id as its own parameter and older builds cap a statement at 999 of them; an empty slice
+    // returns nothing rather than building the `IN ()` that is a syntax error.
+    pub async fn get_jobs_by_ids(&self, job_ids: &[u64]) -> Result<Vec<JobRow>, sqlx::Error> {
+        let mut rows = Vec::with_capacity(job_ids.len());
+        for chunk in job_ids.chunks(500) {
+            let placeholders = ["?"].repeat(chunk.len()).join(",");
+            let sql = format!("{}WHERE job_id IN ({})", job_query!(""), placeholders);
+            let mut query = sqlx::query_as::<_, JobRow>(&sql);
+            for job_id in chunk {
+                query = query.bind(*job_id as i64);
+            }
+            rows.extend(query.fetch_all(&self.pool).await?);
+        }
+        Ok(rows)
+    }
+
     pub async fn get_jobs_by_author(&self, author: u64) -> Result<Vec<JobRow>, sqlx::Error> {
         sqlx::query_as::<_, JobRow>(job_query!("WHERE author = ? ORDER BY requested_at DESC"))
             .bind(author as i64)

@@ -290,34 +290,46 @@ async fn batch_output(State(st): State<AppState>, Path(token): Path<String>) -> 
         .as_deref()
         .and_then(|value| serde_json::from_str(value).ok())
         .unwrap_or_else(|| json!({}));
-    let mut episodes = Vec::new();
-    if let Some(entries) = progress.get("entries").and_then(|value| value.as_array()) {
-        for entry in entries {
-            let child = match entry
-                .get("job_id")
-                .and_then(|value| value.as_str())
-                .and_then(|value| value.parse::<u64>().ok())
-            {
-                Some(child_id) => st.db.get_job(child_id).await.ok().flatten(),
-                None => None,
-            };
-            episodes.push(json!({
-                "index": entry.get("index"),
-                "label": entry.get("label"),
-                "subtitle": entry.get("subtitle"),
-                "job_id": entry.get("job_id"),
-                "stage": child.as_ref().map(|row| crate::lib::db::core::stage_label(row.stage)),
-                "worker": child.as_ref().map(|row| row.worker.clone()),
-                "progress": child
-                    .as_ref()
-                    .and_then(|row| row.progress.as_deref())
-                    .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok()),
-                "links": child
-                    .as_ref()
-                    .and_then(|row| row.uploaded_links.as_deref())
-                    .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok()),
-            }));
-        }
+    let entries = progress
+        .get("entries")
+        .and_then(|value| value.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let child_id = |entry: &serde_json::Value| {
+        entry
+            .get("job_id")
+            .and_then(|value| value.as_str())
+            .and_then(|value| value.parse::<u64>().ok())
+    };
+    // Every episode's row in one query: a lost child still renders as an entry with null stage and
+    // progress, exactly as it did when each one was fetched on its own.
+    let children = st
+        .db
+        .get_jobs_by_ids(&entries.iter().filter_map(child_id).collect::<Vec<_>>())
+        .await
+        .map(|rows| {
+            rows.into_iter()
+                .map(|row| (row.job_id, row))
+                .collect::<std::collections::HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let mut episodes = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let child = child_id(entry).and_then(|id| children.get(&(id as i64)));
+        episodes.push(json!({
+            "index": entry.get("index"),
+            "label": entry.get("label"),
+            "subtitle": entry.get("subtitle"),
+            "job_id": entry.get("job_id"),
+            "stage": child.map(|row| crate::lib::db::core::stage_label(row.stage)),
+            "worker": child.map(|row| row.worker.clone()),
+            "progress": child
+                .and_then(|row| row.progress.as_deref())
+                .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok()),
+            "links": child
+                .and_then(|row| row.uploaded_links.as_deref())
+                .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok()),
+        }));
     }
     (
         [(header::CACHE_CONTROL, "no-store")],
