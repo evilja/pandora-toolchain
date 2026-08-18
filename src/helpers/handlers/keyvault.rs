@@ -1,4 +1,5 @@
 use super::*;
+use pandora_toolchain::lib::secret::hex_bytes;
 use pandora_toolchain::lib::env::standard::{
     ABYSS, CLIENT_ID, CLIENT_SECRET, DOODSTREAM, ENV_PATH, ENV_SEP, LULU, PARENTID, REFRESH_TOKEN,
     TOKEN_URL, UPLOAD_URL, UQLOAD, VOESX,
@@ -1670,14 +1671,6 @@ fn random_hex(bytes: usize) -> Result<String, String> {
 
 fn sha256_hex(bytes: &[u8]) -> String {
     hex_bytes(&Sha256::digest(bytes))
-}
-
-fn hex_bytes(bytes: &[u8]) -> String {
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push_str(&format!("{byte:02x}"));
-    }
-    output
 }
 
 fn valid_hex(value: &str, length: usize) -> bool {

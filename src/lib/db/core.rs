@@ -2,6 +2,22 @@ use sqlx::{Row, SqlitePool, sqlite::SqlitePoolOptions};
 use std::path::PathBuf;
 use crate::pnworker::core::{Job, Stage, Preset};
 
+// Every read of the table selects the same projection into `JobRow`, and it has to keep selecting
+// the same one: `worker` was added after rows already existed, so a row written before it must
+// still answer with the queue's own name. Five copies of that list is five places to forget a
+// column in, so the reads name only what distinguishes them. `concat!` keeps them `&'static str`.
+macro_rules! job_query {
+    ($tail:literal) => {
+        concat!(
+            "SELECT job_id, author, channel_id, response_id, requested_at, ",
+            "job_type, preset_type, candidates, link, directory, stage, archived, ",
+            "progress, uploaded_links, acix_pending, server_id, ",
+            "COALESCE(worker, 'que-main') AS worker FROM jobs ",
+            $tail
+        )
+    };
+}
+
 pub struct JobDb {
     pool: SqlitePool,
 }
@@ -53,7 +69,6 @@ impl JobDb {
             "CREATE INDEX IF NOT EXISTS idx_jobs_author   ON jobs(author);",
             "CREATE INDEX IF NOT EXISTS idx_jobs_channel  ON jobs(channel_id);",
             "CREATE INDEX IF NOT EXISTS idx_jobs_stage    ON jobs(stage);",
-            "CREATE INDEX IF NOT EXISTS idx_jobs_archived ON jobs(archived);",
         ] {
             sqlx::query(idx).execute(&self.pool).await?;
         }
@@ -90,6 +105,20 @@ impl JobDb {
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_jobs_server ON jobs(server_id);")
             .execute(&self.pool)
             .await?;
+
+        // Every job list is ordered by `requested_at` and nothing indexed it, so the console's
+        // polling read scanned and sorted the whole table — including the archived rows it then
+        // discards — to hand back fifty jobs. `requested_at` never changes after the insert and
+        // `archived` changes once, so neither index costs anything on the progress updates that
+        // make up almost all of this table's writes. The composite leads with `archived`, which
+        // makes the single-column index on it redundant.
+        for idx in [
+            "CREATE INDEX IF NOT EXISTS idx_jobs_requested ON jobs(requested_at);",
+            "CREATE INDEX IF NOT EXISTS idx_jobs_archived_requested ON jobs(archived, requested_at);",
+            "DROP INDEX IF EXISTS idx_jobs_archived;",
+        ] {
+            sqlx::query(idx).execute(&self.pool).await?;
+        }
 
         if self.column_exists("jobs", "preset_concat").await? {
             sqlx::query(
@@ -264,71 +293,38 @@ impl JobDb {
     }
 
     pub async fn get_job(&self, job_id: u64) -> Result<Option<JobRow>, sqlx::Error> {
-        sqlx::query_as::<_, JobRow>(
-            r#"
-            SELECT job_id, author, channel_id, response_id, requested_at,
-                   job_type, preset_type, candidates, link, directory, stage, archived,
-                   progress, uploaded_links, acix_pending, server_id, COALESCE(worker, 'que-main') AS worker
-            FROM jobs WHERE job_id = ?
-            "#,
-        )
-        .bind(job_id as i64)
-        .fetch_optional(&self.pool)
-        .await
+        sqlx::query_as::<_, JobRow>(job_query!("WHERE job_id = ?"))
+            .bind(job_id as i64)
+            .fetch_optional(&self.pool)
+            .await
     }
 
     pub async fn get_active_jobs(&self) -> Result<Vec<JobRow>, sqlx::Error> {
-        sqlx::query_as::<_, JobRow>(
-            r#"
-            SELECT job_id, author, channel_id, response_id, requested_at,
-                   job_type, preset_type, candidates, link, directory, stage, archived,
-                   progress, uploaded_links, acix_pending, server_id, COALESCE(worker, 'que-main') AS worker
-            FROM jobs WHERE archived = 0 ORDER BY requested_at ASC
-            "#,
-        )
-        .fetch_all(&self.pool)
-        .await
+        sqlx::query_as::<_, JobRow>(job_query!("WHERE archived = 0 ORDER BY requested_at ASC"))
+            .fetch_all(&self.pool)
+            .await
     }
 
     pub async fn get_ongoing_jobs(&self) -> Result<Vec<JobRow>, sqlx::Error> {
-        sqlx::query_as::<_, JobRow>(
-            r#"
-            SELECT job_id, author, channel_id, response_id, requested_at,
-                   job_type, preset_type, candidates, link, directory, stage, archived,
-                   progress, uploaded_links, acix_pending, server_id, COALESCE(worker, 'que-main') AS worker
-            FROM jobs WHERE archived = 0 AND stage NOT IN (6, 7, 8, 9) ORDER BY requested_at ASC
-            "#,
-        )
+        sqlx::query_as::<_, JobRow>(job_query!(
+            "WHERE archived = 0 AND stage NOT IN (6, 7, 8, 9) ORDER BY requested_at ASC"
+        ))
         .fetch_all(&self.pool)
         .await
     }
 
     pub async fn get_recent_jobs(&self, limit: i64) -> Result<Vec<JobRow>, sqlx::Error> {
-        sqlx::query_as::<_, JobRow>(
-            r#"
-            SELECT job_id, author, channel_id, response_id, requested_at,
-                   job_type, preset_type, candidates, link, directory, stage, archived,
-                   progress, uploaded_links, acix_pending, server_id, COALESCE(worker, 'que-main') AS worker
-            FROM jobs ORDER BY requested_at DESC LIMIT ?
-            "#,
-        )
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
+        sqlx::query_as::<_, JobRow>(job_query!("ORDER BY requested_at DESC LIMIT ?"))
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
     }
 
     pub async fn get_jobs_by_author(&self, author: u64) -> Result<Vec<JobRow>, sqlx::Error> {
-        sqlx::query_as::<_, JobRow>(
-            r#"
-            SELECT job_id, author, channel_id, response_id, requested_at,
-                   job_type, preset_type, candidates, link, directory, stage, archived,
-                   progress, uploaded_links, acix_pending, server_id, COALESCE(worker, 'que-main') AS worker
-            FROM jobs WHERE author = ? ORDER BY requested_at DESC
-            "#,
-        )
-        .bind(author as i64)
-        .fetch_all(&self.pool)
-        .await
+        sqlx::query_as::<_, JobRow>(job_query!("WHERE author = ? ORDER BY requested_at DESC"))
+            .bind(author as i64)
+            .fetch_all(&self.pool)
+            .await
     }
 }
 

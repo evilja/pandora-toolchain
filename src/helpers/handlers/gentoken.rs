@@ -87,11 +87,6 @@ pub async fn handle_gentoken(
 }
 
 fn generate_token() -> Result<String, String> {
-    let mut buf = [0u8; 32];
-    getrandom::getrandom(&mut buf).map_err(|e| format!("entropy source failed: {}", e))?;
-    let mut out = String::with_capacity(64);
-    for b in buf {
-        out.push_str(&format!("{:02x}", b));
-    }
-    Ok(out)
+    pandora_toolchain::lib::secret::random_hex_token()
+        .map_err(|e| format!("entropy source failed: {}", e))
 }

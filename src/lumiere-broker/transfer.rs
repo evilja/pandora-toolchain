@@ -364,14 +364,8 @@ fn registry() -> &'static RwLock<HashMap<String, TransferRecord>> {
 }
 
 fn random_token() -> Result<String, TransferError> {
-    let mut bytes = [0u8; 32];
-    getrandom::getrandom(&mut bytes)
-        .map_err(|_| TransferError::new("secure transfer token generation failed"))?;
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push_str(&format!("{byte:02x}"));
-    }
-    Ok(output)
+    crate::lib::secret::random_hex_token()
+        .map_err(|_| TransferError::new("secure transfer token generation failed"))
 }
 
 fn validate_filename(filename: &str) -> Result<String, TransferError> {

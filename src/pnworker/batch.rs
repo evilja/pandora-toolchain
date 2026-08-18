@@ -89,17 +89,9 @@ impl BatchRequest {
 }
 
 fn batch_token() -> String {
-    let mut bytes = [0u8; 32];
-    if getrandom::getrandom(&mut bytes).is_err() {
-        // A failed CSPRNG must not hand out a guessable capability, so the batch loses its page
-        // instead: an empty token renders no output link.
-        return String::new();
-    }
-    let mut token = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        token.push_str(&format!("{byte:02x}"));
-    }
-    token
+    // A failed CSPRNG must not hand out a guessable capability, so the batch loses its page
+    // instead: an empty token renders no output link.
+    crate::lib::secret::random_hex_token().unwrap_or_default()
 }
 
 // Two children can be created inside the same nanosecond when several files finish together, so
