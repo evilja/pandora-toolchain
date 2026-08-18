@@ -11,8 +11,15 @@ serde_json = "1.0.149"
 capella = { git = "https://github.com/evilja/capella" }
 kagami-trace = { path = "kagami-trace" }
 
-reqwest = { version = "0.12", features = ["blocking", "json", "multipart", "cookies", "stream", "socks"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "net", "time", "process", "io-util"] }
+# `blocking` was declared and never used — nothing in the tree reaches for `reqwest::blocking`, and
+# no other crate asks for it, so it was compiling a second client and its runtime for nobody.
+# `socks` stays: reqwest's `system-proxy` honours a `socks5://` in ALL_PROXY/HTTPS_PROXY, and that is
+# deployment configuration, not something the source can prove unused.
+reqwest = { version = "0.12", features = ["json", "multipart", "cookies", "stream", "socks"] }
+# `sync` is used directly in 28 places and was never declared here — it only resolved because
+# serenity, capella, hyper and sqlx all happen to enable it. Depending on someone else's feature for
+# a module this crate imports itself means an unrelated dependency trim breaks the build.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "net", "time", "process", "io-util", "sync"] }
 serenity = "0.12"
 regex = "1.12.3"
 sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite"] }
