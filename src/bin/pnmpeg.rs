@@ -414,11 +414,20 @@ async fn main() {
             },
             FfmpegParams::Input(a) => {
                 let mut c = a.to_string();
+                // What gets counted is not always what ffmpeg is handed here. The concat branch
+                // passes a list file, and `-f concat` is what makes that readable — ffprobe on its
+                // own sees an unrecognised text file and fails, so counting the argument scored the
+                // whole intro pass as zero frames and its progress line rendered `frame / 0` with
+                // no percentage and no ETA. Count the files that go into the list instead: their
+                // sum is what the concatenated output holds.
+                let mut counted_inputs: Vec<String> = Vec::new();
                 if let Some(ref mut file) = concfile {
                     if let Some(ref b) = selected_subinput {
                         let canon_input = PathBuf::from_str(&args.input).unwrap().canonicalize().unwrap().display().to_string();
                         let canon_snput = PathBuf::from_str(b).unwrap().canonicalize().unwrap().display().to_string();
                         file.write(format!("file '{}'\nfile '{}'\n", canon_snput, canon_input).as_bytes()).await.unwrap();
+                        counted_inputs.push(canon_snput);
+                        counted_inputs.push(canon_input);
                     }
                     c = c.replace("CONCATFILEV", &concfilepath.display().to_string());
                 } else {
@@ -426,15 +435,18 @@ async fn main() {
                     if let Some(ref b) = selected_subinput {
                         c = c.replace("CONCATFILEV", b);
                     }
+                    counted_inputs.push(c.clone());
                 }
                 // The long pole before ffmpeg starts: -count_packets demuxes the whole file, and
                 // until this log existed a slow or hung count looked exactly like a dead encoder.
-                let counted = log.step(
-                    &format!("ffprobe -count_packets {} (full demux)", c),
-                    || ffprobe_frame(&c),
-                );
-                log.line(&format!("{} -> {:?} frames", c, counted));
-                totalframe += counted.unwrap_or(0);
+                for input in &counted_inputs {
+                    let counted = log.step(
+                        &format!("ffprobe -count_packets {} (full demux)", input),
+                        || ffprobe_frame(input),
+                    );
+                    log.line(&format!("{} -> {:?} frames", input, counted));
+                    totalframe += counted.unwrap_or(0);
+                }
                 *i = FfmpegParams::Input(Cow::Owned(c));
             },
             FfmpegParams::BasicFilter(a) => {
@@ -473,6 +485,13 @@ async fn run_with_progress(
     log: &mut ToolLog,
 ) {
     log.line(&format!("spawning ffmpeg ({} expected frames)", totalframe));
+    // A total of zero is not fatal — the encode runs and reports frames either way — but every
+    // percentage and ETA downstream divides by it, so the whole run renders as `frame / 0` with no
+    // progress bar. That is worth naming here, because it means a `-count_packets` above failed and
+    // said so only by returning None.
+    if totalframe == 0 {
+        log.line("WARNING: counted 0 total frames — progress will carry no percentage or ETA");
+    }
     let (tx, mut rx): (UnboundedSender<RpbData>, UnboundedReceiver<RpbData>) = mpsc::unbounded_channel();
     let _thr = tokio::spawn(async move {
         do_comm_encode_ffmpeg(

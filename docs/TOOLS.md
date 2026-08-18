@@ -67,6 +67,12 @@ Filenames are `<ordinal>.<language>.<title-slug>[.forced].<ext>`. The ordinal le
 
 `pnmpeg --concat --input <episode.mp4> --intro-dir <group-folder> --output <video.mp4>` discovers the retained intro variants in the group folder. If one has the same H.264/AAC concat properties as the encoded episode (dimensions, pixel format, sample aspect ratio, frame rate, sample rate, and channel count), both files are joined with video/audio stream copy. Otherwise, only the best source intro is transcoded to those properties as `pnmpeg_compat_<signature>.mp4` in the group folder; that retained variant is then stream-copied and automatically reused by later compatible encodes. Existing `/touchintro` variants remain untouched.
 
+The frame total reported for this pass is the sum of the intro's and the episode's own
+`-count_packets` counts. ffmpeg is handed an ffconcat list here rather than a media file, and a list
+is not something `ffprobe` can count without `-f concat`, so the files behind the list are what get
+counted — counting the argument returned nothing and scored the whole pass as `frame / 0`, with no
+percentage and no ETA. A zero total is logged as a `WARNING` in the run log for the same reason.
+
 `intros.toml` maps group names directly to these folders. `pndc` startup migrates legacy file-array groups into per-group folders before workers start.
 
 ## `pnmpeg` Pandora Studio mode
