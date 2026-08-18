@@ -88,6 +88,38 @@ impl From<Vec<String>> for PathValue {
     }
 }
 
+// Turns a spec plus its call site's value map into the argv. A `Path` the caller forgot is a
+// wiring mistake between `tools.rs` and the worker that declares nothing at compile time, so it is
+// reported by name instead of building a command line that is quietly missing a value.
+pub fn tool_args(
+    params: &[CliParam],
+    paths: &HashMap<&str, PathValue>,
+    job_id: u64,
+) -> Result<Vec<String>, String> {
+    let mut args = Vec::with_capacity(params.len());
+    for param in params {
+        match param {
+            CliParam::Literal(s) => args.push(s.to_string()),
+            CliParam::Flag(s) => args.push(format!("--{}", s)),
+            CliParam::JobId(prefix) => args.push(format!("{}{}", prefix, job_id)),
+            CliParam::NegVer(v) => args.push(v.to_string()),
+            CliParam::Path(key) => match paths.get(key) {
+                Some(PathValue::Single(s)) => args.push(s.clone()),
+                _ => return Err(format!("Missing or wrong type for path key: {}", key)),
+            },
+            CliParam::RepeatedPath(key) => {
+                if let Some(PathValue::Multi(values)) = paths.get(key) {
+                    for v in values {
+                        args.push("--candidate".to_string());
+                        args.push(v.clone());
+                    }
+                }
+            }
+        }
+    }
+    Ok(args)
+}
+
 pub async fn run_tool<F>(
     tool_path: &str,
     params: &[CliParam],
@@ -99,38 +131,18 @@ pub async fn run_tool<F>(
 where
     F: FnMut(&TypeC) -> Option<ToolResult>,
 {
-    let mut cmd = Command::new(tool_path);
-    for param in params {
-        match param {
-            CliParam::Literal(s) => {
-                cmd.arg(s);
-            }
-            CliParam::Flag(s) => {
-                cmd.arg(format!("--{}", s));
-            }
-            CliParam::JobId(prefix) => {
-                cmd.arg(format!("{}{}", prefix, job_id));
-            }
-            CliParam::NegVer(v) => {
-                cmd.arg(v);
-            }
-            CliParam::Path(key) => {
-                if let Some(PathValue::Single(s)) = paths.get(key) {
-                    cmd.arg(s);
-                } else {
-                    panic!("Missing or wrong type for path key: {}", key);
-                }
-            }
-            CliParam::RepeatedPath(key) => {
-                if let Some(PathValue::Multi(values)) = paths.get(key) {
-                    for v in values {
-                        cmd.arg("--candidate");
-                        cmd.arg(v);
-                    }
-                }
-            }
+    // Failing the job beats panicking the worker task: the layer stays up, the caller reports the
+    // job failed now rather than the stall watchdog doing it twenty minutes later, and the reason
+    // is on stderr instead of in a dropped future.
+    let args = match tool_args(params, paths, job_id) {
+        Ok(args) => args,
+        Err(reason) => {
+            eprintln!("[Pandora] {} for job {}: {}", tool_path, job_id, reason);
+            return ToolResult::Fail;
         }
-    }
+    };
+    let mut cmd = Command::new(tool_path);
+    cmd.args(&args);
     cmd.stderr(Stdio::null());
     cmd.stdout(Stdio::piped());
     // The shrine aborts a layer whose heartbeat expired, which drops this future wherever it is

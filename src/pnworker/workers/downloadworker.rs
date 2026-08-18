@@ -18,6 +18,8 @@ use crate::pnworker::util::{ToolResult, WorkerNamePool, job_cancelled, run_tool}
 use crate::pnworker::worker_slots::download_worker_slots;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
+#[cfg(test)]
+use std::path::MAIN_SEPARATOR;
 use tokio::fs::{create_dir_all, rename};
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::time::{Duration, Instant, sleep};
@@ -26,6 +28,37 @@ use tokio::time::{Duration, Instant, sleep};
 // per episode for a batch — a batch runs as a single pnp2p process because the info-hash lock
 // admits exactly one downloader per torrent.
 pub type DownloadData = (PathBuf, TorrentType, u64, Vec<u64>, bool);
+
+// The three pnp2p invocations differ only in how they select files, so the half they share is built
+// once. `CliParam::Path` keys are matched by string at runtime, with nothing tying a spec in
+// `tools.rs` to the map a call site passes: a key added to one and not the other only shows up as a
+// failed job, which is how the selected-file downloads lost their `--logfile` and stopped running.
+fn p2p_params(
+    directory: &PathBuf,
+    torrent_dir: &PathBuf,
+    arg_opcode: &str,
+    torrent_arg: &str,
+    worker_key: &str,
+    log_name: &str,
+) -> HashMap<&'static str, PathValue> {
+    HashMap::from([
+        ("OPCODE", PathValue::from(arg_opcode.to_string())),
+        (
+            "TORRENTTYPE",
+            PathValue::from(format!("--{}", torrent_arg)),
+        ),
+        ("NEGKEY", PathValue::from(worker_key.to_string())),
+        ("SAVE", PathValue::from(torrent_dir.display().to_string())),
+        (
+            "CANCELFILE",
+            PathValue::from(directory.join("CANCEL").display().to_string()),
+        ),
+        (
+            "LOGFILE",
+            PathValue::from(directory.join("log").join(log_name).display().to_string()),
+        ),
+    ])
+}
 
 pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, pulse: Sender<()>) {
     let env = get_pandora_env();
@@ -146,16 +179,6 @@ async fn run_download_job(
                         "CANCELFILE",
                         PathValue::from(directory.join("CANCEL").display().to_string()),
                     ),
-                    (
-                        "LOGFILE",
-                        PathValue::from(
-                            directory
-                                .join("log")
-                                .join(format!("PNp2p{}.log", job_id))
-                                .display()
-                                .to_string(),
-                        ),
-                    ),
                 ]),
                 job_id,
                 &mut proto,
@@ -271,16 +294,6 @@ async fn run_download_job(
                     (
                         "CANCELFILE",
                         PathValue::from(directory.join("CANCEL").display().to_string()),
-                    ),
-                    (
-                        "LOGFILE",
-                        PathValue::from(
-                            directory
-                                .join("log")
-                                .join(format!("PNp2pSelects{}.log", job_id))
-                                .display()
-                                .to_string(),
-                        ),
                     ),
                 ]),
                 job_id,
@@ -447,29 +460,14 @@ async fn run_download_job(
             run_tool(
                 &pnp2p_path,
                 PNP2P_TORRENT,
-                &HashMap::from([
-                    ("OPCODE", PathValue::from(arg_opcode.clone())),
-                    (
-                        "TORRENTTYPE",
-                        PathValue::from(format!("--{}", torrent.get_arg())),
-                    ),
-                    ("NEGKEY", PathValue::from(worker_key.clone())),
-                    ("SAVE", PathValue::from(torrent_dir.display().to_string())),
-                    (
-                        "CANCELFILE",
-                        PathValue::from(directory.join("CANCEL").display().to_string()),
-                    ),
-                    (
-                        "LOGFILE",
-                        PathValue::from(
-                            directory
-                                .join("log")
-                                .join(format!("PNp2pSelect{}.log", job_id))
-                                .display()
-                                .to_string(),
-                        ),
-                    ),
-                ]),
+                &p2p_params(
+                    &directory,
+                    &torrent_dir,
+                    &arg_opcode,
+                    &torrent.get_arg(),
+                    &worker_key,
+                    &format!("PNp2p{}.log", job_id),
+                ),
                 job_id,
                 &mut proto,
                 |data| {
@@ -521,20 +519,18 @@ async fn run_download_job(
             run_tool(
                 &pnp2p_path,
                 PNP2P_SELECTS,
-                &HashMap::from([
-                    ("OPCODE", PathValue::from(arg_opcode.clone())),
-                    (
-                        "TORRENTTYPE",
-                        PathValue::from(format!("--{}", torrent.get_arg())),
-                    ),
-                    ("NEGKEY", PathValue::from(worker_key.clone())),
-                    ("SAVE", PathValue::from(torrent_dir.display().to_string())),
-                    ("INDEXES", PathValue::from(list)),
-                    (
-                        "CANCELFILE",
-                        PathValue::from(directory.join("CANCEL").display().to_string()),
-                    ),
-                ]),
+                &{
+                    let mut params = p2p_params(
+                        &directory,
+                        &torrent_dir,
+                        &arg_opcode,
+                        &torrent.get_arg(),
+                        &worker_key,
+                        &format!("PNp2pSelects{}.log", job_id),
+                    );
+                    params.insert("INDEXES", PathValue::from(list));
+                    params
+                },
                 job_id,
                 &mut proto,
                 |data| {
@@ -599,20 +595,18 @@ async fn run_download_job(
             run_tool(
                 &pnp2p_path,
                 PNP2P_SELECT,
-                &HashMap::from([
-                    ("OPCODE", PathValue::from(arg_opcode.clone())),
-                    (
-                        "TORRENTTYPE",
-                        PathValue::from(format!("--{}", torrent.get_arg())),
-                    ),
-                    ("NEGKEY", PathValue::from(worker_key.clone())),
-                    ("SAVE", PathValue::from(torrent_dir.display().to_string())),
-                    ("INDEX", PathValue::from(idx.to_string())),
-                    (
-                        "CANCELFILE",
-                        PathValue::from(directory.join("CANCEL").display().to_string()),
-                    ),
-                ]),
+                &{
+                    let mut params = p2p_params(
+                        &directory,
+                        &torrent_dir,
+                        &arg_opcode,
+                        &torrent.get_arg(),
+                        &worker_key,
+                        &format!("PNp2pSelect{}.log", job_id),
+                    );
+                    params.insert("INDEX", PathValue::from(idx.to_string()));
+                    params
+                },
                 job_id,
                 &mut proto,
                 |data| {
@@ -806,4 +800,63 @@ async fn find_mkv_files(root: &PathBuf) -> Vec<PathBuf> {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pnworker::util::tool_args;
+
+    // Nothing at compile time connects a spec's `CliParam::Path` keys to the map its caller builds,
+    // so every pnp2p spec is walked against the parameters this worker actually passes. Dropping a
+    // key does not fail to build — it fails the download, silently, for whichever selection mode
+    // lost it.
+    #[test]
+    fn every_p2p_spec_gets_the_parameters_it_declares() {
+        let directory = PathBuf::from("DB/work/7");
+        let torrent_dir = directory.join("contents").join("torrent");
+        let base = |log: &str| {
+            p2p_params(
+                &directory,
+                &torrent_dir,
+                "DB/work/7/contents/fetch.torrent",
+                "nomagnet",
+                "key",
+                log,
+            )
+        };
+
+        let whole = base("PNp2p7.log");
+        let args = tool_args(PNP2P_TORRENT, &whole, 7).unwrap();
+        assert!(args.contains(&"DB/work/7/log/PNp2p7.log".replace('/', &MAIN_SEPARATOR.to_string())));
+
+        let mut one = base("PNp2pSelect7.log");
+        one.insert("INDEX", PathValue::from("12".to_string()));
+        let args = tool_args(PNP2P_SELECT, &one, 7).unwrap();
+        assert!(args.contains(&"--select".to_string()));
+        assert!(args.contains(&"12".to_string()));
+
+        let mut many = base("PNp2pSelects7.log");
+        many.insert("INDEXES", PathValue::from("1,2".to_string()));
+        tool_args(PNP2P_SELECTS, &many, 7).unwrap();
+    }
+
+    // The map a call site forgets a key in is the one that fails, and it names the key.
+    #[test]
+    fn a_missing_parameter_names_itself() {
+        let mut params = p2p_params(
+            &PathBuf::from("DB/work/7"),
+            &PathBuf::from("DB/work/7/contents/torrent"),
+            "opcode",
+            "nomagnet",
+            "key",
+            "PNp2pSelect7.log",
+        );
+        params.remove("LOGFILE");
+        params.insert("INDEX", PathValue::from("0".to_string()));
+        assert_eq!(
+            tool_args(PNP2P_SELECT, &params, 7).unwrap_err(),
+            "Missing or wrong type for path key: LOGFILE"
+        );
+    }
 }
