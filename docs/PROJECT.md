@@ -43,6 +43,17 @@ Guidance for coding agents working in this repository.
 - **Async**: `tokio` everywhere. Use `tokio::fs` and `tokio::io::AsyncWriteExt` for new IO; use reqwest client timeouts where appropriate, but `pncurl` uploads intentionally have no request deadline (only connect timeout). Streaming downloads use `resp.chunk().await?`.
 - **Macros**: use `Regex::new(r"...").unwrap()` per-call (no `lazy_static`/`once_cell` — neither is a dep). Logging is `log!(handle_opt, "msg\n")`.
 
+- **Cargo features are declared where they are used.** A feature reached for in this crate belongs in
+  this crate's `Cargo.toml`, even when a dependency already enables it — relying on serenity or
+  capella to turn on `tokio/sync` means their next feature trim breaks this build for a reason
+  nothing points at. `cargo tree -e features -i <crate>` names who asks for what.
+- **There is deliberately no `[profile.release]`.** `lto = "thin"` with `codegen-units = 1` was
+  measured on this tree: build 99s → 401s, all binaries 85 MiB → 58 MiB (`pndc` 42.2 → 33.2), and
+  tracing an 800×600 image through `pntrace` went 59ms → 58ms — noise. Almost all real work is in
+  ffmpeg or on a socket, so there is nothing for cross-crate inlining to win, and `gitsync` rebuilds
+  on the production host, where 4× the build is 4× the deploy downtime. Don't add it back without a
+  benchmark that moves.
+
 Worker-specific patterns live in [WORKER.md](WORKER.md).
 
 ## Environment / runtime
