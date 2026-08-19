@@ -1,5 +1,10 @@
 use crate::lib::mpeg::probe::{probe_media, MediaProbe};
-use crate::lib::mpeg::studio::{PreviewWindow, StudioInput, StudioRenderManifest, StudioRenderTrack, StudioSourceKind, StudioTrackMode, StudioVideoPreset};
+use crate::lib::mpeg::studio::{
+    PREVIEW_DEFAULT_DURATION_MS, PREVIEW_MAX_DURATION_MS, PREVIEW_MIN_DURATION_MS,
+    PREVIEW_TRACK_DEFAULT_DURATION_MS, PreviewPosition, PreviewWindow,
+    STUDIO_MAX_TRACK_VOLUME_PERCENT, StudioInput, StudioRenderManifest, StudioRenderTrack,
+    StudioSourceKind, StudioTrackMode, StudioVideoPreset,
+};
 use crate::pnworker::core::{KeepKind, Preset};
 use crate::pnworker::keep::{now_secs, resolve_studio_keywords, sanitize_keyword};
 use crate::pnworker::server_effects::load_server_settings;
@@ -98,6 +103,87 @@ pub struct StudioMeta {
     #[serde(default)]
     pub extended_timeout: bool,
     pub disowned_at: Option<u64>,
+}
+
+// What a preview job wants to look at. A track anchors the window on that track, a position
+// anchors it on the start/middle/end of whatever it is anchored to, and the duration overrides
+// the default window length. At least one anchor is required; both together are allowed and read
+// as "the start/middle/end of this track".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StudioPreviewRequest {
+    pub track_id: Option<u64>,
+    pub position: Option<PreviewPosition>,
+    pub duration_ms: Option<u64>,
+}
+
+impl StudioPreviewRequest {
+    pub fn new(
+        track_id: Option<u64>,
+        position: Option<PreviewPosition>,
+        duration_ms: Option<u64>,
+    ) -> Result<Self, String> {
+        let request = Self { track_id, position, duration_ms };
+        request.validate()?;
+        Ok(request)
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.track_id.is_none() && self.position.is_none() {
+            return Err("a preview needs a `track`, a `position`, or both".to_string());
+        }
+        if let Some(duration_ms) = self.duration_ms {
+            if !(PREVIEW_MIN_DURATION_MS..=PREVIEW_MAX_DURATION_MS).contains(&duration_ms) {
+                return Err(format!(
+                    "preview duration must be from {} to {} seconds",
+                    PREVIEW_MIN_DURATION_MS / 1000,
+                    PREVIEW_MAX_DURATION_MS / 1000,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    // Track offsets and lengths change with every edit, so the window is resolved against the
+    // Studio the job is actually snapshotting rather than stored with the request.
+    pub fn resolve(&self, meta: &StudioMeta) -> Result<PreviewWindow, String> {
+        self.validate()?;
+        let total_duration_ms = meta.total_duration_ms;
+        if total_duration_ms == 0 {
+            return Err("this Studio has no timeline to preview".to_string());
+        }
+        let Some(track_id) = self.track_id else {
+            let duration_ms = self.duration_ms.unwrap_or(PREVIEW_DEFAULT_DURATION_MS);
+            return Ok(match self.position.unwrap_or(PreviewPosition::Start) {
+                PreviewPosition::Start => PreviewWindow::starting_at(0, total_duration_ms, duration_ms),
+                PreviewPosition::Middle => {
+                    PreviewWindow::centered_with_duration(total_duration_ms / 2, total_duration_ms, duration_ms)
+                }
+                PreviewPosition::End => {
+                    PreviewWindow::ending_at(total_duration_ms, total_duration_ms, duration_ms)
+                }
+            });
+        };
+        let track = meta.tracks.iter().find(|track| track.id == track_id)
+            .ok_or_else(|| format!("track `{}` does not exist", track_id))?;
+        let track_end_ms = track.offset_ms.saturating_add(track.duration_ms);
+        match self.position {
+            None | Some(PreviewPosition::Start) => Ok(PreviewWindow::around_track_start_with_duration(
+                track.offset_ms,
+                total_duration_ms,
+                self.duration_ms.unwrap_or(PREVIEW_TRACK_DEFAULT_DURATION_MS),
+            )),
+            Some(PreviewPosition::Middle) => Ok(PreviewWindow::centered_with_duration(
+                track.offset_ms.saturating_add(track.duration_ms / 2),
+                total_duration_ms,
+                self.duration_ms.unwrap_or(PREVIEW_DEFAULT_DURATION_MS),
+            )),
+            Some(PreviewPosition::End) => Ok(PreviewWindow::ending_at(
+                track_end_ms,
+                total_duration_ms,
+                self.duration_ms.unwrap_or(PREVIEW_DEFAULT_DURATION_MS),
+            )),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -577,17 +663,13 @@ impl StudioStore {
         guild_id: u64,
         user_id: u64,
         job_dir: &Path,
-        preview_track: Option<u64>,
+        preview: Option<StudioPreviewRequest>,
         video_preset: StudioVideoPreset,
     ) -> Result<(PathBuf, StudioMeta), String> {
         let _guard = studio_lock().lock().await;
         let mut meta = self.get_authorized_without_refresh_locked(guild_id, user_id).await?;
-        let preview_window = match preview_track {
-            Some(id) => {
-                let track = meta.tracks.iter().find(|track| track.id == id)
-                    .ok_or_else(|| format!("track `{}` does not exist", id))?;
-                Some(PreviewWindow::around_track_start(track.offset_ms, meta.total_duration_ms))
-            }
+        let preview_window = match preview {
+            Some(request) => Some(request.resolve(&meta)?),
             None => None,
         };
         refresh_meta(&mut meta)?;
@@ -693,22 +775,30 @@ pub fn studio_render_presets(
     }
 }
 
-pub fn studio_job_display(meta: &StudioMeta, preview_track: Option<u64>) -> String {
-    let Some(track_id) = preview_track else {
-        return format!("Pandora Studio `{}`", meta.studio_id);
+pub fn studio_job_display(meta: &StudioMeta, preview: Option<StudioPreviewRequest>) -> String {
+    let mut display = format!("Pandora Studio `{}`", meta.studio_id);
+    let Some(request) = preview else {
+        return display;
     };
-    let Some(track) = meta.tracks.iter().find(|track| track.id == track_id) else {
-        return format!("Pandora Studio `{}`", meta.studio_id);
+    let Ok(window) = request.resolve(meta) else {
+        return display;
     };
-    let window = PreviewWindow::around_track_start(track.offset_ms, meta.total_duration_ms);
-    format!(
-        "Pandora Studio `{}`\nTrack `#{}` offset: `{}`\nPreview window: `{}` - `{}`",
-        meta.studio_id,
-        track.id,
-        format_timestamp(track.offset_ms),
+    if let Some(track) = request.track_id.and_then(|id| meta.tracks.iter().find(|track| track.id == id)) {
+        display.push_str(&format!(
+            "\nTrack `#{}` offset: `{}`",
+            track.id,
+            format_timestamp(track.offset_ms),
+        ));
+    }
+    if let Some(position) = request.position {
+        display.push_str(&format!("\nPreview anchor: `{}`", position.label()));
+    }
+    display.push_str(&format!(
+        "\nPreview window: `{}` - `{}`",
         format_timestamp(window.start_ms),
         format_timestamp(window.start_ms.saturating_add(window.duration_ms)),
-    )
+    ));
+    display
 }
 
 fn format_timestamp(ms: u64) -> String {
@@ -746,8 +836,11 @@ fn apply_track_edit(
     if mode.is_none() && volume_percent.is_none() && duck_volume_percent.is_none() && fade_ms.is_none() {
         return Err("at least one track setting must be supplied".to_string());
     }
-    if volume_percent.is_some_and(|value| value > 200) {
-        return Err("track volume must be a percentage from 0 to 200".to_string());
+    if volume_percent.is_some_and(|value| value > STUDIO_MAX_TRACK_VOLUME_PERCENT) {
+        return Err(format!(
+            "track volume must be a percentage from 0 to {}",
+            STUDIO_MAX_TRACK_VOLUME_PERCENT,
+        ));
     }
     if duck_volume_percent.is_some_and(|value| value > 100) {
         return Err("duck volume must be a percentage from 0 to 100".to_string());
@@ -1219,6 +1312,56 @@ mod tests {
         assert_eq!(track.duration_ms, 2_000);
         assert_eq!(track.trim_start_ms, 0);
         assert_eq!(track.trim_end_ms, 0);
+    }
+
+    fn preview_meta() -> StudioMeta {
+        let mut meta = test_meta();
+        meta.total_duration_ms = 120_000;
+        let mut track = test_track(20_000);
+        track.id = 4;
+        track.offset_ms = 50_000;
+        meta.tracks = vec![track];
+        meta
+    }
+
+    #[test]
+    fn positional_previews_do_not_need_a_track() {
+        let meta = preview_meta();
+        let start = StudioPreviewRequest::new(None, Some(PreviewPosition::Start), None).unwrap();
+        assert_eq!(start.resolve(&meta), Ok(PreviewWindow { start_ms: 0, duration_ms: 30_000 }));
+        let middle = StudioPreviewRequest::new(None, Some(PreviewPosition::Middle), Some(10_000)).unwrap();
+        assert_eq!(middle.resolve(&meta), Ok(PreviewWindow { start_ms: 55_000, duration_ms: 10_000 }));
+        let end = StudioPreviewRequest::new(None, Some(PreviewPosition::End), Some(15_000)).unwrap();
+        assert_eq!(end.resolve(&meta), Ok(PreviewWindow { start_ms: 105_000, duration_ms: 15_000 }));
+    }
+
+    #[test]
+    fn track_previews_keep_their_default_window_and_follow_the_position() {
+        let meta = preview_meta();
+        let track_only = StudioPreviewRequest::new(Some(4), None, None).unwrap();
+        assert_eq!(track_only.resolve(&meta), Ok(PreviewWindow { start_ms: 48_000, duration_ms: 32_000 }));
+        let middle = StudioPreviewRequest::new(Some(4), Some(PreviewPosition::Middle), Some(10_000)).unwrap();
+        assert_eq!(middle.resolve(&meta), Ok(PreviewWindow { start_ms: 55_000, duration_ms: 10_000 }));
+        let end = StudioPreviewRequest::new(Some(4), Some(PreviewPosition::End), Some(10_000)).unwrap();
+        assert_eq!(end.resolve(&meta), Ok(PreviewWindow { start_ms: 60_000, duration_ms: 10_000 }));
+        assert!(StudioPreviewRequest::new(Some(9), None, None).unwrap().resolve(&meta).is_err());
+    }
+
+    #[test]
+    fn preview_requests_need_an_anchor_and_a_sane_duration() {
+        assert!(StudioPreviewRequest::new(None, None, Some(10_000)).is_err());
+        assert!(StudioPreviewRequest::new(None, Some(PreviewPosition::Start), Some(0)).is_err());
+        assert!(StudioPreviewRequest::new(None, Some(PreviewPosition::Start), Some(300_001)).is_err());
+        assert!(StudioPreviewRequest::new(Some(1), None, Some(300_000)).is_ok());
+    }
+
+    #[test]
+    fn track_volume_accepts_up_to_five_hundred_percent() {
+        let mut track = test_track(10_000);
+        assert!(apply_track_edit(&mut track, None, Some(500), None, None).is_ok());
+        assert_eq!(track.volume_percent, 500);
+        assert!(apply_track_edit(&mut track, None, Some(501), None, None).is_err());
+        assert_eq!(track.volume_percent, 500);
     }
 
     #[test]

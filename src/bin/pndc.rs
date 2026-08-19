@@ -689,7 +689,7 @@ fn help_catalog() -> &'static [HelpCommand] {
             name: "studio",
             summary: "Edit kept videos with mixed, replacement, or ducking audio tracks.",
             usage: "/studio create|details|switch|extend|keywords|insert|override|duck|edittrack|move|cut|remove|preview|timeline|done|disown|reown ...",
-            details: "Create and retain multiple Studios from ordered comma-separated keep keywords, then use switch to select which one commands edit. Details shows source, video, track, collaborator, and expiry information. Extend permanently changes the selected Studio's active inactivity timeout from 24 hours to 7 days. Insert overlays audio; override mutes source audio for that track's interval. Duck mixes its input while fading every other audio source to a target percentage and back. Move accepts absolute or +/- relative seconds, MM:SS, HH:MM:SS, and frame offsets ending in f. Keywords atomically replaces the selected Studio's ordered source keeps. Edittrack changes a track's own volume, type, and Duck settings. Cut cumulatively trims decimal seconds from the start, end, or both sides of a track. Share the Studio ID so guild collaborators can reown it. A Studio with no collaborators expires after 30 minutes.",
+            details: "Create and retain multiple Studios from ordered comma-separated keep keywords, then use switch to select which one commands edit. Details shows source, video, track, collaborator, and expiry information. Extend permanently changes the selected Studio's active inactivity timeout from 24 hours to 7 days. Insert overlays audio; override mutes source audio for that track's interval. Duck mixes its input while fading every other audio source to a target percentage and back. Move accepts absolute or +/- relative seconds, MM:SS, HH:MM:SS, and frame offsets ending in f. Keywords atomically replaces the selected Studio's ordered source keeps. Edittrack changes a track's own volume (0-500%), type, and Duck settings. Cut cumulatively trims decimal seconds from the start, end, or both sides of a track. Preview takes a track, a start/middle/end position, or both, plus an optional duration in seconds; audio in any format ffmpeg can decode is accepted. Share the Studio ID so guild collaborators can reown it. A Studio with no collaborators expires after 30 minutes.",
         },
         HelpCommand {
             section: "encode",
@@ -2412,8 +2412,8 @@ impl EventHandler for Handler {
                 CreateCommandOption::new(CommandOptionType::SubCommand, "edittrack", "Edit a Studio track's volume, type, or Duck settings")
                     .add_sub_option(CreateCommandOption::new(CommandOptionType::Integer, "track", "Stable track number").required(true).min_int_value(1))
                     .add_sub_option(
-                        CreateCommandOption::new(CommandOptionType::Integer, "volume", "Track's own volume percentage (0-200)")
-                            .required(false).min_int_value(0).max_int_value(200)
+                        CreateCommandOption::new(CommandOptionType::Integer, "volume", "Track's own volume percentage (0-500)")
+                            .required(false).min_int_value(0).max_int_value(500)
                     )
                     .add_sub_option(
                         CreateCommandOption::new(CommandOptionType::String, "type", "Track type")
@@ -2456,8 +2456,20 @@ impl EventHandler for Handler {
                     .add_sub_option(CreateCommandOption::new(CommandOptionType::Integer, "track", "Stable track number").required(true).min_int_value(1))
             )
             .add_option(
-                CreateCommandOption::new(CommandOptionType::SubCommand, "preview", "Upload a short Dummy MP4 around one track")
-                    .add_sub_option(CreateCommandOption::new(CommandOptionType::Integer, "track", "Stable track number").required(true).min_int_value(1))
+                CreateCommandOption::new(CommandOptionType::SubCommand, "preview", "Upload a short Dummy MP4 of one track or timeline position")
+                    .add_sub_option(CreateCommandOption::new(CommandOptionType::Integer, "track", "Stable track number; omit to preview a timeline position")
+                        .required(false).min_int_value(1))
+                    .add_sub_option(
+                        CreateCommandOption::new(CommandOptionType::String, "position", "Which part to preview; relative to the track when one is given")
+                            .required(false)
+                            .add_string_choice("Start", "start")
+                            .add_string_choice("Middle", "middle")
+                            .add_string_choice("End", "end")
+                    )
+                    .add_sub_option(
+                        CreateCommandOption::new(CommandOptionType::Number, "duration", "Preview length in seconds (1-300)")
+                            .required(false).min_number_value(1.0).max_number_value(300.0)
+                    )
             )
             .add_option(CreateCommandOption::new(CommandOptionType::SubCommand, "timeline", "Upload a visual Studio timeline"))
             .add_option(CreateCommandOption::new(CommandOptionType::SubCommand, "done", "Render and upload the current Studio mix"));

@@ -4,10 +4,50 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+// A track may be boosted well past unity because Studio inputs are frequently quiet voice
+// recordings; the mix is limited afterwards, so the ceiling only bounds the requested gain.
+pub const STUDIO_MAX_TRACK_VOLUME_PERCENT: u16 = 500;
+
+pub const PREVIEW_MIN_DURATION_MS: u64 = 1_000;
+pub const PREVIEW_MAX_DURATION_MS: u64 = 300_000;
+pub const PREVIEW_DEFAULT_DURATION_MS: u64 = 30_000;
+// A track preview keeps two seconds of lead-in, so its default window is two seconds longer
+// than a positional one and still ends thirty seconds after the track starts.
+pub const PREVIEW_TRACK_PREROLL_MS: u64 = 2_000;
+pub const PREVIEW_TRACK_DEFAULT_DURATION_MS: u64 = PREVIEW_DEFAULT_DURATION_MS + PREVIEW_TRACK_PREROLL_MS;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StudioSourceKind {
     Encode,
     Backup,
+}
+
+// Where a preview window sits inside whatever it is anchored to — the whole timeline, or one
+// track when the request names one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PreviewPosition {
+    Start,
+    Middle,
+    End,
+}
+
+impl PreviewPosition {
+    pub fn label(self) -> &'static str {
+        match self {
+            PreviewPosition::Start => "start",
+            PreviewPosition::Middle => "middle",
+            PreviewPosition::End => "end",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "start" => Some(PreviewPosition::Start),
+            "middle" => Some(PreviewPosition::Middle),
+            "end" => Some(PreviewPosition::End),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,15 +101,48 @@ pub struct PreviewWindow {
 
 impl PreviewWindow {
     pub fn centered(center_ms: u64, total_duration_ms: u64) -> Self {
-        let duration_ms = 30_000.min(total_duration_ms);
+        Self::centered_with_duration(center_ms, total_duration_ms, PREVIEW_DEFAULT_DURATION_MS)
+    }
+
+    pub fn centered_with_duration(center_ms: u64, total_duration_ms: u64, duration_ms: u64) -> Self {
+        let duration_ms = duration_ms.min(total_duration_ms);
         let ideal_start = center_ms.saturating_sub(duration_ms / 2);
         let start_ms = ideal_start.min(total_duration_ms.saturating_sub(duration_ms));
         Self { start_ms, duration_ms }
     }
 
+    // A window that begins at `start_ms` and is shortened by the end of the video.
+    pub fn starting_at(start_ms: u64, total_duration_ms: u64, duration_ms: u64) -> Self {
+        let start_ms = start_ms.min(total_duration_ms);
+        let end_ms = start_ms.saturating_add(duration_ms).min(total_duration_ms);
+        Self { start_ms, duration_ms: end_ms.saturating_sub(start_ms) }
+    }
+
+    // A window that finishes at `end_ms` and is shortened by the start of the video.
+    pub fn ending_at(end_ms: u64, total_duration_ms: u64, duration_ms: u64) -> Self {
+        let end_ms = end_ms.min(total_duration_ms);
+        let start_ms = end_ms.saturating_sub(duration_ms);
+        Self { start_ms, duration_ms: end_ms.saturating_sub(start_ms) }
+    }
+
     pub fn around_track_start(track_start_ms: u64, total_duration_ms: u64) -> Self {
-        let start_ms = track_start_ms.saturating_sub(2_000).min(total_duration_ms);
-        let end_ms = track_start_ms.saturating_add(30_000).min(total_duration_ms);
+        Self::around_track_start_with_duration(
+            track_start_ms,
+            total_duration_ms,
+            PREVIEW_TRACK_DEFAULT_DURATION_MS,
+        )
+    }
+
+    pub fn around_track_start_with_duration(
+        track_start_ms: u64,
+        total_duration_ms: u64,
+        duration_ms: u64,
+    ) -> Self {
+        let preroll_ms = PREVIEW_TRACK_PREROLL_MS.min(duration_ms);
+        let start_ms = track_start_ms.saturating_sub(preroll_ms).min(total_duration_ms);
+        let end_ms = track_start_ms
+            .saturating_add(duration_ms - preroll_ms)
+            .min(total_duration_ms);
         let duration_ms = end_ms.saturating_sub(start_ms);
         Self { start_ms, duration_ms }
     }
@@ -246,7 +319,7 @@ pub fn build_studio_audio_filter(manifest: &StudioRenderManifest) -> String {
             graph.push(format!(
                 "[studio-track-{}-raw]volume={:.4}{}",
                 track.id,
-                track.volume_percent.min(200) as f64 / 100.0,
+                track.volume_percent.min(STUDIO_MAX_TRACK_VOLUME_PERCENT) as f64 / 100.0,
                 label,
             ));
             label
@@ -399,6 +472,28 @@ mod tests {
         assert_eq!(PreviewWindow::around_track_start(5_000, 60_000), PreviewWindow { start_ms: 3_000, duration_ms: 32_000 });
         assert_eq!(PreviewWindow::around_track_start(1_000, 60_000), PreviewWindow { start_ms: 0, duration_ms: 31_000 });
         assert_eq!(PreviewWindow::around_track_start(50_000, 60_000), PreviewWindow { start_ms: 48_000, duration_ms: 12_000 });
+    }
+
+    #[test]
+    fn positional_windows_are_clipped_to_the_video() {
+        assert_eq!(PreviewWindow::starting_at(0, 60_000, 10_000), PreviewWindow { start_ms: 0, duration_ms: 10_000 });
+        assert_eq!(PreviewWindow::starting_at(55_000, 60_000, 10_000), PreviewWindow { start_ms: 55_000, duration_ms: 5_000 });
+        assert_eq!(PreviewWindow::ending_at(60_000, 60_000, 10_000), PreviewWindow { start_ms: 50_000, duration_ms: 10_000 });
+        assert_eq!(PreviewWindow::ending_at(4_000, 60_000, 10_000), PreviewWindow { start_ms: 0, duration_ms: 4_000 });
+        assert_eq!(PreviewWindow::centered_with_duration(30_000, 60_000, 10_000), PreviewWindow { start_ms: 25_000, duration_ms: 10_000 });
+        assert_eq!(PreviewWindow::centered_with_duration(30_000, 8_000, 10_000), PreviewWindow { start_ms: 0, duration_ms: 8_000 });
+    }
+
+    #[test]
+    fn custom_track_window_keeps_the_two_second_lead_in() {
+        assert_eq!(
+            PreviewWindow::around_track_start_with_duration(10_000, 60_000, 12_000),
+            PreviewWindow { start_ms: 8_000, duration_ms: 12_000 },
+        );
+        assert_eq!(
+            PreviewWindow::around_track_start_with_duration(10_000, 60_000, 1_000),
+            PreviewWindow { start_ms: 9_000, duration_ms: 1_000 },
+        );
     }
 
     #[test]

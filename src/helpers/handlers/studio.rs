@@ -1,9 +1,12 @@
 use super::*;
 use pandora_toolchain::lib::image::timeline::{render_timeline, TimelineSpec, TimelineTrack};
-use pandora_toolchain::lib::mpeg::studio::StudioTrackMode;
+use pandora_toolchain::lib::mpeg::studio::{
+    PreviewPosition, StudioTrackMode, PREVIEW_MAX_DURATION_MS, PREVIEW_MIN_DURATION_MS,
+    STUDIO_MAX_TRACK_VOLUME_PERCENT,
+};
 use pandora_toolchain::pnworker::core::StudioJobRequest;
 use pandora_toolchain::pnworker::studio::{
-    studio_job_display, studio_render_presets, StudioMeta, StudioStore,
+    studio_job_display, studio_render_presets, StudioMeta, StudioPreviewRequest, StudioStore,
 };
 use serenity::builder::CreateAttachment;
 use std::path::{Path, PathBuf};
@@ -208,9 +211,12 @@ pub async fn handle_studio(
                 None => None,
             };
             let volume_percent = match option_i64(command, "volume") {
-                Some(value) if (0..=200).contains(&value) => Some(value as u16),
+                Some(value) if (0..=STUDIO_MAX_TRACK_VOLUME_PERCENT as i64).contains(&value) => Some(value as u16),
                 Some(_) => {
-                    command_error(ctx, command, "Error: `volume` must be a percentage from 0 to 200.").await;
+                    command_error(ctx, command, format!(
+                        "Error: `volume` must be a percentage from 0 to {}.",
+                        STUDIO_MAX_TRACK_VOLUME_PERCENT,
+                    )).await;
                     return;
                 }
                 None => None,
@@ -367,13 +373,52 @@ pub async fn handle_studio(
             }
         }
         "preview" => {
-            let Some(track_id) = positive_track_option(ctx, command).await else {
-                return;
+            let track_id = match option_i64(command, "track") {
+                Some(value) if value > 0 => Some(value as u64),
+                Some(_) => {
+                    command_error(ctx, command, "Error: `track` must be a positive track number.").await;
+                    return;
+                }
+                None => None,
+            };
+            let position = match option_trimmed(command, "position") {
+                Some(raw) => match PreviewPosition::parse(&raw) {
+                    Some(position) => Some(position),
+                    None => {
+                        command_error(ctx, command, "Error: `position` must be start, middle, or end.").await;
+                        return;
+                    }
+                },
+                None => None,
+            };
+            let duration_ms = match option_f64(command, "duration") {
+                Some(value) if value.is_finite()
+                    && value >= PREVIEW_MIN_DURATION_MS as f64 / 1000.0
+                    && value <= PREVIEW_MAX_DURATION_MS as f64 / 1000.0 =>
+                {
+                    Some((value * 1000.0).round() as u64)
+                }
+                Some(_) => {
+                    command_error(ctx, command, format!(
+                        "Error: `duration` must be from {} to {} seconds.",
+                        PREVIEW_MIN_DURATION_MS / 1000,
+                        PREVIEW_MAX_DURATION_MS / 1000,
+                    )).await;
+                    return;
+                }
+                None => None,
+            };
+            let request = match StudioPreviewRequest::new(track_id, position, duration_ms) {
+                Ok(request) => request,
+                Err(e) => {
+                    command_error(ctx, command, format!("Error: {}.", e)).await;
+                    return;
+                }
             };
             let Some(response) = working_response(ctx, command, "Preparing Studio preview...").await else {
                 return;
             };
-            queue_studio_job(ctx, command, tx, store, guild_id, user_id, response, Some(track_id)).await;
+            queue_studio_job(ctx, command, tx, store, guild_id, user_id, response, Some(request)).await;
         }
         "done" => {
             let Some(response) = working_response(ctx, command, "Preparing Studio output...").await else {
@@ -393,9 +438,9 @@ async fn queue_studio_job(
     guild_id: u64,
     user_id: u64,
     mut response: Message,
-    preview_track: Option<u64>,
+    preview_request: Option<StudioPreviewRequest>,
 ) {
-    let preview = preview_track.is_some();
+    let preview = preview_request.is_some();
     let current = match store.inspect_current(guild_id, user_id).await {
         Ok(meta) => meta,
         Err(e) => {
@@ -408,7 +453,7 @@ async fn queue_studio_job(
     let directory = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
         .join("DB").join("work").join(job_id.to_string());
     let (manifest, meta) = match store
-        .stage_render_snapshot(guild_id, user_id, &directory, preview_track, video_preset)
+        .stage_render_snapshot(guild_id, user_id, &directory, preview_request, video_preset)
         .await
     {
         Ok(snapshot) => snapshot,
@@ -433,7 +478,7 @@ async fn queue_studio_job(
         read_lang(command.guild_id),
         Some(guild_id),
     );
-    job.display_link = Some(studio_job_display(&meta, preview_track));
+    job.display_link = Some(studio_job_display(&meta, preview_request));
     job.preset = job_preset;
     job.studio = Some(StudioJobRequest { manifest });
     if tx.send(JobClass::Job(job)).await.is_err() {

@@ -271,11 +271,24 @@ pub fn ffprobe_has_audio_stream(path: &Path) -> bool {
     output.map(|out| out.status.success() && !out.stdout.is_empty()).unwrap_or(false)
 }
 
+// ffprobe reports a duration as either a JSON string or a number depending on the demuxer, and
+// reports "N/A" for the ones that cannot measure it at all.
+fn probe_duration_ms(value: Option<&serde_json::Value>) -> Option<u64> {
+    let seconds = match value? {
+        serde_json::Value::String(raw) => raw.trim().parse::<f64>().ok()?,
+        other => other.as_f64()?,
+    };
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return None;
+    }
+    Some((seconds * 1000.0).ceil() as u64)
+}
+
 pub fn ffprobe_media(path: &Path) -> Option<MediaProbe> {
     let output = Command::new(resolve_runtime_binary("ffprobe"))
         .args([
             "-v", "error",
-            "-show_entries", "format=duration:stream=codec_type,width,height,r_frame_rate",
+            "-show_entries", "format=duration:stream=codec_type,width,height,r_frame_rate,duration",
             "-of", "json",
             &path.to_string_lossy(),
         ])
@@ -287,17 +300,10 @@ pub fn ffprobe_media(path: &Path) -> Option<MediaProbe> {
     let streams = value.get("streams")?.as_array()?;
     let video = streams.iter().find(|s| s.get("codec_type").and_then(|v| v.as_str()) == Some("video"));
     let audio = streams.iter().any(|s| s.get("codec_type").and_then(|v| v.as_str()) == Some("audio"));
-    let duration = value.get("format")?.get("duration")?.as_str()
-        .or_else(|| value.get("format")?.get("duration")?.as_f64().map(|_| ""))?;
-    let duration_ms = if duration.is_empty() {
-        value.get("format")?.get("duration")?.as_f64().and_then(|d| {
-            if d.is_finite() && d > 0.0 { Some((d * 1000.0).ceil() as u64) } else { None }
-        })?
-    } else {
-        let d = duration.parse::<f64>().ok()?;
-        if !d.is_finite() || d <= 0.0 { return None; }
-        (d * 1000.0).ceil() as u64
-    };
+    // Bare audio streams (ADTS AAC, raw AC-3, some Ogg/WavPack files) carry no container
+    // duration, so fall back to the longest stream duration before giving up on the file.
+    let duration_ms = probe_duration_ms(value.get("format").and_then(|f| f.get("duration")))
+        .or_else(|| streams.iter().filter_map(|s| probe_duration_ms(s.get("duration"))).max())?;
     let (fps_num, fps_den) = video
         .and_then(|s| s.get("r_frame_rate").and_then(|v| v.as_str()))
         .and_then(|rate| {
@@ -341,7 +347,21 @@ pub fn ffprobe_video_height(path: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::duration_to_centiseconds;
+    use super::{duration_to_centiseconds, probe_duration_ms};
+
+    #[test]
+    fn probe_duration_accepts_string_and_number_forms() {
+        assert_eq!(probe_duration_ms(Some(&serde_json::json!("12.3456"))), Some(12_346));
+        assert_eq!(probe_duration_ms(Some(&serde_json::json!(1.5))), Some(1_500));
+    }
+
+    #[test]
+    fn probe_duration_rejects_unmeasured_streams() {
+        assert_eq!(probe_duration_ms(None), None);
+        assert_eq!(probe_duration_ms(Some(&serde_json::json!("N/A"))), None);
+        assert_eq!(probe_duration_ms(Some(&serde_json::json!("0"))), None);
+        assert_eq!(probe_duration_ms(Some(&serde_json::json!(serde_json::Value::Null))), None);
+    }
 
     #[test]
     fn duration_rounds_up_to_ass_centiseconds() {

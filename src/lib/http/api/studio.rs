@@ -15,11 +15,14 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 
 use crate::lib::image::timeline::{TimelineSpec, TimelineTrack, render_timeline};
-use crate::lib::mpeg::studio::StudioTrackMode;
+use crate::lib::mpeg::studio::{
+    PREVIEW_MAX_DURATION_MS, PREVIEW_MIN_DURATION_MS, PreviewPosition,
+    STUDIO_MAX_TRACK_VOLUME_PERCENT, StudioTrackMode,
+};
 use crate::lib::p2p::nyaaise::TorrentType;
 use crate::pnworker::core::{Job, JobType, StudioJobRequest};
 use crate::pnworker::studio::{
-    StudioMeta, StudioStore, studio_job_display, studio_render_presets,
+    StudioMeta, StudioPreviewRequest, StudioStore, studio_job_display, studio_render_presets,
 };
 
 fn identity(auth: &ApiAuth, state: &AppState) -> Result<(u64, u64), Response> {
@@ -347,8 +350,11 @@ pub(super) async fn edit_track(
         Ok(mode) => mode,
         Err(response) => return response,
     };
-    if req.volume_percent.is_some_and(|volume| volume > 200) {
-        return (StatusCode::BAD_REQUEST, "volume_percent must be from 0 to 200").into_response();
+    if req.volume_percent.is_some_and(|volume| volume > STUDIO_MAX_TRACK_VOLUME_PERCENT) {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("volume_percent must be from 0 to {}", STUDIO_MAX_TRACK_VOLUME_PERCENT),
+        ).into_response();
     }
     if req.duck_volume_percent.is_some_and(|volume| volume > 100) {
         return (StatusCode::BAD_REQUEST, "duck_volume_percent must be from 0 to 100").into_response();
@@ -575,16 +581,33 @@ fn parse_byte_range(raw: &str, file_size: u64) -> Option<(u64, u64)> {
     (end >= start).then_some((start, end))
 }
 
+// The browser editor decodes track media itself, so every container Studio accepts gets a real
+// media type; anything unrecognised still streams as bytes and is left to content sniffing.
 fn media_content_type(path: &FsPath) -> &'static str {
     match path.extension().and_then(|extension| extension.to_str()).map(str::to_ascii_lowercase).as_deref() {
         Some("mp4") | Some("m4v") | Some("mov") => "video/mp4",
         Some("webm") => "video/webm",
         Some("mkv") => "video/x-matroska",
-        Some("mp3") => "audio/mpeg",
-        Some("m4a") | Some("aac") => "audio/mp4",
-        Some("wav") => "audio/wav",
-        Some("ogg") | Some("oga") | Some("opus") => "audio/ogg",
+        Some("avi") => "video/x-msvideo",
+        Some("mp3") | Some("mp2") => "audio/mpeg",
+        Some("m4a") | Some("m4b") | Some("aac") | Some("alac") => "audio/mp4",
+        Some("wav") | Some("wave") => "audio/wav",
+        Some("ogg") | Some("oga") | Some("spx") => "audio/ogg",
+        Some("opus") => "audio/opus",
+        Some("weba") => "audio/webm",
+        Some("mka") => "audio/x-matroska",
         Some("flac") => "audio/flac",
+        Some("aiff") | Some("aif") | Some("aifc") => "audio/aiff",
+        Some("wma") => "audio/x-ms-wma",
+        Some("ac3") => "audio/ac3",
+        Some("dts") => "audio/vnd.dts",
+        Some("amr") => "audio/amr",
+        Some("caf") => "audio/x-caf",
+        Some("ape") => "audio/x-ape",
+        Some("wv") => "audio/x-wavpack",
+        Some("tta") => "audio/x-tta",
+        Some("au") | Some("snd") => "audio/basic",
+        Some("mid") | Some("midi") => "audio/midi",
         _ => "application/octet-stream",
     }
 }
@@ -624,6 +647,10 @@ pub(super) struct RenderReq {
     #[serde(default)]
     track_id: Option<u64>,
     #[serde(default)]
+    position: Option<String>,
+    #[serde(default)]
+    duration_seconds: Option<f64>,
+    #[serde(default)]
     channel_id: Option<String>,
 }
 
@@ -632,10 +659,35 @@ pub(super) async fn preview(
     Extension(auth): Extension<ApiAuth>,
     Json(req): Json<RenderReq>,
 ) -> Response {
-    let Some(track_id) = req.track_id else {
-        return (StatusCode::BAD_REQUEST, "track_id is required").into_response();
+    let position = match req.position.as_deref().map(str::trim).filter(|raw| !raw.is_empty()) {
+        Some(raw) => match PreviewPosition::parse(raw) {
+            Some(position) => Some(position),
+            None => return (StatusCode::BAD_REQUEST, "position must be start, middle, or end").into_response(),
+        },
+        None => None,
     };
-    queue_render(state, auth, req.channel_id, Some(track_id)).await
+    let duration_ms = match req.duration_seconds {
+        Some(seconds) if seconds.is_finite()
+            && seconds >= PREVIEW_MIN_DURATION_MS as f64 / 1000.0
+            && seconds <= PREVIEW_MAX_DURATION_MS as f64 / 1000.0 =>
+        {
+            Some((seconds * 1000.0).round() as u64)
+        }
+        Some(_) => return (
+            StatusCode::BAD_REQUEST,
+            format!(
+                "duration_seconds must be from {} to {}",
+                PREVIEW_MIN_DURATION_MS / 1000,
+                PREVIEW_MAX_DURATION_MS / 1000,
+            ),
+        ).into_response(),
+        None => None,
+    };
+    let request = match StudioPreviewRequest::new(req.track_id, position, duration_ms) {
+        Ok(request) => request,
+        Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
+    };
+    queue_render(state, auth, req.channel_id, Some(request)).await
 }
 
 pub(super) async fn render(
@@ -650,7 +702,7 @@ async fn queue_render(
     state: AppState,
     auth: ApiAuth,
     channel_id: Option<String>,
-    preview_track: Option<u64>,
+    preview_request: Option<StudioPreviewRequest>,
 ) -> Response {
     let (guild_id, user_id) = match identity(&auth, &state) {
         Ok(ids) => ids,
@@ -668,7 +720,7 @@ async fn queue_render(
         Ok(meta) => meta,
         Err(error) => return error_response(error),
     };
-    let preview = preview_track.is_some();
+    let preview = preview_request.is_some();
     let (job_preset, video_preset) = studio_render_presets(current.source_kind, guild_id, preview);
     let job_type = if preview { JobType::StudioPreview } else { JobType::Studio };
     let mut job = Job::new_api(
@@ -684,13 +736,13 @@ async fn queue_render(
         guild_id,
         user_id,
         &job.directory,
-        preview_track,
+        preview_request,
         video_preset,
     ).await {
         Ok(snapshot) => snapshot,
         Err(error) => return error_response(error),
     };
-    job.display_link = Some(studio_job_display(&meta, preview_track));
+    job.display_link = Some(studio_job_display(&meta, preview_request));
     job.preset = job_preset;
     job.studio = Some(StudioJobRequest { manifest });
     submit(&state, job).await
