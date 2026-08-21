@@ -369,10 +369,15 @@ async fn akiraconfirm_response(
     command: &serenity::all::CommandInteraction,
     content: impl Into<String>,
 ) {
-    command
+    // The command defers before it touches Akira, so a failed edit is the one outcome the caller
+    // never sees: the ephemeral reply keeps saying the bot is thinking. Report it here or the whole
+    // run leaves no trace anywhere.
+    if let Err(e) = command
         .edit_response(ctx, EditInteractionResponse::new().content(content.into()))
         .await
-        .ok();
+    {
+        eprintln!("[akiraconfirm] response edit failed: {}", e);
+    }
 }
 
 #[cfg(test)]
