@@ -23,6 +23,7 @@ pub struct CreditOverrides {
     ts: Option<Option<String>>,
     qc: Option<Option<String>>,
     template: Option<i64>,
+    acix_id: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,7 +71,16 @@ impl CreditOverrides {
             ts: role_override(ts),
             qc: role_override(qc),
             template: None,
+            acix_id: None,
         })
+    }
+
+    // The AnimeciX title id a caller already resolved. Unlike the edits below this is a lookup
+    // result rather than an operator choice, so it is carried onto the record outside the refusal
+    // gate: a record whose first half already published still needs the id to retry the second.
+    pub fn with_acix_id(mut self, acix_id: i64) -> Self {
+        self.acix_id = Some(acix_id);
+        self
     }
 
     // Publishing under a fansub other than the one queued at upload time is the same kind of
@@ -351,6 +361,14 @@ pub async fn confirm_acix_with_overrides(
     if pending.fully_published() {
         return Err("this job was already published to AnimeciX multishare and multiple".to_string());
     }
+    // A caller that already resolved the title id hands it over before anything else. The record a
+    // smartcode queued carries only the channel's MyAnimeList id, and when the two catalogs file the
+    // anime under different ids that id reaches nothing — so without this the search below repeats
+    // the miss a TMDB import had already settled.
+    if let Some(acix_id) = overrides.acix_id {
+        pending.acix.acix_id = Some(acix_id);
+        persist_pending(db, job_id, &mut pending).await?;
+    }
     if overrides.has_any() {
         pending.apply_overrides(&overrides)?;
         persist_pending(db, job_id, &mut pending).await?;
@@ -481,6 +499,23 @@ mod tests {
         let json = serde_json::to_string(&AcixPending::new(publish, "https://drive".to_string())).unwrap();
         let pending: AcixPending = serde_json::from_str(&json).unwrap();
         assert_eq!(pending.acix.acix_id, Some(9383));
+    }
+
+    // A carried title id is a lookup result, not an operator edit, so it must not read as an
+    // override — otherwise retrying the failed half of a partly published record would be refused
+    // for carrying the very id that retry needs.
+    #[test]
+    fn a_carried_acix_id_is_not_an_override_and_survives_a_partial_publish() {
+        let overrides = CreditOverrides::from_values(None, None, None, None, None)
+            .unwrap()
+            .with_acix_id(9383);
+        assert_eq!(overrides.acix_id, Some(9383));
+        assert!(!overrides.has_any());
+
+        let mut pending = AcixPending::new(acix(), "https://drive".to_string());
+        pending.multishare_status = Some(PublishState::Published);
+        pending.multiple_status = Some(PublishState::Failed);
+        assert!(pending.apply_overrides(&overrides).is_ok());
     }
 
     fn acix() -> AcixPublish {

@@ -783,6 +783,14 @@ async fn publish_acix(
         (Some((template, _)), true) => overrides.with_template(*template),
         _ => overrides,
     };
+    // Same story for the title id: the record built just above already stores it, but one queued at
+    // upload time was resolved from the channel's MyAnimeList id alone. A selection that had to
+    // settle the id through TMDB has to hand it over, or confirm repeats the search that just
+    // missed and reports it as a plain no-match.
+    let overrides = match (acix_id, has_pending) {
+        (Some(acix_id), true) => overrides.with_acix_id(acix_id),
+        _ => overrides,
+    };
     match confirm_acix_with_overrides(db, job_id, overrides).await {
         Ok(value) => {
             let detail = match &overridden {
