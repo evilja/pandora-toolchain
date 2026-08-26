@@ -9,6 +9,7 @@ pub mod logging;
 pub mod mpeg;
 pub mod p2p;
 pub mod protocol;
+pub mod publishlog;
 pub mod secret;
 pub mod subs;
 pub mod torrent;

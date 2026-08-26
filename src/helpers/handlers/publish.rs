@@ -2,6 +2,7 @@ use super::anizmconfirm::{credit, job_embed_links, resolve_or_create_translation
 use super::fansubs::FansubOption;
 use super::openanimeconfirm::{channel_credits, link_value, plan_players};
 use super::*;
+use pandora_toolchain::lib::publishlog::log_publish;
 use pandora_toolchain::lib::db::core::JobDb;
 use pandora_toolchain::lib::http::acix::{AliasMatch, AnimeCix, MediaType, SearchHit};
 use pandora_toolchain::lib::http::anizm::{
@@ -425,6 +426,7 @@ pub async fn handle_publish(ctx: &Context, command: &serenity::all::CommandInter
             return;
         }
     };
+    log_publish(job_id, "/publish", format!("invoked by user {} in channel {}", command.user.id, command.channel_id)).await;
     let season_option = match option_i64(command, "season") {
         Some(season) if season >= 1 => Some(season),
         Some(_) => {
@@ -473,23 +475,23 @@ pub async fn handle_publish(ctx: &Context, command: &serenity::all::CommandInter
     let db = match JobDb::new().await {
         Ok(db) => db,
         Err(e) => {
-            publish_response(ctx, command, format!("Database error: {}", e)).await;
+            publish_response(ctx, command, job_id, format!("Database error: {}", e)).await;
             return;
         }
     };
     let row = match db.get_job(job_id).await {
         Ok(Some(row)) => row,
         Ok(None) => {
-            publish_response(ctx, command, "Error: job not found.").await;
+            publish_response(ctx, command, job_id, "Error: job not found.").await;
             return;
         }
         Err(e) => {
-            publish_response(ctx, command, format!("Database error: {}", e)).await;
+            publish_response(ctx, command, job_id, format!("Database error: {}", e)).await;
             return;
         }
     };
     if row.stage != 6 {
-        publish_response(ctx, command, "Error: job is not uploaded yet.").await;
+        publish_response(ctx, command, job_id, "Error: job is not uploaded yet.").await;
         return;
     }
     let uploaded: serde_json::Value = match row.uploaded_links.as_deref() {
@@ -499,6 +501,7 @@ pub async fn handle_publish(ctx: &Context, command: &serenity::all::CommandInter
                 publish_response(
                     ctx,
                     command,
+                    job_id,
                     format!("Error: uploaded links JSON is invalid: {}", e),
                 )
                 .await;
@@ -506,7 +509,7 @@ pub async fn handle_publish(ctx: &Context, command: &serenity::all::CommandInter
             }
         },
         None => {
-            publish_response(ctx, command, "Error: job has no uploaded links.").await;
+            publish_response(ctx, command, job_id, "Error: job has no uploaded links.").await;
             return;
         }
     };
@@ -514,7 +517,7 @@ pub async fn handle_publish(ctx: &Context, command: &serenity::all::CommandInter
     let overrides = match FansubOverrides::resolve(command).await {
         Ok(overrides) => overrides,
         Err(e) => {
-            publish_response(ctx, command, format!("Error: {}", e)).await;
+            publish_response(ctx, command, job_id, format!("Error: {}", e)).await;
             return;
         }
     };
@@ -537,7 +540,7 @@ pub async fn handle_publish(ctx: &Context, command: &serenity::all::CommandInter
         Some(selection) => match resolve_selection(selection).await {
             Ok(resolved) => resolved,
             Err(e) => {
-                publish_response(ctx, command, e).await;
+                publish_response(ctx, command, job_id, e).await;
                 return;
             }
         },
@@ -552,6 +555,7 @@ pub async fn handle_publish(ctx: &Context, command: &serenity::all::CommandInter
                         publish_response(
                             ctx,
                             command,
+                            job_id,
                             "Error: this job did not record an anime and this channel is not attached to one. Pass `anime`.",
                         )
                         .await;
@@ -565,6 +569,7 @@ pub async fn handle_publish(ctx: &Context, command: &serenity::all::CommandInter
                 publish_response(
                     ctx,
                     command,
+                    job_id,
                     format!(
                         "Error: `{}` is recorded with MAL id {}, which no site can resolve. Pass `anime`.",
                         name, mal_id
@@ -605,6 +610,7 @@ pub async fn handle_publish(ctx: &Context, command: &serenity::all::CommandInter
             publish_response(
                 ctx,
                 command,
+                job_id,
                 "Error: this job did not record an episode number. Pass `episode`.",
             )
             .await;
@@ -679,7 +685,7 @@ pub async fn handle_publish(ctx: &Context, command: &serenity::all::CommandInter
     for note in &notes {
         lines.push(format!("_Note: {}_", note));
     }
-    publish_response(ctx, command, lines.join("\n")).await;
+    publish_response(ctx, command, job_id, lines.join("\n")).await;
 }
 
 // AnimeciX publishes from the record queued at upload time. A job that never queued one (anything
@@ -1124,12 +1130,20 @@ fn site_outcome(
 async fn publish_response(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,
+    job_id: u64,
     content: impl Into<String>,
 ) {
-    command
-        .edit_response(ctx, EditInteractionResponse::new().content(content.into()))
+    let content = content.into();
+    log_publish(job_id, "/publish", &content).await;
+    // The command defers before it talks to the provider, so a lost reply edit leaves the
+    // ephemeral stuck on "thinking" with no trace anywhere else. Record it either way.
+    if let Err(e) = command
+        .edit_response(ctx, EditInteractionResponse::new().content(content))
         .await
-        .ok();
+    {
+        eprintln!("[/publish] response edit failed: {}", e);
+        log_publish(job_id, "/publish", format!("response edit failed: {}", e)).await;
+    }
 }
 
 #[cfg(test)]

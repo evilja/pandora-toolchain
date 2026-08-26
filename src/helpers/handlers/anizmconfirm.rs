@@ -1,4 +1,5 @@
 use super::*;
+use pandora_toolchain::lib::publishlog::log_publish;
 use pandora_toolchain::lib::http::anizm::{
     episode_not_listed, fetch_publishing_catalog, find_episode_option, find_option, format_episode,
     resolve_translation_option, Anizm, EpisodeCreate, SelectOption, TranslationCreate, VideoCreate,
@@ -46,6 +47,7 @@ pub async fn handle_anizmconfirm(ctx: &Context, command: &serenity::all::Command
             return;
         }
     };
+    log_publish(job_id, "/anizmconfirm", format!("invoked by user {} in channel {}", command.user.id, command.channel_id)).await;
     let episode = match option_f64(command, "episode") {
         Some(episode) if episode > 0.0 => episode,
         _ => {
@@ -110,7 +112,7 @@ pub async fn handle_anizmconfirm(ctx: &Context, command: &serenity::all::Command
     let embeds = match embed_targets(command, job_id).await {
         Ok(embeds) => embeds,
         Err(e) => {
-            anizm_response(ctx, command, e).await;
+            anizm_response(ctx, command, job_id, e).await;
             return;
         }
     };
@@ -118,7 +120,7 @@ pub async fn handle_anizmconfirm(ctx: &Context, command: &serenity::all::Command
     let catalog = match fetch_publishing_catalog().await {
         Ok(catalog) => catalog,
         Err(e) => {
-            anizm_response(ctx, command, format!("Failed to load Anizm staff panel: {}", e)).await;
+            anizm_response(ctx, command, job_id, format!("Failed to load Anizm staff panel: {}", e)).await;
             return;
         }
     };
@@ -128,6 +130,7 @@ pub async fn handle_anizmconfirm(ctx: &Context, command: &serenity::all::Command
             anizm_response(
                 ctx,
                 command,
+                job_id,
                 format!(
                     "Error: Anizm anime id `{}` is not offered by this account's staff panel.",
                     anime_id
@@ -143,6 +146,7 @@ pub async fn handle_anizmconfirm(ctx: &Context, command: &serenity::all::Command
             anizm_response(
                 ctx,
                 command,
+                job_id,
                 format!(
                     "Error: Anizm fansub id `{}` is no longer offered by this account. Reselect it with `/edit anizm_fansub:`.",
                     fansub_id
@@ -162,7 +166,7 @@ pub async fn handle_anizmconfirm(ctx: &Context, command: &serenity::all::Command
     let client = match Anizm::from_env() {
         Ok(client) => client,
         Err(e) => {
-            anizm_response(ctx, command, format!("Anizm client error: {}", e)).await;
+            anizm_response(ctx, command, job_id, format!("Anizm client error: {}", e)).await;
             return;
         }
     };
@@ -190,7 +194,7 @@ pub async fn handle_anizmconfirm(ctx: &Context, command: &serenity::all::Command
     {
         Ok(option) => option,
         Err(e) => {
-            anizm_response(ctx, command, format!("Error: {}", e)).await;
+            anizm_response(ctx, command, job_id, format!("Error: {}", e)).await;
             return;
         }
     };
@@ -214,7 +218,7 @@ pub async fn handle_anizmconfirm(ctx: &Context, command: &serenity::all::Command
     {
         Ok(translation) => translation,
         Err(e) => {
-            anizm_response(ctx, command, format!("Error: {}", e)).await;
+            anizm_response(ctx, command, job_id, format!("Error: {}", e)).await;
             return;
         }
     };
@@ -238,6 +242,7 @@ pub async fn handle_anizmconfirm(ctx: &Context, command: &serenity::all::Command
     anizm_response(
         ctx,
         command,
+        job_id,
         summary(
             job_id,
             &anime,
@@ -444,12 +449,20 @@ fn summary(
 async fn anizm_response(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,
+    job_id: u64,
     content: impl Into<String>,
 ) {
-    command
-        .edit_response(ctx, EditInteractionResponse::new().content(content.into()))
+    let content = content.into();
+    log_publish(job_id, "/anizmconfirm", &content).await;
+    // The command defers before it talks to the provider, so a lost reply edit leaves the
+    // ephemeral stuck on "thinking" with no trace anywhere else. Record it either way.
+    if let Err(e) = command
+        .edit_response(ctx, EditInteractionResponse::new().content(content))
         .await
-        .ok();
+    {
+        eprintln!("[/anizmconfirm] response edit failed: {}", e);
+        log_publish(job_id, "/anizmconfirm", format!("response edit failed: {}", e)).await;
+    }
 }
 
 #[cfg(test)]

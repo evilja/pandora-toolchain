@@ -1,4 +1,5 @@
 use super::*;
+use pandora_toolchain::lib::publishlog::log_publish;
 use pandora_toolchain::lib::http::openanime::{
     Anime, EpisodeSource, OpenAnime, Player, PlayerProvider, Resolutions,
 };
@@ -16,6 +17,7 @@ pub async fn handle_openanimeconfirm(ctx: &Context, command: &serenity::all::Com
             return;
         }
     };
+    log_publish(job_id, "/openanimeconfirm", format!("invoked by user {} in channel {}", command.user.id, command.channel_id)).await;
     let episode = match positive_u32_option(ctx, command, "episode").await {
         Some(episode) => episode,
         None => return,
@@ -82,7 +84,7 @@ pub async fn handle_openanimeconfirm(ctx: &Context, command: &serenity::all::Com
     let uploaded = match uploaded_links(job_id).await {
         Ok(uploaded) => uploaded,
         Err(e) => {
-            openanime_response(ctx, command, e).await;
+            openanime_response(ctx, command, job_id, e).await;
             return;
         }
     };
@@ -90,7 +92,7 @@ pub async fn handle_openanimeconfirm(ctx: &Context, command: &serenity::all::Com
     let client = match OpenAnime::from_env() {
         Ok(client) => client,
         Err(e) => {
-            openanime_response(ctx, command, format!("OpenAnime client error: {}", e)).await;
+            openanime_response(ctx, command, job_id, format!("OpenAnime client error: {}", e)).await;
             return;
         }
     };
@@ -100,7 +102,7 @@ pub async fn handle_openanimeconfirm(ctx: &Context, command: &serenity::all::Com
     let fansub = match resolve_fansub_selection(FansubSite::OpenAnime, &secure_name).await {
         Ok(fansub) => fansub,
         Err(e) => {
-            openanime_response(ctx, command, format!("Error: {}", e)).await;
+            openanime_response(ctx, command, job_id, format!("Error: {}", e)).await;
             return;
         }
     };
@@ -108,7 +110,7 @@ pub async fn handle_openanimeconfirm(ctx: &Context, command: &serenity::all::Com
     let anime = match resolve_anime(&client, &meta, option_trimmed(command, "slug")).await {
         Ok(anime) => anime,
         Err(e) => {
-            openanime_response(ctx, command, e).await;
+            openanime_response(ctx, command, job_id, e).await;
             return;
         }
     };
@@ -117,6 +119,7 @@ pub async fn handle_openanimeconfirm(ctx: &Context, command: &serenity::all::Com
         openanime_response(
             ctx,
             command,
+            job_id,
             format!(
                 "Error: OpenAnime has no season {} episode {} for `{}`: {}",
                 season, episode, anime.slug, e
@@ -129,7 +132,7 @@ pub async fn handle_openanimeconfirm(ctx: &Context, command: &serenity::all::Com
     let (players, skipped) = match plan_players(&uploaded, resolutions) {
         Ok(planned) => planned,
         Err(e) => {
-            openanime_response(ctx, command, e).await;
+            openanime_response(ctx, command, job_id, e).await;
             return;
         }
     };
@@ -160,6 +163,7 @@ pub async fn handle_openanimeconfirm(ctx: &Context, command: &serenity::all::Com
     openanime_response(
         ctx,
         command,
+        job_id,
         summary(
             job_id,
             &anime.slug,
@@ -344,12 +348,20 @@ fn summary(
 async fn openanime_response(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,
+    job_id: u64,
     content: impl Into<String>,
 ) {
-    command
-        .edit_response(ctx, EditInteractionResponse::new().content(content.into()))
+    let content = content.into();
+    log_publish(job_id, "/openanimeconfirm", &content).await;
+    // The command defers before it talks to the provider, so a lost reply edit leaves the
+    // ephemeral stuck on "thinking" with no trace anywhere else. Record it either way.
+    if let Err(e) = command
+        .edit_response(ctx, EditInteractionResponse::new().content(content))
         .await
-        .ok();
+    {
+        eprintln!("[/openanimeconfirm] response edit failed: {}", e);
+        log_publish(job_id, "/openanimeconfirm", format!("response edit failed: {}", e)).await;
+    }
 }
 
 #[cfg(test)]

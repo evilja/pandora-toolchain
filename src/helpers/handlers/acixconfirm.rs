@@ -1,4 +1,5 @@
 use super::*;
+use pandora_toolchain::lib::publishlog::log_publish;
 
 pub async fn handle_acixconfirm(
     ctx: &Context,
@@ -11,6 +12,7 @@ pub async fn handle_acixconfirm(
             return;
         }
     };
+    log_publish(job_id, "/acixconfirm", format!("invoked by user {} in channel {}", command.user.id, command.channel_id)).await;
 
     let credit_overrides = match pandora_toolchain::pnworker::acix::CreditOverrides::from_values(
         option_str(command, "extra").map(str::to_string),
@@ -42,7 +44,7 @@ pub async fn handle_acixconfirm(
     let db = match pandora_toolchain::lib::db::core::JobDb::new().await {
         Ok(d) => d,
         Err(e) => {
-            acixconfirm_response(ctx, command, format!("Database error: {}", e)).await;
+            acixconfirm_response(ctx, command, job_id, format!("Database error: {}", e)).await;
             return;
         }
     };
@@ -52,6 +54,7 @@ pub async fn handle_acixconfirm(
             acixconfirm_response(
                 ctx,
                 command,
+                job_id,
                 format!("Published job `{}` to AnimeciX multishare and multiple.", job_id),
             )
             .await;
@@ -60,6 +63,7 @@ pub async fn handle_acixconfirm(
             acixconfirm_response(
                 ctx,
                 command,
+                job_id,
                 format!("AnimeciX publish failed: {}", e),
             )
             .await;
@@ -70,10 +74,18 @@ pub async fn handle_acixconfirm(
 async fn acixconfirm_response(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,
+    job_id: u64,
     content: impl Into<String>,
 ) {
-    command
-        .edit_response(ctx, EditInteractionResponse::new().content(content.into()))
+    let content = content.into();
+    log_publish(job_id, "/acixconfirm", &content).await;
+    // The command defers before it talks to the provider, so a lost reply edit leaves the
+    // ephemeral stuck on "thinking" with no trace anywhere else. Record it either way.
+    if let Err(e) = command
+        .edit_response(ctx, EditInteractionResponse::new().content(content))
         .await
-        .ok();
+    {
+        eprintln!("[/acixconfirm] response edit failed: {}", e);
+        log_publish(job_id, "/acixconfirm", format!("response edit failed: {}", e)).await;
+    }
 }

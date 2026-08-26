@@ -1,4 +1,5 @@
 use super::*;
+use pandora_toolchain::lib::publishlog::log_publish;
 use pandora_toolchain::lib::env::core::get_pandora_env;
 use pandora_toolchain::lib::env::standard::{AKIRA_API, AKIRA_INDEX, AKIRA_TOKEN};
 use pandora_toolchain::lib::http::hyperkira::{
@@ -13,6 +14,7 @@ pub async fn handle_akiraconfirm(ctx: &Context, command: &serenity::all::Command
             return;
         }
     };
+    log_publish(job_id, "/akiraconfirm", format!("invoked by user {} in channel {}", command.user.id, command.channel_id)).await;
     let episode = match option_i64(command, "episode") {
         Some(n) if n >= 0 => n as f64,
         _ => {
@@ -57,6 +59,7 @@ pub async fn handle_akiraconfirm(ctx: &Context, command: &serenity::all::Command
             akiraconfirm_response(
                 ctx,
                 command,
+                job_id,
                 format!("Error: `{}` is not configured.", AKIRA_API),
             )
             .await;
@@ -73,6 +76,7 @@ pub async fn handle_akiraconfirm(ctx: &Context, command: &serenity::all::Command
             akiraconfirm_response(
                 ctx,
                 command,
+                job_id,
                 format!("Error: `{}` is not configured.", AKIRA_TOKEN),
             )
             .await;
@@ -89,29 +93,29 @@ pub async fn handle_akiraconfirm(ctx: &Context, command: &serenity::all::Command
     let db = match pandora_toolchain::lib::db::core::JobDb::new().await {
         Ok(d) => d,
         Err(e) => {
-            akiraconfirm_response(ctx, command, format!("Database error: {}", e)).await;
+            akiraconfirm_response(ctx, command, job_id, format!("Database error: {}", e)).await;
             return;
         }
     };
     let row = match db.get_job(job_id).await {
         Ok(Some(row)) => row,
         Ok(None) => {
-            akiraconfirm_response(ctx, command, "Error: job not found.").await;
+            akiraconfirm_response(ctx, command, job_id, "Error: job not found.").await;
             return;
         }
         Err(e) => {
-            akiraconfirm_response(ctx, command, format!("Database error: {}", e)).await;
+            akiraconfirm_response(ctx, command, job_id, format!("Database error: {}", e)).await;
             return;
         }
     };
     if row.stage != 6 {
-        akiraconfirm_response(ctx, command, "Error: job is not uploaded yet.").await;
+        akiraconfirm_response(ctx, command, job_id, "Error: job is not uploaded yet.").await;
         return;
     }
     let links_json = match row.uploaded_links {
         Some(v) => v,
         None => {
-            akiraconfirm_response(ctx, command, "Error: job has no uploaded links.").await;
+            akiraconfirm_response(ctx, command, job_id, "Error: job has no uploaded links.").await;
             return;
         }
     };
@@ -121,6 +125,7 @@ pub async fn handle_akiraconfirm(ctx: &Context, command: &serenity::all::Command
             akiraconfirm_response(
                 ctx,
                 command,
+                job_id,
                 format!("Error: uploaded links JSON is invalid: {}", e),
             )
             .await;
@@ -130,7 +135,7 @@ pub async fn handle_akiraconfirm(ctx: &Context, command: &serenity::all::Command
     let client = match AkiraClient::with_bearer(akira_api, akira_token) {
         Ok(c) => c,
         Err(e) => {
-            akiraconfirm_response(ctx, command, format!("Akira client error: {}", e)).await;
+            akiraconfirm_response(ctx, command, job_id, format!("Akira client error: {}", e)).await;
             return;
         }
     };
@@ -151,7 +156,7 @@ pub async fn handle_akiraconfirm(ctx: &Context, command: &serenity::all::Command
     {
         Ok(slug) => slug,
         Err(e) => {
-            akiraconfirm_response(ctx, command, e).await;
+            akiraconfirm_response(ctx, command, job_id, e).await;
             return;
         }
     };
@@ -159,7 +164,7 @@ pub async fn handle_akiraconfirm(ctx: &Context, command: &serenity::all::Command
     let links = match akira_episode_links(&uploaded, &index_base, &folder, &name) {
         Ok(v) => v,
         Err(e) => {
-            akiraconfirm_response(ctx, command, e).await;
+            akiraconfirm_response(ctx, command, job_id, e).await;
             return;
         }
     };
@@ -171,7 +176,7 @@ pub async fn handle_akiraconfirm(ctx: &Context, command: &serenity::all::Command
     let episode_exists = match akira_episode_exists(&client, &slug, episode).await {
         Ok(exists) => exists,
         Err(e) => {
-            akiraconfirm_response(ctx, command, format!("Akira episode lookup failed: {}", e)).await;
+            akiraconfirm_response(ctx, command, job_id, format!("Akira episode lookup failed: {}", e)).await;
             return;
         }
     };
@@ -184,7 +189,7 @@ pub async fn handle_akiraconfirm(ctx: &Context, command: &serenity::all::Command
             released_at: None,
         };
         if let Err(e) = client.update_episode(&slug, episode, &update).await {
-            akiraconfirm_response(ctx, command, format!("Akira episode update failed: {}", e)).await;
+            akiraconfirm_response(ctx, command, job_id, format!("Akira episode update failed: {}", e)).await;
             return;
         }
     } else {
@@ -201,18 +206,19 @@ pub async fn handle_akiraconfirm(ctx: &Context, command: &serenity::all::Command
             skip_webhook: false,
         };
         if let Err(e) = client.create_episode(&slug, &create).await {
-            akiraconfirm_response(ctx, command, format!("Akira episode create failed: {}", e)).await;
+            akiraconfirm_response(ctx, command, job_id, format!("Akira episode create failed: {}", e)).await;
             return;
         }
     }
     if let Err(e) = client.replace_episode_links(&slug, episode, &links).await {
-        akiraconfirm_response(ctx, command, format!("Akira episode links failed: {}", e)).await;
+        akiraconfirm_response(ctx, command, job_id, format!("Akira episode links failed: {}", e)).await;
         return;
     }
 
     akiraconfirm_response(
         ctx,
         command,
+        job_id,
         format!(
             "{} job `{}` to Akira `{}` episode `{}`.",
             if episode_exists { "Updated" } else { "Published" },
@@ -367,16 +373,22 @@ fn path_escape(raw: &str) -> String {
 async fn akiraconfirm_response(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,
+    job_id: u64,
     content: impl Into<String>,
 ) {
+    let content = content.into();
+    log_publish(job_id, "/akiraconfirm", &content).await;
     // The command defers before it touches Akira, so a failed edit is the one outcome the caller
     // never sees: the ephemeral reply keeps saying the bot is thinking. Report it here or the whole
     // run leaves no trace anywhere.
     if let Err(e) = command
-        .edit_response(ctx, EditInteractionResponse::new().content(content.into()))
+        .edit_response(ctx, EditInteractionResponse::new().content(content))
         .await
     {
         eprintln!("[akiraconfirm] response edit failed: {}", e);
+        // The publish itself already succeeded or failed on its own terms; this line is what
+        // separates "the command never ran" from "the command ran and only the reply was lost".
+        log_publish(job_id, "/akiraconfirm", format!("response edit failed: {}", e)).await;
     }
 }
 

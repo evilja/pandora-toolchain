@@ -1,4 +1,5 @@
 use super::*;
+use pandora_toolchain::lib::publishlog::log_publish;
 use pandora_toolchain::pnworker::acix::{unpublish_acix, AcixResetScope};
 
 pub async fn handle_acixunpublish(
@@ -12,6 +13,7 @@ pub async fn handle_acixunpublish(
             return;
         }
     };
+    log_publish(job_id, "/acixunpublish", format!("invoked by user {} in channel {}", command.user.id, command.channel_id)).await;
     let scope = match option_str(command, "scope").and_then(AcixResetScope::parse) {
         Some(scope) => scope,
         None => {
@@ -32,9 +34,11 @@ pub async fn handle_acixunpublish(
     let db = match pandora_toolchain::lib::db::core::JobDb::new().await {
         Ok(db) => db,
         Err(e) => {
+            let content = format!("Database error: {}", e);
+            log_publish(job_id, "/acixunpublish", &content).await;
             command.edit_response(
                 ctx,
-                EditInteractionResponse::new().content(format!("Database error: {}", e)),
+                EditInteractionResponse::new().content(content),
             ).await.ok();
             return;
         }
@@ -44,18 +48,22 @@ pub async fn handle_acixunpublish(
         Ok(result) => {
             let status = result.get("status").and_then(|value| value.as_str()).unwrap_or("pending");
             let scope = result.get("scope").and_then(|value| value.as_str()).unwrap_or("selected");
+            let content = format!(
+                "Reset local AnimeciX `{}` state for job `{}`. New local status: `{}`. No AnimeciX videos were remotely deleted.",
+                scope, job_id, status,
+            );
+            log_publish(job_id, "/acixunpublish", &content).await;
             command.edit_response(
                 ctx,
-                EditInteractionResponse::new().content(format!(
-                    "Reset local AnimeciX `{}` state for job `{}`. New local status: `{}`. No AnimeciX videos were remotely deleted.",
-                    scope, job_id, status,
-                )),
+                EditInteractionResponse::new().content(content),
             ).await.ok();
         }
         Err(e) => {
+            let content = format!("AnimeciX local reset failed: {}", e);
+            log_publish(job_id, "/acixunpublish", &content).await;
             command.edit_response(
                 ctx,
-                EditInteractionResponse::new().content(format!("AnimeciX local reset failed: {}", e)),
+                EditInteractionResponse::new().content(content),
             ).await.ok();
         }
     }
