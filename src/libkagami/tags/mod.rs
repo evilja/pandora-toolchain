@@ -140,95 +140,16 @@ impl ASSLine {
 impl std::str::FromStr for ASSLine {
     type Err = std::convert::Infallible;
 
+    // Parsing without a style is parsing against an empty baseline. This used
+    // to be a second hand-written copy of from_str_store's loop, and the two
+    // had already drifted: this one cleared current_overrides for a bare \r
+    // where the other reset to the style's overrides, and it suppressed every
+    // repeat of a first-wins tag where the other let a tag override the value
+    // the style contributed. Both differences only exist when there is a
+    // baseline to reset to, so against an empty one the copies were the same
+    // parser -- and keeping them separate meant the next fix landing in one.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if has_star_in_override_block(s) {
-            return Ok(Self { current_overrides: Vec::new(), data: vec![ASSText::RawText(s.to_string())] });
-        }
-
-        let mut data: Vec<ASSText> = Vec::new();
-        let mut current_overrides: Vec<ASSOverride> = Vec::new();
-        let mut transformed_since_tag: HashSet<Discriminant<ASSOverride>> = HashSet::new();
-        let mut raw_buf = String::new();
-        let mut drawing_mode = 0;
-
-        let bytes = s.as_bytes();
-        let mut i = 0;
-
-        while i < bytes.len() {
-            if bytes[i] == b'{' {
-                if !raw_buf.is_empty() {
-                    push_text(&mut data, std::mem::take(&mut raw_buf), drawing_mode);
-                }
-
-                if find_block_end(bytes, i + 1).is_none() {
-                    raw_buf.push('{');
-                    i += 1;
-                    continue;
-                }
-
-                let block_start = i + 1;
-                let block_end = find_block_end(bytes, block_start).unwrap();
-
-                let block_content = &s[block_start..block_end];
-                let (tags, _) = parse_override_block_content(block_content);
-                let tags = apply_same_tag_after_transform(tags);
-
-                for tag in tags {
-                    if matches!(&tag, ASSOverride::BlockText(_)) {
-                        data.push(ASSText::Override(tag));
-                        continue;
-                    }
-                    mark_transform_tags(&tag, &mut transformed_since_tag);
-                    if matches!(&tag, ASSOverride::R(_)) {
-                        current_overrides.clear();
-                        drawing_mode = 0;
-                        transformed_since_tag.clear();
-                        data.push(ASSText::Override(tag));
-                        continue;
-                    }
-                    if let ASSOverride::P(v) = &tag {
-                        drawing_mode = *v;
-                    }
-                    let tag_disc = discriminant(&tag);
-                    if is_repeatable_effect(&tag) {
-                        data.push(ASSText::Override(tag));
-                        continue;
-                    }
-                    if already_active(&current_overrides, &tag) && !transformed_since_tag.contains(&tag_disc) {
-                        continue;
-                    }
-                    if is_first_wins(&tag) {
-                        if current_overrides.iter().any(|c| same_override_kind(c, &tag)) {
-                            continue;
-                        }
-                    }
-                    upsert_override(&mut current_overrides, tag.clone());
-                    transformed_since_tag.remove(&tag_disc);
-                    data.push(ASSText::Override(tag));
-                }
-
-                i = block_end + 1;
-            } else {
-                if bytes[i] == b'\\' && i + 1 < bytes.len() && (bytes[i + 1] == b'{' || bytes[i + 1] == b'}') {
-                    raw_buf.push('\\');
-                    raw_buf.push(bytes[i + 1] as char);
-                    i += 2;
-                    continue;
-                }
-                let ch_len = s[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
-                raw_buf.push_str(&s[i..i + ch_len]);
-                i += ch_len;
-            }
-        }
-
-        if !raw_buf.is_empty() {
-            push_text(&mut data, raw_buf, drawing_mode);
-        }
-
-        trim_tags_without_text_after(&mut data);
-        current_overrides = final_overrides(&data, &[]);
-
-        Ok(Self { current_overrides, data })
+        Ok(Self::from_str_store(s, &[]))
     }
 }
 

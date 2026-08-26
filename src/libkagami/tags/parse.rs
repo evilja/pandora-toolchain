@@ -100,6 +100,15 @@ fn empty_transform(ov: &ASSOverride) -> bool {
 /// Returns (tag, bytes_consumed, is_malformed).
 /// is_malformed = true means an unclosed paren was found; caller should drop
 /// all subsequent tags in the block.
+///
+/// Dispatch is on the first byte. Every candidate prefix is matched from
+/// position 0, so a prefix can only match input that starts with its own first
+/// byte — grouping by that byte and keeping each group's internal order is the
+/// same parser as one flat chain, but `\b` no longer pays for the thirty-odd
+/// comparisons that used to sit in front of it. Order *within* a group is
+/// still load-bearing: longest prefix first (`fscx` before `fsc` before `fs`),
+/// and the paren-guarded forms before the bare tag they'd otherwise shadow
+/// (`pbo`/`pos` before `p`, `iclip` before `i`).
 pub fn parse_one_tag(s: &str) -> Option<(ASSOverride, usize, bool)> {
     let orig_len = s.len();
 
@@ -122,6 +131,14 @@ pub fn parse_one_tag(s: &str) -> Option<(ASSOverride, usize, bool)> {
             }
         };
     }
+    macro_rules! try_int {
+        ($prefix:literal, $variant:expr, $ty:ty) => {
+            if let Some(rest) = s.strip_prefix($prefix) {
+                let (val, rest2) = parse_f32_arg(rest);
+                return Some(($variant(val as $ty), consumed!(rest2), false));
+            }
+        };
+    }
     macro_rules! try_hex {
         ($prefix:literal, $ctor:expr) => {
             if let Some(rest) = s.strip_prefix($prefix) {
@@ -130,212 +147,170 @@ pub fn parse_one_tag(s: &str) -> Option<(ASSOverride, usize, bool)> {
             }
         };
     }
-
-    // ── \fn — before anything else starting with 'f' ────────────────────────
-    if let Some(rest) = s.strip_prefix("fn") {
-        let (name, rest2) = parse_text_arg(rest);
-        return Some((ASSOverride::Fn(name), consumed!(rest2), false));
-    }
-
-    // ── float tags — longest prefix first ───────────────────────────────────
-    try_f32!("xbord", ASSOverride::Xbord);
-    try_f32!("ybord", ASSOverride::Ybord);
-    try_f32!("xshad", ASSOverride::Xshad);
-    try_f32!("yshad", ASSOverride::Yshad);
-    try_f32!("fscx",  ASSOverride::Fscx);
-    try_f32!("fscy",  ASSOverride::Fscy);
-    try_f32!("fsc",   ASSOverride::Fsc);
-    try_f32!("fsp",   ASSOverride::Fsp);
-    try_f32!("frx",   ASSOverride::Frx);
-    try_f32!("fry",   ASSOverride::Fry);
-    try_f32!("frz",   ASSOverride::Frz);
-    try_f32!("fax",   ASSOverride::Fax);
-    try_f32!("fay",   ASSOverride::Fay);
-    try_f32!("fe",    ASSOverride::Fe);
-    try_f32!("pbo",   ASSOverride::Pbo);
-    try_f32!("fr",    ASSOverride::Frz);
-    try_f32!("blur",  ASSOverride::Blur);
-    try_f32!("bord",  ASSOverride::Bord);
-    try_f32!("shad",  ASSOverride::Shad);
-    try_f32!("be",    ASSOverride::Be);
-    try_f32!("fs",    ASSOverride::Fs);
-
-    // ── \an — before \alpha ──────────────────────────────────────────────────
-    if let Some(rest) = s.strip_prefix("an") {
-        let (val, rest2) = parse_f32_arg(rest);
-        return Some((ASSOverride::An(val as u8), consumed!(rest2), false));
-    }
-
-    // ── \q ───────────────────────────────────────────────────────────────────
-    if let Some(rest) = s.strip_prefix("q") {
-        let (val, rest2) = parse_f32_arg(rest);
-        return Some((ASSOverride::Q(val as u8), consumed!(rest2), false));
-    }
-
-    // ── \r — consumes until next \ like \fn ──────────────────────────────────
-    if let Some(rest) = s.strip_prefix("r") {
-        let end = rest.find('\\').unwrap_or(rest.len());
-        let name = rest[..end].trim().to_string();
-        let tag = ASSOverride::R(if name.is_empty() { None } else { Some(name) });
-        return Some((tag, consumed!(&rest[end..]), false));
-    }
-
-    // ── alpha / color — longest prefix first ────────────────────────────────
-    try_hex!("alpha", ASSOverride::Alpha);
-    try_hex!("1a",    ASSOverride::AlphaI);
-    try_hex!("2a",    ASSOverride::AlphaII);
-    try_hex!("3a",    ASSOverride::AlphaIII);
-    try_hex!("4a",    ASSOverride::AlphaIV);
-    try_hex!("1c",    ASSOverride::ColorI);
-    try_hex!("2c",    ASSOverride::ColorII);
-    try_hex!("3c",    ASSOverride::ColorIII);
-    try_hex!("4c",    ASSOverride::ColorIV);
-
-    if let Some(rest) = s.strip_prefix("a") {
-        let (val, rest2) = parse_f32_arg(rest);
-        return Some((ASSOverride::A(val as u8), consumed!(rest2), false));
-    }
-
-    // ── karaoke — ko/kf before k, K uppercase before k ───────────────────────
-    if let Some(rest) = s.strip_prefix("kt") {
-        let (val, rest2) = parse_f32_arg(rest);
-        return Some((ASSOverride::Kt(val as u32), consumed!(rest2), false));
-    }
-    if let Some(rest) = s.strip_prefix("ko") {
-        let (val, rest2) = parse_f32_arg(rest);
-        return Some((ASSOverride::Ko(val as u32), consumed!(rest2), false));
-    }
-    if let Some(rest) = s.strip_prefix("kf") {
-        let (val, rest2) = parse_f32_arg(rest);
-        return Some((ASSOverride::Kf(val as u32), consumed!(rest2), false));
-    }
-    if let Some(rest) = s.strip_prefix("K") {
-        let (val, rest2) = parse_f32_arg(rest);
-        return Some((ASSOverride::KSweep(val as u32), consumed!(rest2), false));
-    }
-    if let Some(rest) = s.strip_prefix("k") {
-        let (val, rest2) = parse_f32_arg(rest);
-        return Some((ASSOverride::K(val as u32), consumed!(rest2), false));
-    }
-
-    // ── \c — primary color alias, guard against "clip" ───────────────────────
-    if s.starts_with('c') && !s.starts_with("clip") {
-        let rest = &s[1..];
-        let (val, rest2) = parse_hex_val(rest);
-        return Some((ASSOverride::ColorI(val), consumed!(rest2), false));
-    }
-
-    // ── paren-based tags ─────────────────────────────────────────────────────
-
-    if let Some(rest) = s.strip_prefix("fade") {
-        if rest.starts_with('(') {
-            match parse_paren_numbers(rest) {
-                Some((n, after)) if n.len() == 2 => {
-                    return Some((ASSOverride::Fad(n[0], n[1]), consumed!(after), false));
+    macro_rules! try_paren_numbers {
+        ($prefix:literal, $($count:literal => $build:expr),+ $(,)?) => {
+            if let Some(rest) = s.strip_prefix($prefix) {
+                if rest.starts_with('(') {
+                    match parse_paren_numbers(rest) {
+                        $(Some((n, after)) if n.len() == $count => {
+                            #[allow(clippy::redundant_closure_call)]
+                            return Some(($build(&n), consumed!(after), false));
+                        })+
+                        Some((_n, _after)) => return None,
+                        None => return None,
+                    }
                 }
-                Some((n, after)) if n.len() == 7 => {
-                    return Some((ASSOverride::Fade(n[0], n[1], n[2], n[3], n[4], n[5], n[6]), consumed!(after), false));
+            }
+        };
+    }
+
+    match *s.as_bytes().first()? {
+        // ── \fn first, then the float tags, longest prefix first ────────────
+        b'f' => {
+            if let Some(rest) = s.strip_prefix("fn") {
+                let (name, rest2) = parse_text_arg(rest);
+                return Some((ASSOverride::Fn(name), consumed!(rest2), false));
+            }
+            try_f32!("fscx", ASSOverride::Fscx);
+            try_f32!("fscy", ASSOverride::Fscy);
+            try_f32!("fsc",  ASSOverride::Fsc);
+            try_f32!("fsp",  ASSOverride::Fsp);
+            try_f32!("frx",  ASSOverride::Frx);
+            try_f32!("fry",  ASSOverride::Fry);
+            try_f32!("frz",  ASSOverride::Frz);
+            try_f32!("fax",  ASSOverride::Fax);
+            try_f32!("fay",  ASSOverride::Fay);
+            try_f32!("fe",   ASSOverride::Fe);
+            try_f32!("fr",   ASSOverride::Frz);
+            try_f32!("fs",   ASSOverride::Fs);
+            try_paren_numbers!("fade",
+                2 => |n: &[f32]| ASSOverride::Fad(n[0], n[1]),
+                7 => |n: &[f32]| ASSOverride::Fade(n[0], n[1], n[2], n[3], n[4], n[5], n[6]),
+            );
+            try_paren_numbers!("fad",
+                2 => |n: &[f32]| ASSOverride::Fad(n[0], n[1]),
+                7 => |n: &[f32]| ASSOverride::Fade(n[0], n[1], n[2], n[3], n[4], n[5], n[6]),
+            );
+        }
+        b'x' => {
+            try_f32!("xbord", ASSOverride::Xbord);
+            try_f32!("xshad", ASSOverride::Xshad);
+        }
+        b'y' => {
+            try_f32!("ybord", ASSOverride::Ybord);
+            try_f32!("yshad", ASSOverride::Yshad);
+        }
+        b'b' => {
+            try_f32!("blur", ASSOverride::Blur);
+            try_f32!("bord", ASSOverride::Bord);
+            try_f32!("be",   ASSOverride::Be);
+            try_flag!("b",   ASSOverride::Bold);
+        }
+        b's' => {
+            try_f32!("shad", ASSOverride::Shad);
+            try_flag!("s",   ASSOverride::Strikeout);
+        }
+        // ── \an before \alpha, both before bare \a ──────────────────────────
+        b'a' => {
+            try_int!("an", ASSOverride::An, u8);
+            try_hex!("alpha", ASSOverride::Alpha);
+            try_int!("a", ASSOverride::A, u8);
+        }
+        b'q' => {
+            try_int!("q", ASSOverride::Q, u8);
+        }
+        // ── \r consumes until the next \, like \fn ──────────────────────────
+        b'r' => {
+            let rest = &s[1..];
+            let end = rest.find('\\').unwrap_or(rest.len());
+            let name = rest[..end].trim().to_string();
+            let tag = ASSOverride::R(if name.is_empty() { None } else { Some(name) });
+            return Some((tag, consumed!(&rest[end..]), false));
+        }
+        b'1' => {
+            try_hex!("1a", ASSOverride::AlphaI);
+            try_hex!("1c", ASSOverride::ColorI);
+        }
+        b'2' => {
+            try_hex!("2a", ASSOverride::AlphaII);
+            try_hex!("2c", ASSOverride::ColorII);
+        }
+        b'3' => {
+            try_hex!("3a", ASSOverride::AlphaIII);
+            try_hex!("3c", ASSOverride::ColorIII);
+        }
+        b'4' => {
+            try_hex!("4a", ASSOverride::AlphaIV);
+            try_hex!("4c", ASSOverride::ColorIV);
+        }
+        // ── karaoke — kt/ko/kf before bare k ────────────────────────────────
+        b'k' => {
+            try_int!("kt", ASSOverride::Kt, u32);
+            try_int!("ko", ASSOverride::Ko, u32);
+            try_int!("kf", ASSOverride::Kf, u32);
+            try_int!("k",  ASSOverride::K,  u32);
+        }
+        b'K' => {
+            try_int!("K", ASSOverride::KSweep, u32);
+        }
+        // ── \c is the primary colour alias; \clip is a different tag ────────
+        b'c' => {
+            if !s.starts_with("clip") {
+                let (val, rest2) = parse_hex_val(&s[1..]);
+                return Some((ASSOverride::ColorI(val), consumed!(rest2), false));
+            }
+            if let Some(rest) = s.strip_prefix("clip") {
+                if rest.starts_with('(') {
+                    match parse_clip_args(rest, false) {
+                        Some((ov, after)) => return Some((ov, consumed!(after), false)),
+                        None => return None,
+                    }
                 }
-                Some((_n, _after)) => return None,
-                None => return None,
             }
         }
-    }
-
-    if let Some(rest) = s.strip_prefix("move") {
-        if rest.starts_with('(') {
-            match parse_paren_numbers(rest) {
-                Some((n, after)) if n.len() == 4 => {
-                    return Some((ASSOverride::MoveI(n[0], n[1], n[2], n[3]), consumed!(after), false));
+        b'm' => {
+            try_paren_numbers!("move",
+                4 => |n: &[f32]| ASSOverride::MoveI(n[0], n[1], n[2], n[3]),
+                6 => |n: &[f32]| ASSOverride::MoveII(n[0], n[1], n[2], n[3], n[4], n[5]),
+            );
+        }
+        b'o' => {
+            try_paren_numbers!("org", 2 => |n: &[f32]| ASSOverride::Org(n[0], n[1]));
+        }
+        b'p' => {
+            try_f32!("pbo", ASSOverride::Pbo);
+            try_paren_numbers!("pos", 2 => |n: &[f32]| ASSOverride::Pos(n[0], n[1]));
+            try_int!("p", ASSOverride::P, u8);
+        }
+        b't' => {
+            if let Some(rest) = s.strip_prefix("t") {
+                if rest.starts_with('(') {
+                    match parse_parenthesized_args(rest) {
+                        Some((_args, after, _has_backslash_arg)) => {
+                            let transform_source = &rest[..rest.len() - after.len()];
+                            let ov = parse_transform(transform_source).unwrap_or_else(|| ASSOverride::TransformI(Vec::new()));
+                            return Some((ov, consumed!(after), false));
+                        }
+                        None => return None,
+                    }
                 }
-                Some((n, after)) if n.len() == 6 => {
-                    return Some((ASSOverride::MoveII(n[0], n[1], n[2], n[3], n[4], n[5]), consumed!(after), false));
-                }
-                Some((_n, _after)) => return None,
-                None => return None,
             }
         }
-    }
-
-    if let Some(rest) = s.strip_prefix("org") {
-        if rest.starts_with('(') {
-            match parse_paren_numbers(rest) {
-                Some((n, after)) if n.len() == 2 => {
-                    return Some((ASSOverride::Org(n[0], n[1]), consumed!(after), false));
+        b'i' => {
+            if let Some(rest) = s.strip_prefix("iclip") {
+                if rest.starts_with('(') {
+                    match parse_clip_args(rest, true) {
+                        Some((ov, after)) => return Some((ov, consumed!(after), false)),
+                        None => return None,
+                    }
                 }
-                Some((_n, _after)) => return None,
-                None => return None,
             }
+            try_flag!("i", ASSOverride::Italic);
         }
-    }
-
-    if let Some(rest) = s.strip_prefix("fad") {
-        if rest.starts_with('(') {
-            match parse_paren_numbers(rest) {
-                Some((n, after)) if n.len() == 2 => {
-                    return Some((ASSOverride::Fad(n[0], n[1]), consumed!(after), false));
-                }
-                Some((n, after)) if n.len() == 7 => {
-                    return Some((ASSOverride::Fade(n[0], n[1], n[2], n[3], n[4], n[5], n[6]), consumed!(after), false));
-                }
-                Some((_n, _after)) => return None,
-                None => return None,
-            }
+        b'u' => {
+            try_flag!("u", ASSOverride::Underline);
         }
-    }
-
-    if let Some(rest) = s.strip_prefix("pos") {
-        if rest.starts_with('(') {
-            match parse_paren_numbers(rest) {
-                Some((n, after)) if n.len() == 2 => {
-                    return Some((ASSOverride::Pos(n[0], n[1]), consumed!(after), false));
-                }
-                Some((_n, _after)) => return None,
-                None => return None,
-            }
-        }
-    }
-
-    if let Some(rest) = s.strip_prefix("t") {
-        if rest.starts_with('(') {
-            match parse_parenthesized_args(rest) {
-                Some((_args, after, _has_backslash_arg)) => {
-                    let transform_source = &rest[..rest.len() - after.len()];
-                    let ov = parse_transform(transform_source).unwrap_or_else(|| ASSOverride::TransformI(Vec::new()));
-                    return Some((ov, consumed!(after), false));
-                }
-                None => return None,
-            }
-        }
-    }
-
-    if let Some(rest) = s.strip_prefix("iclip") {
-        if rest.starts_with('(') {
-            match parse_clip_args(rest, true) {
-                Some((ov, after)) => return Some((ov, consumed!(after), false)),
-                None => return None,
-            }
-        }
-    }
-
-    if let Some(rest) = s.strip_prefix("clip") {
-        if rest.starts_with('(') {
-            match parse_clip_args(rest, false) {
-                Some((ov, after)) => return Some((ov, consumed!(after), false)),
-                None => return None,
-            }
-        }
-    }
-
-    // ── single-char / short tags — LAST ──────────────────────────────────────
-    try_flag!("b", ASSOverride::Bold);
-    try_flag!("i", ASSOverride::Italic);
-    try_flag!("u", ASSOverride::Underline);
-    try_flag!("s", ASSOverride::Strikeout);
-
-    if let Some(rest) = s.strip_prefix("p") {
-        let (val, rest2) = parse_f32_arg(rest);
-        return Some((ASSOverride::P(val as u8), consumed!(rest2), false));
+        _ => {}
     }
 
     None
