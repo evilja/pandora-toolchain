@@ -1,7 +1,7 @@
 use super::*;
 use pandora_toolchain::libkagami::core::{
     cached_font_names, collect_font_files, load_font_name_cache, normalize_font_name,
-    save_font_name_cache,
+    save_font_name_cache, system_font_roots, warm_font_names_for_roots,
 };
 use serde::{Deserialize, Serialize};
 use serenity::builder::CreateAutocompleteResponse;
@@ -156,6 +156,12 @@ pub async fn handle_cfont_autocomplete(
 // the first autocomplete interaction has to race Discord's 3s deadline. The
 // cache is seeded from and saved back to an on-disk index, so only fonts that
 // changed since the previous boot are actually re-parsed.
+//
+// The system font dirs are warmed here too even though they never appear in
+// autocomplete: font resolution searches them, and warming them before the
+// save is what gets them into the index. Parsing them later — on the first
+// probe job — would leave them in memory only, so every restart paid to read
+// the whole OS font corpus again.
 pub fn warm_font_name_cache() {
     tokio::task::spawn_blocking(|| {
         let started = std::time::Instant::now();
@@ -165,7 +171,8 @@ pub fn warm_font_name_cache() {
         let files = roots
             .iter()
             .map(|root| refresh_font_family_names_for_root(root).1)
-            .sum::<usize>();
+            .sum::<usize>()
+            + warm_font_names_for_roots(&system_font_roots());
         match save_font_name_cache(&index) {
             Ok(saved) => println!(
                 "[fonts] font name cache ready: {} file(s), {} seeded from index, {} saved, {:.1?}",

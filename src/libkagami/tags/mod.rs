@@ -5,7 +5,7 @@ use crate::libkagami::drawing::parse::Drawing;
 use crate::libkagami::tags::parse::parse_override_block_content;
 use crate::libkagami::tags::transform::{apply_same_tag_after_transform, transform_inner_tags};
 use crate::libkagami::tags::state::{already_active, upsert_override, is_first_wins, same_override_kind, is_repeatable_effect};
-use crate::libkagami::tags::stringify::stringify_override;
+use crate::libkagami::tags::stringify::write_override;
 
 pub mod parse;
 pub mod stringify;
@@ -26,13 +26,16 @@ pub struct ASSLine {
 }
 
 impl ASSLine {
-    pub fn from_str_store(s: &str, start: Vec<ASSOverride>) -> Self {
+    // `start` is the style's override baseline. It is borrowed rather than
+    // owned because every event line in a script shares its style's baseline,
+    // so taking it by value made loading a file clone one per line.
+    pub fn from_str_store(s: &str, start: &[ASSOverride]) -> Self {
         if has_star_in_override_block(s) {
-            return Self { current_overrides: start, data: vec![ASSText::RawText(s.to_string())] };
+            return Self { current_overrides: start.to_vec(), data: vec![ASSText::RawText(s.to_string())] };
         }
 
         let mut data: Vec<ASSText> = Vec::new();
-        let mut current_overrides: Vec<ASSOverride> = start.clone();
+        let mut current_overrides: Vec<ASSOverride> = start.to_vec();
         let mut transformed_since_tag: HashSet<Discriminant<ASSOverride>> = HashSet::new();
         let mut raw_buf = String::new();
         let mut drawing_mode = start.iter()
@@ -71,7 +74,7 @@ impl ASSLine {
                     if let ASSOverride::R(ref name) = tag {
                         if name.is_none() {
                             // bare \r — reset to style baseline
-                            current_overrides = start.clone();
+                            current_overrides = start.to_vec();
                             drawing_mode = start.iter()
                                 .rev()
                                 .find_map(|ov| if let ASSOverride::P(v) = ov { Some(*v) } else { None })
@@ -128,7 +131,7 @@ impl ASSLine {
         }
 
         trim_tags_without_text_after(&mut data);
-        current_overrides = final_overrides(&data, &start);
+        current_overrides = final_overrides(&data, start);
 
         Self { current_overrides, data }
     }
@@ -232,6 +235,11 @@ impl std::str::FromStr for ASSLine {
 impl ASSLine {
     pub fn stringify(&self) -> String {
         let mut out = String::new();
+        self.write_into(&mut out);
+        out
+    }
+
+    pub fn write_into(&self, out: &mut String) {
         let mut i = 0;
         while i < self.data.len() {
             if matches!(self.data[i], ASSText::Override(_)) {
@@ -241,7 +249,7 @@ impl ASSLine {
                         if !matches!(ov, ASSOverride::BlockText(_)) {
                             out.push('\\');
                         }
-                        out.push_str(&stringify_override(ov));
+                        write_override(out, ov);
                         i += 1;
                     } else {
                         break;
@@ -252,11 +260,10 @@ impl ASSLine {
                 out.push_str(t);
                 i += 1;
             } else if let ASSText::Drawing(d) = &self.data[i] {
-                out.push_str(&d.stringify());
+                d.write_into(out);
                 i += 1;
             }
         }
-        out
     }
 
     // Explicit tags inside raw fallback blocks intentionally report no signals.
@@ -676,7 +683,7 @@ mod tests {
     fn test_trailing_tags_reset_to_style_baseline_after_store() {
         let line = ASSLine::from_str_store(
             r"{\fs80}Hello{\fnTrailing}",
-            vec![ASSOverride::Fn("DefaultFont".to_string()), ASSOverride::Fs(20.0)],
+            &[ASSOverride::Fn("DefaultFont".to_string()), ASSOverride::Fs(20.0)],
         );
         assert_eq!(line.stringify(), r"{\fs80}Hello");
         assert!(line.current_overrides.iter().any(|t| matches!(t, ASSOverride::Fn(name) if name == "DefaultFont")));

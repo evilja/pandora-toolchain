@@ -1,84 +1,107 @@
+use std::fmt::Write;
+
 use crate::libkagami::complex::overrides::ASSOverride;
 
-pub fn stringify_override(ov: &ASSOverride) -> String {
-    match ov {
-        ASSOverride::BlockText(v)         => v.to_string(),
-        ASSOverride::Bold(v)              => format!("b{}", *v as u8),
-        ASSOverride::Italic(v)            => format!("i{}", *v as u8),
-        ASSOverride::Underline(v)         => format!("u{}", *v as u8),
-        ASSOverride::Strikeout(v)         => format!("s{}", *v as u8),
-        ASSOverride::Bord(v)              => format!("bord{v}"),
-        ASSOverride::Shad(v)              => format!("shad{v}"),
-        ASSOverride::Fn(v)                => format!("fn{v}"),
-        ASSOverride::Fs(v)                => format!("fs{v}"),
-        ASSOverride::Fsp(v)               => format!("fsp{v}"),
-        ASSOverride::Blur(v)              => format!("blur{v}"),
-        ASSOverride::Be(v)                => format!("be{v}"),
-        ASSOverride::Fscx(v)              => format!("fscx{v}"),
-        ASSOverride::Fscy(v)              => format!("fscy{v}"),
-        ASSOverride::Fsc(v)               => format!("fsc{v}"),
-        ASSOverride::Xbord(v)             => format!("xbord{v}"),
-        ASSOverride::Ybord(v)             => format!("ybord{v}"),
-        ASSOverride::Xshad(v)             => format!("xshad{v}"),
-        ASSOverride::Yshad(v)             => format!("yshad{v}"),
-        ASSOverride::Fax(v)               => format!("fax{v}"),
-        ASSOverride::Fay(v)               => format!("fay{v}"),
-        ASSOverride::Frx(v)               => format!("frx{v}"),
-        ASSOverride::Fry(v)               => format!("fry{v}"),
-        ASSOverride::Frz(v)               => format!("frz{v}"),
-        ASSOverride::Fr(v)                => format!("fr{v}"),
-        ASSOverride::Fad(a, b)            => format!("fad({a},{b})"),
-        ASSOverride::Fade(a,b,c,d,e,f,g)  => format!("fade({a},{b},{c},{d},{e},{f},{g})"),
-        ASSOverride::Pos(x, y)            => format!("pos({x},{y})"),
-        ASSOverride::Alpha(v)             => format!("alpha&H{v:02X}&"),
-        ASSOverride::AlphaI(v)            => format!("1a&H{v:02X}&"),
-        ASSOverride::AlphaII(v)           => format!("2a&H{v:02X}&"),
-        ASSOverride::AlphaIII(v)          => format!("3a&H{v:02X}&"),
-        ASSOverride::AlphaIV(v)           => format!("4a&H{v:02X}&"),
-        ASSOverride::ColorI(v)            => format!("c&H{v:06X}&"),
-        ASSOverride::ColorII(v)           => format!("2c&H{v:06X}&"),
-        ASSOverride::ColorIII(v)          => format!("3c&H{v:06X}&"),
-        ASSOverride::ColorIV(v)           => format!("4c&H{v:06X}&"),
-        ASSOverride::A(v)                 => format!("a{v}"),
-        ASSOverride::An(v)                => format!("an{v}"),
-        ASSOverride::P(v)                 => format!("p{v}"),
-        ASSOverride::ClipI(v)             => format!("clip({v})"),
-        ASSOverride::ClipII(s, v)         => format!("clip({s},{v})"),
-        ASSOverride::ClipRect(x0,y0,x1,y1)=> format!("clip({x0},{y0},{x1},{y1})"),
-        ASSOverride::IclipI(v)            => format!("iclip({v})"),
-        ASSOverride::IclipII(s, v)        => format!("iclip({s},{v})"),
-        ASSOverride::IclipRect(x0,y0,x1,y1)=> format!("iclip({x0},{y0},{x1},{y1})"),
-        ASSOverride::TransformI(v)        => format!("t({})", stringify_overrides(v)),
-        ASSOverride::TransformII(a, v)    => format!("t({a},{})", stringify_overrides(v)),
-        ASSOverride::TransformIII(a,b,v)  => format!("t({a},{b},{})", stringify_overrides(v)),
-        ASSOverride::TransformIV(a,b,c,v) => format!("t({a},{b},{c},{})", stringify_overrides(v)),
-        ASSOverride::Fe(v)                => format!("fe{v}"),
-        ASSOverride::MoveI(a,b,c,d)       => format!("move({a},{b},{c},{d})"),
-        ASSOverride::MoveII(a,b,c,d,e,f)  => format!("move({a},{b},{c},{d},{e},{f})"),
-        ASSOverride::Org(x,y)             => format!("org({x},{y})"),
-        ASSOverride::Pbo(v)               => format!("pbo{v}"),
-        ASSOverride::Q(v)                 => format!("q{v}"),
-        ASSOverride::R(None)              => "r".to_string(),
-        ASSOverride::R(Some(s))           => format!("r{s}"),
-        ASSOverride::K(v)                 => format!("k{v}"),
-        ASSOverride::Kt(v)                => format!("kt{v}"),
-        ASSOverride::KSweep(v)            => format!("K{v}"),
-        ASSOverride::Kf(v)                => format!("kf{v}"),
-        ASSOverride::Ko(v)                => format!("ko{v}"),
+// Appends one tag's text. Writing into the caller's buffer rather than
+// returning a String matters because a typeset line can carry hundreds of
+// tags and each one used to cost an allocation that was immediately copied
+// into the line, then into the file.
+pub fn write_override(out: &mut String, ov: &ASSOverride) {
+    let _ = match ov {
+        ASSOverride::BlockText(v)         => out.write_str(v),
+        ASSOverride::Bold(v)              => write!(out, "b{}", *v as u8),
+        ASSOverride::Italic(v)            => write!(out, "i{}", *v as u8),
+        ASSOverride::Underline(v)         => write!(out, "u{}", *v as u8),
+        ASSOverride::Strikeout(v)         => write!(out, "s{}", *v as u8),
+        ASSOverride::Bord(v)              => write!(out, "bord{v}"),
+        ASSOverride::Shad(v)              => write!(out, "shad{v}"),
+        ASSOverride::Fn(v)                => write!(out, "fn{v}"),
+        ASSOverride::Fs(v)                => write!(out, "fs{v}"),
+        ASSOverride::Fsp(v)               => write!(out, "fsp{v}"),
+        ASSOverride::Blur(v)              => write!(out, "blur{v}"),
+        ASSOverride::Be(v)                => write!(out, "be{v}"),
+        ASSOverride::Fscx(v)              => write!(out, "fscx{v}"),
+        ASSOverride::Fscy(v)              => write!(out, "fscy{v}"),
+        ASSOverride::Fsc(v)               => write!(out, "fsc{v}"),
+        ASSOverride::Xbord(v)             => write!(out, "xbord{v}"),
+        ASSOverride::Ybord(v)             => write!(out, "ybord{v}"),
+        ASSOverride::Xshad(v)             => write!(out, "xshad{v}"),
+        ASSOverride::Yshad(v)             => write!(out, "yshad{v}"),
+        ASSOverride::Fax(v)               => write!(out, "fax{v}"),
+        ASSOverride::Fay(v)               => write!(out, "fay{v}"),
+        ASSOverride::Frx(v)               => write!(out, "frx{v}"),
+        ASSOverride::Fry(v)               => write!(out, "fry{v}"),
+        ASSOverride::Frz(v)               => write!(out, "frz{v}"),
+        ASSOverride::Fr(v)                => write!(out, "fr{v}"),
+        ASSOverride::Fad(a, b)            => write!(out, "fad({a},{b})"),
+        ASSOverride::Fade(a,b,c,d,e,f,g)  => write!(out, "fade({a},{b},{c},{d},{e},{f},{g})"),
+        ASSOverride::Pos(x, y)            => write!(out, "pos({x},{y})"),
+        ASSOverride::Alpha(v)             => write!(out, "alpha&H{v:02X}&"),
+        ASSOverride::AlphaI(v)            => write!(out, "1a&H{v:02X}&"),
+        ASSOverride::AlphaII(v)           => write!(out, "2a&H{v:02X}&"),
+        ASSOverride::AlphaIII(v)          => write!(out, "3a&H{v:02X}&"),
+        ASSOverride::AlphaIV(v)           => write!(out, "4a&H{v:02X}&"),
+        ASSOverride::ColorI(v)            => write!(out, "c&H{v:06X}&"),
+        ASSOverride::ColorII(v)           => write!(out, "2c&H{v:06X}&"),
+        ASSOverride::ColorIII(v)          => write!(out, "3c&H{v:06X}&"),
+        ASSOverride::ColorIV(v)           => write!(out, "4c&H{v:06X}&"),
+        ASSOverride::A(v)                 => write!(out, "a{v}"),
+        ASSOverride::An(v)                => write!(out, "an{v}"),
+        ASSOverride::P(v)                 => write!(out, "p{v}"),
+        ASSOverride::ClipI(v)             => write!(out, "clip({v})"),
+        ASSOverride::ClipII(s, v)         => write!(out, "clip({s},{v})"),
+        ASSOverride::ClipRect(x0,y0,x1,y1)=> write!(out, "clip({x0},{y0},{x1},{y1})"),
+        ASSOverride::IclipI(v)            => write!(out, "iclip({v})"),
+        ASSOverride::IclipII(s, v)        => write!(out, "iclip({s},{v})"),
+        ASSOverride::IclipRect(x0,y0,x1,y1)=> write!(out, "iclip({x0},{y0},{x1},{y1})"),
+        ASSOverride::TransformI(v)        => write_transform(out, &[], v),
+        ASSOverride::TransformII(a, v)    => write_transform(out, &[*a], v),
+        ASSOverride::TransformIII(a,b,v)  => write_transform(out, &[*a, *b], v),
+        ASSOverride::TransformIV(a,b,c,v) => write_transform(out, &[*a, *b, *c], v),
+        ASSOverride::Fe(v)                => write!(out, "fe{v}"),
+        ASSOverride::MoveI(a,b,c,d)       => write!(out, "move({a},{b},{c},{d})"),
+        ASSOverride::MoveII(a,b,c,d,e,f)  => write!(out, "move({a},{b},{c},{d},{e},{f})"),
+        ASSOverride::Org(x,y)             => write!(out, "org({x},{y})"),
+        ASSOverride::Pbo(v)               => write!(out, "pbo{v}"),
+        ASSOverride::Q(v)                 => write!(out, "q{v}"),
+        ASSOverride::R(None)              => out.write_str("r"),
+        ASSOverride::R(Some(s))           => write!(out, "r{s}"),
+        ASSOverride::K(v)                 => write!(out, "k{v}"),
+        ASSOverride::Kt(v)                => write!(out, "kt{v}"),
+        ASSOverride::KSweep(v)            => write!(out, "K{v}"),
+        ASSOverride::Kf(v)                => write!(out, "kf{v}"),
+        ASSOverride::Ko(v)                => write!(out, "ko{v}"),
+    };
+}
+
+fn write_transform(out: &mut String, leading: &[f32], tags: &[ASSOverride]) -> std::fmt::Result {
+    out.write_str("t(")?;
+    for value in leading {
+        write!(out, "{value},")?;
+    }
+    write_overrides(out, tags);
+    out.write_str(")")
+}
+
+pub fn write_overrides(out: &mut String, v: &[ASSOverride]) {
+    for o in v {
+        if !matches!(o, ASSOverride::BlockText(_)) {
+            out.push('\\');
+        }
+        write_override(out, o);
     }
 }
 
+pub fn stringify_override(ov: &ASSOverride) -> String {
+    let mut out = String::new();
+    write_override(&mut out, ov);
+    out
+}
+
 pub fn stringify_overrides(v: &[ASSOverride]) -> String {
-    v.iter()
-        .map(|o| {
-            if matches!(o, ASSOverride::BlockText(_)) {
-                stringify_override(o)
-            } else {
-                format!("\\{}", stringify_override(o))
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("")
+    let mut out = String::new();
+    write_overrides(&mut out, v);
+    out
 }
 
 /// Debug formatter for tests — human readable variant names with values

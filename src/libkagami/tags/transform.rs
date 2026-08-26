@@ -50,6 +50,13 @@ pub fn strip_conflicting_inner_tags(
 /// the same variant, that inner tag is stripped from the transform.
 /// If the transform ends up with no inner tags, it is dropped entirely.
 pub fn apply_same_tag_after_transform(tags: Vec<ASSOverride>) -> Vec<ASSOverride> {
+    // Most override blocks contain no \t at all, and with nothing to conflict
+    // with the rest of this function is two allocations and two passes that
+    // cannot change the input.
+    if !tags.iter().any(|t| transform_inner_tags(t).is_some()) {
+        return tags;
+    }
+
     // Collect per-transform which discriminants get conflicted by later raw tags
     let mut transform_conflicts: Vec<HashSet<std::mem::Discriminant<ASSOverride>>> =
         tags.iter()
