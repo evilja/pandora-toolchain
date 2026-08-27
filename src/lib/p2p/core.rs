@@ -4,6 +4,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 
+use crate::lib::download_prefix::{DownloadPrefixState, write_download_prefix};
 use crate::lib::protocol::core::{Protocol, Schema};
 use crate::lib::torrent::{
     DownloadEvent, DownloadOptions, FileSelection, TorrentClient, TorrentError, TorrentSource,
@@ -84,14 +85,22 @@ impl P2p {
         neg: String,
         srcmgn: bool,
         _tag: Option<String>,
+        prefix_state: Option<PathBuf>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let source = torrent_source(torrent_path, srcmgn);
         let _lock = DownloadLock::acquire(&source, save_path).await?;
+        let prefix_index = if file_indices.len() == 1 {
+            file_indices.first().copied()
+        } else {
+            None
+        };
+        let prefix_root = PathBuf::from(save_path);
         let options = DownloadOptions {
             selection: FileSelection::Only(file_indices),
             cancel_file: self.cfile.clone(),
         };
         let mut last_progress = None;
+        let mut last_prefix_publish = None;
         let result = self
             .client
             .download(&source, save_path, options, |event| match event {
@@ -120,9 +129,35 @@ impl P2p {
                     total_bytes,
                     &mut last_progress,
                 ),
+                DownloadEvent::FilePrefix { index, path, available_bytes, total_bytes }
+                    if Some(index) == prefix_index => {
+                        let ready = last_prefix_publish
+                            .map(|last: Instant| last.elapsed() >= Duration::from_millis(250))
+                            .unwrap_or(true);
+                        if ready {
+                            publish_prefix(
+                                prefix_state.as_deref(),
+                                prefix_root.join(path),
+                                available_bytes,
+                                total_bytes,
+                                false,
+                            );
+                            last_prefix_publish = Some(Instant::now());
+                        }
+                    }
+                DownloadEvent::FilePrefix { .. } => {}
                 // Opcode 6 is the per-file completion a batch download rides on: the file is on
                 // disk and its encode can start while the rest of the selection transfers.
-                DownloadEvent::FileComplete { index, path, .. } => {
+                DownloadEvent::FileComplete { index, path, bytes } => {
+                    if Some(index) == prefix_index {
+                        publish_prefix(
+                            prefix_state.as_deref(),
+                            prefix_root.join(&path),
+                            bytes,
+                            bytes,
+                            true,
+                        );
+                    }
                     let name = portable_path(&path);
                     println!(
                         "{}",
@@ -150,6 +185,7 @@ impl P2p {
         neg: String,
         srcmgn: bool,
         _tag: Option<String>,
+        prefix_state: Option<PathBuf>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let source = torrent_source(torrent_path, srcmgn);
         let _lock = DownloadLock::acquire(&source, save_path).await?;
@@ -158,6 +194,9 @@ impl P2p {
             cancel_file: self.cfile.clone(),
         };
         let mut last_progress = None;
+        let mut last_prefix_publish = None;
+        let prefix_root = PathBuf::from(save_path);
+        let mut prefix_index = None;
         let result = self
             .client
             .download(&source, save_path, options, |event| match event {
@@ -173,9 +212,42 @@ impl P2p {
                     total_bytes,
                     &mut last_progress,
                 ),
+                DownloadEvent::Metadata { files, .. } => {
+                    prefix_index = files
+                        .iter()
+                        .filter(|file| is_video_name(&file.path))
+                        .max_by_key(|file| file.length)
+                        .map(|file| file.index);
+                }
+                DownloadEvent::FilePrefix { index, path, available_bytes, total_bytes }
+                    if Some(index) == prefix_index => {
+                        let ready = last_prefix_publish
+                            .map(|last: Instant| last.elapsed() >= Duration::from_millis(250))
+                            .unwrap_or(true);
+                        if ready {
+                            publish_prefix(
+                                prefix_state.as_deref(),
+                                prefix_root.join(path),
+                                available_bytes,
+                                total_bytes,
+                                false,
+                            );
+                            last_prefix_publish = Some(Instant::now());
+                        }
+                    }
+                DownloadEvent::FileComplete { index, path, bytes }
+                    if Some(index) == prefix_index => {
+                        publish_prefix(
+                            prefix_state.as_deref(),
+                            prefix_root.join(path),
+                            bytes,
+                            bytes,
+                            true,
+                        );
+                    }
                 DownloadEvent::Complete => emit_done(proto, &neg),
-                DownloadEvent::Metadata { .. }
-                | DownloadEvent::FileSelected { .. }
+                DownloadEvent::FileSelected { .. }
+                | DownloadEvent::FilePrefix { .. }
                 | DownloadEvent::FileComplete { .. } => {}
             })
             .await;
@@ -238,6 +310,28 @@ impl Drop for DownloadLock {
         if owned {
             std::fs::remove_file(&self.path).ok();
         }
+    }
+}
+
+// Prefix publication is an encode optimisation and must never turn a successful transfer into a
+// failed one. A sidecar failure is logged and the worker simply falls back to fixed-stride chunks.
+fn publish_prefix(
+    state_path: Option<&Path>,
+    source: PathBuf,
+    available: u64,
+    total: u64,
+    complete: bool,
+) {
+    let Some(state_path) = state_path else {
+        return;
+    };
+    if let Err(e) = write_download_prefix(state_path, &DownloadPrefixState {
+        source,
+        available,
+        total,
+        complete,
+    }) {
+        eprintln!("[pnp2p] could not publish download prefix: {e}");
     }
 }
 

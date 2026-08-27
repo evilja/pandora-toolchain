@@ -61,6 +61,10 @@ struct Args {
 
     #[arg(long)]
     drive_folder: Option<String>,
+
+    /// Atomic sidecar describing the contiguous downloaded byte prefix for an overlapped decoder.
+    #[arg(long)]
+    prefix_state: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -90,12 +94,14 @@ async fn main() {
         target: args.link.clone(),
         log: args.logfile.clone().map(PathBuf::from),
         cfile: args.cancelfile.clone().map(PathBuf::from),
+        prefix_state: args.prefix_state.clone(),
     };
     if args.gscrape {
         let scraper = GScrape {
             link: args.link.clone(),
             log: args.logfile.map(PathBuf::from),
             cfile: args.cancelfile.map(PathBuf::from),
+            prefix_state: args.prefix_state,
         };
         log.line("google drive scrape starting");
         let ok = scraper.send(args.opcode, &proto, &neg).await;
@@ -150,11 +156,11 @@ async fn main() {
         });
         if !args.backup {
             tokio::spawn(async move {
-                let req4 = Req { target: link4, log: log4, cfile: cfile4 };
+                let req4 = Req { target: link4, log: log4, cfile: cfile4, prefix_state: None };
                 req4.luluwrapupload(env4, Some(opcode4), tx4).await;
             });
             tokio::spawn(async move {
-                let req5 = Req { target: link5, log: log5, cfile: cfile5 };
+                let req5 = Req { target: link5, log: log5, cfile: cfile5, prefix_state: None };
                 req5.voewrapupload(env5, Some(opcode5), tx5).await;
             });
         }

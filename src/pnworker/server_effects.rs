@@ -1,4 +1,3 @@
-use crate::lib::mpeg::probe::ffprobe_duration_centiseconds_timeout;
 use crate::lib::protocol::core::Protocol;
 use crate::pnworker::core::Preset;
 use crate::pnworker::tools::PNASS_INJECT;
@@ -17,9 +16,11 @@ pub struct AppliedServerEffects {
     pub warnings: Vec<String>,
 }
 
-// This runs on the encode worker's own task, between the dispatch and ENCODE_START, so anything
-// that blocks here stops the encoder without ever reaching a stage the queue can see.
-const DURATION_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+// `[all]` only needs to outlive the video: rendering an event through ASS's maximum timestamp is
+// frame-equivalent to ending it at the probed duration, but unlike a duration probe it can be done
+// before a streaming download finishes. The overlapped x264 planner and the eventual encoder can
+// therefore consume the exact same generated subtitle file.
+const MAX_ASS_CENTISECONDS: u64 = 255 * 360_000 + 59 * 6_000 + 59 * 100 + 99;
 
 pub fn load_server_settings(server_id: Option<u64>) -> ServerSettings {
     let Some(server_id) = server_id else {
@@ -83,15 +84,8 @@ pub async fn server_effects(
     if directory.join("CANCEL").try_exists().unwrap_or(false) {
         return Err("cancelled".to_string());
     }
-    let input = directory.join("contents").join("torrent").join("input.mkv");
     let output = directory.join("work").join("subtitle_server_effects.ass");
     let watermark_path = directory.join("contents").join("server_watermark.ass");
-    let duration = ffprobe_duration_centiseconds_timeout(&input.to_string_lossy(), DURATION_PROBE_TIMEOUT)
-        .await?
-        .ok_or_else(|| "could not determine downloaded video duration".to_string())?;
-    if directory.join("CANCEL").try_exists().unwrap_or(false) {
-        return Err("cancelled".to_string());
-    }
     tokio::fs::write(&watermark_path, watermark)
         .await
         .map_err(|e| format!("could not write watermark: {}", e))?;
@@ -111,7 +105,10 @@ pub async fn server_effects(
                 PathValue::from(watermark_path.display().to_string()),
             ),
             ("OUTPUT", PathValue::from(output.display().to_string())),
-            ("DURATION", PathValue::from(duration.to_string())),
+            (
+                "DURATION",
+                PathValue::from(MAX_ASS_CENTISECONDS.to_string()),
+            ),
             (
                 "LOGFILE",
                 PathValue::from(
@@ -156,5 +153,10 @@ mod tests {
         let settings = load_server_settings(None);
         assert!(matches!(settings.preset, Preset::Standard(None)));
         assert!(settings.watermark.is_none());
+    }
+
+    #[test]
+    fn all_watermarks_can_span_any_ass_representable_video() {
+        assert_eq!(MAX_ASS_CENTISECONDS, 92_159_999);
     }
 }

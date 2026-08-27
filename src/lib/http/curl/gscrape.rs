@@ -3,7 +3,12 @@
 
 // https://drive.usercontent.google.com/download?id=1QMul1d30l_ux05JJW5ZD8V4H8TWnXJ1S&export=download&confirm=t&uuid=4508405e-7311-498a-a81c-77bd9ee5f5f7
 
-use crate::{lib_pn_data, lib_pn_emit, lib_pn_schema, lib::logging::core::LoggingHandle, lib::protocol::core::{Protocol, Schema}, log};
+use crate::{
+    lib::download_prefix::{DownloadPrefixState, write_download_prefix},
+    lib::logging::core::LoggingHandle,
+    lib::protocol::core::{Protocol, Schema},
+    lib_pn_data, lib_pn_emit, lib_pn_schema, log,
+};
 use regex::Regex;
 use reqwest::{Client, Response};
 use std::path::{Path, PathBuf};
@@ -12,15 +17,27 @@ use tokio::fs::{try_exists, File};
 use tokio::io::AsyncWriteExt;
 use tokio::time::Instant;
 
+// Sidecar publication is best-effort: planning may disappear at any point without changing the
+// Drive download's outcome.
+fn publish_prefix(path: Option<&Path>, state: DownloadPrefixState) {
+    let Some(path) = path else {
+        return;
+    };
+    if let Err(e) = write_download_prefix(path, &state) {
+        eprintln!("[pncurl] could not publish Drive prefix: {e}");
+    }
+}
+
 pub struct GScrape {
     pub link: String,
     pub log: Option<PathBuf>,
     pub cfile: Option<PathBuf>,
+    pub prefix_state: Option<PathBuf>,
 }
 
 impl GScrape {
     pub fn new(link: String, log: Option<PathBuf>, cfile: Option<PathBuf>) -> Self {
-        Self { link, log, cfile }
+        Self { link, log, cfile, prefix_state: None }
     }
 
     pub fn parse_id(link: &str) -> Option<String> {
@@ -63,10 +80,19 @@ impl GScrape {
         proto: &Protocol,
         neg: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let total = resp.content_length().unwrap_or(1) as f64;
+        let content_length = resp.content_length().unwrap_or(0);
+        let total = content_length.max(1) as f64;
         let mut downloaded: f64 = 0.0;
         let mut last_emit: Option<Instant> = None;
+        let mut last_prefix_emit: Option<Instant> = None;
+        let source = PathBuf::from(path);
         let mut file = File::create(Path::new(path)).await?;
+        publish_prefix(self.prefix_state.as_deref(), DownloadPrefixState {
+            source: source.clone(),
+            available: 0,
+            total: content_length,
+            complete: false,
+        });
         while let Some(chunk) = resp.chunk().await? {
             if let Some(ref cancelfile) = self.cfile {
                 if try_exists(cancelfile).await.unwrap_or(false) {
@@ -82,6 +108,18 @@ impl GScrape {
             file.write_all(&chunk).await?;
             let n = chunk.len() as f64;
             downloaded += n;
+            let should_publish_prefix = last_prefix_emit
+                .map(|last| last.elapsed() >= Duration::from_millis(250))
+                .unwrap_or(true);
+            if should_publish_prefix {
+                publish_prefix(self.prefix_state.as_deref(), DownloadPrefixState {
+                    source: source.clone(),
+                    available: downloaded as u64,
+                    total: content_length,
+                    complete: false,
+                });
+                last_prefix_emit = Some(Instant::now());
+            }
             let should_emit = match last_emit {
                 Some(t) => t.elapsed() >= Duration::from_secs(5),
                 None => true,
@@ -98,6 +136,13 @@ impl GScrape {
             }
         }
         file.flush().await?;
+        let downloaded = downloaded as u64;
+        publish_prefix(self.prefix_state.as_deref(), DownloadPrefixState {
+            source,
+            available: downloaded,
+            total: if content_length == 0 { downloaded } else { content_length },
+            complete: true,
+        });
 
         Ok(())
     }

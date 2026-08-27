@@ -124,7 +124,7 @@ pub struct DownloadOptions {
 pub enum DownloadEvent {
     Metadata {
         name: String,
-        files: usize,
+        files: Vec<TorrentFile>,
         total_bytes: u64,
     },
     FileSelected {
@@ -136,6 +136,14 @@ pub enum DownloadEvent {
         downloaded_bytes: u64,
         total_bytes: u64,
         percent: f64,
+    },
+    // The verified contiguous prefix of one file. Torrent storage is preallocated to its final
+    // length, so this event — not file metadata — is what makes a growing prefix safe to decode.
+    FilePrefix {
+        index: u64,
+        path: PathBuf,
+        available_bytes: u64,
+        total_bytes: u64,
     },
     FileComplete {
         index: u64,
@@ -151,10 +159,13 @@ pub enum DownloadEvent {
 struct FileProgress {
     index: u64,
     path: PathBuf,
+    offset: u64,
     length: u64,
     first_piece: usize,
     last_piece: usize,
     remaining: usize,
+    next_prefix_piece: usize,
+    prefix_bytes: u64,
     done: bool,
 }
 
@@ -174,14 +185,36 @@ fn file_progress(metainfo: &Metainfo, selected: Option<&HashSet<u64>>) -> Vec<Fi
             FileProgress {
                 index: file.index,
                 path: file.path.clone(),
+                offset: file.offset,
                 length: file.length,
                 first_piece,
                 last_piece,
                 remaining,
+                next_prefix_piece: first_piece,
+                prefix_bytes: 0,
                 done: file.length == 0,
             }
         })
         .collect()
+}
+
+fn advance_file_prefix(
+    file: &mut FileProgress,
+    metainfo: &Metainfo,
+    written: &HashSet<usize>,
+) -> Result<bool> {
+    let before = file.prefix_bytes;
+    while file.next_prefix_piece <= file.last_piece && written.contains(&file.next_prefix_piece) {
+        let piece_end = ((file.next_prefix_piece as u64 + 1) * metainfo.piece_length)
+            .min(metainfo.total_length);
+        let file_end = file
+            .offset
+            .checked_add(file.length)
+            .ok_or_else(|| TorrentError::metainfo("file prefix end overflow"))?;
+        file.prefix_bytes = piece_end.min(file_end).saturating_sub(file.offset);
+        file.next_prefix_piece += 1;
+    }
+    Ok(file.prefix_bytes != before)
 }
 
 // Writing a verified piece, charging it against every file it overlaps, and announcing the files
@@ -228,6 +261,14 @@ where
             continue;
         }
         file.remaining = file.remaining.saturating_sub(1);
+        if advance_file_prefix(file, metainfo, written)? {
+            event(DownloadEvent::FilePrefix {
+                index: file.index,
+                path: file.path.clone(),
+                available_bytes: file.prefix_bytes,
+                total_bytes: file.length,
+            });
+        }
         if file.remaining > 0 {
             continue;
         }
@@ -332,7 +373,7 @@ impl TorrentClient {
         let (metainfo, initial_peers) = self.resolve_source(source, cancel.clone()).await?;
         event(DownloadEvent::Metadata {
             name: metainfo.name.clone(),
-            files: metainfo.files.len(),
+            files: metainfo.files.clone(),
             total_bytes: metainfo.total_length,
         });
         let selected = selection_set(selection);
@@ -916,6 +957,20 @@ mod tests {
     }
 
     #[test]
+    fn file_prefix_waits_for_a_gap_before_advancing() {
+        let info = b"d5:filesld6:lengthi3e4:pathl5:a.mkveed6:lengthi3e4:pathl5:b.mkveee4:name4:root12:piece lengthi4e6:pieces40:0000000000000000000011111111111111111111e";
+        let meta = Metainfo::from_info_bytes(info, vec![], None).unwrap();
+        let mut file = file_progress(&meta, None).remove(1);
+        let mut written = HashSet::from([1]);
+        assert!(!advance_file_prefix(&mut file, &meta, &written).unwrap());
+        assert_eq!(file.prefix_bytes, 0);
+
+        written.insert(0);
+        assert!(advance_file_prefix(&mut file, &meta, &written).unwrap());
+        assert_eq!(file.prefix_bytes, 3);
+    }
+
+    #[test]
     fn file_progress_only_tracks_the_selected_files() {
         let info = b"d5:filesld6:lengthi3e4:pathl5:a.mkveed6:lengthi3e4:pathl5:b.mkveee4:name4:root12:piece lengthi4e6:pieces40:0000000000000000000011111111111111111111e";
         let meta = Metainfo::from_info_bytes(info, vec![], None).unwrap();
@@ -959,16 +1014,19 @@ mod tests {
         let torrent = test_torrent(&info, &tracker_url);
         let destination = scratch_dir();
         let mut progress = Vec::new();
+        let mut prefixes = Vec::new();
         let client = TorrentClient::new(test_config()).unwrap();
         let summary = client
             .download(
                 &TorrentSource::Bytes(torrent),
                 &destination,
                 DownloadOptions::default(),
-                |event| {
-                    if let DownloadEvent::Progress { percent, .. } = event {
-                        progress.push(percent);
+                |event| match event {
+                    DownloadEvent::Progress { percent, .. } => progress.push(percent),
+                    DownloadEvent::FilePrefix { available_bytes, total_bytes, .. } => {
+                        prefixes.push((available_bytes, total_bytes));
                     }
+                    _ => {}
                 },
             )
             .await
@@ -979,6 +1037,7 @@ mod tests {
             content
         );
         assert_eq!(progress.last().copied(), Some(100.0));
+        assert_eq!(prefixes.last().copied(), Some((content.len() as u64, content.len() as u64)));
         peer_task.await.unwrap();
         tracker_task.await.unwrap();
         tokio::fs::remove_dir_all(destination).await.ok();

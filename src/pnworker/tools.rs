@@ -32,6 +32,8 @@ pub const PNCURL_GSCRAPE: &[CliParam] = &[
     CliParam::Path("LOGFILE"),
     CliParam::Literal("--cancelfile"),
     CliParam::Path("CANCELFILE"),
+    CliParam::Literal("--prefix-state"),
+    CliParam::Path("PREFIX_STATE"),
 ];
 
 pub const PNCURL_DIRECT: &[CliParam] = &[
@@ -49,6 +51,8 @@ pub const PNCURL_DIRECT: &[CliParam] = &[
     CliParam::Path("LOGFILE"),
     CliParam::Literal("--cancelfile"),
     CliParam::Path("CANCELFILE"),
+    CliParam::Literal("--prefix-state"),
+    CliParam::Path("PREFIX_STATE"),
 ];
 
 pub const PNP2P_TORRENT: &[CliParam] = &[
@@ -69,6 +73,8 @@ pub const PNP2P_TORRENT: &[CliParam] = &[
     CliParam::Path("CANCELFILE"),
     CliParam::Literal("--logfile"),
     CliParam::Path("LOGFILE"),
+    CliParam::Literal("--prefix-state"),
+    CliParam::Path("PREFIX_STATE"),
 ];
 
 pub const PNMPEG_STUDIO: &[CliParam] = &[
@@ -306,6 +312,8 @@ pub const PNP2P_SELECT: &[CliParam] = &[
     CliParam::Path("CANCELFILE"),
     CliParam::Literal("--logfile"),
     CliParam::Path("LOGFILE"),
+    CliParam::Literal("--prefix-state"),
+    CliParam::Path("PREFIX_STATE"),
 ];
 
 pub const PNP2P_SELECTS: &[CliParam] = &[
@@ -328,6 +336,8 @@ pub const PNP2P_SELECTS: &[CliParam] = &[
     CliParam::Path("CANCELFILE"),
     CliParam::Literal("--logfile"),
     CliParam::Path("LOGFILE"),
+    CliParam::Literal("--prefix-state"),
+    CliParam::Path("PREFIX_STATE"),
 ];
 
 pub const PNASS_LAYER: &[CliParam] = &[

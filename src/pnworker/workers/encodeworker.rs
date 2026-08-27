@@ -19,6 +19,36 @@ pub type EncodeData = (PathBuf, Preset, u64, Option<u64>, Option<Vec<u8>>, bool)
 pub type StudioData = (PathBuf, PathBuf, u64);
 pub type KeycodeData = (PathBuf, Vec<PathBuf>, Option<String>, KeepKind, u64, Option<u64>);
 
+struct ForegroundEncodeGuard {
+    path: PathBuf,
+}
+
+impl ForegroundEncodeGuard {
+    fn acquire(directory: &Path, job_id: u64) -> Self {
+        let root = directory.parent().unwrap_or(directory);
+        let path = root.join(".foreground-encode");
+        let temporary = root.join(format!(".foreground-encode.{}.tmp", std::process::id()));
+        std::fs::create_dir_all(root).ok();
+        if std::fs::write(&temporary, format!("{}|{job_id}\n", std::process::id())).is_ok() {
+            if std::fs::rename(&temporary, &path).is_err() {
+                std::fs::remove_file(&temporary).ok();
+            }
+        }
+        Self { path }
+    }
+}
+
+impl Drop for ForegroundEncodeGuard {
+    fn drop(&mut self) {
+        let owned = std::fs::read_to_string(&self.path)
+            .ok()
+            .and_then(|value| value.trim().split('|').next()?.parse::<u32>().ok())
+            == Some(std::process::id());
+        if owned {
+            std::fs::remove_file(&self.path).ok();
+        }
+    }
+}
 
 #[cfg(target_os = "windows")]
 use std::env;
@@ -50,10 +80,12 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             }
         };
         if let WorkerMsg::Studio((directory, manifest, job_id)) = msg {
+                let _foreground = ForegroundEncodeGuard::acquire(&directory, job_id);
                 run_studio_job(&pnmpeg_path, directory, manifest, job_id, &mut proto, &tx).await;
                 continue 'll;
             }
             if let WorkerMsg::Keycode((directory, inputs, intro_dir, kind, job_id, _server_id)) = msg {
+                let _foreground = ForegroundEncodeGuard::acquire(&directory, job_id);
                 let Some(first) = inputs.first() else {
                     tx.send((job_id, MessagePayload::Static(ENCODE_FAIL), Some(Stage::Failed))).await.unwrap();
                     continue 'll;
@@ -105,6 +137,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             let WorkerMsg::Encode((directory, preset, job_id, server_id, watermark, cache_resolution)) = msg else {
                 continue 'll;
             };
+            let _foreground = ForegroundEncodeGuard::acquire(&directory, job_id);
             let mut resolution_probe = if cache_resolution {
                 let input = directory
                     .join("contents")
@@ -426,4 +459,30 @@ fn keycode_progress(
         _ => {}
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn foreground_guard_publishes_and_removes_its_live_pid() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("pn-foreground-{nonce}"));
+        let job = root.join("123");
+        std::fs::create_dir_all(&job).unwrap();
+        let marker = root.join(".foreground-encode");
+        {
+            let _guard = ForegroundEncodeGuard::acquire(&job, 123);
+            assert_eq!(
+                std::fs::read_to_string(&marker).unwrap().trim(),
+                format!("{}|123", std::process::id()),
+            );
+        }
+        assert!(!marker.exists());
+        std::fs::remove_dir_all(root).ok();
+    }
 }

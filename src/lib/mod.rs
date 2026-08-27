@@ -1,5 +1,6 @@
 pub mod bin;
 pub mod db;
+pub mod download_prefix;
 pub mod env;
 pub mod git;
 pub mod http;

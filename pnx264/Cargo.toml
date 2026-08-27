@@ -1,0 +1,14 @@
+# Detached from the root crate's workspace the same way kagami-trace is, so this stays
+# buildable on its own and its C build-dependency never lands in pandora-toolchain's tree.
+[workspace]
+members = ["."]
+
+[package]
+name = "pnx264"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "libx264 FFI for the Pandora parallel encode worker"
+
+[build-dependencies]
+cc = "1"

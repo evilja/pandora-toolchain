@@ -5,6 +5,7 @@ use pandora_toolchain::lib::logging::tool::ToolLog;
 use pandora_toolchain::{pn_data, pn_emit, pn_schema};
 
 use clap::Parser;
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -54,6 +55,10 @@ struct Args {
 
     #[arg(long)]
     logfile: Option<String>,
+
+    /// Atomic sidecar describing the selected video's verified contiguous byte prefix.
+    #[arg(long)]
+    prefix_state: Option<PathBuf>,
 }
 
 // `--select` stays a single index for the existing worker call; `--selects` adds the comma list a
@@ -207,6 +212,7 @@ async fn main() {
                 neg.clone(),
                 !args.nomagnet && args.magnet,
                 args.tag.clone(),
+                args.prefix_state.clone(),
             )
             .await
     } else {
@@ -224,6 +230,7 @@ async fn main() {
                     false
                 },
                 args.tag.clone(),
+                args.prefix_state.clone(),
             )
             .await
     };

@@ -835,6 +835,7 @@ async fn queue_backup_all_job(
             job.job_id,
             Vec::new(),
             true,
+            None,
         )),
         job,
         db,
@@ -971,6 +972,17 @@ async fn queue_download_job(
             job.job_id,
             file_indices,
             preserve_all,
+            if !preserve_all && matches!(job.job_type, JobType::Encode | JobType::Pancode) {
+                match &job.preset {
+                    Preset::VerySlow(_) => Some(DownloadAot::VerySlow),
+                    Preset::Standard(_) => Some(DownloadAot::Standard),
+                    Preset::PseudoLossless(_) => Some(DownloadAot::PseudoLossless),
+                    Preset::Dummy(_) => Some(DownloadAot::Dummy),
+                    Preset::Gpu(_) | Preset::Copy => None,
+                }
+            } else {
+                None
+            },
         )),
         job,
         db,

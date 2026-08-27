@@ -1,5 +1,5 @@
 use crate::lib::env::core::get_pandora_env;
-use crate::lib::env::standard::{PNCURL, PNP2P};
+use crate::lib::env::standard::{PNASS, PNCURL, PNMPEG, PNP2P};
 use crate::lib::p2p::nyaaise::TorrentType;
 use crate::lib::protocol::core::Protocol;
 use crate::pnworker::core::Stage;
@@ -27,7 +27,15 @@ use tokio::time::{Duration, Instant, sleep};
 // The index list is empty for a whole-torrent download, one entry for `/encode pan`, and one entry
 // per episode for a batch — a batch runs as a single pnp2p process because the info-hash lock
 // admits exactly one downloader per torrent.
-pub type DownloadData = (PathBuf, TorrentType, u64, Vec<u64>, bool);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DownloadAot {
+    VerySlow,
+    Standard,
+    PseudoLossless,
+    Dummy,
+}
+
+pub type DownloadData = (PathBuf, TorrentType, u64, Vec<u64>, bool, Option<DownloadAot>);
 
 // The three pnp2p invocations differ only in how they select files, so the half they share is built
 // once. `CliParam::Path` keys are matched by string at runtime, with nothing tying a spec in
@@ -57,6 +65,10 @@ fn p2p_params(
             "LOGFILE",
             PathValue::from(directory.join("log").join(log_name).display().to_string()),
         ),
+        (
+            "PREFIX_STATE",
+            PathValue::from(directory.join("work").join("download.prefix").display().to_string()),
+        ),
     ])
 }
 
@@ -64,6 +76,8 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
     let env = get_pandora_env();
     let pncurl_path = env.get(PNCURL).cloned().unwrap_or_default();
     let pnp2p_path = env.get(PNP2P).cloned().unwrap_or_default();
+    let pnmpeg_path = env.get(PNMPEG).cloned().unwrap_or_default();
+    let pnass_path = env.get(PNASS).cloned().unwrap_or_default();
     let mut pool = WorkerNamePool::new(download_worker_slots().await);
     let mut next_slot_refresh = Instant::now() + Duration::from_secs(1);
     let (done_tx, mut done_rx) = channel::<String>(32);
@@ -94,8 +108,18 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             let done_tx2 = done_tx.clone();
             let pncurl_path2 = pncurl_path.clone();
             let pnp2p_path2 = pnp2p_path.clone();
+            let pnmpeg_path2 = pnmpeg_path.clone();
+            let pnass_path2 = pnass_path.clone();
             tokio::spawn(async move {
-                run_download_job(data, pncurl_path2, pnp2p_path2, tx2, name.clone()).await;
+                run_download_job(
+                    data,
+                    pncurl_path2,
+                    pnp2p_path2,
+                    pnmpeg_path2,
+                    pnass_path2,
+                    tx2,
+                    name.clone(),
+                ).await;
                 done_tx2.send(name).await.ok();
             });
         }
@@ -104,14 +128,138 @@ pub async fn pn_dloadworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
     }
 }
 
+// Download-time encoding is always optional. VerySlow plans/chunks speculatively; the other CPU
+// presets keep one linear x264 instance alive so its real rate-control state reaches handoff.
+struct DownloadPlanner {
+    child: Option<tokio::process::Child>,
+    linear: bool,
+    prefix_state: PathBuf,
+}
+
+impl Drop for DownloadPlanner {
+    fn drop(&mut self) {
+        let completed_linear = self.linear
+            && crate::lib::download_prefix::read_download_prefix(&self.prefix_state)
+                .is_ok_and(|state| state.complete);
+        if completed_linear {
+            // The foreground worker adopts the still-live process through linear-aot.state.
+            self.child.take();
+        } else if let Some(child) = self.child.as_mut() {
+            child.start_kill().ok();
+        }
+    }
+}
+
+async fn start_download_planner(
+    directory: &PathBuf,
+    pnmpeg_path: &str,
+    pnass_path: &str,
+    job_id: u64,
+    mode: DownloadAot,
+) -> Option<DownloadPlanner> {
+    if pnmpeg_path.trim().is_empty() {
+        return None;
+    }
+    let watermark = tokio::fs::read(directory.join("contents").join("server_watermark.ass"))
+        .await
+        .ok();
+    let effects = match crate::pnworker::server_effects::server_effects(
+        directory,
+        watermark.as_deref(),
+        pnass_path,
+        job_id,
+    ).await {
+        Ok(effects) => effects,
+        Err(e) => {
+            eprintln!("[Pandora Downloader] planner subtitle setup skipped: {e}");
+            return None;
+        }
+    };
+    let stderr_path = directory.join("log").join(format!("PNmpeg_Plan{}.stderr.log", job_id));
+    let stderr = std::fs::File::create(stderr_path).ok()?;
+    let worker_root = directory.parent().unwrap_or(directory);
+    let foreground_busy = worker_root.join(".foreground-encode");
+    let aot_lease = worker_root.join(".aot-owner");
+    let mut command = tokio::process::Command::new(pnmpeg_path);
+    let linear = mode != DownloadAot::VerySlow;
+    let prefix_state = directory.join("work").join("download.prefix");
+    if linear {
+        let preset = match mode {
+            DownloadAot::Standard => "--x264",
+            DownloadAot::PseudoLossless => "--pseudolossless",
+            DownloadAot::Dummy => "--dummy",
+            DownloadAot::VerySlow => unreachable!(),
+        };
+        command.args([
+            "--linear-prefix",
+            preset,
+            "--aot-job-id",
+            &job_id.to_string(),
+            "--output",
+            &directory.join("work").join("linear-aot-video.mp4").display().to_string(),
+        ]);
+    } else {
+        command.args([
+            "--plan-prefix",
+            "--veryslow",
+            "--output",
+            &directory.join("work").join("parallel.plan").display().to_string(),
+        ]);
+    }
+    command.args([
+        "--input",
+        &directory.join("work").join("download.prefix").display().to_string(),
+        "--ass",
+        &effects.subtitle.display().to_string(),
+        "--cancelfile",
+        &directory.join("CANCEL").display().to_string(),
+        "--aot-busyfile",
+        &foreground_busy.display().to_string(),
+        "--aot-lockfile",
+        &aot_lease.display().to_string(),
+        "--logfile",
+        &directory.join("log").join(format!("PNmpeg_Plan{}.log", job_id)).display().to_string(),
+    ]);
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::from(stderr))
+        .kill_on_drop(false);
+    match command.spawn() {
+        Ok(child) => Some(DownloadPlanner { child: Some(child), linear, prefix_state }),
+        Err(e) => {
+            eprintln!("[Pandora Downloader] prefix planner could not start: {e}");
+            None
+        }
+    }
+}
+
+async fn finish_download_planner(planner: &mut Option<DownloadPlanner>, success: bool) {
+    let Some(mut planner) = planner.take() else {
+        return;
+    };
+    let Some(mut child) = planner.child.take() else {
+        return;
+    };
+    if planner.linear && success {
+        // The foreground worker will adopt this live encoder through linear-aot.state.
+        drop(child);
+        return;
+    }
+    child.start_kill().ok();
+    tokio::time::timeout(Duration::from_secs(2), child.wait()).await.ok();
+}
+
 async fn run_download_job(
     data: DownloadData,
     pncurl_path: String,
     pnp2p_path: String,
+    pnmpeg_path: String,
+    pnass_path: String,
     tx: Sender<CommData>,
     worker_name: String,
 ) {
-    let (directory, torrent, job_id, file_indices, preserve_all) = data;
+    let (directory, torrent, job_id, file_indices, preserve_all, aot_mode) = data;
     let mut proto = Protocol::new(vec![1]);
     let worker_key = format!("pn-download-{}", worker_name);
     tx.try_send((
@@ -130,6 +278,12 @@ async fn run_download_job(
         .unwrap();
         return;
     }
+
+    let mut planner = if let Some(mode) = aot_mode {
+        start_download_planner(&directory, &pnmpeg_path, &pnass_path, job_id, mode).await
+    } else {
+        None
+    };
 
     let arg_opcode: String;
     match torrent {
@@ -178,6 +332,10 @@ async fn run_download_job(
                     (
                         "CANCELFILE",
                         PathValue::from(directory.join("CANCEL").display().to_string()),
+                    ),
+                    (
+                        "PREFIX_STATE",
+                        PathValue::from(directory.join("work").join("download.prefix").display().to_string()),
                     ),
                 ]),
                 job_id,
@@ -294,6 +452,10 @@ async fn run_download_job(
                     (
                         "CANCELFILE",
                         PathValue::from(directory.join("CANCEL").display().to_string()),
+                    ),
+                    (
+                        "PREFIX_STATE",
+                        PathValue::from(directory.join("work").join("download.prefix").display().to_string()),
                     ),
                 ]),
                 job_id,
@@ -653,6 +815,11 @@ async fn run_download_job(
             .await
         }
     };
+
+    finish_download_planner(
+        &mut planner,
+        matches!(result, ToolResult::Success) && duplicate_save_path.is_none(),
+    ).await;
 
     if let Some(path) = duplicate_save_path {
         tx.send((

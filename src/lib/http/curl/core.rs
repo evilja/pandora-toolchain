@@ -1,4 +1,5 @@
 use crate::{
+    lib::download_prefix::{DownloadPrefixState, write_download_prefix},
     lib::env::{
         core::get_env,
         standard::{
@@ -170,6 +171,20 @@ pub struct Req {
     pub target: String,
     pub log: Option<PathBuf>,
     pub cfile: Option<PathBuf>,
+    // Optional sidecar for a decoder that consumes only bytes confirmed contiguous by this
+    // sequential download. It is unused by upload requests.
+    pub prefix_state: Option<PathBuf>,
+}
+
+// Prefix planning is opportunistic. Losing its sidecar must leave the media download untouched so
+// the encoder can fall back to fixed-stride chunks.
+fn publish_prefix(path: Option<&std::path::Path>, state: DownloadPrefixState) {
+    let Some(path) = path else {
+        return;
+    };
+    if let Err(e) = write_download_prefix(path, &state) {
+        eprintln!("[pncurl] could not publish download prefix: {e}");
+    }
 }
 
 fn is_cancelled(cfile: &Option<PathBuf>) -> bool {
@@ -225,7 +240,9 @@ impl Req {
         let total = response.content_length().unwrap_or(0);
         let mut downloaded = 0u64;
         let mut last_emit: Option<Instant> = None;
+        let mut last_prefix_emit: Option<Instant> = None;
         let mut response = response;
+        let source = PathBuf::from(path);
         let mut file = match File::create(path).await {
             Ok(f) => {
                 log!(handle, &format!("File created: {path}\n"));
@@ -236,6 +253,12 @@ impl Req {
                 return Err(a.into());
             }
         };
+        publish_prefix(self.prefix_state.as_deref(), DownloadPrefixState {
+            source: source.clone(),
+            available: 0,
+            total,
+            complete: false,
+        });
         while let Some(chunk) = response.chunk().await? {
             if is_cancelled(&self.cfile) {
                 if let (Some(proto), Some(neg)) = (proto, neg) {
@@ -257,6 +280,18 @@ impl Req {
             }
             file.write_all(&chunk).await?;
             downloaded += chunk.len() as u64;
+            let should_publish_prefix = last_prefix_emit
+                .map(|last| last.elapsed() >= Duration::from_millis(250))
+                .unwrap_or(true);
+            if should_publish_prefix {
+                publish_prefix(self.prefix_state.as_deref(), DownloadPrefixState {
+                    source: source.clone(),
+                    available: downloaded,
+                    total,
+                    complete: false,
+                });
+                last_prefix_emit = Some(Instant::now());
+            }
             let should_emit = match last_emit {
                 Some(t) => t.elapsed() >= Duration::from_secs(5),
                 None => true,
@@ -283,6 +318,12 @@ impl Req {
             }
         }
         file.flush().await?;
+        publish_prefix(self.prefix_state.as_deref(), DownloadPrefixState {
+            source,
+            available: downloaded,
+            total: if total == 0 { downloaded } else { total },
+            complete: true,
+        });
         if let Some(mut a) = handle {
             a.flush().await;
         }

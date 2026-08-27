@@ -10,6 +10,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 capella = { git = "https://github.com/evilja/capella" }
 kagami-trace = { path = "kagami-trace" }
+pnx264 = { path = "pnx264" }
 
 # `blocking` was declared and never used — nothing in the tree reaches for `reqwest::blocking`, and
 # no other crate asks for it, so it was compiling a second client and its runtime for nobody.

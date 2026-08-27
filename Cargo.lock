@@ -2596,6 +2596,7 @@ dependencies = [
  "git2",
  "kagami-trace",
  "md5",
+ "pnx264",
  "regex",
  "reqwest",
  "resvg",
@@ -2798,6 +2799,13 @@ dependencies = [
  "fdeflate",
  "flate2",
  "miniz_oxide",
+]
+
+[[package]]
+name = "pnx264"
+version = "0.1.0"
+dependencies = [
+ "cc",
 ]
 
 [[package]]

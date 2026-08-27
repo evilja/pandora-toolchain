@@ -11,6 +11,7 @@ use pandora_toolchain::lib::mpeg::{
 use tokio::{fs::File, io::AsyncWriteExt, time::{Duration, Instant}};
 use pandora_toolchain::{pn_data, pn_emit, pn_schema};
 use pandora_toolchain::lib::mpeg::core::RpbData;
+use pandora_toolchain::lib::bin::resolve_runtime_binary;
 use pandora_toolchain::lib::logging::tool::ToolLog;
 use pandora_toolchain::lib::mpeg::studio::{studio_ffmpeg_params, write_ffconcat, StudioRenderManifest};
 use pandora_toolchain::lib::mpeg::subs::{ExtractOutcome, extract_subtitle, ffprobe_subtitle_streams};
@@ -18,6 +19,7 @@ use pandora_toolchain::lib::protocol::core::{Protocol, Schema, ToolInfo};
 use std::str::FromStr;
 use clap::Parser;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use std::borrow::Cow;
 
@@ -53,6 +55,66 @@ struct Args {
     /// Render a serialized Pandora Studio manifest.
     #[arg(long)]
     studio: bool,
+
+    /// Plan natural IDR boundaries from a growing download-prefix sidecar.
+    #[arg(long)]
+    plan_prefix: bool,
+
+    /// Continuously encode a growing prefix with one persistent x264 instance.
+    #[arg(long, hide = true)]
+    linear_prefix: bool,
+
+    #[arg(long, hide = true)]
+    aot_job_id: Option<u64>,
+
+    /// Internal: encode one speculative natural-IDR chunk.
+    #[arg(long, hide = true)]
+    aot_chunk: bool,
+
+    #[arg(long, hide = true)]
+    aot_stopfile: Option<String>,
+
+    #[arg(long, hide = true)]
+    aot_busyfile: Option<String>,
+
+    #[arg(long, hide = true)]
+    aot_lockfile: Option<String>,
+
+    #[arg(long, hide = true)]
+    start_frame: Option<u64>,
+
+    #[arg(long, hide = true)]
+    frame_count: Option<u64>,
+
+    #[arg(long, hide = true)]
+    video_width: Option<u32>,
+
+    #[arg(long, hide = true)]
+    video_height: Option<u32>,
+
+    #[arg(long, hide = true)]
+    fps_num: Option<u32>,
+
+    #[arg(long, hide = true)]
+    fps_den: Option<u32>,
+
+    #[arg(long, hide = true)]
+    aot_crf: Option<f32>,
+
+    #[arg(long, hide = true)]
+    aot_preset: Option<String>,
+
+    #[arg(long, hide = true)]
+    aot_tune: Option<String>,
+
+    #[arg(long, hide = true)]
+    aot_profile: Option<String>,
+
+    #[arg(long, hide = true)]
+    aot_level: Option<String>,
+
+    #[arg(long, hide = true)]
+    aot_x264_params: Option<String>,
 
     /// Extract every text subtitle track of --input into the --output directory.
     #[arg(long)]
@@ -116,6 +178,170 @@ struct Args {
 #[inline]
 fn wrap(a: &str) -> String { return String::from(a) }
 
+fn planner_encoder_config(args: &Args) -> pnx264::Config {
+    let (preset, crf, x264_params) = if args.dummy {
+        ("veryfast", 25.0, None)
+    } else if args.pseudolossless {
+        (
+            "fast",
+            17.0,
+            Some("me=umh:subme=8:merange=24:trellis=2:psy-rd=1:aq-strength=1.1:aq-mode=3".to_string()),
+        )
+    } else if args.veryslow {
+        ("veryslow", 18.0, None)
+    } else {
+        (
+            "fast",
+            17.0,
+            Some("aq-strength=1.0:aq-mode=3".to_string()),
+        )
+    };
+    pnx264::Config {
+        crf,
+        threads: std::env::var("PLAN_THREADS").ok().and_then(|value| value.parse().ok()).unwrap_or(0),
+        preset: Some(preset.to_string()),
+        profile: Some("high".to_string()),
+        level: Some("4.1".to_string()),
+        x264_params,
+        plan_only: true,
+        ..Default::default()
+    }
+}
+
+fn encoder_compatibility(encoder: &pnx264::Config) -> String {
+    format!(
+        "{}|{}|{}|{}|{}|{}",
+        encoder.preset.as_deref().unwrap_or(""),
+        encoder.crf,
+        encoder.tune.as_deref().unwrap_or(""),
+        encoder.profile.as_deref().unwrap_or(""),
+        encoder.level.as_deref().unwrap_or(""),
+        encoder.x264_params.as_deref().unwrap_or(""),
+    )
+}
+
+fn finish_linear_aot(
+    args: &Args,
+    encoder: &pnx264::Config,
+    audio_index: &str,
+    proto: &Protocol,
+    neg: &str,
+    log: &mut ToolLog,
+) -> Result<bool, String> {
+    let output = PathBuf::from(&args.output);
+    let parent = output.parent().unwrap_or_else(|| Path::new("."));
+    let state_path = parent.join("linear-aot.state");
+    let aot_video = parent.join("linear-aot-video.mp4");
+    let Ok(initial) = pnx264::linear::LinearAotState::read(&state_path) else {
+        return Ok(false);
+    };
+    if initial.compatibility != encoder_compatibility(encoder)
+        || (!initial.complete && !initial.process_alive())
+    {
+        log.line("linear AOT state is stale or incompatible; using established linear encode");
+        std::fs::remove_file(&state_path).ok();
+        std::fs::remove_file(&aot_video).ok();
+        return Ok(false);
+    }
+
+    let scratch = parent.join("pnmpeg-linear-aot");
+    std::fs::remove_dir_all(&scratch).ok();
+    std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
+    let audio = scratch.join("audio.m4a");
+    let mut audio_child = Command::new(resolve_runtime_binary("ffmpeg"))
+        .args(["-v", "error", "-i", &args.input, "-map", &format!("0:{audio_index}"),
+            "-vn", "-c:a", "aac", "-b:a", "192k", "-y"])
+        .arg(&audio)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("spawn linear AOT audio encoder: {e}"))?;
+    let probe_input = args.input.clone();
+    let mut total_probe = Some(std::thread::spawn(move || ffprobe_frame(&probe_input).unwrap_or(0)));
+    let mut total = 0u64;
+    let wait_started = std::time::Instant::now();
+    let initial_frames = initial.frames;
+    let mut last_emit = None;
+    let completed = loop {
+        if args.cancelfile.as_deref().is_some_and(|path| Path::new(path).exists()) {
+            audio_child.kill().ok();
+            audio_child.wait().ok();
+            std::fs::remove_dir_all(&scratch).ok();
+            return Err("cancelled".to_string());
+        }
+        let state = pnx264::linear::LinearAotState::read(&state_path)
+            .map_err(|e| format!("read linear AOT handoff: {e}"))?;
+        if total_probe.as_ref().is_some_and(|probe| probe.is_finished()) {
+            total = total_probe.take().and_then(|probe| probe.join().ok()).unwrap_or(0);
+        }
+        if state.compatibility != initial.compatibility {
+            audio_child.kill().ok();
+            audio_child.wait().ok();
+            std::fs::remove_dir_all(&scratch).ok();
+            return Err("linear AOT compatibility changed during handoff".to_string());
+        }
+        let now = std::time::Instant::now();
+        if last_emit.is_none_or(|last: std::time::Instant| now.duration_since(last) >= Duration::from_secs(5)) {
+            let fps = (state.frames.saturating_sub(initial_frames) as f64
+                / wait_started.elapsed().as_secs_f64().max(0.001)).round() as u64;
+            let bitrate = if state.frames == 0 { 0 } else {
+                state.bytes.saturating_mul(8).saturating_mul(fps) / state.frames / 1000
+            };
+            let fps_value = fps.to_string();
+            let frame_value = state.frames.to_string();
+            let total_value = total.to_string();
+            let bitrate_value = bitrate.to_string();
+            println!("{}", pn_emit!(
+                protocol = proto,
+                negkey = neg,
+                schema = [leaf, [leaf, leaf, leaf, leaf]],
+                data = ["0", [fps_value, frame_value, total_value, bitrate_value]]
+            ).unwrap());
+            last_emit = Some(now);
+        }
+        if state.complete {
+            break state;
+        }
+        if !state.process_alive() {
+            audio_child.kill().ok();
+            audio_child.wait().ok();
+            std::fs::remove_dir_all(&scratch).ok();
+            std::fs::remove_file(&state_path).ok();
+            std::fs::remove_file(&aot_video).ok();
+            return Ok(false);
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    };
+    if let Some(probe) = total_probe.take() {
+        total = probe.join().unwrap_or(0);
+    }
+    if total != 0 && completed.frames != total {
+        audio_child.kill().ok();
+        audio_child.wait().ok();
+        return Err(format!("linear AOT encoded {}/{} frames", completed.frames, total));
+    }
+    if !audio_child.wait().map_err(|e| e.to_string())?.success() {
+        return Err("linear AOT audio encode failed".to_string());
+    }
+    let mux_status = Command::new(resolve_runtime_binary("ffmpeg"))
+        .args(["-v", "error", "-i"])
+        .arg(&aot_video)
+        .args(["-i"])
+        .arg(&audio)
+        .args(["-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-movflags", "+faststart", "-y"])
+        .arg(&output)
+        .status()
+        .map_err(|e| format!("spawn linear AOT final mux: {e}"))?;
+    if !mux_status.success() {
+        return Err("linear AOT final mux failed".to_string());
+    }
+    log.line(&format!("linear AOT handoff complete: {} frames", completed.frames));
+    std::fs::remove_file(&aot_video).ok();
+    std::fs::remove_file(&state_path).ok();
+    std::fs::remove_dir_all(&scratch).ok();
+    Ok(true)
+}
+
 fn emit_extract_failure(proto: &Protocol, neg: &str) {
     println!(
         "{}",
@@ -144,6 +370,133 @@ async fn main() {
         args.gpu, args.x264, args.pseudolossless, args.veryslow, args.dummy,
         args.concat, args.legacyconcat, args.joinconcat, args.joinass, args.studio, args.extractsubs
     ));
+    let x264_config = planner_encoder_config(&args);
+    if args.linear_prefix {
+        let Some(job_id) = args.aot_job_id else {
+            eprintln!("pnmpeg: --aot-job-id is required with --linear-prefix");
+            std::process::exit(2);
+        };
+        let Some(ass) = args.ass.as_deref() else {
+            eprintln!("pnmpeg: --ass is required with --linear-prefix");
+            std::process::exit(2);
+        };
+        let mut encoder = x264_config.clone();
+        encoder.threads = 0;
+        encoder.plan_only = false;
+        let output = PathBuf::from(&args.output);
+        let compatibility = encoder_compatibility(&encoder);
+        let result = pnx264::linear::run_linear_aot(pnx264::linear::LinearAotConfig {
+            ffmpeg: resolve_runtime_binary("ffmpeg"),
+            prefix_state: PathBuf::from(&args.input),
+            state: output.parent().unwrap_or_else(|| Path::new(".")).join("linear-aot.state"),
+            output,
+            subtitle: PathBuf::from(ass),
+            cancel_file: args.cancelfile.as_deref().map(PathBuf::from),
+            busy_file: args.aot_busyfile.as_deref().map(PathBuf::from),
+            lease_file: args.aot_lockfile.as_deref().map(PathBuf::from),
+            job_id,
+            compatibility,
+            encoder,
+        });
+        match result {
+            Ok(summary) => {
+                log.line(&format!("linear AOT complete: {} frames, {} bytes", summary.frames, summary.bytes));
+                return;
+            }
+            Err(error) => {
+                log.line(&format!("linear AOT failed: {error}"));
+                eprintln!("pnmpeg linear AOT failed: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if args.aot_chunk {
+        let required = |value: Option<u64>, name: &str| {
+            value.unwrap_or_else(|| {
+                eprintln!("pnmpeg: {name} is required with --aot-chunk");
+                std::process::exit(2);
+            })
+        };
+        let required_u32 = |value: Option<u32>, name: &str| required(value.map(u64::from), name) as u32;
+        let Some(ass) = args.ass.as_deref() else {
+            eprintln!("pnmpeg: --ass is required with --aot-chunk");
+            std::process::exit(2);
+        };
+        let Some(stop_file) = args.aot_stopfile.as_deref() else {
+            eprintln!("pnmpeg: --aot-stopfile is required with --aot-chunk");
+            std::process::exit(2);
+        };
+        let encoder = pnx264::Config {
+            crf: args.aot_crf.unwrap_or(18.0),
+            threads: 1,
+            preset: args.aot_preset.clone(),
+            tune: args.aot_tune.clone(),
+            profile: args.aot_profile.clone(),
+            level: args.aot_level.clone(),
+            x264_params: args.aot_x264_params.clone(),
+            plan_only: false,
+            ..Default::default()
+        };
+        let result = pnx264::parallel::encode_aot_chunk(pnx264::parallel::AotChunkConfig {
+            ffmpeg: resolve_runtime_binary("ffmpeg"),
+            input: PathBuf::from(&args.input),
+            output: PathBuf::from(&args.output),
+            subtitle: PathBuf::from(ass),
+            cancel_file: args.cancelfile.as_deref().map(PathBuf::from),
+            stop_file: PathBuf::from(stop_file),
+            busy_file: args.aot_busyfile.as_deref().map(PathBuf::from),
+            width: required_u32(args.video_width, "--video-width"),
+            height: required_u32(args.video_height, "--video-height"),
+            fps_num: required_u32(args.fps_num, "--fps-num"),
+            fps_den: required_u32(args.fps_den, "--fps-den"),
+            start: required(args.start_frame, "--start-frame"),
+            frames: required(args.frame_count, "--frame-count"),
+            encoder,
+        });
+        if let Err(error) = result {
+            log.line(&format!("AOT chunk failed: {error}"));
+            eprintln!("pnmpeg AOT chunk failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.plan_prefix {
+        let Some(ass) = args.ass.as_deref() else {
+            eprintln!("pnmpeg: --ass is required with --plan-prefix");
+            std::process::exit(2);
+        };
+        let result = pnx264::planner::run_prefix_planner(pnx264::planner::PrefixPlannerConfig {
+            ffmpeg: resolve_runtime_binary("ffmpeg"),
+            executable: std::env::current_exe().unwrap_or_else(|_| PathBuf::from("pnmpeg")),
+            prefix_state: PathBuf::from(&args.input),
+            output: PathBuf::from(&args.output),
+            subtitle: PathBuf::from(ass),
+            cancel_file: args.cancelfile.as_deref().map(PathBuf::from),
+            busy_file: args.aot_busyfile.as_deref().map(PathBuf::from),
+            lease_file: args.aot_lockfile.as_deref().map(PathBuf::from),
+            workers: std::env::var("PN_PARALLEL_WORKERS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or_else(|| std::thread::available_parallelism().map(|value| value.get()).unwrap_or(1)),
+            encoder: x264_config.clone(),
+        });
+        match result {
+            Ok(summary) => {
+                log.line(&format!(
+                    "prefix plan complete: {}/{} frames, {} IDRs, {} bytes, {} AOT chunks launched",
+                    summary.planned, summary.submitted, summary.idrs, summary.source_bytes,
+                    summary.aot_chunks,
+                ));
+                return;
+            }
+            Err(e) => {
+                log.line(&format!("prefix plan failed: {e}"));
+                eprintln!("pnmpeg prefix planner failed: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     let mut proto = Protocol::new(vec![1]);
     let neg = proto.request(ToolInfo { tool: match args.negotiator {
                         Some(ref negotiator) => negotiator,
@@ -153,8 +506,8 @@ async fn main() {
                         None => "0.1.1",
                     }, proto: 1 },
                   ToolInfo { tool: "PNmpeg", build: "0.1.1", proto: 1 },
-                  match args.negkey {
-                      Some(key) => key,
+                  match args.negkey.as_ref() {
+                      Some(key) => key.clone(),
                       None => "PNmpegCLI".to_string(),
                   });
 
@@ -405,6 +758,134 @@ async fn main() {
         wrap("1")
     };
     log.line(&format!("audio_index={}", audio_index));
+
+    if args.x264 || args.pseudolossless || args.dummy {
+        match finish_linear_aot(&args, &x264_config, &audio_index, &proto, &neg, &mut log) {
+            Ok(true) => {
+                println!("{}", pn_emit!(
+                    protocol = proto,
+                    negkey = &neg,
+                    schema = [leaf, leaf],
+                    data = ["1", "DONE"]
+                ).unwrap());
+                return;
+            }
+            Ok(false) => {}
+            Err(error) if error == "cancelled" => {
+                log.line("linear AOT handoff cancelled");
+                println!("{}", pn_emit!(
+                    protocol = proto,
+                    negkey = &neg,
+                    schema = [leaf, leaf],
+                    data = ["3", "CANCELFILE"]
+                ).unwrap());
+                return;
+            }
+            Err(error) => {
+                log.line(&format!("linear AOT handoff failed: {error}"));
+                eprintln!("pnmpeg linear AOT handoff failed: {error}");
+                println!("{}", pn_emit!(
+                    protocol = proto,
+                    negkey = &neg,
+                    schema = [leaf, leaf],
+                    data = ["2", "0"]
+                ).unwrap());
+                return;
+            }
+        }
+    }
+
+    // The corrected episode-scale benchmark showed a latency win only for VerySlow. Every other
+    // CPU preset stays on the established linear ffmpeg path below.
+    if args.veryslow && !args.concat && !args.legacyconcat {
+        let Some(ass) = args.ass.as_deref() else {
+            eprintln!("pnmpeg: --ass is required for parallel VerySlow encoding");
+            std::process::exit(2);
+        };
+        let output = PathBuf::from(&args.output);
+        let plan = output.parent().map(|parent| parent.join("parallel.plan"));
+        let workers = std::env::var("PN_PARALLEL_WORKERS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_else(|| std::thread::available_parallelism().map(|value| value.get()).unwrap_or(1));
+        log.line(&format!("parallel VerySlow requested with {} workers", workers));
+        let mut encoder = x264_config.clone();
+        encoder.plan_only = false;
+        let result = pnx264::parallel::encode_parallel(
+            pnx264::parallel::ParallelConfig {
+                ffmpeg: resolve_runtime_binary("ffmpeg"),
+                ffprobe: resolve_runtime_binary("ffprobe"),
+                input: PathBuf::from(&args.input),
+                output,
+                subtitle: PathBuf::from(ass),
+                cancel_file: args.cancelfile.as_deref().map(PathBuf::from),
+                plan: plan.filter(|path| path.exists()),
+                workers,
+                encoder,
+                audio_map: audio_index.clone(),
+            },
+            |update| {
+                let fps = update.fps.round() as u64;
+                let bitrate = if update.frames == 0 || update.fps <= 0.0 {
+                    0
+                } else {
+                    (update.bytes as f64 * 8.0 * update.fps / update.frames as f64 / 1000.0) as u64
+                };
+                let frame = update.frames;
+                let total = update.total_frames;
+                println!("{}", pn_emit!(
+                    protocol = proto,
+                    negkey = &neg,
+                    schema = [leaf, [leaf, leaf, leaf, leaf]],
+                    data = ["0", [fps, frame, total, bitrate]]
+                ).unwrap());
+            },
+        );
+        match result {
+            Ok(summary) => {
+                log.line(&format!(
+                    "parallel VerySlow done: {} frames, {} chunks, {} workers, {} AOT chunks reused, natural={}, {:.2}s",
+                    summary.frames,
+                    summary.chunks,
+                    summary.workers,
+                    summary.reused_chunks,
+                    summary.natural_boundaries,
+                    summary.elapsed.as_secs_f64(),
+                ));
+                println!("{}", pn_emit!(
+                    protocol = proto,
+                    negkey = &neg,
+                    schema = [leaf, leaf],
+                    data = ["1", "DONE"]
+                ).unwrap());
+                return;
+            }
+            Err(e) if e == "parallel input has fewer than four chunks per worker" => {
+                log.line(&format!("parallel VerySlow skipped: {e}; using linear ffmpeg"));
+            }
+            Err(e) if e == "cancelled" || args.cancelfile.as_deref().is_some_and(|path| Path::new(path).exists()) => {
+                log.line("parallel VerySlow cancelled");
+                println!("{}", pn_emit!(
+                    protocol = proto,
+                    negkey = &neg,
+                    schema = [leaf, leaf],
+                    data = ["3", "CANCELFILE"]
+                ).unwrap());
+                return;
+            }
+            Err(e) => {
+                log.line(&format!("parallel VerySlow failed: {e}"));
+                eprintln!("pnmpeg parallel encode failed: {e}");
+                println!("{}", pn_emit!(
+                    protocol = proto,
+                    negkey = &neg,
+                    schema = [leaf, leaf],
+                    data = ["2", "0"]
+                ).unwrap());
+                return;
+            }
+        }
+    }
 
     let mut totalframe: u64 = 0;
     for i in params.iter_mut() {
