@@ -157,7 +157,11 @@ async fn start_download_planner(
     job_id: u64,
     mode: DownloadAot,
 ) -> Option<DownloadPlanner> {
+    // Speculation is optional everywhere, which used to mean it could decline for four different
+    // reasons without saying which. A job that encoded from a standing start looked exactly like a
+    // job whose planner had never been asked to run.
     if pnmpeg_path.trim().is_empty() {
+        eprintln!("[Pandora Downloader] job {job_id} AOT skipped: no pnmpeg binary resolved");
         return None;
     }
     let watermark = tokio::fs::read(directory.join("contents").join("server_watermark.ass"))
@@ -171,12 +175,21 @@ async fn start_download_planner(
     ).await {
         Ok(effects) => effects,
         Err(e) => {
-            eprintln!("[Pandora Downloader] planner subtitle setup skipped: {e}");
+            eprintln!("[Pandora Downloader] job {job_id} AOT skipped: planner subtitle setup failed: {e}");
             return None;
         }
     };
     let stderr_path = directory.join("log").join(format!("PNmpeg_Plan{}.stderr.log", job_id));
-    let stderr = std::fs::File::create(stderr_path).ok()?;
+    let stderr = match std::fs::File::create(&stderr_path) {
+        Ok(file) => file,
+        Err(e) => {
+            eprintln!(
+                "[Pandora Downloader] job {job_id} AOT skipped: could not open {}: {e}",
+                stderr_path.display()
+            );
+            return None;
+        }
+    };
     let worker_root = directory.parent().unwrap_or(directory);
     let foreground_busy = worker_root.join(".foreground-encode");
     let aot_lease = worker_root.join(".aot-owner");
@@ -226,15 +239,23 @@ async fn start_download_planner(
         .stderr(std::process::Stdio::from(stderr))
         .kill_on_drop(false);
     match command.spawn() {
-        Ok(child) => Some(DownloadPlanner { child: Some(child), linear, prefix_state }),
+        Ok(child) => {
+            println!(
+                "[Pandora Downloader] job {job_id} AOT started: {:?} planner pid {} ({})",
+                mode,
+                child.id().unwrap_or(0),
+                crate::lib::logging::diag::memory_line()
+            );
+            Some(DownloadPlanner { child: Some(child), linear, prefix_state })
+        }
         Err(e) => {
-            eprintln!("[Pandora Downloader] prefix planner could not start: {e}");
+            eprintln!("[Pandora Downloader] job {job_id} AOT skipped: prefix planner could not start: {e}");
             None
         }
     }
 }
 
-async fn finish_download_planner(planner: &mut Option<DownloadPlanner>, success: bool) {
+async fn finish_download_planner(planner: &mut Option<DownloadPlanner>, job_id: u64, success: bool) {
     let Some(mut planner) = planner.take() else {
         return;
     };
@@ -243,9 +264,18 @@ async fn finish_download_planner(planner: &mut Option<DownloadPlanner>, success:
     };
     if planner.linear && success {
         // The foreground worker will adopt this live encoder through linear-aot.state.
+        println!(
+            "[Pandora Downloader] job {job_id} AOT left running for handoff: planner pid {}",
+            child.id().unwrap_or(0)
+        );
         drop(child);
         return;
     }
+    // Whether the planner was stopped on purpose is worth one line: a handoff that finds no live
+    // process later cannot otherwise tell that apart from one the kernel ended.
+    println!(
+        "[Pandora Downloader] job {job_id} AOT planner stopped (download success={success})"
+    );
     child.start_kill().ok();
     tokio::time::timeout(Duration::from_secs(2), child.wait()).await.ok();
 }
@@ -818,6 +848,7 @@ async fn run_download_job(
 
     finish_download_planner(
         &mut planner,
+        job_id,
         matches!(result, ToolResult::Success) && duplicate_save_path.is_none(),
     ).await;
 

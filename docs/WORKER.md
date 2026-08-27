@@ -69,6 +69,27 @@ AOT is globally idle-only. Every `enc-main` job holds `DB/work/.foreground-encod
 
 Parallel worker count is additionally capped from Linux `MemAvailable` after AOT processes are stopped. Defaults reserve 4096 MiB for the OS/other services and budget 800 MiB per 1080p VerySlow worker; `PN_PARALLEL_MEMORY_RESERVE_MIB` and `PN_PARALLEL_MEMORY_PER_WORKER_MIB` tune those safety estimates. This prevents CPU-count selection from invoking the OOM killer on a memory-constrained host.
 
+### Reading an AOT failure
+
+A speculative encoder that the kernel kills writes no message of its own, so the AOT paths record
+what a post-mortem needs. Every `--linear-prefix` planner logs its start, a 15-second heartbeat
+(`frames`, `bytes`, its own RSS, and host `MemAvailable`/`MemTotal`/`SwapFree`) written through a
+second appending handle on `log/PNmpeg_Plan<job_id>.run.log` while the encode blocks, and a final
+line carrying the same memory reading — a transcript that simply stops names the size the process
+had reached and what the host had left at that moment. The download worker prints one
+`[Pandora Downloader] job <id> AOT …` line to `pndc`'s stdout for every outcome: started (with the
+planner PID), skipped (with which of the four reasons), left running for handoff, or stopped.
+
+The foreground handoff logs to `log/PNmpeg_Encode<job_id>.run.log`: whether a state file was found
+at all, the state it adopted, an incompatible key printed against the one this encode wanted, a
+per-tick line beside each progress emit (frames, total or `counting`, fps, the AOT process's RSS,
+host memory), and — the case that leaves nothing behind otherwise — the speculative process
+vanishing, with the frames it reached, the last size it was seen at, and the memory reading. The
+audio and mux children keep their stderr in `work/pnmpeg-linear-aot/`, and their failures quote its
+last lines plus `killed by signal N` where a signal, not an exit code, ended them. Parallel VerySlow
+logs the requested worker count, the count left after the `MemAvailable` headroom cap, and the
+reading the cap was computed from.
+
 Chunk decoders use input seeking with preserved source timestamps, so per-chunk libass evaluates episode-global event times. Audio is encoded once, not once per chunk. Raw H.264 begins with negative parser timestamps from B-frame reordering, so video is normalized separately before audio is muxed; applying the shift to both streams would introduce an audio delay.
 
 ## Server-scoped encode effects

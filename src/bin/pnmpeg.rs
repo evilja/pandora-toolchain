@@ -12,6 +12,7 @@ use tokio::{fs::File, io::AsyncWriteExt, time::{Duration, Instant}};
 use pandora_toolchain::{pn_data, pn_emit, pn_schema};
 use pandora_toolchain::lib::mpeg::core::RpbData;
 use pandora_toolchain::lib::bin::resolve_runtime_binary;
+use pandora_toolchain::lib::logging::diag::{exit_reason, memory_line, process_rss_mib, tail_line};
 use pandora_toolchain::lib::logging::tool::ToolLog;
 use pandora_toolchain::lib::mpeg::studio::{studio_ffmpeg_params, write_ffconcat, StudioRenderManifest};
 use pandora_toolchain::lib::mpeg::subs::{ExtractOutcome, extract_subtitle, ffprobe_subtitle_streams};
@@ -232,13 +233,41 @@ fn finish_linear_aot(
     let parent = output.parent().unwrap_or_else(|| Path::new("."));
     let state_path = parent.join("linear-aot.state");
     let aot_video = parent.join("linear-aot-video.mp4");
-    let Ok(initial) = pnx264::linear::LinearAotState::read(&state_path) else {
-        return Ok(false);
+    let initial = match pnx264::linear::LinearAotState::read(&state_path) {
+        Ok(state) => state,
+        Err(e) => {
+            // Every Standard/PseudoLossless/Dummy encode passes through here, most of them with no
+            // speculation to adopt. Saying so is what separates "AOT was never started for this
+            // job" from "AOT ran and its handoff was refused".
+            log.line(&format!(
+                "no linear AOT handoff at {} ({e}); encoding linearly from the start",
+                state_path.display()
+            ));
+            return Ok(false);
+        }
     };
-    if initial.compatibility != encoder_compatibility(encoder)
-        || (!initial.complete && !initial.process_alive())
-    {
-        log.line("linear AOT state is stale or incompatible; using established linear encode");
+    log.line(&format!(
+        "linear AOT handoff found: complete={} pid={} job={} frames={} bytes={} {}",
+        initial.complete, initial.pid, initial.job_id, initial.frames, initial.bytes, memory_line()
+    ));
+    let wanted = encoder_compatibility(encoder);
+    if initial.compatibility != wanted {
+        log.line(&format!(
+            "linear AOT is incompatible (speculated {:?}, this encode wants {:?}); using established linear encode",
+            initial.compatibility, wanted
+        ));
+        std::fs::remove_file(&state_path).ok();
+        std::fs::remove_file(&aot_video).ok();
+        return Ok(false);
+    }
+    if !initial.complete && !initial.process_alive() {
+        // The speculative encoder died before it could finish and before this process arrived.
+        // Nothing in it writes a message on the way out, so this line and the memory reading beside
+        // it are the only evidence that will exist afterwards.
+        log.line(&format!(
+            "linear AOT process {} is gone with {} frames and {} bytes encoded and its state still incomplete; using established linear encode — {}",
+            initial.pid, initial.frames, initial.bytes, memory_line()
+        ));
         std::fs::remove_file(&state_path).ok();
         std::fs::remove_file(&aot_video).ok();
         return Ok(false);
@@ -248,20 +277,32 @@ fn finish_linear_aot(
     std::fs::remove_dir_all(&scratch).ok();
     std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
     let audio = scratch.join("audio.m4a");
+    // Both of these ran with their stderr discarded, so "linear AOT audio encode failed" was the
+    // whole account of the failure. The files sit inside the scratch directory that is removed on
+    // success, and are read back into the error on the paths that keep them.
+    let audio_errors = scratch.join("audio.stderr.log");
+    let mux_errors = scratch.join("mux.stderr.log");
     let mut audio_child = Command::new(resolve_runtime_binary("ffmpeg"))
         .args(["-v", "error", "-i", &args.input, "-map", &format!("0:{audio_index}"),
             "-vn", "-c:a", "aac", "-b:a", "192k", "-y"])
         .arg(&audio)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(std::fs::File::create(&audio_errors).map(Stdio::from).unwrap_or_else(|_| Stdio::null()))
         .spawn()
         .map_err(|e| format!("spawn linear AOT audio encoder: {e}"))?;
+    log.line(&format!(
+        "adopting linear AOT: waiting for {} to finish, encoding audio from stream {} meanwhile",
+        initial.pid, audio_index
+    ));
     let probe_input = args.input.clone();
     let mut total_probe = Some(std::thread::spawn(move || ffprobe_frame(&probe_input).unwrap_or(0)));
     let mut total = 0u64;
     let wait_started = std::time::Instant::now();
     let initial_frames = initial.frames;
     let mut last_emit = None;
+    // Sampled on every tick because /proc/<pid> is gone the instant the process is, and the size it
+    // had reached is the whole question when the kernel is the one that ended it.
+    let mut last_rss: Option<u64> = None;
     let completed = loop {
         if args.cancelfile.as_deref().is_some_and(|path| Path::new(path).exists()) {
             audio_child.kill().ok();
@@ -297,12 +338,32 @@ fn finish_linear_aot(
                 schema = [leaf, [leaf, leaf, leaf, leaf]],
                 data = ["0", [fps_value, frame_value, total_value, bitrate_value]]
             ).unwrap());
+            last_rss = process_rss_mib(state.pid).or(last_rss);
+            log.line(&format!(
+                "linear AOT handoff waiting: frames={} total={} fps={} bytes={} aot_rss={} {}",
+                state.frames,
+                if total == 0 { "counting".to_string() } else { total.to_string() },
+                fps,
+                state.bytes,
+                last_rss.map(|mib| format!("{mib}MiB")).unwrap_or_else(|| "unknown".to_string()),
+                memory_line(),
+            ));
             last_emit = Some(now);
         }
         if state.complete {
             break state;
         }
         if !state.process_alive() {
+            // The same silent death as above, except this process watched it happen: report the
+            // frames it had reached and the last size it was seen at before falling back.
+            log.line(&format!(
+                "linear AOT process {} vanished after {} frames ({} of them since this handoff began), last seen at {}; falling back to the linear encode — {}",
+                state.pid,
+                state.frames,
+                state.frames.saturating_sub(initial_frames),
+                last_rss.map(|mib| format!("{mib}MiB RSS")).unwrap_or_else(|| "an unknown size".to_string()),
+                memory_line(),
+            ));
             audio_child.kill().ok();
             audio_child.wait().ok();
             std::fs::remove_dir_all(&scratch).ok();
@@ -315,13 +376,25 @@ fn finish_linear_aot(
     if let Some(probe) = total_probe.take() {
         total = probe.join().unwrap_or(0);
     }
+    log.line(&format!(
+        "linear AOT reported complete: {} frames, {} bytes, {} expected by ffprobe, {:.1}s waiting",
+        completed.frames, completed.bytes, total, wait_started.elapsed().as_secs_f64()
+    ));
     if total != 0 && completed.frames != total {
         audio_child.kill().ok();
         audio_child.wait().ok();
-        return Err(format!("linear AOT encoded {}/{} frames", completed.frames, total));
+        return Err(format!(
+            "linear AOT encoded {} of the {} frames ffprobe counted in {}",
+            completed.frames, total, args.input
+        ));
     }
-    if !audio_child.wait().map_err(|e| e.to_string())?.success() {
-        return Err("linear AOT audio encode failed".to_string());
+    let audio_status = audio_child.wait().map_err(|e| e.to_string())?;
+    if !audio_status.success() {
+        return Err(format!(
+            "linear AOT audio encode failed: {}; ffmpeg said: {}",
+            exit_reason(&audio_status),
+            tail_line(&audio_errors, 3)
+        ));
     }
     let mux_status = Command::new(resolve_runtime_binary("ffmpeg"))
         .args(["-v", "error", "-i"])
@@ -330,12 +403,22 @@ fn finish_linear_aot(
         .arg(&audio)
         .args(["-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-movflags", "+faststart", "-y"])
         .arg(&output)
+        .stderr(std::fs::File::create(&mux_errors).map(Stdio::from).unwrap_or_else(|_| Stdio::null()))
         .status()
         .map_err(|e| format!("spawn linear AOT final mux: {e}"))?;
     if !mux_status.success() {
-        return Err("linear AOT final mux failed".to_string());
+        return Err(format!(
+            "linear AOT final mux failed: {}; ffmpeg said: {}",
+            exit_reason(&mux_status),
+            tail_line(&mux_errors, 3)
+        ));
     }
-    log.line(&format!("linear AOT handoff complete: {} frames", completed.frames));
+    log.line(&format!(
+        "linear AOT handoff complete: {} frames, {} bytes muxed to {}",
+        completed.frames,
+        completed.bytes,
+        output.display()
+    ));
     std::fs::remove_file(&aot_video).ok();
     std::fs::remove_file(&state_path).ok();
     std::fs::remove_dir_all(&scratch).ok();
@@ -385,10 +468,53 @@ async fn main() {
         encoder.plan_only = false;
         let output = PathBuf::from(&args.output);
         let compatibility = encoder_compatibility(&encoder);
+        let state_path = output
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("linear-aot.state");
+        log.line(&format!(
+            "linear AOT planner start: job={} pid={} output={} {}",
+            job_id,
+            std::process::id(),
+            output.display(),
+            memory_line()
+        ));
+        // The planner spends its whole life inside one blocking call, and when the kernel kills it
+        // there it writes nothing. A watchdog on a second handle to the same transcript leaves a
+        // trail of frame counts and resident sizes, so a log that simply stops still says how big
+        // this process had grown and what the host had left at that moment.
+        let watchdog_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watchdog = {
+            let stop = watchdog_stop.clone();
+            let mut watchdog_log = log.watchdog();
+            let state_path = state_path.clone();
+            std::thread::spawn(move || {
+                let pid = std::process::id();
+                let mut next = std::time::Instant::now() + Duration::from_secs(15);
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(250));
+                    if std::time::Instant::now() < next {
+                        continue;
+                    }
+                    next = std::time::Instant::now() + Duration::from_secs(15);
+                    let progress = pnx264::linear::LinearAotState::read(&state_path)
+                        .map(|state| format!("frames={} bytes={}", state.frames, state.bytes))
+                        .unwrap_or_else(|e| format!("state unreadable ({e})"));
+                    watchdog_log.line(&format!(
+                        "linear AOT planner alive: {} rss={} {}",
+                        progress,
+                        process_rss_mib(pid)
+                            .map(|mib| format!("{mib}MiB"))
+                            .unwrap_or_else(|| "unknown".to_string()),
+                        memory_line(),
+                    ));
+                }
+            })
+        };
         let result = pnx264::linear::run_linear_aot(pnx264::linear::LinearAotConfig {
             ffmpeg: resolve_runtime_binary("ffmpeg"),
             prefix_state: PathBuf::from(&args.input),
-            state: output.parent().unwrap_or_else(|| Path::new(".")).join("linear-aot.state"),
+            state: state_path,
             output,
             subtitle: PathBuf::from(ass),
             cancel_file: args.cancelfile.as_deref().map(PathBuf::from),
@@ -398,13 +524,20 @@ async fn main() {
             compatibility,
             encoder,
         });
+        watchdog_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        watchdog.join().ok();
         match result {
             Ok(summary) => {
-                log.line(&format!("linear AOT complete: {} frames, {} bytes", summary.frames, summary.bytes));
+                log.line(&format!(
+                    "linear AOT complete: {} frames, {} bytes, {}",
+                    summary.frames,
+                    summary.bytes,
+                    memory_line()
+                ));
                 return;
             }
             Err(error) => {
-                log.line(&format!("linear AOT failed: {error}"));
+                log.line(&format!("linear AOT failed: {error} — {}", memory_line()));
                 eprintln!("pnmpeg linear AOT failed: {error}");
                 std::process::exit(1);
             }
@@ -454,7 +587,7 @@ async fn main() {
             encoder,
         });
         if let Err(error) = result {
-            log.line(&format!("AOT chunk failed: {error}"));
+            log.line(&format!("AOT chunk failed: {error} — {}", memory_line()));
             eprintln!("pnmpeg AOT chunk failed: {error}");
             std::process::exit(1);
         }
@@ -490,7 +623,7 @@ async fn main() {
                 return;
             }
             Err(e) => {
-                log.line(&format!("prefix plan failed: {e}"));
+                log.line(&format!("prefix plan failed: {e} — {}", memory_line()));
                 eprintln!("pnmpeg prefix planner failed: {e}");
                 std::process::exit(1);
             }
@@ -808,7 +941,15 @@ async fn main() {
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or_else(|| std::thread::available_parallelism().map(|value| value.get()).unwrap_or(1));
-        log.line(&format!("parallel VerySlow requested with {} workers", workers));
+        // The headroom cap exists because a 12-worker fallback was OOM-killed mid-encode. Recording
+        // what it decided, and on what reading, is what makes the next one answerable without
+        // reconstructing the host's memory after the fact.
+        log.line(&format!(
+            "parallel VerySlow requested with {} workers, {} after memory headroom — {}",
+            workers,
+            pnx264::parallel::memory_worker_limit(workers),
+            memory_line()
+        ));
         let mut encoder = x264_config.clone();
         encoder.plan_only = false;
         let result = pnx264::parallel::encode_parallel(
@@ -874,7 +1015,7 @@ async fn main() {
                 return;
             }
             Err(e) => {
-                log.line(&format!("parallel VerySlow failed: {e}"));
+                log.line(&format!("parallel VerySlow failed: {e} — {}", memory_line()));
                 eprintln!("pnmpeg parallel encode failed: {e}");
                 println!("{}", pn_emit!(
                     protocol = proto,

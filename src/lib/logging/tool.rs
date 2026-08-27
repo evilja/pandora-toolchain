@@ -12,17 +12,24 @@ use std::time::Instant;
 // both where it stopped and how long it had been running.
 pub struct ToolLog {
     file: Option<std::fs::File>,
+    path: Option<PathBuf>,
     started: Instant,
 }
 
 impl ToolLog {
     pub fn open(path: Option<&str>) -> Self {
+        let kept = path.map(PathBuf::from);
         let file = path.and_then(|path| {
             let path = Path::new(path);
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).ok();
             }
-            match std::fs::File::create(path) {
+            // Truncated for this run, then reopened for appending: a watchdog handle writes at the
+            // end of the file, and a primary handle holding its own offset would write over those
+            // lines the next time it logged.
+            match std::fs::File::create(path)
+                .and_then(|_| std::fs::OpenOptions::new().append(true).open(path))
+            {
                 Ok(file) => Some(file),
                 Err(e) => {
                     eprintln!("[toollog] could not open {}: {}", path.display(), e);
@@ -32,7 +39,23 @@ impl ToolLog {
         });
         Self {
             file,
+            path: kept,
             started: Instant::now(),
+        }
+    }
+
+    // A second handle on the same transcript, for a watchdog thread that has to keep reporting
+    // while the main thread sits inside one long call. It appends rather than truncating, shares
+    // the start instant so both stamp the same timeline, and relies on every line being flushed as
+    // it is written so the two interleave instead of tearing.
+    pub fn watchdog(&self) -> Self {
+        let file = self.path.as_ref().and_then(|path| {
+            std::fs::OpenOptions::new().append(true).open(path).ok()
+        });
+        Self {
+            file,
+            path: self.path.clone(),
+            started: self.started,
         }
     }
 
@@ -118,5 +141,34 @@ mod tests {
         let written = std::fs::read_to_string(&path).unwrap();
         assert!(written.contains("-> second") && written.contains("<- second"), "{}", written);
         std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn a_watchdog_handle_and_the_primary_one_both_keep_their_lines() {
+        let root = std::env::temp_dir().join(format!("pandora-toollog-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("run.log");
+        let name = path.display().to_string();
+
+        let mut log = ToolLog::open(Some(&name));
+        let mut watchdog = log.watchdog();
+        log.line("primary one");
+        watchdog.line("watchdog one");
+        // The primary handle logging after the watchdog is the case that used to overwrite: it
+        // holds its own offset, which is short of where the watchdog left the file.
+        log.line("primary two");
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.contains("primary one"), "{written}");
+        assert!(written.contains("watchdog one"), "{written}");
+        assert!(written.contains("primary two"), "{written}");
+
+        // Reopening the same path truncates, so a second run does not read as a continuation.
+        let mut second = ToolLog::open(Some(&name));
+        second.line("second run");
+        let rerun = std::fs::read_to_string(&path).unwrap();
+        assert!(!rerun.contains("primary one"), "{rerun}");
+        assert!(rerun.contains("second run"), "{rerun}");
+        std::fs::remove_dir_all(&root).ok();
     }
 }
