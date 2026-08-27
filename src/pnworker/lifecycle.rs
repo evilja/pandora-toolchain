@@ -37,9 +37,18 @@ async fn preserve_log_dir(source: &PathBuf, dest: &PathBuf) {
     if !tokio::fs::metadata(source).await.is_ok_and(|meta| meta.is_dir()) {
         return;
     }
-    if rename(source, dest).await.is_ok() {
-        return;
-    }
+    let refused = match rename(source, dest).await {
+        Ok(()) => return,
+        Err(e) => e,
+    };
+    // Which of the two reasons it was decides whether the per-file fallback is a rare event or the
+    // normal path, and only production can say. Name it rather than falling back in silence.
+    eprintln!(
+        "[Pandora] job log directory {} could not be moved to {} ({}); moving its files one at a time",
+        source.display(),
+        dest.display(),
+        refused
+    );
     if let Err(e) = create_dir_all(dest).await {
         eprintln!("[Pandora] job logs at {} could not be preserved: {}", source.display(), e);
         return;
@@ -48,17 +57,22 @@ async fn preserve_log_dir(source: &PathBuf, dest: &PathBuf) {
         eprintln!("[Pandora] job logs at {} could not be listed", source.display());
         return;
     };
+    // Read the whole listing before moving anything. Taking entries out of a directory while still
+    // iterating it is undefined enough on a local filesystem, and `DB` is a bind mount in
+    // production, where the same walk can start reporting names it can no longer stat.
+    let mut names = Vec::new();
     while let Ok(Some(entry)) = entries.next_entry().await {
-        let target = dest.join(entry.file_name());
-        if rename(entry.path(), &target).await.is_ok() {
+        names.push(entry.file_name());
+    }
+    drop(entries);
+    for name in names {
+        let from = source.join(&name);
+        let target = dest.join(&name);
+        if rename(&from, &target).await.is_ok() {
             continue;
         }
-        if let Err(e) = tokio::fs::copy(entry.path(), &target).await {
-            eprintln!(
-                "[Pandora] job log {} could not be preserved: {}",
-                entry.path().display(),
-                e
-            );
+        if let Err(e) = tokio::fs::copy(&from, &target).await {
+            eprintln!("[Pandora] job log {} could not be preserved: {}", from.display(), e);
         }
     }
 }

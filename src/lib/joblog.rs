@@ -95,8 +95,27 @@ pub async fn log_files(directory: &Path) -> Result<Vec<JobLogFile>, String> {
         Err(error) => return Err(error.to_string()),
     };
     let mut files = Vec::new();
-    while let Some(entry) = entries.next_entry().await.map_err(|error| error.to_string())? {
-        let metadata = entry.metadata().await.map_err(|error| error.to_string())?;
+    // One unreadable entry used to fail the whole listing, which is the opposite of what this is
+    // for: a job whose directory holds a name its file no longer answers to would report *no* logs
+    // at all — a `500` in place of every other transcript sitting right beside it. Remember the
+    // problem, name it, and let it decide the outcome only when nothing readable turned up.
+    let mut problem: Option<String> = None;
+    loop {
+        let entry = match entries.next_entry().await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => break,
+            Err(error) => {
+                problem.get_or_insert(format!("{}: {}", directory.display(), error));
+                break;
+            }
+        };
+        let metadata = match entry.metadata().await {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                problem.get_or_insert(format!("{}: {}", entry.path().display(), error));
+                continue;
+            }
+        };
         if !metadata.is_file() {
             continue;
         }
@@ -116,6 +135,12 @@ pub async fn log_files(directory: &Path) -> Result<Vec<JobLogFile>, String> {
             bytes: metadata.len(),
             modified,
         });
+    }
+    if let Some(problem) = problem {
+        if files.is_empty() {
+            return Err(problem);
+        }
+        eprintln!("[Pandora] job log listing skipped an unreadable entry: {}", problem);
     }
     files.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(files)
@@ -263,5 +288,24 @@ mod tests {
         assert_eq!(capped.bytes, 19);
 
         tokio::fs::remove_dir_all(root).await.ok();
+    }
+
+    #[tokio::test]
+    async fn an_entry_that_does_not_resolve_never_hides_the_logs_beside_it() {
+        let root = scratch("dangling").await;
+        tokio::fs::write(root.join("PNmpeg_Encode1.log"), b"why it failed").await.unwrap();
+        // A name the directory lists that resolves to nothing. `DirEntry::metadata` is an lstat, so
+        // this one is merely "not a file"; production found a bind mount that fails the stat itself.
+        // Either way the transcript sitting beside it has to survive the encounter.
+        std::os::unix::fs::symlink(root.join("gone.log"), root.join("dangling.log")).unwrap();
+
+        let files = log_files(&root).await.unwrap();
+        assert_eq!(files.len(), 1, "{files:?}");
+        assert_eq!(files[0].name, "PNmpeg_Encode1.log");
+
+        // And on its own it reads as a job with no logs, not as a failed request.
+        tokio::fs::remove_file(root.join("PNmpeg_Encode1.log")).await.unwrap();
+        assert!(log_files(&root).await.unwrap().is_empty());
+        tokio::fs::remove_dir_all(&root).await.ok();
     }
 }

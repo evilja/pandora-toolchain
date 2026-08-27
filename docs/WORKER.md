@@ -125,8 +125,13 @@ Archiving is the last moment that directory exists, since `cleanup_job` wipes th
 unconditionally. A plain `rename` is not enough to carry the logs out: it refuses a destination that
 already holds files (a `publish.log`, or a gitsync that ran mid-job) and cannot cross a mount point,
 and either way the transcript went into the wipe unreported — leaving a job that is archived, failed,
-and completely undiagnosable. It now falls back to moving the files one at a time and prints what it
-could not preserve.
+and completely undiagnosable. It now prints why the directory move was refused, then falls back to
+moving the files one at a time, reading the whole listing before it moves anything (taking entries
+out of a directory mid-walk is a bad bet on `DB`'s bind mount) and printing what it could not keep.
+
+Reading is forgiving in the same direction: `log_files` skips an entry it cannot stat, names it on
+stdout, and fails the request only when nothing readable turned up. One unresolvable name in the
+directory must never answer `500` in place of every transcript sitting beside it.
 
 ## Worker snapshot
 
