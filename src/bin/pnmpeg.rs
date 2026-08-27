@@ -332,9 +332,17 @@ fn finish_linear_aot(
         .stderr(std::fs::File::create(&audio_errors).map(Stdio::from).unwrap_or_else(|_| Stdio::null()))
         .spawn()
         .map_err(|e| format!("spawn linear AOT audio encoder: {e}"))?;
+    let input_path = Path::new(&args.input);
     log.line(&format!(
-        "adopting linear AOT: waiting for {} to finish, encoding audio from stream {} meanwhile",
-        initial.pid, audio_index
+        "adopting linear AOT: waiting for {} to finish, encoding audio from stream {} of {} (exists={}) meanwhile; torrent dir holds {}",
+        initial.pid,
+        audio_index,
+        args.input,
+        input_path.exists(),
+        input_path
+            .parent()
+            .map(directory_names)
+            .unwrap_or_else(|| "unreadable".to_string()),
     ));
     // The frame total used to come from `ffprobe -count_packets`, a full demux of the input, run on
     // a thread for the whole handoff. That put a third reader on the same file the speculative
@@ -356,6 +364,11 @@ fn finish_linear_aot(
     let mut last_frames = initial_frames;
     let mut missing_since: Option<std::time::Instant> = None;
     let mut reported_missing = false;
+    // The AAC pass is started here and used to be waited on only after the video finished, so a job
+    // whose audio failed in its first second still spent the whole encode before anyone looked: one
+    // run burned eleven minutes and 34,911 successfully encoded frames before reporting that its
+    // input had not been there at all. Watch it as we go.
+    let mut audio_done: Option<std::process::ExitStatus> = None;
     let completed = loop {
         if args.cancelfile.as_deref().is_some_and(|path| Path::new(path).exists()) {
             audio_child.kill().ok();
@@ -458,6 +471,25 @@ fn finish_linear_aot(
             last_emit = Some(now);
         }
         last_frames = state.frames;
+        if audio_done.is_none() {
+            match audio_child.try_wait() {
+                Ok(Some(status)) if !status.success() => {
+                    log.line(&format!(
+                        "linear AOT audio encode died after {:.1}s, abandoning the handoff",
+                        wait_started.elapsed().as_secs_f64()
+                    ));
+                    std::fs::remove_dir_all(&scratch).ok();
+                    return Err(format!(
+                        "linear AOT audio encode failed: {}; ffmpeg said: {}",
+                        exit_reason(&status),
+                        tail_line(&audio_errors, 3)
+                    ));
+                }
+                Ok(Some(status)) => audio_done = Some(status),
+                Ok(None) => {}
+                Err(e) => log.line(&format!("linear AOT audio encode status unreadable: {e}")),
+            }
+        }
         if state.complete {
             break state;
         }
@@ -511,7 +543,10 @@ fn finish_linear_aot(
             completed.frames, total, args.input
         ));
     }
-    let audio_status = audio_child.wait().map_err(|e| e.to_string())?;
+    let audio_status = match audio_done {
+        Some(status) => status,
+        None => audio_child.wait().map_err(|e| e.to_string())?,
+    };
     if !audio_status.success() {
         return Err(format!(
             "linear AOT audio encode failed: {}; ffmpeg said: {}",

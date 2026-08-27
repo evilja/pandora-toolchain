@@ -91,6 +91,12 @@ AOT produced disagree by more than `TOTAL_ESTIMATE_TOLERANCE` (2 frames) — the
 catch. In the ordinary case it never runs at all. Only an exact count may reject a finished AOT on a
 frame-count mismatch; an estimate is a frame or two out by nature and never fails a job on its own.
 
+The AAC pass is started when the handoff begins and is now watched as it runs. It used to be waited
+on only after the video finished, so a handoff whose audio died in its first second still spent the
+whole encode before anyone looked — one production run burned eleven minutes and 34,911 successfully
+encoded frames before reporting that its input file had not been there at all. The handoff also
+records, at adoption, whether the input exists and what `contents/torrent/` holds.
+
 A missing state file is not by itself a failure. `LinearAotState::publish` replaces the file by
 renaming a temporary over it, roughly once a second, and `DB` is a bind mount in production where
 that rename is **not** atomic — the path goes briefly absent. The handoff polls it four times a
