@@ -80,13 +80,21 @@ had reached and what the host had left at that moment. The download worker print
 `[Pandora Downloader] job <id> AOT …` line to `pndc`'s stdout for every outcome: started (with the
 planner PID), skipped (with which of the four reasons), left running for handoff, or stopped.
 
-When the handoff loses its state file mid-wait it records what else is still there — whether
-`work/` and the job directory survive, and what the job directory still holds. A single deleted file
-and a scratch directory pulled out from under a running encode read identically otherwise, and only
-the second has an external cause. `/gitsync` is that cause by design: it clears `DB/work` with no
-regard for what is running, so it now prints the ids of the unfinished jobs it is about to break
-(`preserve_work_logs` returns them), which is the only line connecting a deploy to the encodes that
-fail seconds later.
+A missing state file is not by itself a failure. `LinearAotState::publish` replaces the file by
+renaming a temporary over it, roughly once a second, and `DB` is a bind mount in production where
+that rename is **not** atomic — the path goes briefly absent. The handoff polls it four times a
+second, so a poll eventually lands in that window; four encodes died that way (2.9s, 58s, 177s and
+337s in) while the publisher went on writing the same file for another quarter of an hour. The
+handoff now waits out an absence for `MISSING_STATE_GRACE` (15s) before believing it, and if the
+speculative process is gone by then it falls back to the ordinary linear encode instead of failing
+the job.
+
+When an absence does outlast the grace, the log records what else is still there — whether `work/`
+and the job directory survive, and what the job directory still holds. One deleted file and a scratch
+directory pulled out from under a running encode read identically otherwise, and only the second has
+an external cause. `/gitsync` is that cause by design: it clears `DB/work` with no regard for what is
+running, so it now prints the ids of the unfinished jobs it is about to break (`preserve_work_logs`
+returns them), which is the only line connecting a deploy to the encodes that fail seconds later.
 
 The foreground handoff logs to `log/PNmpeg_Encode<job_id>.run.log`: whether a state file was found
 at all, the state it adopted, an incompatible key printed against the one this encode wanted, a

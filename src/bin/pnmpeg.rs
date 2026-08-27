@@ -221,6 +221,11 @@ fn encoder_compatibility(encoder: &pnx264::Config) -> String {
     )
 }
 
+// How long the linear AOT state file may be missing before the handoff stops believing in it. The
+// speculative encoder rewrites it roughly once a second, so anything shorter-lived than this is the
+// publisher's rename window rather than a file that has actually gone away.
+const MISSING_STATE_GRACE: Duration = Duration::from_secs(15);
+
 // What a directory still holds, for a log line written at the moment something has gone missing
 // from it. Names only, capped: the point is to tell an emptied directory from a wiped one.
 fn directory_names(directory: &Path) -> String {
@@ -322,6 +327,8 @@ fn finish_linear_aot(
     // had reached is the whole question when the kernel is the one that ended it.
     let mut last_rss: Option<u64> = None;
     let mut last_frames = initial_frames;
+    let mut missing_since: Option<std::time::Instant> = None;
+    let mut reported_missing = false;
     let completed = loop {
         if args.cancelfile.as_deref().is_some_and(|path| Path::new(path).exists()) {
             audio_child.kill().ok();
@@ -330,17 +337,39 @@ fn finish_linear_aot(
             return Err("cancelled".to_string());
         }
         let state = match pnx264::linear::LinearAotState::read(&state_path) {
-            Ok(state) => state,
+            Ok(state) => {
+                missing_since = None;
+                state
+            }
             Err(e) => {
-                // Losing the state file mid-handoff has two very different causes: something
-                // deleted that one file, or the job's whole scratch directory went out from under
-                // the encode (a `/gitsync` restart clears `DB/work` with no regard for what is
-                // running). Which one it was is the entire question afterwards, and the answer is
-                // only readable in this moment — say what still exists while it can still be seen.
+                // The speculative encoder republishes this file about once a second by renaming a
+                // temporary over it. `DB` is a bind mount in production, where that rename is not
+                // atomic: the path goes briefly absent, and a poll landing in that window used to
+                // end an encode that was running perfectly — at 2.9s, 58s, 177s, 337s into four
+                // different jobs, with the publisher happily writing the same file for another
+                // quarter of an hour afterwards. An absence only means something if it lasts.
+                let waiting = *missing_since.get_or_insert(std::time::Instant::now());
+                let planner_alive = initial.process_alive();
+                if planner_alive && waiting.elapsed() < MISSING_STATE_GRACE {
+                    if !reported_missing {
+                        log.line(&format!(
+                            "linear AOT state momentarily unreadable at {} frames ({e}); waiting for it to come back",
+                            last_frames
+                        ));
+                        reported_missing = true;
+                    }
+                    std::thread::sleep(Duration::from_millis(250));
+                    continue;
+                }
+                // Gone for good. Which of the two causes it was — one deleted file, or the job's
+                // whole scratch directory pulled out from under the encode — is only readable in
+                // this moment, so say what still exists while it can still be seen.
                 let job_dir = parent.parent().unwrap_or(parent);
                 log.line(&format!(
-                    "linear AOT handoff lost its state after {} frames: {e} — scratch {} exists={}, job dir {} exists={}, siblings={}",
+                    "linear AOT handoff lost its state after {} frames: {e} — absent for {:.1}s, planner {} alive, scratch {} exists={}, job dir {} exists={}, siblings={}",
                     last_frames,
+                    waiting.elapsed().as_secs_f64(),
+                    if planner_alive { "still" } else { "no longer" },
                     parent.display(),
                     parent.exists(),
                     job_dir.display(),
@@ -349,6 +378,14 @@ fn finish_linear_aot(
                 ));
                 audio_child.kill().ok();
                 audio_child.wait().ok();
+                std::fs::remove_dir_all(&scratch).ok();
+                if !planner_alive {
+                    // There is nothing left to adopt, but the episode is not lost: the ordinary
+                    // linear encode below still produces it.
+                    std::fs::remove_file(&state_path).ok();
+                    std::fs::remove_file(&aot_video).ok();
+                    return Ok(false);
+                }
                 return Err(format!("read linear AOT handoff: {e}"));
             }
         };
