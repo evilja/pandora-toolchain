@@ -235,6 +235,11 @@ fn estimated_frame_total(input: &str) -> Option<u64> {
     u64::try_from(frames).ok().filter(|frames| *frames != 0)
 }
 
+// How far the header estimate may sit from what the speculative encoder actually produced before
+// the exact count is worth a full demux. Container duration rounding is worth a frame either way; a
+// truncated encode — the thing being guarded against — is short by thousands.
+const TOTAL_ESTIMATE_TOLERANCE: u64 = 2;
+
 // How long the linear AOT state file may be missing before the handoff stops believing in it. The
 // speculative encoder rewrites it roughly once a second, so anything shorter-lived than this is the
 // publisher's rename window rather than a file that has actually gone away.
@@ -331,18 +336,16 @@ fn finish_linear_aot(
         "adopting linear AOT: waiting for {} to finish, encoding audio from stream {} meanwhile",
         initial.pid, audio_index
     ));
-    let probe_input = args.input.clone();
-    let mut total_probe = Some(std::thread::spawn(move || ffprobe_frame(&probe_input).unwrap_or(0)));
-    // The exact count is a full demux of the input, and while the speculative encoder is streaming
-    // that same file off the production bind mount it can outlast the encode it was meant to
-    // describe: every AOT job so far reported a total of zero for its entire run, so the progress
-    // the user watched had no denominator and never drew a bar. The container header knows the
-    // duration and the frame rate, which is one metadata read and enough to show a real total from
-    // the first tick. The exact count replaces it the moment it lands.
+    // The frame total used to come from `ffprobe -count_packets`, a full demux of the input, run on
+    // a thread for the whole handoff. That put a third reader on the same file the speculative
+    // encoder and the AAC pass were already streaming off the bind mount — the slowest resource in
+    // the container — for the length of an encode, and it still did not finish in time to report a
+    // total. The container header answers the same question in two metadata reads. The exact count
+    // is now only paid for at the end, and only if this disagrees with what the AOT produced.
     let mut total = estimated_frame_total(&args.input).unwrap_or(0);
     let mut total_is_estimate = total != 0;
     if total_is_estimate {
-        log.line(&format!("linear AOT handoff estimating {total} frames from the header while the exact count runs"));
+        log.line(&format!("linear AOT handoff expecting {total} frames from the input header"));
     }
     let wait_started = std::time::Instant::now();
     let initial_frames = initial.frames;
@@ -413,18 +416,6 @@ fn finish_linear_aot(
                 return Err(format!("read linear AOT handoff: {e}"));
             }
         };
-        if total_probe.as_ref().is_some_and(|probe| probe.is_finished()) {
-            // A probe that failed returns zero, which must not overwrite a usable estimate.
-            if let Some(counted) = total_probe
-                .take()
-                .and_then(|probe| probe.join().ok())
-                .filter(|counted| *counted != 0)
-            {
-                total = counted;
-                total_is_estimate = false;
-                log.line(&format!("linear AOT handoff counted {total} frames in the input"));
-            }
-        }
         if state.compatibility != initial.compatibility {
             audio_child.kill().ok();
             audio_child.wait().ok();
@@ -490,15 +481,25 @@ fn finish_linear_aot(
         }
         std::thread::sleep(Duration::from_millis(250));
     };
-    if let Some(probe) = total_probe.take() {
-        if let Some(counted) = probe.join().ok().filter(|counted| *counted != 0) {
+    // Either the header told us nothing, or what the AOT produced is not what it implied — the one
+    // case the exact count exists to catch. Nothing else is reading the input now, so asking costs
+    // a read rather than a fight for the disk, and in the ordinary case it is never asked at all.
+    if total == 0 || completed.frames.abs_diff(total) > TOTAL_ESTIMATE_TOLERANCE {
+        let counted = log.step("ffprobe -count_packets to verify the AOT frame count", || {
+            ffprobe_frame(&args.input)
+        });
+        if let Some(counted) = counted.filter(|counted| *counted != 0) {
             total = counted;
             total_is_estimate = false;
         }
     }
     log.line(&format!(
-        "linear AOT reported complete: {} frames, {} bytes, {} expected by ffprobe, {:.1}s waiting",
-        completed.frames, completed.bytes, total, wait_started.elapsed().as_secs_f64()
+        "linear AOT reported complete: {} frames, {} bytes, {} expected ({}), {:.1}s waiting",
+        completed.frames,
+        completed.bytes,
+        total,
+        if total_is_estimate { "from the header" } else { "counted" },
+        wait_started.elapsed().as_secs_f64()
     ));
     // Only the exact count may reject a finished AOT: an estimate is a frame or two out by nature
     // and would throw away a perfectly good encode.

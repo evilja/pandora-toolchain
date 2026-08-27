@@ -80,12 +80,16 @@ had reached and what the host had left at that moment. The download worker print
 `[Pandora Downloader] job <id> AOT …` line to `pndc`'s stdout for every outcome: started (with the
 planner PID), skipped (with which of the four reasons), left running for handoff, or stopped.
 
-The frame total a handoff reports comes from the container header — duration times frame rate — not
-from the exact `-count_packets` demux. That demux competes with the speculative encoder for the same
-file on the same bind mount and can outlast the encode it describes, which left every AOT job
-reporting a total of zero for its whole run and no progress bar to draw. The exact count still runs
-alongside and replaces the estimate the moment it lands; only the exact number is allowed to reject a
-finished AOT on a frame-count mismatch, since an estimate is a frame or two out by nature.
+The frame total a handoff reports comes from the container header — duration times frame rate, two
+metadata reads — not from an exact `-count_packets` demux. The demux used to run on a thread for the
+whole handoff, which put a third reader (with the speculative encoder and the AAC pass) on one file
+on the bind mount, the slowest resource in the container, and still did not finish in time to report
+a total: every AOT job reported zero for its whole run and drew no progress bar.
+
+The exact count is now only paid for after the encode, and only when the header estimate and what the
+AOT produced disagree by more than `TOTAL_ESTIMATE_TOLERANCE` (2 frames) — the case it exists to
+catch. In the ordinary case it never runs at all. Only an exact count may reject a finished AOT on a
+frame-count mismatch; an estimate is a frame or two out by nature and never fails a job on its own.
 
 A missing state file is not by itself a failure. `LinearAotState::publish` replaces the file by
 renaming a temporary over it, roughly once a second, and `DB` is a bind mount in production where
