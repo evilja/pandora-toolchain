@@ -100,6 +100,13 @@ job. Its logs survive in `DB/saved_data/<job_id>/log`, readable with `/catlogs` 
 `GET /api/v1/jobs/:id/logs` — a stalled job is now the *one* case that reliably keeps them, since a
 job that stays in the queue loses them to the next `/gitsync`.
 
+Archiving is the last moment that directory exists, since `cleanup_job` wipes the work directory
+unconditionally. A plain `rename` is not enough to carry the logs out: it refuses a destination that
+already holds files (a `publish.log`, or a gitsync that ran mid-job) and cannot cross a mount point,
+and either way the transcript went into the wipe unreported — leaving a job that is archived, failed,
+and completely undiagnosable. It now falls back to moving the files one at a time and prints what it
+could not preserve.
+
 ## Worker snapshot
 
 The queue is a `Vec<Job>` owned by `pn_worker` and shrine heartbeats are in-memory, so none of the

@@ -24,6 +24,78 @@ pub(crate) async fn cleanup_job(source: &PathBuf, dest: &PathBuf) {
         dest.join("fetch.torrent"),
     )
     .await;
-    let _ = rename(source.join("log"), dest.join("log")).await;
+    preserve_log_dir(&source.join("log"), &dest.join("log")).await;
     remove_dir_all(source).await.ok();
+}
+
+// The log directory is the only durable account of why a job ended, and this is the last moment it
+// exists: the wipe below is unconditional. A single `rename` is not enough to carry it across —
+// it refuses when something is already at the destination, and cannot cross a mount point at all,
+// and either way the logs went into `remove_dir_all` unreported. Fall back to moving the files one
+// at a time, and say so when even that fails.
+async fn preserve_log_dir(source: &PathBuf, dest: &PathBuf) {
+    if !tokio::fs::metadata(source).await.is_ok_and(|meta| meta.is_dir()) {
+        return;
+    }
+    if rename(source, dest).await.is_ok() {
+        return;
+    }
+    if let Err(e) = create_dir_all(dest).await {
+        eprintln!("[Pandora] job logs at {} could not be preserved: {}", source.display(), e);
+        return;
+    }
+    let Ok(mut entries) = tokio::fs::read_dir(source).await else {
+        eprintln!("[Pandora] job logs at {} could not be listed", source.display());
+        return;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let target = dest.join(entry.file_name());
+        if rename(entry.path(), &target).await.is_ok() {
+            continue;
+        }
+        if let Err(e) = tokio::fs::copy(entry.path(), &target).await {
+            eprintln!(
+                "[Pandora] job log {} could not be preserved: {}",
+                entry.path().display(),
+                e
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn archiving_keeps_logs_even_when_the_destination_already_holds_some() {
+        let root = std::env::temp_dir().join(format!("pandora-cleanup-logs-{}", std::process::id()));
+        tokio::fs::remove_dir_all(&root).await.ok();
+        let source = root.join("work").join("777");
+        let dest = root.join("saved_data").join("777");
+
+        tokio::fs::create_dir_all(source.join("log")).await.unwrap();
+        tokio::fs::write(source.join("log").join("PNmpeg_Encode777.log"), b"why it failed")
+            .await
+            .unwrap();
+        // A publish, or a gitsync that ran while this job was still going, gets there first: the
+        // directory rename then fails and used to take the transcript down with it.
+        tokio::fs::create_dir_all(dest.join("log")).await.unwrap();
+        tokio::fs::write(dest.join("log").join("publish.log"), b"earlier")
+            .await
+            .unwrap();
+
+        cleanup_job(&source, &dest).await;
+
+        assert_eq!(
+            tokio::fs::read_to_string(dest.join("log").join("PNmpeg_Encode777.log")).await.unwrap(),
+            "why it failed"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(dest.join("log").join("publish.log")).await.unwrap(),
+            "earlier"
+        );
+        assert!(!source.exists());
+        tokio::fs::remove_dir_all(&root).await.ok();
+    }
 }
