@@ -91,11 +91,19 @@ AOT produced disagree by more than `TOTAL_ESTIMATE_TOLERANCE` (2 frames) — the
 catch. In the ordinary case it never runs at all. Only an exact count may reject a finished AOT on a
 frame-count mismatch; an estimate is a frame or two out by nature and never fails a job on its own.
 
-The AAC pass is started when the handoff begins and is now watched as it runs. It used to be waited
-on only after the video finished, so a handoff whose audio died in its first second still spent the
-whole encode before anyone looked — one production run burned eleven minutes and 34,911 successfully
-encoded frames before reporting that its input file had not been there at all. The handoff also
-records, at adoption, whether the input exists and what `contents/torrent/` holds.
+The AAC pass is started when the handoff begins and is watched as it runs. It used to be waited on
+only after the video finished, so a handoff whose audio died in its first second still spent the whole
+encode before anyone looked — one production run burned eleven minutes and 34,911 successfully encoded
+frames before reporting that its input had not been there at all.
+
+Its input frequently is not there, at the start. On the production bind mount a file the speculative
+encoder holds open is **listed in its directory but cannot be stat'd by name** after the download
+worker renames it to `input.mkv` (`exists=false` beside `torrent dir holds input.mkv` in the adoption
+line). The name becomes usable again when that process exits, which is what the handoff is waiting
+for anyway, so a failed audio pass is retried once the AOT completes rather than failing the job —
+and only a name that still will not resolve ten seconds later is an error, reported with the
+directory's actual contents. The same filesystem behaviour is why a job's log files could not be
+stat'd while their writer was alive.
 
 A missing state file is not by itself a failure. `LinearAotState::publish` replaces the file by
 renaming a temporary over it, roughly once a second, and `DB` is a bind mount in production where

@@ -240,6 +240,9 @@ fn estimated_frame_total(input: &str) -> Option<u64> {
 // truncated encode — the thing being guarded against — is short by thousands.
 const TOTAL_ESTIMATE_TOLERANCE: u64 = 2;
 
+// How many half-second attempts the audio retry gets to see the input reappear.
+const AUDIO_RETRY_ATTEMPTS: u32 = 20;
+
 // How long the linear AOT state file may be missing before the handoff stops believing in it. The
 // speculative encoder rewrites it roughly once a second, so anything shorter-lived than this is the
 // publisher's rename window rather than a file that has actually gone away.
@@ -324,14 +327,17 @@ fn finish_linear_aot(
     // success, and are read back into the error on the paths that keep them.
     let audio_errors = scratch.join("audio.stderr.log");
     let mux_errors = scratch.join("mux.stderr.log");
-    let mut audio_child = Command::new(resolve_runtime_binary("ffmpeg"))
-        .args(["-v", "error", "-i", &args.input, "-map", &format!("0:{audio_index}"),
-            "-vn", "-c:a", "aac", "-b:a", "192k", "-y"])
-        .arg(&audio)
-        .stdout(Stdio::null())
-        .stderr(std::fs::File::create(&audio_errors).map(Stdio::from).unwrap_or_else(|_| Stdio::null()))
-        .spawn()
-        .map_err(|e| format!("spawn linear AOT audio encoder: {e}"))?;
+    let spawn_audio = || {
+        Command::new(resolve_runtime_binary("ffmpeg"))
+            .args(["-v", "error", "-i", &args.input, "-map", &format!("0:{audio_index}"),
+                "-vn", "-c:a", "aac", "-b:a", "192k", "-y"])
+            .arg(&audio)
+            .stdout(Stdio::null())
+            .stderr(std::fs::File::create(&audio_errors).map(Stdio::from).unwrap_or_else(|_| Stdio::null()))
+            .spawn()
+            .map_err(|e| format!("spawn linear AOT audio encoder: {e}"))
+    };
+    let mut audio_child = spawn_audio()?;
     let input_path = Path::new(&args.input);
     log.line(&format!(
         "adopting linear AOT: waiting for {} to finish, encoding audio from stream {} of {} (exists={}) meanwhile; torrent dir holds {}",
@@ -369,6 +375,7 @@ fn finish_linear_aot(
     // run burned eleven minutes and 34,911 successfully encoded frames before reporting that its
     // input had not been there at all. Watch it as we go.
     let mut audio_done: Option<std::process::ExitStatus> = None;
+    let mut audio_retry = false;
     let completed = loop {
         if args.cancelfile.as_deref().is_some_and(|path| Path::new(path).exists()) {
             audio_child.kill().ok();
@@ -474,16 +481,21 @@ fn finish_linear_aot(
         if audio_done.is_none() {
             match audio_child.try_wait() {
                 Ok(Some(status)) if !status.success() => {
+                    // Almost always the input this is reading: on the production bind mount, a file
+                    // the speculative encoder holds open is listed in its directory but cannot be
+                    // stat'd by name after the download worker renames it, so the audio pass starts
+                    // against a path that resolves to nothing while the video sails on. The name
+                    // becomes usable again once that process exits, which is exactly what the loop
+                    // below is already waiting for — so this is a reason to retry the audio later,
+                    // not to throw the encode away.
                     log.line(&format!(
-                        "linear AOT audio encode died after {:.1}s, abandoning the handoff",
-                        wait_started.elapsed().as_secs_f64()
-                    ));
-                    std::fs::remove_dir_all(&scratch).ok();
-                    return Err(format!(
-                        "linear AOT audio encode failed: {}; ffmpeg said: {}",
+                        "linear AOT audio encode failed after {:.1}s ({}; ffmpeg said: {}); retrying it once the AOT finishes",
+                        wait_started.elapsed().as_secs_f64(),
                         exit_reason(&status),
                         tail_line(&audio_errors, 3)
                     ));
+                    audio_retry = true;
+                    audio_done = Some(status);
                 }
                 Ok(Some(status)) => audio_done = Some(status),
                 Ok(None) => {}
@@ -542,6 +554,29 @@ fn finish_linear_aot(
             "linear AOT encoded {} of the {} frames ffprobe counted in {}",
             completed.frames, total, args.input
         ));
+    }
+    if audio_retry {
+        // The AOT is complete, so whatever was holding the input open has let go of it.
+        for attempt in 1..=AUDIO_RETRY_ATTEMPTS {
+            if !input_path.exists() {
+                std::thread::sleep(Duration::from_millis(500));
+                continue;
+            }
+            log.line(&format!("retrying the linear AOT audio encode (attempt {attempt})"));
+            audio_child = spawn_audio()?;
+            audio_done = Some(audio_child.wait().map_err(|e| e.to_string())?);
+            break;
+        }
+        if !input_path.exists() {
+            return Err(format!(
+                "linear AOT audio encode has no input: {} is listed in {} but does not resolve",
+                args.input,
+                input_path
+                    .parent()
+                    .map(directory_names)
+                    .unwrap_or_else(|| "unreadable".to_string()),
+            ));
+        }
     }
     let audio_status = match audio_done {
         Some(status) => status,
