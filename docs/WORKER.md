@@ -81,7 +81,13 @@ had reached and what the host had left at that moment. The download worker print
 planner PID), skipped (with which of the four reasons), left running for handoff, or stopped.
 
 The frame total a handoff reports comes from the container header — duration times frame rate, two
-metadata reads — not from an exact `-count_packets` demux. The demux used to run on a thread for the
+metadata reads — and, when the input itself cannot be read, from a count the download worker recorded
+for it. `record_total_frames` probes the selected file **before** renaming it to `input.mkv` and
+leaves the number in `work/total_frames`, because after that rename a file the speculative encoder
+holds open stops resolving by name: during an AOT handoff there is no readable path to the video at
+all, so every probe of it fails and the progress the user watches has no denominator. The handoff
+tries the input first and falls back to that sidecar; the log line names which one answered. Neither
+comes from an exact `-count_packets` demux. The demux used to run on a thread for the
 whole handoff, which put a third reader (with the speculative encoder and the AAC pass) on one file
 on the bind mount, the slowest resource in the container, and still did not finish in time to report
 a total: every AOT job reported zero for its whole run and drew no progress bar.

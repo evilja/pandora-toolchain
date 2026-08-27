@@ -66,6 +66,19 @@ pub fn ffprobe_frame(path: &str) -> Option<u64> {
  }
 
 
+// Frames implied by the container header — duration times frame rate — without the full demux
+// `ffprobe_frame` performs. Exact for the constant-frame-rate sources this encodes, and near enough
+// for a progress denominator on anything else. Callers that need certainty still use the count.
+pub fn ffprobe_estimated_frames(path: &str) -> Option<u64> {
+    let duration_ms = ffprobe_duration_millis(Path::new(path))?;
+    let (fps_num, fps_den) = ffprobe_framerate(path)?;
+    if fps_num == 0 || fps_den == 0 {
+        return None;
+    }
+    let frames = u128::from(duration_ms) * u128::from(fps_num) / (u128::from(fps_den) * 1000);
+    u64::try_from(frames).ok().filter(|frames| *frames != 0)
+}
+
 #[derive(Debug, Deserialize)]
 struct FfprobeFramerate {
     streams: Vec<FramerateStream>,

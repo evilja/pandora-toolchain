@@ -255,6 +255,32 @@ async fn start_download_planner(
     }
 }
 
+// The frame count of the file this job just downloaded, left in the job's scratch for pnmpeg to read
+// when it cannot probe the input itself. Best-effort throughout: a job with no recorded count simply
+// falls back to probing, which is what every non-AOT encode does anyway.
+async fn record_total_frames(directory: &std::path::Path, source: &std::path::Path) {
+    let probe_path = source.to_string_lossy().to_string();
+    let frames = match tokio::task::spawn_blocking(move || {
+        crate::lib::mpeg::probe::ffprobe_estimated_frames(&probe_path)
+    })
+    .await
+    {
+        Ok(Some(frames)) => frames,
+        Ok(None) => {
+            eprintln!("[Pandora Downloader] no frame count for {}", source.display());
+            return;
+        }
+        Err(e) => {
+            eprintln!("[Pandora Downloader] frame count probe failed: {e}");
+            return;
+        }
+    };
+    let path = directory.join("work").join("total_frames");
+    if let Err(e) = tokio::fs::write(&path, frames.to_string()).await {
+        eprintln!("[Pandora Downloader] could not write {}: {}", path.display(), e);
+    }
+}
+
 async fn finish_download_planner(planner: &mut Option<DownloadPlanner>, job_id: u64, success: bool) {
     let Some(mut planner) = planner.take() else {
         return;
@@ -926,6 +952,11 @@ async fn run_download_job(
                 "[Pandora Downloader] Selected file: {}",
                 final_source.display()
             );
+            // Take the frame count before the rename, while this path is still readable. Once the
+            // file becomes `input.mkv`, a speculative encoder holding it open leaves that name
+            // unresolvable on the production bind mount, and the encoder that adopts the AOT is
+            // then unable to probe anything at all for the progress total it reports.
+            record_total_frames(&directory, &final_source).await;
             rename(&final_source, &target).await.unwrap();
 
             if let Some(parent) = source_parent {

@@ -4,7 +4,7 @@ use pandora_toolchain::lib::mpeg::{
         CONCAT, CONCAT_LEGACY, CPU_DUMMY, CPU_PSEUDOLOSSLESS, CPU_SANE_DEFAULTS, CPU_VERYSLOW,
         GPU_SANE_DEFAULTS
     }, probe::{
-        ConcatMedia, ffprobe_concat_media, ffprobe_duration_millis, ffprobe_frame,
+        ConcatMedia, ffprobe_concat_media, ffprobe_estimated_frames, ffprobe_frame,
         ffprobe_framerate, ffprobe_lang,
         ffprobe_samplerate
     }
@@ -222,23 +222,30 @@ fn encoder_compatibility(encoder: &pnx264::Config) -> String {
     )
 }
 
-// A frame total from container metadata alone: duration times frame rate, two header reads and no
-// demux. Exact for the constant-frame-rate sources this encodes, and near enough for a progress bar
-// either way — the caller keeps track of the fact that it is an estimate.
-fn estimated_frame_total(input: &str) -> Option<u64> {
-    let duration_ms = ffprobe_duration_millis(Path::new(input))?;
-    let (fps_num, fps_den) = ffprobe_framerate(input)?;
-    if fps_den == 0 || fps_num == 0 {
-        return None;
+// A frame total for the handoff to count against. The input itself is the obvious source and is
+// often the one thing that cannot be read: while the speculative encoder holds the downloaded file
+// open, the production bind mount stops resolving the name it was renamed to, so every probe of it
+// fails and the progress the user watches has no denominator. The download worker records the count
+// while that path still works, and this reads it back.
+fn handoff_frame_total(input: &str, parent: &Path) -> (Option<u64>, &'static str) {
+    if let Some(frames) = ffprobe_estimated_frames(input) {
+        return (Some(frames), "the input header");
     }
-    let frames = u128::from(duration_ms) * u128::from(fps_num) / (u128::from(fps_den) * 1000);
-    u64::try_from(frames).ok().filter(|frames| *frames != 0)
+    let recorded = std::fs::read_to_string(parent.join(TOTAL_FRAMES_SIDECAR))
+        .ok()
+        .and_then(|text| text.trim().parse::<u64>().ok())
+        .filter(|frames| *frames != 0);
+    (recorded, "the download worker")
 }
 
 // How far the header estimate may sit from what the speculative encoder actually produced before
 // the exact count is worth a full demux. Container duration rounding is worth a frame either way; a
 // truncated encode — the thing being guarded against — is short by thousands.
 const TOTAL_ESTIMATE_TOLERANCE: u64 = 2;
+
+// Where the download worker leaves the frame count of the file it just finished, beside the job's
+// scratch. See `handoff_frame_total`.
+const TOTAL_FRAMES_SIDECAR: &str = "total_frames";
 
 // How many half-second attempts the audio retry gets to see the input reappear.
 const AUDIO_RETRY_ATTEMPTS: u32 = 20;
@@ -356,10 +363,13 @@ fn finish_linear_aot(
     // the container — for the length of an encode, and it still did not finish in time to report a
     // total. The container header answers the same question in two metadata reads. The exact count
     // is now only paid for at the end, and only if this disagrees with what the AOT produced.
-    let mut total = estimated_frame_total(&args.input).unwrap_or(0);
+    let (estimate, estimate_source) = handoff_frame_total(&args.input, parent);
+    let mut total = estimate.unwrap_or(0);
     let mut total_is_estimate = total != 0;
     if total_is_estimate {
-        log.line(&format!("linear AOT handoff expecting {total} frames from the input header"));
+        log.line(&format!("linear AOT handoff expecting {total} frames, from {estimate_source}"));
+    } else {
+        log.line("linear AOT handoff has no frame total to report: neither the input nor a recorded count could be read");
     }
     let wait_started = std::time::Instant::now();
     let initial_frames = initial.frames;
@@ -542,7 +552,7 @@ fn finish_linear_aot(
         completed.frames,
         completed.bytes,
         total,
-        if total_is_estimate { "from the header" } else { "counted" },
+        if total_is_estimate { estimate_source } else { "counted" },
         wait_started.elapsed().as_secs_f64()
     ));
     // Only the exact count may reject a finished AOT: an estimate is a frame or two out by nature
@@ -569,7 +579,7 @@ fn finish_linear_aot(
         }
         if !input_path.exists() {
             return Err(format!(
-                "linear AOT audio encode has no input: {} is listed in {} but does not resolve",
+                "linear AOT audio encode has no input: {} still does not resolve; its directory holds {}",
                 args.input,
                 input_path
                     .parent()
