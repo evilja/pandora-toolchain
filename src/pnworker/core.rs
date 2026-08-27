@@ -1194,16 +1194,26 @@ async fn preserve_work_logs() {
         &PathBuf::from("DB").join("saved_data"),
     )
     .await;
-    if saved > 0 {
-        println!("[Pandora] gitsync kept the logs of {} unfinished job(s)", saved);
+    if !saved.is_empty() {
+        // These are the jobs the wipe on the next line is about to break. Each one dies moments
+        // later with its scratch gone — "No such file or directory" from a tool that was healthy a
+        // second earlier — and nothing else on either side names the connection. Print the ids so a
+        // failed encode can be traced back to the deploy that caused it.
+        println!(
+            "[Pandora] gitsync is clearing DB/work under {} unfinished job(s): {}",
+            saved.len(),
+            saved.iter().map(u64::to_string).collect::<Vec<String>>().join(", ")
+        );
     }
 }
 
-async fn preserve_logs_from(work: &std::path::Path, saved_data: &std::path::Path) -> usize {
+// Returns the ids whose logs it kept — which is also the list of jobs the caller's wipe is about
+// to pull the ground out from under.
+async fn preserve_logs_from(work: &std::path::Path, saved_data: &std::path::Path) -> Vec<u64> {
     let Ok(mut entries) = tokio::fs::read_dir(work).await else {
-        return 0;
+        return Vec::new();
     };
-    let mut saved = 0usize;
+    let mut saved = Vec::new();
     while let Ok(Some(entry)) = entries.next_entry().await {
         let source = entry.path().join("log");
         if !source.is_dir() {
@@ -1228,9 +1238,10 @@ async fn preserve_logs_from(work: &std::path::Path, saved_data: &std::path::Path
             continue;
         }
         if rename(&source, &dest).await.is_ok() {
-            saved += 1;
+            saved.push(job_id);
         }
     }
+    saved.sort_unstable();
     saved
 }
 
@@ -3221,7 +3232,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(preserve_logs_from(&work, &saved_data).await, 1);
+        // The ids come back so the caller can name the jobs its wipe is about to break.
+        assert_eq!(preserve_logs_from(&work, &saved_data).await, vec![111]);
 
         assert_eq!(
             tokio::fs::read_to_string(saved_data.join("111").join("log").join("PNmpeg_Encode111.log"))

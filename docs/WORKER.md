@@ -80,6 +80,14 @@ had reached and what the host had left at that moment. The download worker print
 `[Pandora Downloader] job <id> AOT …` line to `pndc`'s stdout for every outcome: started (with the
 planner PID), skipped (with which of the four reasons), left running for handoff, or stopped.
 
+When the handoff loses its state file mid-wait it records what else is still there — whether
+`work/` and the job directory survive, and what the job directory still holds. A single deleted file
+and a scratch directory pulled out from under a running encode read identically otherwise, and only
+the second has an external cause. `/gitsync` is that cause by design: it clears `DB/work` with no
+regard for what is running, so it now prints the ids of the unfinished jobs it is about to break
+(`preserve_work_logs` returns them), which is the only line connecting a deploy to the encodes that
+fail seconds later.
+
 The foreground handoff logs to `log/PNmpeg_Encode<job_id>.run.log`: whether a state file was found
 at all, the state it adopted, an incompatible key printed against the one this encode wanted, a
 per-tick line beside each progress emit (frames, total or `counting`, fps, the AOT process's RSS,

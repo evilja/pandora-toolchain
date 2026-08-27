@@ -221,6 +221,24 @@ fn encoder_compatibility(encoder: &pnx264::Config) -> String {
     )
 }
 
+// What a directory still holds, for a log line written at the moment something has gone missing
+// from it. Names only, capped: the point is to tell an emptied directory from a wiped one.
+fn directory_names(directory: &Path) -> String {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return "unreadable".to_string();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .take(12)
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .collect();
+    if names.is_empty() {
+        return "empty".to_string();
+    }
+    names.sort();
+    names.join(",")
+}
+
 fn finish_linear_aot(
     args: &Args,
     encoder: &pnx264::Config,
@@ -303,6 +321,7 @@ fn finish_linear_aot(
     // Sampled on every tick because /proc/<pid> is gone the instant the process is, and the size it
     // had reached is the whole question when the kernel is the one that ended it.
     let mut last_rss: Option<u64> = None;
+    let mut last_frames = initial_frames;
     let completed = loop {
         if args.cancelfile.as_deref().is_some_and(|path| Path::new(path).exists()) {
             audio_child.kill().ok();
@@ -310,8 +329,29 @@ fn finish_linear_aot(
             std::fs::remove_dir_all(&scratch).ok();
             return Err("cancelled".to_string());
         }
-        let state = pnx264::linear::LinearAotState::read(&state_path)
-            .map_err(|e| format!("read linear AOT handoff: {e}"))?;
+        let state = match pnx264::linear::LinearAotState::read(&state_path) {
+            Ok(state) => state,
+            Err(e) => {
+                // Losing the state file mid-handoff has two very different causes: something
+                // deleted that one file, or the job's whole scratch directory went out from under
+                // the encode (a `/gitsync` restart clears `DB/work` with no regard for what is
+                // running). Which one it was is the entire question afterwards, and the answer is
+                // only readable in this moment — say what still exists while it can still be seen.
+                let job_dir = parent.parent().unwrap_or(parent);
+                log.line(&format!(
+                    "linear AOT handoff lost its state after {} frames: {e} — scratch {} exists={}, job dir {} exists={}, siblings={}",
+                    last_frames,
+                    parent.display(),
+                    parent.exists(),
+                    job_dir.display(),
+                    job_dir.exists(),
+                    directory_names(job_dir),
+                ));
+                audio_child.kill().ok();
+                audio_child.wait().ok();
+                return Err(format!("read linear AOT handoff: {e}"));
+            }
+        };
         if total_probe.as_ref().is_some_and(|probe| probe.is_finished()) {
             total = total_probe.take().and_then(|probe| probe.join().ok()).unwrap_or(0);
         }
@@ -350,6 +390,7 @@ fn finish_linear_aot(
             ));
             last_emit = Some(now);
         }
+        last_frames = state.frames;
         if state.complete {
             break state;
         }
