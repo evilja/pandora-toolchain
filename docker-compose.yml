@@ -2,9 +2,6 @@ services:
   pndc:
     build:
       context: .
-      args:
-        PNX264_RELEASE_URL: ${PNX264_RELEASE_URL:?set the pinned x264 fork release artifact URL}
-        PNX264_RELEASE_SHA256: ${PNX264_RELEASE_SHA256:?set the artifact SHA-256}
     restart: unless-stopped
     # No published ports: cloudflared reaches it over the internal network only.
     # The bot binds 0.0.0.0:8787 (set api_port|pntools|8787 in env.pandora).
