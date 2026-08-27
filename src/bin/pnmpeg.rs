@@ -4,7 +4,8 @@ use pandora_toolchain::lib::mpeg::{
         CONCAT, CONCAT_LEGACY, CPU_DUMMY, CPU_PSEUDOLOSSLESS, CPU_SANE_DEFAULTS, CPU_VERYSLOW,
         GPU_SANE_DEFAULTS
     }, probe::{
-        ConcatMedia, ffprobe_concat_media, ffprobe_frame, ffprobe_framerate, ffprobe_lang,
+        ConcatMedia, ffprobe_concat_media, ffprobe_duration_millis, ffprobe_frame,
+        ffprobe_framerate, ffprobe_lang,
         ffprobe_samplerate
     }
 };
@@ -221,6 +222,19 @@ fn encoder_compatibility(encoder: &pnx264::Config) -> String {
     )
 }
 
+// A frame total from container metadata alone: duration times frame rate, two header reads and no
+// demux. Exact for the constant-frame-rate sources this encodes, and near enough for a progress bar
+// either way — the caller keeps track of the fact that it is an estimate.
+fn estimated_frame_total(input: &str) -> Option<u64> {
+    let duration_ms = ffprobe_duration_millis(Path::new(input))?;
+    let (fps_num, fps_den) = ffprobe_framerate(input)?;
+    if fps_den == 0 || fps_num == 0 {
+        return None;
+    }
+    let frames = u128::from(duration_ms) * u128::from(fps_num) / (u128::from(fps_den) * 1000);
+    u64::try_from(frames).ok().filter(|frames| *frames != 0)
+}
+
 // How long the linear AOT state file may be missing before the handoff stops believing in it. The
 // speculative encoder rewrites it roughly once a second, so anything shorter-lived than this is the
 // publisher's rename window rather than a file that has actually gone away.
@@ -319,7 +333,17 @@ fn finish_linear_aot(
     ));
     let probe_input = args.input.clone();
     let mut total_probe = Some(std::thread::spawn(move || ffprobe_frame(&probe_input).unwrap_or(0)));
-    let mut total = 0u64;
+    // The exact count is a full demux of the input, and while the speculative encoder is streaming
+    // that same file off the production bind mount it can outlast the encode it was meant to
+    // describe: every AOT job so far reported a total of zero for its entire run, so the progress
+    // the user watched had no denominator and never drew a bar. The container header knows the
+    // duration and the frame rate, which is one metadata read and enough to show a real total from
+    // the first tick. The exact count replaces it the moment it lands.
+    let mut total = estimated_frame_total(&args.input).unwrap_or(0);
+    let mut total_is_estimate = total != 0;
+    if total_is_estimate {
+        log.line(&format!("linear AOT handoff estimating {total} frames from the header while the exact count runs"));
+    }
     let wait_started = std::time::Instant::now();
     let initial_frames = initial.frames;
     let mut last_emit = None;
@@ -390,7 +414,16 @@ fn finish_linear_aot(
             }
         };
         if total_probe.as_ref().is_some_and(|probe| probe.is_finished()) {
-            total = total_probe.take().and_then(|probe| probe.join().ok()).unwrap_or(0);
+            // A probe that failed returns zero, which must not overwrite a usable estimate.
+            if let Some(counted) = total_probe
+                .take()
+                .and_then(|probe| probe.join().ok())
+                .filter(|counted| *counted != 0)
+            {
+                total = counted;
+                total_is_estimate = false;
+                log.line(&format!("linear AOT handoff counted {total} frames in the input"));
+            }
         }
         if state.compatibility != initial.compatibility {
             audio_child.kill().ok();
@@ -419,7 +452,13 @@ fn finish_linear_aot(
             log.line(&format!(
                 "linear AOT handoff waiting: frames={} total={} fps={} bytes={} aot_rss={} {}",
                 state.frames,
-                if total == 0 { "counting".to_string() } else { total.to_string() },
+                if total == 0 {
+                    "counting".to_string()
+                } else if total_is_estimate {
+                    format!("~{total}")
+                } else {
+                    total.to_string()
+                },
                 fps,
                 state.bytes,
                 last_rss.map(|mib| format!("{mib}MiB")).unwrap_or_else(|| "unknown".to_string()),
@@ -452,13 +491,18 @@ fn finish_linear_aot(
         std::thread::sleep(Duration::from_millis(250));
     };
     if let Some(probe) = total_probe.take() {
-        total = probe.join().unwrap_or(0);
+        if let Some(counted) = probe.join().ok().filter(|counted| *counted != 0) {
+            total = counted;
+            total_is_estimate = false;
+        }
     }
     log.line(&format!(
         "linear AOT reported complete: {} frames, {} bytes, {} expected by ffprobe, {:.1}s waiting",
         completed.frames, completed.bytes, total, wait_started.elapsed().as_secs_f64()
     ));
-    if total != 0 && completed.frames != total {
+    // Only the exact count may reject a finished AOT: an estimate is a frame or two out by nature
+    // and would throw away a perfectly good encode.
+    if !total_is_estimate && total != 0 && completed.frames != total {
         audio_child.kill().ok();
         audio_child.wait().ok();
         return Err(format!(

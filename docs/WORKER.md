@@ -80,6 +80,13 @@ had reached and what the host had left at that moment. The download worker print
 `[Pandora Downloader] job <id> AOT …` line to `pndc`'s stdout for every outcome: started (with the
 planner PID), skipped (with which of the four reasons), left running for handoff, or stopped.
 
+The frame total a handoff reports comes from the container header — duration times frame rate — not
+from the exact `-count_packets` demux. That demux competes with the speculative encoder for the same
+file on the same bind mount and can outlast the encode it describes, which left every AOT job
+reporting a total of zero for its whole run and no progress bar to draw. The exact count still runs
+alongside and replaces the estimate the moment it lands; only the exact number is allowed to reject a
+finished AOT on a frame-count mismatch, since an estimate is a frame or two out by nature.
+
 A missing state file is not by itself a failure. `LinearAotState::publish` replaces the file by
 renaming a temporary over it, roughly once a second, and `DB` is a bind mount in production where
 that rename is **not** atomic — the path goes briefly absent. The handoff polls it four times a
