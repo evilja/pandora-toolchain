@@ -1,5 +1,6 @@
 use crate::y4m::Y4mReader;
 use crate::{Config, Encoder};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -10,6 +11,27 @@ use std::time::{Duration, Instant};
 
 pub const FIXED_STRIDE: u64 = 250;
 const MAX_PLAN_TAIL: u64 = 500;
+// How far a header's frame count may sit from what the duration implies before it is distrusted.
+const HEADER_FRAME_TOLERANCE: f64 = 0.02;
+
+// What answered the frame total, for the run log — a header read is two metadata seeks, a packet
+// count is a full demux of the input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameTotal {
+    Header,
+    Tag,
+    PacketCount,
+}
+
+impl FrameTotal {
+    pub fn label(self) -> &'static str {
+        match self {
+            FrameTotal::Header => "header",
+            FrameTotal::Tag => "mkv statistics tag",
+            FrameTotal::PacketCount => "packet count",
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct ParallelConfig {
@@ -40,6 +62,7 @@ pub struct ParallelSummary {
     pub workers: usize,
     pub reused_chunks: usize,
     pub natural_boundaries: bool,
+    pub frame_total: FrameTotal,
     pub elapsed: Duration,
 }
 
@@ -84,32 +107,113 @@ pub fn aot_chunk_path(directory: &Path, start: u64, frames: u64) -> PathBuf {
     directory.join(format!("chunk-{start:012}-{frames:012}.264"))
 }
 
-fn probe(ffprobe: &Path, input: &Path) -> Result<Source, String> {
+// This used to be a single `-count_frames` call, which decodes every frame of the input before the
+// first chunk is dispatched — minutes of silence on a 1080p episode, with no progress to report
+// because the workers have not started. The container almost always knows the answer already.
+fn probe(ffprobe: &Path, input: &Path) -> Result<(Source, FrameTotal), String> {
     let output = Command::new(ffprobe)
         .args([
-            "-v", "error", "-select_streams", "v:0", "-count_frames",
-            "-show_entries", "stream=width,height,r_frame_rate,nb_read_frames",
-            "-of", "default=nw=1:nk=1",
+            "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=width,height,r_frame_rate,nb_frames,duration:stream_tags:format=duration",
+            "-of", "default=nw=1",
         ])
         .arg(input)
         .output()
         .map_err(|e| e.to_string())?;
     if !output.status.success() {
-        return Err("ffprobe could not count input frames".to_string());
+        return Err("ffprobe could not read the input's video stream".to_string());
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    let fields: Vec<&str> = text.split_whitespace().collect();
-    if fields.len() < 4 {
-        return Err(format!("ffprobe returned incomplete video metadata: {fields:?}"));
+    let fields = ffprobe_fields(&text);
+    let (fps_num, fps_den) = fields
+        .get("r_frame_rate")
+        .and_then(|value| value.split_once('/'))
+        .ok_or("invalid input frame rate")?;
+    let fps_num: u32 = fps_num.parse().map_err(|_| "invalid frame-rate numerator")?;
+    let fps_den: u32 = fps_den.parse().map_err(|_| "invalid frame-rate denominator")?;
+    if fps_den == 0 {
+        return Err("input frame rate has a zero denominator".to_string());
     }
-    let (fps_num, fps_den) = fields[2].split_once('/').ok_or("invalid input frame rate")?;
-    Ok(Source {
-        width: fields[0].parse().map_err(|_| "invalid input width")?,
-        height: fields[1].parse().map_err(|_| "invalid input height")?,
-        fps_num: fps_num.parse().map_err(|_| "invalid frame-rate numerator")?,
-        fps_den: fps_den.parse().map_err(|_| "invalid frame-rate denominator")?,
-        frames: fields[3].parse().map_err(|_| "invalid input frame count")?,
-    })
+    let (frames, total) = match header_frame_total(&fields, fps_num, fps_den) {
+        Some(found) => found,
+        None => (count_packets(ffprobe, input)?, FrameTotal::PacketCount),
+    };
+    if frames == 0 {
+        return Err("input reports no video frames".to_string());
+    }
+    Ok((
+        Source {
+            width: fields.get("width").and_then(|v| v.parse().ok()).ok_or("invalid input width")?,
+            height: fields.get("height").and_then(|v| v.parse().ok()).ok_or("invalid input height")?,
+            fps_num,
+            fps_den,
+            frames,
+        },
+        total,
+    ))
+}
+
+// `-of default=nw=1` prints one `key=value` per line and stream tags arrive prefixed with `TAG:`;
+// anything the container does not carry is the literal `N/A`. The format section is printed after
+// the stream, so a file-level `duration` overwrites the stream's own — which is what we want, since
+// Matroska usually leaves the stream one empty.
+fn ffprobe_fields(text: &str) -> HashMap<&str, &str> {
+    text.lines()
+        .filter_map(|line| line.split_once('='))
+        .map(|(key, value)| (key.trim(), value.trim()))
+        .filter(|(_, value)| !value.is_empty() && *value != "N/A")
+        .collect()
+}
+
+// MP4 carries the count as `nb_frames`; mkvmerge writes it into the track's statistics tags, where
+// it is sometimes suffixed with the track language (`NUMBER_OF_FRAMES-eng`).
+//
+// The exact total matters for one thing: the last range is `total - last_start` frames long, and
+// encode_chunk fails the encode if the decoder hands it fewer frames than it asked for. So a header
+// value is only taken when the duration agrees with it — a statistics tag left behind by an earlier
+// cut would otherwise truncate the episode or fail it at the tail. Disagreement costs a demux, not
+// a wrong answer.
+fn header_frame_total(fields: &HashMap<&str, &str>, fps_num: u32, fps_den: u32) -> Option<(u64, FrameTotal)> {
+    let header = fields
+        .get("nb_frames")
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|frames| (frames, FrameTotal::Header));
+    let tag = fields
+        .iter()
+        .find(|(key, _)| key.starts_with("TAG:NUMBER_OF_FRAMES"))
+        .and_then(|(_, value)| value.parse::<u64>().ok())
+        .map(|frames| (frames, FrameTotal::Tag));
+    let (frames, total) = header.or(tag).filter(|(frames, _)| *frames > 0)?;
+
+    let estimate = fields
+        .get("duration")
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|seconds| *seconds > 0.0)
+        .map(|seconds| seconds * fps_num as f64 / fps_den as f64);
+    match estimate {
+        Some(estimate) if (frames as f64 - estimate).abs() > estimate * HEADER_FRAME_TOLERANCE => None,
+        _ => Some((frames, total)),
+    }
+}
+
+// A demux with no decoding: seconds where `-count_frames` took minutes, and still exact for a
+// stream whose packets are whole frames.
+fn count_packets(ffprobe: &Path, input: &Path) -> Result<u64, String> {
+    let output = Command::new(ffprobe)
+        .args([
+            "-v", "error", "-select_streams", "v:0", "-count_packets",
+            "-show_entries", "stream=nb_read_packets", "-of", "default=nw=1:nk=1",
+        ])
+        .arg(input)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err("ffprobe could not count the input's packets".to_string());
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .map_err(|_| "ffprobe returned an unreadable packet count".to_string())
 }
 
 fn filter_quote(value: &str) -> String {
@@ -377,7 +481,8 @@ where
     if let Some(directory) = aot.as_ref() {
         freeze_aot(directory);
     }
-    let source = Arc::new(probe(&config.ffprobe, &config.input)?);
+    let (probed, frame_total) = probe(&config.ffprobe, &config.input)?;
+    let source = Arc::new(probed);
     let scratch = config
         .output
         .parent()
@@ -587,6 +692,7 @@ where
         workers,
         reused_chunks: reused_chunks.load(Ordering::Relaxed),
         natural_boundaries,
+        frame_total,
         elapsed,
     })
 }
@@ -604,6 +710,41 @@ mod tests {
         assert_eq!(chunk_worker_count(15_036, 16), 15);
         assert_eq!(chunk_worker_count(15_036, 12), 12);
         assert_eq!(chunk_worker_count(999, 16), 1);
+    }
+
+    #[test]
+    fn an_mp4_header_answers_the_frame_total_without_a_demux() {
+        let fields = ffprobe_fields(
+            "width=1920\nheight=1080\nr_frame_rate=24000/1001\nduration=1439.900000\nnb_frames=34525\nduration=1440.000000\n",
+        );
+        assert_eq!(fields.get("duration").copied(), Some("1440.000000"));
+        assert_eq!(header_frame_total(&fields, 24000, 1001), Some((34525, FrameTotal::Header)));
+    }
+
+    #[test]
+    fn a_matroska_statistics_tag_answers_it_too() {
+        let fields = ffprobe_fields(
+            "width=1920\nheight=1080\nr_frame_rate=24000/1001\nduration=N/A\nnb_frames=N/A\nTAG:NUMBER_OF_FRAMES-eng=34525\nduration=1440.000000\n",
+        );
+        assert_eq!(header_frame_total(&fields, 24000, 1001), Some((34525, FrameTotal::Tag)));
+    }
+
+    // The tail range is `total - last_start` frames long and encode_chunk fails the whole encode
+    // when the decoder comes up short, so a count the duration disagrees with is worth the demux.
+    #[test]
+    fn a_stale_tag_from_an_earlier_cut_is_sent_back_to_the_demux() {
+        let fields = ffprobe_fields(
+            "width=1920\nheight=1080\nr_frame_rate=24000/1001\nTAG:NUMBER_OF_FRAMES=51000\nduration=1440.000000\n",
+        );
+        assert_eq!(header_frame_total(&fields, 24000, 1001), None);
+    }
+
+    #[test]
+    fn a_container_carrying_neither_is_counted() {
+        let fields = ffprobe_fields(
+            "width=1920\nheight=1080\nr_frame_rate=24000/1001\nnb_frames=N/A\nduration=1440.000000\n",
+        );
+        assert_eq!(header_frame_total(&fields, 24000, 1001), None);
     }
 
     #[test]

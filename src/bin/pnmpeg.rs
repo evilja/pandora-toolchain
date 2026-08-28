@@ -1188,8 +1188,9 @@ async fn main() {
         match result {
             Ok(summary) => {
                 log.line(&format!(
-                    "parallel VerySlow done: {} frames, {} chunks, {} workers, {} AOT chunks reused, natural={}, {:.2}s",
+                    "parallel VerySlow done: {} frames (total from {}), {} chunks, {} workers, {} AOT chunks reused, natural={}, {:.2}s",
                     summary.frames,
+                    summary.frame_total.label(),
                     summary.chunks,
                     summary.workers,
                     summary.reused_chunks,
