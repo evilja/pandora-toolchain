@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use regex::Regex;
 
 use crate::lib::bin::resolve_runtime_binary;
+use crate::libkagami::core::SubstationAlpha;
 
 // Text subtitle formats ffmpeg can demux, mapped from the uploaded extension to the
 // extension the temp file gets before ffmpeg probes it (several demuxers key off it).
@@ -156,7 +157,7 @@ async fn convert_classified(kind: SubtitleInput, label: &str, bytes: &[u8]) -> R
             Ok(ConvertedSubtitle {
                 bytes: converted,
                 warning: Some(format!(
-                    "{} was converted to ASS by ffmpeg. Converted scripts carry no styling — the result uses ffmpeg's Default Arial 16 style at 384x288.",
+                    "{} was converted to ASS by ffmpeg. Converted scripts carry no styling — the result uses ffmpeg's Default Arial style, rescaled onto a 1920x1080 canvas.",
                     label
                 )),
             })
@@ -207,7 +208,80 @@ async fn convert_in_dir(dir: &PathBuf, bytes: &[u8], demux_ext: &str) -> Result<
     {
         return Err("subtitle conversion produced no dialogue lines.".to_string());
     }
-    Ok(converted)
+    Ok(rescale_converted(&output, converted).await)
+}
+
+// The canvas every script here is authored against; the watermarks and TS scripts a converted
+// subtitle later gets merged with are all written for it.
+const CONVERTED_PLAYRES_X: u16 = 1920;
+const CONVERTED_PLAYRES_Y: u16 = 1080;
+
+// What ffmpeg synthesises whenever the source format carries no header of its own. A converted
+// .ssa that arrived with a real header keeps it — canvas, positioning and all — and is left alone.
+const FFMPEG_DEFAULT_PLAYRES_X: u16 = 384;
+const FFMPEG_DEFAULT_PLAYRES_Y: u16 = 288;
+
+// ffmpeg's ASS muxer always writes its own 384x288 canvas with an Arial 16 Default sized for it,
+// and nothing downstream is prepared for that. A 1920x1080 watermark cannot be merged into a 4:3
+// script — the PlayRes ratios do not match, so the merge is rejected and the job dies with it —
+// and on the way to a 16:9 frame libass stretches the text horizontally to fill the mismatch.
+// Rescaling onto the 1080p canvas settles both, and renders the same text at the same proportions.
+// Only converted output passes through here: an uploaded ASS keeps whatever canvas it was authored
+// on.
+async fn rescale_converted(path: &PathBuf, converted: Vec<u8>) -> Vec<u8> {
+    let mut sub = SubstationAlpha::load(path.clone(), false).await;
+    let source_x = sub.script_info.playresx;
+    let source_y = sub.script_info.playresy;
+    if source_x != FFMPEG_DEFAULT_PLAYRES_X || source_y != FFMPEG_DEFAULT_PLAYRES_Y {
+        return converted;
+    }
+    // Only the header and the style metrics move, so a script that positions anything itself would
+    // be left with coordinates pointing at the old canvas. Nothing ffmpeg writes this header for
+    // can carry those tags, but declining such a script costs nothing and cannot be wrong.
+    if carries_positioning(&converted) {
+        return converted;
+    }
+
+    let sx = CONVERTED_PLAYRES_X as f32 / source_x as f32;
+    let sy = CONVERTED_PLAYRES_Y as f32 / source_y as f32;
+    sub.script_info.playresx = CONVERTED_PLAYRES_X;
+    sub.script_info.playresy = CONVERTED_PLAYRES_Y;
+    if sub.script_info.layout_res_x != 0 {
+        sub.script_info.layout_res_x = CONVERTED_PLAYRES_X;
+    }
+    if sub.script_info.layout_res_y != 0 {
+        sub.script_info.layout_res_y = CONVERTED_PLAYRES_Y;
+    }
+    // Anything measured against the glyphs follows the vertical factor, the way libass sizes text
+    // off PlayResY; only the side margins follow the width. The 384x288 Default lands on exactly
+    // the canonical 1080p row that way: Arial 60, outline 3.75, margins 50/50/38.
+    for style in &mut sub.v4p_styles {
+        style.fontsize = scale_metric(style.fontsize, sy);
+        style.outline *= sy;
+        style.shadow *= sy;
+        style.spacing *= sy;
+        style.margin_v = scale_metric(style.margin_v, sy);
+        style.margin_l = scale_metric(style.margin_l, sx);
+        style.margin_r = scale_metric(style.margin_r, sx);
+    }
+    for event in &mut sub.events {
+        event.margin_v = scale_metric(event.margin_v, sy);
+        event.margin_l = scale_metric(event.margin_l, sx);
+        event.margin_r = scale_metric(event.margin_r, sx);
+    }
+    sub.stringify().into_bytes()
+}
+
+fn scale_metric(value: u16, factor: f32) -> u16 {
+    (value as f32 * factor).round().clamp(0.0, u16::MAX as f32) as u16
+}
+
+// Every tag whose meaning is tied to the canvas it was written against.
+fn carries_positioning(script: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(script).to_lowercase();
+    ["\\pos(", "\\move(", "\\org(", "\\clip(", "\\iclip(", "\\p1", "\\p2", "\\p3", "\\p4"]
+        .iter()
+        .any(|tag| text.contains(tag))
 }
 
 #[cfg(test)]
@@ -314,6 +388,23 @@ mod tests {
         assert!(text.contains("0:00:01.00,0:00:03.50"), "{}", text);
         assert!(text.contains("Hello {\\i1}world{\\i0}"), "{}", text);
         assert!(out.warning.is_some());
+        // ffmpeg hands back a 384x288 4:3 canvas, which no watermark can be merged into.
+        assert!(text.contains("PlayResX: 1920"), "{}", text);
+        assert!(text.contains("PlayResY: 1080"), "{}", text);
+        assert!(text.contains("Default,Arial,60,"), "{}", text);
+    }
+
+    #[test]
+    fn positioned_scripts_keep_the_canvas_their_coordinates_were_written_against() {
+        assert!(carries_positioning(
+            b"Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\pos(320,240)}sign\n"
+        ));
+        assert!(carries_positioning(
+            b"Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\p1}m 0 0 l 10 10{\\p0}\n"
+        ));
+        assert!(!carries_positioning(
+            b"Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,Hello {\\i1}world{\\i0}\n"
+        ));
     }
 
     #[tokio::test]
