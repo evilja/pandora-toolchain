@@ -5,7 +5,9 @@ use serenity::{
     prelude::*,
 };
 use pandora_toolchain::lib::p2p::nyaaise::{display_source_link, nyaaise, TorrentType};
-use pandora_toolchain::pnworker::core::{HalfJob, Job, JobClass, JobType, KeepRequest, KeycodeRequest};
+use pandora_toolchain::pnworker::core::{
+    DriveDeleteRequest, HalfJob, Job, JobClass, JobType, KeepRequest, KeycodeRequest,
+};
 use pandora_toolchain::pnworker::messages::{COMMAND_LIST, COMMAND_UPDATED};
 use pandora_toolchain::pnworker::util::{CliParam, PathValue, ToolResult, run_tool};
 use pandora_toolchain::pnworker::tools::PNASS_JOB;
@@ -3288,6 +3290,19 @@ impl EventHandler for Handler {
                         user_id.get(),
                         reaction.channel_id.get(),
                         reaction.message_id.get()
+                    ))).await.ok();
+                }
+                // A completed encode's author may retract its Google Drive copy; a Witch may do
+                // the same for any encode. The worker verifies the message id, channel, job type,
+                // ownership, completed stage, and retained per-file deletion capability before it
+                // asks Lumiere to remove anything. Reacting before upload completion is a no-op.
+                if emoji == "💔" {
+                    let is_witch = has_level_at_least(user_id.get(), level_rank("witch.pandora"));
+                    self.tx.send(JobClass::DriveDelete(DriveDeleteRequest::new(
+                        user_id.get(),
+                        reaction.channel_id.get(),
+                        reaction.message_id.get(),
+                        is_witch,
                     ))).await.ok();
                 }
                 // A Witch retracting one of the bot's own messages: the message goes, and so does

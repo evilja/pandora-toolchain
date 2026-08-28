@@ -25,6 +25,8 @@ use tokio::time::{Instant, sleep, sleep_until};
 // when something is wrong.
 const HOST_WAIT_HEARTBEAT: Duration = Duration::from_secs(60);
 
+// The final flag retains the per-file Drive deletion capability for upload-producing encode jobs.
+// Backup jobs leave it false even though they also use the single-Drive payload shape.
 pub type UploadData = (
     PathBuf,
     String,
@@ -35,6 +37,7 @@ pub type UploadData = (
     Option<String>,
     Option<String>,
     Option<SmartcodeDriveName>,
+    bool,
 );
 pub type UploadAllData = (PathBuf, u64, Option<u64>);
 
@@ -92,7 +95,7 @@ enum LumiereUploadEvent {
 
 async fn run_lumiere_upload_job(msg: WorkerMsg, tx: Sender<CommData>, worker_name: String) {
     let assign_job_id = match &msg {
-        WorkerMsg::Upload((_, _, _, job_id, _, _, _, _, _)) => Some(*job_id),
+        WorkerMsg::Upload((_, _, _, job_id, _, _, _, _, _, _)) => Some(*job_id),
         WorkerMsg::UploadAll((_, job_id, _)) => Some(*job_id),
         _ => None,
     };
@@ -132,6 +135,7 @@ async fn run_lumiere_upload_job(msg: WorkerMsg, tx: Sender<CommData>, worker_nam
             gdrive_folder_global,
             gdrive_folder_local,
             smartcode_drive_name,
+            retain_drive_deletion,
         )) => {
             run_lumiere_single_upload(
                 client,
@@ -143,6 +147,7 @@ async fn run_lumiere_upload_job(msg: WorkerMsg, tx: Sender<CommData>, worker_nam
                 gdrive_folder_global,
                 gdrive_folder_local,
                 smartcode_drive_name,
+                retain_drive_deletion,
                 tx,
             )
             .await;
@@ -165,6 +170,7 @@ async fn run_lumiere_single_upload(
     gdrive_folder_global: Option<String>,
     gdrive_folder_local: Option<String>,
     smartcode_drive_name: Option<SmartcodeDriveName>,
+    retain_drive_deletion: bool,
     tx: Sender<CommData>,
 ) {
     if job_cancelled(&directory) {
@@ -255,8 +261,7 @@ async fn run_lumiere_single_upload(
     let mut voe_link = if drive_only { String::new() } else { "Voe Bekleniyor".to_string() };
     let mut done = [false; 4];
     let mut last_progress = [None; 4];
-    let mut drive_meta: Option<(String, String, String, String)> = None;
-    let track_smartcode = smartcode_drive_name.is_some();
+    let mut drive_meta: Option<(String, String, String, String, String)> = None;
     let mut cancelled = false;
 
     loop {
@@ -327,16 +332,13 @@ async fn run_lumiere_single_upload(
                     &mut lulu_link,
                     &mut voe_link,
                 );
-                if let Some(result) = result
-                    && track_smartcode
-                    && result.profile.starts_with("guild:")
-                    && result.root == "smartcode"
-                {
+                if let Some(result) = result && retain_drive_deletion {
                     drive_meta = Some((
                         result.file_id,
                         result.parent_id,
                         result.profile,
                         result.delete_token,
+                        result.root,
                     ));
                 }
             }
@@ -832,12 +834,12 @@ fn lumiere_upload_payload(
     byse_link: &str,
     lulu_link: &str,
     voe_link: &str,
-    drive_meta: Option<(String, String, String, String)>,
+    drive_meta: Option<(String, String, String, String, String)>,
     stage: Option<Stage>,
 ) -> CommData {
     let visible_meta = drive_meta
         .as_ref()
-        .map(|(file_id, folder_id, _, _)| (file_id.clone(), folder_id.clone()));
+        .map(|(file_id, folder_id, _, _, _)| (file_id.clone(), folder_id.clone()));
     let mut payload = upload_payload(
         job_id,
         release,
@@ -849,11 +851,17 @@ fn lumiere_upload_payload(
         visible_meta,
         stage,
     );
-    if let Some((_, _, profile, delete_token)) = drive_meta
+    if let Some((file_id, folder_id, profile, delete_token, root)) = drive_meta
         && let MessagePayload::Progress(_, args) = &mut payload.1
     {
+        if !release {
+            args.resize(5, String::new());
+            args.push(file_id);
+            args.push(folder_id);
+        }
         args.push(profile);
         args.push(delete_token);
+        args.push(root);
     }
     payload
 }
@@ -1082,6 +1090,7 @@ mod tests {
                 "folder".to_string(),
                 "guild:1".to_string(),
                 "delete-token".to_string(),
+                "smartcode".to_string(),
             )),
             Some(Stage::Uploaded),
         );
@@ -1089,13 +1098,14 @@ mod tests {
         let MessagePayload::Progress(_, args) = payload.1 else {
             panic!("expected progress payload");
         };
-        assert_eq!(args.len(), 9);
+        assert_eq!(args.len(), 10);
         assert!(args[1..5].iter().all(|arg| arg.is_empty()));
         // Index 4 is the retired host slot: present, empty, and never occupied.
         assert_eq!(args[5], "file");
         assert_eq!(args[6], "folder");
         assert_eq!(args[7], "guild:1");
         assert_eq!(args[8], "delete-token");
+        assert_eq!(args[9], "smartcode");
     }
 
     #[test]
@@ -1113,20 +1123,71 @@ mod tests {
                 "folder".to_string(),
                 "guild:1".to_string(),
                 "delete-token".to_string(),
+                "smartcode".to_string(),
             )),
             Some(Stage::Uploaded),
         );
         let rendered = crate::pnworker::messages::format_payload(&payload.1, "EN");
         assert!(!rendered.contains("guild:1"));
         assert!(!rendered.contains("delete-token"));
+        assert!(!rendered.contains("smartcode"));
         let MessagePayload::Progress(_, args) = payload.1 else {
             panic!("expected progress payload");
         };
-        assert_eq!(args.len(), 9);
+        assert_eq!(args.len(), 10);
         // A retired host still costs its position so Drive metadata stays at 5+.
         assert_eq!(args[1], "byse");
         assert_eq!(args[4], "");
         assert_eq!(args[7], "guild:1");
+        assert_eq!(args[8], "delete-token");
+        assert_eq!(args[9], "smartcode");
+    }
+
+    #[test]
+    fn backup_payload_without_retention_has_only_its_drive_link() {
+        let payload = lumiere_upload_payload(
+            1,
+            false,
+            UPLOAD_DONE,
+            "drive",
+            "",
+            "",
+            "",
+            None,
+            Some(Stage::Uploaded),
+        );
+        let MessagePayload::Progress(_, args) = payload.1 else {
+            panic!("expected progress payload");
+        };
+        assert_eq!(args, vec!["drive"]);
+    }
+
+    #[test]
+    fn non_release_encode_payload_retains_private_drive_deletion_metadata() {
+        let payload = lumiere_upload_payload(
+            1,
+            false,
+            UPLOAD_DONE,
+            "drive",
+            "",
+            "",
+            "",
+            Some((
+                "file".to_string(),
+                "folder".to_string(),
+                "global".to_string(),
+                "delete-token".to_string(),
+                "default".to_string(),
+            )),
+            Some(Stage::Uploaded),
+        );
+        let rendered = crate::pnworker::messages::format_payload(&payload.1, "en");
+        assert_eq!(rendered, "drive");
+        let MessagePayload::Progress(_, args) = payload.1 else {
+            panic!("expected progress payload");
+        };
+        assert_eq!(args.len(), 10);
+        assert_eq!(args[5], "file");
         assert_eq!(args[8], "delete-token");
     }
 }

@@ -223,6 +223,7 @@ Verify:
 3. Capability URLs return `404` after the upload task finishes.
 4. Worker logs contain no bearer token, provider key, Google session URI, or capability URL.
 5. Smartcode replacement deletes the previous Drive file through its per-file Lumiere deletion capability. The first replacement of a pre-Lumiere state intentionally requires manual cleanup because legacy state has no such capability.
+6. Reacting 💔 on a completed encode as its author (or as a Witch) deletes its Drive file, removes the Drive link from Pandora's stored job data, and leaves its streaming-host links intact. A pre-feature job has no retained capability and intentionally does nothing.
 
 ## 9. Remove legacy secrets from the VDS
 
@@ -298,7 +299,7 @@ The command performs logical removal, not guaranteed forensic erasure; filesyste
 - Provider endpoints and source origin are hard-coded/allowlisted.
 - KV stores idempotency records containing temporary source URLs and provider operation IDs for 24 hours; it never stores provider credentials.
 - Drive session URLs are pinned to `https://www.googleapis.com/upload/drive/v3/files` by both Worker and Rust client.
-- Every Drive session uses a pre-generated file ID and receives a random deletion capability whose hash is bound into private Drive `appProperties`; the Worker verifies it before deleting, so the VDS broker token alone cannot delete arbitrary account files. Smartcode state stores this narrow capability with mode `0600` on Unix.
+- Every Drive session uses a pre-generated file ID and receives a random deletion capability whose hash is bound into private Drive `appProperties`; the Worker verifies it before deleting, so the VDS broker token alone cannot delete arbitrary account files. Pandora stores each completed Encode/Pancode/Keycode/Studio upload's narrow capability under mode-`0600` `DB/config/global/environment/drive_deletions/` for author/Witch 💔 removal; named Smartcode state keeps its additional replacement pointer. Keyvault backups include both capability locations.
 - Pandora verifies Drive size and MD5, requesting capability-checked deletion of an unverified result through the broker.
 - File-transfer capabilities are 256-bit random tokens, memory-only, range-capable, non-cacheable, and scoped to one exact file.
 - A VDS attacker can abuse operations Pandora is allowed to invoke while its broker token remains valid. Preventing that requires an independently authorized control plane or remote attestation; the broker's purpose here is preventing reusable credential extraction.

@@ -77,17 +77,18 @@ pub(crate) async fn persist_side_effects(
         let p = serde_json::json!({ "type": "upload", "percent": 100, "hosts": display_args });
         db.update_progress(job_id, &p.to_string()).await.ok();
     } else if *id == UPLOAD_BACKUP_PROG {
+        let display_args = upload_display_args(args);
         if stage == Some(Stage::Uploaded) {
-            let mut v = serde_json::json!({ "drive": args.get(0) });
+            let mut v = serde_json::json!({ "drive": display_args.first() });
             add_warnings(&mut v, encode_warnings);
             db.update_links(job_id, &v.to_string()).await.ok();
-            let p = serde_json::json!({ "type": "upload", "percent": 100, "hosts": args });
+            let p = serde_json::json!({ "type": "upload", "percent": 100, "hosts": display_args });
             db.update_progress(job_id, &p.to_string()).await.ok();
         } else {
             let v = serde_json::json!({
                 "type": "upload",
-                "percent": upload_percent(args),
-                "hosts": args,
+                "percent": upload_percent(display_args),
+                "hosts": display_args,
             });
             db.update_progress(job_id, &v.to_string()).await.ok();
         }
@@ -352,6 +353,7 @@ mod tests {
             "folder456".to_string(),
             "guild:1".to_string(),
             "private-delete-token".to_string(),
+            "smartcode".to_string(),
         ];
 
         let links = upload_links_json(&args, &[]);
@@ -361,5 +363,6 @@ mod tests {
         assert_eq!(links["drive_folder_id"], "folder456");
         assert_eq!(links["drive_profile"], "guild:1");
         assert!(!links.to_string().contains("private-delete-token"));
+        assert!(!links.to_string().contains("smartcode"));
     }
 }

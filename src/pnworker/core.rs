@@ -36,6 +36,10 @@ use crate::pnworker::presence::{Presence, presence_from_queue};
 use crate::pnworker::progress::{drive_link_from_payload, persist_side_effects};
 use crate::pnworker::pull::{git_pull, head_commit, SyncReport};
 use crate::pnworker::server_effects::load_server_settings;
+use crate::pnworker::drive_cleanup::{
+    delete_job_drive_upload, drive_deletable_job_type, persist_job_drive_upload,
+    DriveDeleteOutcome,
+};
 use crate::pnworker::smartcode_drive::{replace_smartcode_upload, SmartcodeDriveUpload};
 use crate::pnworker::workers::downloadworker::*;
 use crate::pnworker::workers::encodeworker::*;
@@ -196,8 +200,55 @@ async fn do_queue_things(
         JobClass::HalfJob(halfjob) => {
             handle_half_job(db, queue, shrine, halfjob, gitquery).await;
         }
+        JobClass::DriveDelete(request) => {
+            let db = db.clone();
+            tokio::spawn(async move {
+                handle_drive_delete(&db, request).await;
+            });
+        }
     }
     false
+}
+
+async fn handle_drive_delete(db: &JobDb, request: DriveDeleteRequest) {
+    let row = match db.get_job(request.job_id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => return,
+        Err(error) => {
+            eprintln!(
+                "[drive-delete] could not read reacted job {}: {}",
+                request.job_id, error
+            );
+            return;
+        }
+    };
+    if row.channel_id as u64 != request.channel_id
+        || !request.may_delete(row.author as u64)
+        || row.stage != 6
+        || ![
+            JobType::Encode as u16 as i64,
+            JobType::Pancode as u16 as i64,
+            JobType::Keycode as u16 as i64,
+            JobType::Studio as u16 as i64,
+        ]
+        .contains(&row.job_type)
+    {
+        return;
+    }
+    match delete_job_drive_upload(db, request.job_id).await {
+        Ok(DriveDeleteOutcome::Deleted { affected_jobs }) => println!(
+            "[drive-delete] user {} removed Google Drive upload for job {} (shared job records: {:?})",
+            request.author, request.job_id, affected_jobs
+        ),
+        Ok(DriveDeleteOutcome::NoCapability) => println!(
+            "[drive-delete] job {} has no retained Google Drive deletion capability",
+            request.job_id
+        ),
+        Err(error) => eprintln!(
+            "[drive-delete] Google Drive removal failed for job {}: {}",
+            request.job_id, error
+        ),
+    }
 }
 
 fn is_encode_job_type(job_type: JobType) -> bool {
@@ -1392,7 +1443,7 @@ async fn persist_smartcode_drive_upload(job: &Job, payload: &MessagePayload, sta
     let MessagePayload::Progress(id, args) = payload else {
         return;
     };
-    if *id != UPLOAD_PROG && *id != UPLOAD_DONE {
+    if *id != UPLOAD_PROG && *id != UPLOAD_DONE && *id != crate::pnworker::messages::UPLOAD_BACKUP_PROG {
         return;
     }
     let Some(name) = job.smartcode_drive_name.as_ref() else {
@@ -1406,6 +1457,10 @@ async fn persist_smartcode_drive_upload(job: &Job, payload: &MessagePayload, sta
     };
     let profile = args.get(7).cloned().unwrap_or_default();
     let delete_token = args.get(8).cloned().unwrap_or_default();
+    let root = args.get(9).map(|value| value.trim()).unwrap_or_default();
+    if !profile.starts_with("guild:") || root != "smartcode" {
+        return;
+    }
     let url = args.first().cloned().unwrap_or_default();
     let upload = SmartcodeDriveUpload {
         job_id: job.job_id,
@@ -1719,6 +1774,12 @@ async fn do_worker_message_things(
                 }
             }
             persist_side_effects(db, i.job_id, &payload, stage, &i.encode_warnings).await;
+            if let Err(error) = persist_job_drive_upload(i, &payload, stage).await {
+                eprintln!(
+                    "[drive-delete] failed to retain deletion capability for job {}: {}",
+                    i.job_id, error
+                );
+            }
             persist_smartcode_drive_upload(i, &payload, stage).await;
             // PREVIEW_DONE attaches files from the work dir here; cleanup below must remain after render.
             render(i, payload.clone()).await;
@@ -2277,6 +2338,7 @@ async fn do_job_progression_things(
                         None,
                         None,
                         None,
+                        false,
                     )),
                     job,
                     db,
@@ -2449,6 +2511,7 @@ async fn do_job_progression_things(
                     job.gdrive_folder_global.clone(),
                     job.gdrive_folder_local.clone(),
                     job.smartcode_drive_name.clone(),
+                    drive_deletable_job_type(job.job_type),
                 )),
                 job,
                 db,
@@ -2698,6 +2761,25 @@ pub enum Stage {
 pub enum JobClass {
     Job(Job),
     HalfJob(HalfJob),
+    DriveDelete(DriveDeleteRequest),
+}
+
+#[derive(Clone, Debug)]
+pub struct DriveDeleteRequest {
+    pub author: u64,
+    pub channel_id: u64,
+    pub job_id: u64,
+    pub is_witch: bool,
+}
+
+impl DriveDeleteRequest {
+    pub fn new(author: u64, channel_id: u64, job_id: u64, is_witch: bool) -> Self {
+        Self { author, channel_id, job_id, is_witch }
+    }
+
+    fn may_delete(&self, job_author: u64) -> bool {
+        self.is_witch || self.author == job_author
+    }
 }
 
 #[derive(Clone)]
@@ -3168,6 +3250,15 @@ HashMap::from([
 mod tests {
     use super::*;
     use crate::lib::p2p::nyaaise::TorrentType;
+
+    #[test]
+    fn drive_deletion_is_limited_to_the_job_author_or_a_witch() {
+        let author = DriveDeleteRequest::new(7, 1, 99, false);
+        assert!(author.may_delete(7));
+        assert!(!author.may_delete(8));
+        let witch = DriveDeleteRequest::new(7, 1, 99, true);
+        assert!(witch.may_delete(8));
+    }
 
     #[test]
     fn a_knife_cancel_reaches_a_job_its_sender_did_not_start() {

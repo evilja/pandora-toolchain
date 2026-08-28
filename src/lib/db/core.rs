@@ -18,6 +18,7 @@ macro_rules! job_query {
     };
 }
 
+#[derive(Clone)]
 pub struct JobDb {
     pool: SqlitePool,
 }

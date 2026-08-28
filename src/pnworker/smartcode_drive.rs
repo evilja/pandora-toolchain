@@ -1,4 +1,4 @@
-use crate::lumiere_broker::LumiereClient;
+use crate::pnworker::drive_cleanup::delete_replaced_drive_upload;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -23,7 +23,7 @@ pub async fn replace_smartcode_upload(
     let previous = read_smartcode_upload(server_id, channel_id, episode).await?;
     let delete_result = if let Some(previous) = previous {
         if previous.file_id != upload.file_id {
-            delete_drive_file(&previous.profile, &previous.file_id, &previous.delete_token).await
+            delete_replaced_drive_upload(&previous.profile, &previous.file_id, &previous.delete_token).await
         } else {
             Ok(())
         }
@@ -76,6 +76,31 @@ async fn write_smartcode_upload(
     Ok(())
 }
 
+pub async fn remove_smartcode_upload_if_job(
+    server_id: u64,
+    channel_id: u64,
+    episode: u32,
+    job_id: u64,
+) -> Result<(), String> {
+    let path = state_path(server_id, channel_id, episode);
+    let Some(upload) = read_smartcode_upload(server_id, channel_id, episode).await? else {
+        return Ok(());
+    };
+    if upload.job_id != job_id {
+        return Ok(());
+    }
+    tokio::fs::remove_file(path)
+        .await
+        .or_else(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        })
+        .map_err(|error| error.to_string())
+}
+
 fn state_path(server_id: u64, channel_id: u64, episode: u32) -> PathBuf {
     PathBuf::from("DB")
         .join("config")
@@ -83,21 +108,6 @@ fn state_path(server_id: u64, channel_id: u64, episode: u32) -> PathBuf {
         .join(channel_id.to_string())
         .join("smartcode_drive")
         .join(format!("{:02}.json", episode))
-}
-
-async fn delete_drive_file(profile: &str, file_id: &str, delete_token: &str) -> Result<(), String> {
-    if profile.trim().is_empty() || delete_token.trim().is_empty() {
-        return Err("legacy Smartcode Drive file requires manual cleanup".to_string());
-    }
-    LumiereClient::from_env()
-        .map_err(|error| error.to_string())?
-        .delete_drive_file(
-            profile.trim().to_string(),
-            file_id.to_string(),
-            delete_token.trim().to_string(),
-        )
-        .await
-        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

@@ -4,6 +4,7 @@ use crate::lib::db::core::JobDb;
 use crate::lib::p2p::nyaaise::TorrentType;
 use crate::lib::torrent::{magnet_info_hash, torrent_info_hash};
 use crate::pnworker::core::{Job, JobType, Preset, Stage};
+use crate::pnworker::drive_cleanup::persist_job_drive_upload;
 use crate::pnworker::lifecycle::{cleanup_job, render};
 use crate::pnworker::messages::{
     CTORRENT_DONE, MessagePayload, TORRENT_DONE, TORRENT_PROG, TORRENT_PROG_SELECT,
@@ -89,6 +90,12 @@ pub(crate) async fn sync_forwarded_jobs(
             db.update_worker(queue[pos].job_id, &worker).await.ok();
             if !is_forwarded_download_payload(payload) {
                 persist_side_effects(db, queue[pos].job_id, payload, stage, &queue[pos].encode_warnings).await;
+                if let Err(error) = persist_job_drive_upload(&queue[pos], payload, stage).await {
+                    eprintln!(
+                        "[drive-delete] failed to retain shared deletion capability for job {}: {}",
+                        queue[pos].job_id, error
+                    );
+                }
                 render(&mut queue[pos], payload.clone()).await;
             }
             if stage.map(is_terminal_stage).unwrap_or(false) {

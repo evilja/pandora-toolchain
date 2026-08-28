@@ -7,6 +7,7 @@ pub mod server_config;
 pub mod tools;
 pub mod worker_slots;
 pub mod smartcode_drive;
+pub mod drive_cleanup;
 pub mod workers;
 pub mod workers_view;
 pub mod preview;

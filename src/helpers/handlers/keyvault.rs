@@ -845,10 +845,12 @@ fn backup_path_matches(path: &Path, kind: BackupScanKind) -> bool {
             {
                 return true;
             }
-            if path
-                .components()
-                .any(|component| component.as_os_str() == "smartcode_drive")
-            {
+            if path.components().any(|component| {
+                matches!(
+                    component.as_os_str().to_str(),
+                    Some("smartcode_drive" | "drive_deletions")
+                )
+            }) {
                 return true;
             }
             let in_global_environment = path
@@ -1816,6 +1818,10 @@ mod tests {
         ));
         assert!(backup_path_matches(
             Path::new("DB/config/1/2/smartcode_drive/01.json"),
+            BackupScanKind::Database,
+        ));
+        assert!(backup_path_matches(
+            Path::new("DB/config/global/environment/drive_deletions/123.json"),
             BackupScanKind::Database,
         ));
         assert!(!backup_path_matches(
