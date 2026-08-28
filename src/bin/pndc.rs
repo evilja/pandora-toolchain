@@ -3290,6 +3290,30 @@ impl EventHandler for Handler {
                         reaction.message_id.get()
                     ))).await.ok();
                 }
+                // A Witch retracting one of the bot's own messages: the message goes, and so does
+                // the job that was still writing to it — deleting it alone would leave an encoder
+                // working on an announcement nobody can read any more. The cancel goes first
+                // because the queue is keyed by that message id, and it no-ops for a message that
+                // was never a job or whose job has already finished.
+                if emoji == "🔪" && has_level_at_least(user_id.get(), level_rank("witch.pandora")) {
+                    self.tx.send(JobClass::HalfJob(HalfJob::new_cancel_any(
+                        user_id.get(),
+                        reaction.channel_id.get(),
+                        reaction.message_id.get()
+                    ))).await.ok();
+                    let message_id = reaction.message_id.get();
+                    match reaction.message(&ctx.http).await {
+                        // Only the bot's own messages: a knife on somebody else's post is not a
+                        // moderation tool, and Pandora has no business deleting it.
+                        Ok(message) if message.author.id == ctx.cache.current_user().id => {
+                            if let Err(e) = message.delete(&ctx.http).await {
+                                eprintln!("[Pandora] knife could not delete message {}: {}", message_id, e);
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(e) => eprintln!("[Pandora] knife could not read message {}: {}", message_id, e),
+                    }
+                }
             }
         }
     }

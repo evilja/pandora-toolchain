@@ -1051,7 +1051,7 @@ async fn handle_half_job(
         JobType::Cancel => {
             if let Some(pos) = queue
                 .iter()
-                .position(|i| halfjob.job_id == i.job_id && halfjob.author == i.author)
+                .position(|i| halfjob.job_id == i.job_id && halfjob.may_cancel(i.author))
             {
                 // Cancelling the batch has to reach the episodes it already handed to the encoder;
                 // they are ordinary jobs by then and nothing else would stop them.
@@ -2708,6 +2708,11 @@ pub struct HalfJob {
     pub job_id: u64,
     pub job_type: JobType,
     pub frontend: Frontend,
+    // A cancel normally has to come from the job's own author, which is what keeps one user's ❌
+    // off another user's encode. A Witch's 🔪 is the deliberate exception: it retracts the bot's
+    // message whoever asked for it, so it has to be able to stop the job behind it too. Read only
+    // by JobType::Cancel.
+    pub any_author: bool,
 }
 
 impl HalfJob {
@@ -2721,7 +2726,20 @@ impl HalfJob {
                 .unwrap_or(Duration::from_secs(0)),
             job_type: JobType::Cancel,
             frontend: Frontend::None,
+            any_author: false,
         }
+    }
+    // The Witch knife's cancel: same message id, without the author match that makes ❌ personal.
+    pub fn new_cancel_any(author: u64, channel_id: u64, job_id: u64) -> Self {
+        Self {
+            any_author: true,
+            ..Self::new_cancel(author, channel_id, job_id)
+        }
+    }
+    // ❌ only stops the job its own author asked for, so one user's reaction cannot end another's
+    // encode. A Witch's 🔪 is the one request allowed past that.
+    pub fn may_cancel(&self, job_author: u64) -> bool {
+        self.any_author || self.author == job_author
     }
     pub fn new_hearts(
         author: u64,
@@ -2739,6 +2757,7 @@ impl HalfJob {
                 .unwrap_or(Duration::from_secs(0)),
             job_type: JobType::Hearts,
             frontend: Frontend::discord(context, msg),
+            any_author: false,
         }
     }
     pub fn new_workers(
@@ -2757,6 +2776,7 @@ impl HalfJob {
                 .unwrap_or(Duration::from_secs(0)),
             job_type: JobType::Workers,
             frontend: Frontend::discord(context, msg),
+            any_author: false,
         }
     }
     pub fn new_gitsync(
@@ -2775,6 +2795,7 @@ impl HalfJob {
                 .unwrap_or(Duration::from_secs(0)),
             job_type: JobType::GitSync,
             frontend: Frontend::discord(context, msg),
+            any_author: false,
         }
     }
     pub fn new_gitquery(
@@ -2793,6 +2814,7 @@ impl HalfJob {
                 .unwrap_or(Duration::from_secs(0)),
             job_type: JobType::GitQuery,
             frontend: Frontend::discord(context, msg),
+            any_author: false,
         }
     }
     pub fn new_gitsync_api(author: u64, channel_id: u64) -> Self {
@@ -2808,6 +2830,7 @@ impl HalfJob {
                 .unwrap_or(Duration::from_secs(0)),
             job_type: JobType::GitSync,
             frontend: Frontend::Web,
+            any_author: false,
         }
     }
 }
@@ -3145,6 +3168,17 @@ HashMap::from([
 mod tests {
     use super::*;
     use crate::lib::p2p::nyaaise::TorrentType;
+
+    #[test]
+    fn a_knife_cancel_reaches_a_job_its_sender_did_not_start() {
+        let own = HalfJob::new_cancel(7, 1, 99);
+        assert!(own.may_cancel(7));
+        assert!(!own.may_cancel(8));
+        let witch = HalfJob::new_cancel_any(7, 1, 99);
+        assert!(witch.may_cancel(8));
+        assert_eq!(witch.job_id, 99);
+        assert!(matches!(witch.job_type, JobType::Cancel));
+    }
 
     fn dispatched_encode(now: Duration) -> Job {
         let mut job = Job::new_api(

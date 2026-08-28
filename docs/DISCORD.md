@@ -85,6 +85,7 @@ Server-scoped configuration commands require both their normal Pandora rank and 
 - `!auth <user_id>` / `!authorize <user_id>` — admin; appends a user id to `authorize.pandora`.
 - `!enc` — replies pointing the user at `/encode`. Legacy.
 - ❌ reaction on a job's response message — emits a `HalfJob(Cancel)` that touches a `CANCEL` sentinel file in the job's working directory; the worker process picks it up via `cancelfile` polling. (`/job` does not participate — it's in-handler, atomic.)
+- 🔪 reaction on any message the bot itself sent — **rank 4 (Witch tier)**; deletes that message, and cancels the job behind it when the message id is still a live job. The cancel is the same `HalfJob(Cancel)` the ❌ path sends, minus the author match: ❌ only stops the job its own author started, while a Witch's knife stops whoever's it is (`HalfJob::may_cancel`). A message the bot did not send is left alone — the knife retracts Pandora's own output, it is not a moderation tool — and a knife on a message that was never a job, or whose job has already finished, deletes it and cancels nothing. The worker may still try to edit the message it was given after it is gone; every frontend edit already tolerates that.
 
 Torrent classification, duplicate handling, and cache behavior are covered in [WORKER.md](WORKER.md).
 
