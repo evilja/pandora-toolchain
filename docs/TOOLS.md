@@ -95,7 +95,7 @@ The worker stages fonts referenced by the merged ASS from `DB/fontconfig/<server
 
 ## `pnass` flags
 
-Always emits a pnprotocol negotiation line on stdout (`PNprotocol:PNdc@0.1.1@1:PNass@0.1.1@1:PNass` by default; `--negkey` / `--negotiator` / `--negver` override the three pieces). Emits line-length warnings as protocol opcode `4` (one per warning event, with grouping for consecutive events — see [pnass line-length check](#pnass-line-length-check)).
+Always emits a pnprotocol negotiation line on stdout (`PNprotocol:PNdc@0.1.1@1:PNass@0.1.1@1:PNass` by default; `--negkey` / `--negotiator` / `--negver` override the three pieces). Emits line-length warnings as protocol opcode `4` (one per warning event, with grouping for consecutive events — see [pnass line-length check](#pnass-line-length-check)). Every abort — incompatible PlayRes ratios, an output left with no dialogue lines, a malformed `--inject` invocation, an unwritable output — emits its reason as protocol opcode `2` and then exits `1`. `run_tool` discards tool stderr, so that emission is the only copy of the reason a caller can report.
 
 - `--input <path>` / `--output <path>` — required. Reads via `SubstationAlpha::load(path, true)` (adv_parsing — events get parsed Override blocks), writes via `dump_to_file`.
 - `--merge <path>` — optional secondary ASS to merge into `--input`. When set, the intersection of TL/TS style names drives a per-style rename of the secondary (TL styles stay intact), then TS's styles and events are appended after TL's. See [pnass `--merge` semantics](#pnass---merge-semantics).

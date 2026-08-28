@@ -110,8 +110,7 @@ async fn main() {
     if let Some(signs_path) = args.split_signs.as_deref() {
         if let Some(signs) = split_sign_events(&mut sub) {
             if signs.dump_to_file(PathBuf::from(signs_path)).await.is_err() {
-                eprintln!("pnass: failed to write {}", signs_path);
-                std::process::exit(1);
+                fatal(&mut log, &proto, &neg, &format!("failed to write {}", signs_path));
             }
         }
     }
@@ -121,8 +120,7 @@ async fn main() {
     let prune_styles = has_merge || args.negkey.as_deref() == Some("PNassMerge");
 
     if args.merge.is_some() && args.inject.is_some() {
-        eprintln!("pnass: --merge and --inject cannot be used together");
-        std::process::exit(1);
+        fatal(&mut log, &proto, &neg, "--merge and --inject cannot be used together");
     }
     if let Some(merge_path) = args.merge.as_deref().or(args.inject.as_deref()) {
         log.line(&format!("loading secondary {}", merge_path));
@@ -131,21 +129,16 @@ async fn main() {
         fill_script_info_defaults(&mut secondary.script_info, wrap_style);
         if args.inject.is_some() {
             let Some(duration) = args.duration_centiseconds else {
-                eprintln!("pnass: --duration-centiseconds is required with --inject");
-                std::process::exit(1);
+                fatal(&mut log, &proto, &neg, "--duration-centiseconds is required with --inject");
             };
             if duration > max_ass_centiseconds() {
-                eprintln!("pnass: injection duration is too long for ASS timestamps");
-                std::process::exit(1);
+                fatal(&mut log, &proto, &neg, "injection duration is too long for ASS timestamps");
             }
             apply_injection_timings(&mut secondary, duration);
             log.line(&format!("injection timings applied for {}cs", duration));
         }
         if let Err(e) = normalize_merge_resolutions(&mut sub, &mut secondary) {
-            log.line(&format!("resolution normalisation failed: {}", e));
-            println!("{}", pn_emit!(protocol = proto, negkey = &neg,
-                schema = [leaf, leaf], data = ["4", e]).unwrap());
-            std::process::exit(1);
+            fatal(&mut log, &proto, &neg, &e);
         }
         prepare_merge_styles(&mut sub, &mut secondary);
         append_sub(&mut sub, secondary);
@@ -194,19 +187,27 @@ async fn main() {
     }
 
     if sub.events.is_empty() {
-        log.line("aborting: no dialogue lines left in the output");
-        println!("{}", pn_emit!(protocol = proto, negkey = &neg,
-            schema = [leaf, leaf], data = ["4", "ASS output has no dialogue lines"]).unwrap());
-        std::process::exit(1);
+        fatal(&mut log, &proto, &neg, "ASS output has no dialogue lines");
     }
 
     log.line(&format!("writing {} events to {}", sub.events.len(), args.output));
     if sub.dump_to_file(PathBuf::from(&args.output)).await.is_err() {
-        log.line("write failed");
-        eprintln!("pnass: failed to write {}", args.output);
-        std::process::exit(1);
+        fatal(&mut log, &proto, &neg, &format!("failed to write {}", args.output));
     }
     log.line("done");
+}
+
+// Every way pnass gives up ends in a non-zero exit, and the worker runs it with stderr discarded:
+// a reason printed there is gone by the time a job reports itself failed. Emitting it on the
+// protocol's fail opcode puts it in the only stream the caller reads, so the job can say what
+// broke instead of only that something did.
+fn fatal(log: &mut ToolLog, proto: &Protocol, neg: &str, reason: &str) -> ! {
+    log.line(&format!("aborting: {}", reason));
+    eprintln!("pnass: {}", reason);
+    if let Ok(line) = pn_emit!(protocol = proto, negkey = neg, schema = [leaf, leaf], data = ["2", reason]) {
+        println!("{}", line);
+    }
+    std::process::exit(1);
 }
 
 fn visible_lines(line: &ASSLine) -> Vec<String> {

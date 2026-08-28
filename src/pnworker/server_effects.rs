@@ -94,6 +94,7 @@ pub async fn server_effects(
         return Err("PNASS binary path is not configured".to_string());
     }
     let mut warnings = Vec::new();
+    let mut failure: Option<String> = None;
     let mut proto = Protocol::new(vec![1]);
     let result = run_tool(
         pnass_path,
@@ -123,10 +124,14 @@ pub async fn server_effects(
         job_id,
         &mut proto,
         |data| {
-            if data.get(0).and_then(|v| v.as_str()) == Some("4") {
-                if let Some(warning) = data.get(1).and_then(|v| v.as_str()) {
-                    warnings.push(warning.to_string());
+            match data.get(0).and_then(|v| v.as_str()) {
+                Some("4") => {
+                    if let Some(warning) = data.get(1).and_then(|v| v.as_str()) {
+                        warnings.push(warning.to_string());
+                    }
                 }
+                Some("2") => failure = data.get(1).and_then(|v| v.as_str()).map(str::to_string),
+                _ => {}
             }
             None
         },
@@ -136,7 +141,14 @@ pub async fn server_effects(
         return Err("cancelled".to_string());
     }
     if !matches!(result, ToolResult::Success) {
-        return Err("server subtitle effects failed".to_string());
+        // pnass names what it choked on before it exits; reporting the generic failure instead left
+        // the job saying only that effects failed, which is what the operator already knew.
+        return Err(failure.unwrap_or_else(|| {
+            format!(
+                "pnass exited without applying server effects (see log/PNass_Inject{}.log)",
+                job_id
+            )
+        }));
     }
     Ok(AppliedServerEffects {
         subtitle: output,
