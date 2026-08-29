@@ -22,6 +22,25 @@ pub fn random_hex_token() -> Result<String, getrandom::Error> {
     Ok(hex_bytes(&bytes))
 }
 
+// The identity an HLS release names its playlists and chunks after. A random v4 UUID rather than a
+// counter so nothing about one output's filenames tells a viewer what the next release's are called;
+// it is an identifier, not the capability — `random_hex_token` still guards the directory.
+pub fn random_uuid_v4() -> Result<String, getrandom::Error> {
+    let mut bytes = [0u8; 16];
+    getrandom::getrandom(&mut bytes)?;
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex = hex_bytes(&bytes);
+    Ok(format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -40,5 +59,24 @@ mod tests {
         assert_eq!(token.len(), 64);
         assert!(token.bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert_ne!(token, random_hex_token().unwrap());
+    }
+
+    // Every HLS filename is built from this, and the serving side accepts only the canonical form,
+    // so a UUID that is laid out any other way is a UUID nothing will serve.
+    #[test]
+    fn a_uuid_is_canonical_lowercase_version_four() {
+        let uuid = random_uuid_v4().unwrap();
+        assert_eq!(uuid.len(), 36);
+        let groups: Vec<&str> = uuid.split('-').collect();
+        assert_eq!(
+            groups.iter().map(|group| group.len()).collect::<Vec<_>>(),
+            [8, 4, 4, 4, 12]
+        );
+        assert!(groups.iter().all(|group| group
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))));
+        assert!(groups[2].starts_with('4'));
+        assert!(["8", "9", "a", "b"].contains(&&groups[3][0..1]));
+        assert_ne!(uuid, random_uuid_v4().unwrap());
     }
 }

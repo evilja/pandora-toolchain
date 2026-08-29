@@ -16,8 +16,6 @@ const HLS_ROOT: &str = "DB/lumiere/hls";
 const HLS_TTL: Duration = Duration::from_secs(12 * 60 * 60);
 const STALE_STAGING_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 const EXPIRES_FILE: &str = ".expires";
-const MASTER_FILE: &str = "master.m3u8";
-const MEDIA_FILE: &str = "media.m3u8";
 
 pub struct HlsPublication {
     url: String,
@@ -32,6 +30,63 @@ impl HlsPublication {
     pub async fn revoke(self) {
         tokio::fs::remove_dir_all(self.directory).await.ok();
     }
+}
+
+// Every name an HLS output publishes, derived from the source's height and one random v4 UUID:
+// `720p_<uuid>.m3u8` is the master, `720p_<uuid>_variant.m3u8` the media playlist it points at, and
+// the chunks live one directory down as `chunk-720p/p<n>-<uuid>.ts`. The serving side re-derives the
+// same shapes rather than trusting the request, so anything that is not one of these is a 404.
+struct HlsNames {
+    master: String,
+    media: String,
+    chunk_directory: String,
+    chunk_base_url: String,
+    chunk_pattern: String,
+}
+
+impl HlsNames {
+    // A source ffprobe could not measure still has to be published; 1080p is the label the upload
+    // worker falls back to for the same reason, so the two stay consistent.
+    fn new(height: Option<u32>, id: String) -> Self {
+        let resolution = format!("{}p", height.filter(|height| *height > 0).unwrap_or(1080));
+        let chunk_directory = format!("chunk-{resolution}");
+        Self {
+            master: format!("{resolution}_{id}.m3u8"),
+            media: format!("{resolution}_{id}_variant.m3u8"),
+            chunk_pattern: format!("{chunk_directory}/p%d-{id}.ts"),
+            chunk_base_url: format!("{chunk_directory}/"),
+            chunk_directory,
+        }
+    }
+}
+
+// Height names the output, width only decorates the master's STREAM-INF, so a source ffprobe cannot
+// measure is a missing label rather than a failed publication.
+async fn probe_dimensions(source: &FsPath) -> Option<(u32, u32)> {
+    let mut command = Command::new(resolve_runtime_binary("ffprobe"));
+    command
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(source);
+    command.kill_on_drop(true);
+    let output = command.output().await.ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?;
+    let (width, height) = text.trim().split_once(',')?;
+    Some((
+        width.trim().parse::<u32>().ok()?,
+        height.trim().parse::<u32>().ok()?,
+    ))
 }
 
 pub async fn publish_hls(
@@ -63,7 +118,14 @@ pub async fn publish_hls(
         .await
         .map_err(|e| format!("HLS staging directory could not be created: {e}"))?;
 
-    let result = build_hls(&source, &temporary, cancel_file).await;
+    let dimensions = probe_dimensions(&source).await;
+    let names = HlsNames::new(
+        dimensions.map(|(_, height)| height),
+        crate::lib::secret::random_uuid_v4()
+            .map_err(|_| "secure HLS name generation failed".to_string())?,
+    );
+
+    let result = build_hls(&source, &temporary, &names, dimensions, cancel_file).await;
     if let Err(error) = result {
         tokio::fs::remove_dir_all(&temporary).await.ok();
         return Err(error);
@@ -91,7 +153,7 @@ pub async fn publish_hls(
         segments.push("v1");
         segments.push("hls");
         segments.push(&token);
-        segments.push(MASTER_FILE);
+        segments.push(&names.master);
     }
     info(
         &format!("hls {}", token_tag(&token)),
@@ -106,8 +168,15 @@ pub async fn publish_hls(
 async fn build_hls(
     source: &FsPath,
     directory: &FsPath,
+    names: &HlsNames,
+    dimensions: Option<(u32, u32)>,
     cancel_file: Option<&FsPath>,
 ) -> Result<(), String> {
+    // ffmpeg writes chunks where it is told to and nowhere else — it will not create the directory
+    // the segment pattern points into, and a missing one fails the mux rather than the open.
+    tokio::fs::create_dir_all(directory.join(&names.chunk_directory))
+        .await
+        .map_err(|e| format!("HLS chunk directory could not be created: {e}"))?;
     let mut command = Command::new(resolve_runtime_binary("ffmpeg"));
     command
         .current_dir(directory)
@@ -130,10 +199,12 @@ async fn build_hls(
             "vod",
             "-hls_flags",
             "independent_segments",
-            "-hls_segment_filename",
-            "chunk-%05d.ts",
-            MEDIA_FILE,
-        ]);
+        ])
+        // The muxer writes only the basename of a segment into the playlist, so the chunk
+        // subdirectory has to be put back in front of every entry through the base URL.
+        .args(["-hls_base_url", &names.chunk_base_url])
+        .args(["-hls_segment_filename", &names.chunk_pattern])
+        .arg(&names.media);
     command.kill_on_drop(true);
     let output = {
         let output = command.output();
@@ -160,7 +231,7 @@ async fn build_hls(
         });
     }
 
-    let playlist_path = directory.join(MEDIA_FILE);
+    let playlist_path = directory.join(&names.media);
     let playlist = tokio::fs::read_to_string(&playlist_path)
         .await
         .map_err(|e| format!("HLS media playlist is missing: {e}"))?;
@@ -177,10 +248,15 @@ async fn build_hls(
     let bandwidth = ((segment_bytes as f64 * 8.0 / duration) * 1.10)
         .ceil()
         .clamp(1.0, u64::MAX as f64) as u64;
+    let resolution = match dimensions {
+        Some((width, height)) => format!(",RESOLUTION={width}x{height}"),
+        None => String::new(),
+    };
+    let media = &names.media;
     let master = format!(
-        "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-STREAM-INF:BANDWIDTH={bandwidth}\n{MEDIA_FILE}\n"
+        "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-STREAM-INF:BANDWIDTH={bandwidth}{resolution}\n{media}\n"
     );
-    tokio::fs::write(directory.join(MASTER_FILE), master)
+    tokio::fs::write(directory.join(&names.master), master)
         .await
         .map_err(|e| format!("HLS master playlist could not be written: {e}"))?;
     Ok(())
@@ -203,7 +279,7 @@ fn validate_media_playlist(playlist: &str) -> Result<(f64, Vec<String>), String>
                 duration += seconds;
             }
         } else if !line.starts_with('#') {
-            if !is_chunk_filename(line) {
+            if !is_chunk_path(line) {
                 return Err("HLS media playlist contains an unsafe chunk path".to_string());
             }
             segments.push(line.to_string());
@@ -216,10 +292,10 @@ fn validate_media_playlist(playlist: &str) -> Result<(f64, Vec<String>), String>
 }
 
 pub async fn serve_hls(
-    Path((token, filename)): Path<(String, String)>,
+    Path((token, resource)): Path<(String, String)>,
     method: Method,
 ) -> Response {
-    if !valid_token(&token) || !is_public_hls_filename(&filename) {
+    if !valid_token(&token) || !is_public_hls_resource(&resource) {
         return hls_not_found();
     }
     if method != Method::GET && method != Method::HEAD {
@@ -234,12 +310,12 @@ pub async fn serve_hls(
         tokio::fs::remove_dir_all(&directory).await.ok();
         return hls_not_found();
     }
-    let path = directory.join(&filename);
+    let path = directory.join(&resource);
     let metadata = match tokio::fs::metadata(&path).await {
         Ok(metadata) if metadata.is_file() && metadata.len() > 0 => metadata,
         _ => return hls_not_found(),
     };
-    let content_type = if filename.ends_with(".m3u8") {
+    let content_type = if resource.ends_with(".m3u8") {
         "application/vnd.apple.mpegurl"
     } else {
         "video/mp2t"
@@ -322,15 +398,66 @@ fn valid_token(token: &str) -> bool {
     token.len() == 64 && token.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn is_public_hls_filename(filename: &str) -> bool {
-    matches!(filename, MASTER_FILE | MEDIA_FILE) || is_chunk_filename(filename)
+fn is_public_hls_resource(resource: &str) -> bool {
+    is_playlist_filename(resource) || is_chunk_path(resource)
 }
 
-fn is_chunk_filename(filename: &str) -> bool {
-    filename
-        .strip_prefix("chunk-")
-        .and_then(|value| value.strip_suffix(".ts"))
-        .is_some_and(|digits| digits.len() == 5 && digits.bytes().all(|byte| byte.is_ascii_digit()))
+// `720p_<uuid>.m3u8` and `720p_<uuid>_variant.m3u8`.
+fn is_playlist_filename(filename: &str) -> bool {
+    let Some(stem) = filename.strip_suffix(".m3u8") else {
+        return false;
+    };
+    let stem = stem.strip_suffix("_variant").unwrap_or(stem);
+    match stem.split_once('_') {
+        Some((resolution, id)) => is_resolution(resolution) && is_uuid(id),
+        None => false,
+    }
+}
+
+// `chunk-720p/p<n>-<uuid>.ts`. The one slash a public name is allowed to contain is the one this
+// spells out, so a traversal or a nested path fails the shape rather than needing to be stripped.
+fn is_chunk_path(resource: &str) -> bool {
+    let Some((directory, filename)) = resource.split_once('/') else {
+        return false;
+    };
+    let Some(resolution) = directory.strip_prefix("chunk-") else {
+        return false;
+    };
+    let Some(rest) = filename
+        .strip_suffix(".ts")
+        .and_then(|value| value.strip_prefix('p'))
+    else {
+        return false;
+    };
+    let Some((index, id)) = rest.split_once('-') else {
+        return false;
+    };
+    is_resolution(resolution)
+        && !index.is_empty()
+        && index.bytes().all(|byte| byte.is_ascii_digit())
+        && is_uuid(id)
+}
+
+fn is_resolution(value: &str) -> bool {
+    match value.strip_suffix('p') {
+        Some(height) => {
+            !height.is_empty()
+                && height.len() <= 5
+                && height.bytes().all(|byte| byte.is_ascii_digit())
+        }
+        None => false,
+    }
+}
+
+fn is_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(position, byte)| {
+            if matches!(position, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+            }
+        })
 }
 
 fn hls_not_found() -> Response {
@@ -348,25 +475,72 @@ fn unix_now() -> u64 {
 mod tests {
     use super::*;
 
+    const ID: &str = "f28305c9-74d0-449e-920b-938155931dd6";
+
+    #[test]
+    fn names_are_derived_from_the_source_height_and_one_id() {
+        let names = HlsNames::new(Some(720), ID.to_string());
+        assert_eq!(names.master, format!("720p_{ID}.m3u8"));
+        assert_eq!(names.media, format!("720p_{ID}_variant.m3u8"));
+        assert_eq!(names.chunk_directory, "chunk-720p");
+        assert_eq!(names.chunk_base_url, "chunk-720p/");
+        assert_eq!(names.chunk_pattern, format!("chunk-720p/p%d-{ID}.ts"));
+        assert!(is_public_hls_resource(&names.master));
+        assert!(is_public_hls_resource(&names.media));
+        assert!(is_public_hls_resource(&format!("chunk-720p/p0-{ID}.ts")));
+        // An unmeasurable source is still published, under the upload worker's fallback label.
+        assert_eq!(
+            HlsNames::new(None, ID.to_string()).master,
+            format!("1080p_{ID}.m3u8")
+        );
+    }
+
     #[test]
     fn public_hls_names_are_a_small_fixed_surface() {
-        assert!(is_public_hls_filename("master.m3u8"));
-        assert!(is_public_hls_filename("media.m3u8"));
-        assert!(is_public_hls_filename("chunk-00042.ts"));
-        assert!(!is_public_hls_filename(".expires"));
-        assert!(!is_public_hls_filename("../chunk-00042.ts"));
-        assert!(!is_public_hls_filename("chunk-42.ts"));
+        assert!(is_public_hls_resource(&format!("1080p_{ID}.m3u8")));
+        assert!(is_public_hls_resource(&format!("chunk-1080p/p12-{ID}.ts")));
+        assert!(!is_public_hls_resource(".expires"));
+        assert!(!is_public_hls_resource("master.m3u8"));
+        assert!(!is_public_hls_resource(&format!("../720p_{ID}.m3u8")));
+        assert!(!is_public_hls_resource(&format!(
+            "chunk-720p/../p0-{ID}.ts"
+        )));
+        assert!(!is_public_hls_resource(&format!("chunk-720p/p0-{ID}.ts.ts")));
+        assert!(!is_public_hls_resource(&format!("720p_{ID}")));
+        assert!(!is_public_hls_resource(&format!("720_{ID}.m3u8")));
+        assert!(!is_public_hls_resource("720p_not-a-uuid.m3u8"));
+        assert!(!is_public_hls_resource(&format!(
+            "720p_{}.m3u8",
+            ID.to_uppercase()
+        )));
+        assert!(!is_public_hls_resource(&format!("chunk-720p/px-{ID}.ts")));
+        assert!(!is_public_hls_resource(&format!(
+            "chunk-720p/sub/p0-{ID}.ts"
+        )));
     }
 
     #[test]
     fn media_playlist_validation_rejects_external_or_nested_paths() {
-        let valid = "#EXTM3U\n#EXTINF:6.0,\nchunk-00000.ts\n#EXTINF:2.5,\nchunk-00001.ts\n";
-        let (duration, chunks) = validate_media_playlist(valid).unwrap();
+        let valid = format!(
+            "#EXTM3U\n#EXTINF:6.0,\nchunk-720p/p0-{ID}.ts\n#EXTINF:2.5,\nchunk-720p/p1-{ID}.ts\n"
+        );
+        let (duration, chunks) = validate_media_playlist(&valid).unwrap();
         assert_eq!(duration, 8.5);
-        assert_eq!(chunks, ["chunk-00000.ts", "chunk-00001.ts"]);
+        assert_eq!(
+            chunks,
+            [
+                format!("chunk-720p/p0-{ID}.ts"),
+                format!("chunk-720p/p1-{ID}.ts")
+            ]
+        );
         assert!(
             validate_media_playlist("#EXTM3U\n#EXTINF:6,\nhttps://other.example/a.ts\n").is_err()
         );
-        assert!(validate_media_playlist("#EXTM3U\n#EXTINF:6,\nsub/chunk-00000.ts\n").is_err());
+        assert!(
+            validate_media_playlist(&format!(
+                "#EXTM3U\n#EXTINF:6,\nsub/chunk-720p/p0-{ID}.ts\n"
+            ))
+            .is_err()
+        );
     }
 }
