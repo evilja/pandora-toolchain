@@ -1,8 +1,9 @@
 use pandora_toolchain::lib::mpeg::{
     core::{
         FFmpeg, FfmpegParams, do_comm_encode_ffmpeg}, preset::{
-        CONCAT, CONCAT_LEGACY, CPU_DUMMY, CPU_PSEUDOLOSSLESS, CPU_PSEUDOLOSSLESS_X264_PARAMS,
-        CPU_SANE_DEFAULTS, CPU_SANE_X264_PARAMS, CPU_VERYSLOW, GPU_SANE_DEFAULTS
+        CONCAT, CONCAT_LEGACY, CPU_480P, CPU_720P, CPU_DUMMY, CPU_PSEUDOLOSSLESS,
+        CPU_PSEUDOLOSSLESS_X264_PARAMS, CPU_SANE_DEFAULTS, CPU_SANE_X264_PARAMS, CPU_VERYSLOW,
+        GPU_SANE_DEFAULTS
     }, probe::{
         ConcatMedia, ffprobe_concat_media, ffprobe_estimated_frames, ffprobe_frame,
         ffprobe_framerate, ffprobe_lang,
@@ -50,6 +51,14 @@ struct Args {
     /// x264 veryslow at CRF 18 with untouched x264 defaults
     #[arg(long)]
     veryslow: bool,
+
+    /// The x264 preset downscaled to at most 720 lines
+    #[arg(long = "720p")]
+    p720: bool,
+
+    /// The x264 preset downscaled to at most 480 lines
+    #[arg(long = "480p")]
+    p480: bool,
 
     #[arg(long)]
     concat: bool,
@@ -187,6 +196,18 @@ struct Args {
 #[inline]
 fn wrap(a: &str) -> String { return String::from(a) }
 
+// The frame height the selected preset caps its output at, if it caps one at all. It is a cap and
+// not a target: the scale filters never upscale a source that is already smaller than this.
+fn scale_height(args: &Args) -> Option<u32> {
+    if args.p720 {
+        Some(720)
+    } else if args.p480 {
+        Some(480)
+    } else {
+        None
+    }
+}
+
 fn planner_encoder_config(args: &Args) -> pnx264::Config {
     let (preset, crf, x264_params) = if args.dummy {
         ("veryfast", 25.0, None)
@@ -293,9 +314,20 @@ fn directory_names(directory: &Path) -> String {
 // from the playlist it finds; ffmpeg will not create the directory its segment pattern points into,
 // so that happens here. An earlier attempt at the same job may have left a layout behind, and
 // publishing a mix of the two would serve chunks from both encodes.
-fn prepare_hls_output(directory: &Path, height_source: &str) -> Result<HlsNames, String> {
+fn prepare_hls_output(
+    directory: &Path,
+    height_source: &str,
+    height_cap: Option<u32>,
+) -> Result<HlsNames, String> {
     let id = random_uuid_v4().map_err(|e| format!("HLS output has no entropy: {e}"))?;
-    let names = HlsNames::new(ffprobe_video_height(height_source), &id);
+    // A downscaling preset is about to write fewer lines than the source it was measured on, and
+    // the playlist name is what the player reads the variant's resolution off.
+    let height = match (ffprobe_video_height(height_source), height_cap) {
+        (Some(height), Some(cap)) => Some(height.min(cap)),
+        (Some(height), None) => Some(height),
+        (None, cap) => cap,
+    };
+    let names = HlsNames::new(height, &id);
     std::fs::remove_dir_all(directory).ok();
     std::fs::create_dir_all(directory.join(&names.chunk_directory))
         .map_err(|e| format!("HLS directory {} could not be created: {e}", directory.display()))?;
@@ -310,9 +342,10 @@ fn retarget_params_to_hls(
     params: &mut Vec<FfmpegParams>,
     directory: &Path,
     height_source: &str,
+    height_cap: Option<u32>,
     log: &mut ToolLog,
 ) -> Result<(), String> {
-    let names = prepare_hls_output(directory, height_source)?;
+    let names = prepare_hls_output(directory, height_source, height_cap)?;
     params.retain(|param| !matches!(param, FfmpegParams::Movflags));
     let output = params
         .iter()
@@ -336,7 +369,7 @@ fn mux_linear_aot_hls(
     mux_errors: &Path,
     log: &mut ToolLog,
 ) -> Result<String, String> {
-    let names = prepare_hls_output(directory, &video.display().to_string())?;
+    let names = prepare_hls_output(directory, &video.display().to_string(), None)?;
     let status = Command::new(resolve_runtime_binary("ffmpeg"))
         .args(["-v", "error", "-i"])
         .arg(video)
@@ -752,8 +785,8 @@ async fn main() {
         args.input, args.output, args.ass, args.lang, args.intro_dir, args.candidate.len()
     ));
     log.line(&format!(
-        "mode gpu={} x264={} pseudolossless={} veryslow={} dummy={} concat={} legacyconcat={} joinconcat={} joinass={} studio={} extractsubs={}",
-        args.gpu, args.x264, args.pseudolossless, args.veryslow, args.dummy,
+        "mode gpu={} x264={} pseudolossless={} veryslow={} 720p={} 480p={} dummy={} concat={} legacyconcat={} joinconcat={} joinass={} studio={} extractsubs={}",
+        args.gpu, args.x264, args.pseudolossless, args.veryslow, args.p720, args.p480, args.dummy,
         args.concat, args.legacyconcat, args.joinconcat, args.joinass, args.studio, args.extractsubs
     ));
     let x264_config = planner_encoder_config(&args);
@@ -1155,6 +1188,8 @@ async fn main() {
             if args.x264 { 1 } else { 0 } +
             if args.pseudolossless { 1 } else { 0 } +
             if args.veryslow { 1 } else { 0 } +
+            if args.p720 { 1 } else { 0 } +
+            if args.p480 { 1 } else { 0 } +
             if args.dummy { 1 } else { 0 };
 
     if a > 1 {
@@ -1167,6 +1202,10 @@ async fn main() {
         params = Vec::from(CPU_PSEUDOLOSSLESS);
     } else if args.veryslow {
         params = Vec::from(CPU_VERYSLOW);
+    } else if args.p720 {
+        params = Vec::from(CPU_720P);
+    } else if args.p480 {
+        params = Vec::from(CPU_480P);
     } else if args.concat {
         if use_legacy {
             params = Vec::from(CONCAT_LEGACY);
@@ -1396,7 +1435,7 @@ async fn main() {
     // write — the broker would only take it apart into the same chunks. The intro concat arrives
     // here too, and is as much a final mux as the encode: it stream-copies what it joins.
     if let Some(directory) = args.hls.as_deref() {
-        if let Err(error) = retarget_params_to_hls(&mut params, Path::new(directory), &args.input, &mut log) {
+        if let Err(error) = retarget_params_to_hls(&mut params, Path::new(directory), &args.input, scale_height(&args), &mut log) {
             log.line(&format!("HLS output could not be prepared: {error}"));
             eprintln!("pnmpeg HLS output could not be prepared: {error}");
             println!("{}", pn_emit!(

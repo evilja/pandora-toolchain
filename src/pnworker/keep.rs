@@ -413,6 +413,8 @@ fn preset_label(preset: &Preset) -> String {
         Preset::Standard(_) => "standard",
         Preset::VerySlow(_) => "veryslow",
         Preset::Gpu(_) => "gpu",
+        Preset::Hd720(_) => "720p",
+        Preset::Sd480(_) => "480p",
         Preset::Copy => "copy",
     }
     .to_string()

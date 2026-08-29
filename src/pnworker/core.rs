@@ -719,6 +719,8 @@ async fn dispatch_keycode_ready(
         | Preset::Dummy(intro_dir)
         | Preset::Standard(intro_dir)
         | Preset::VerySlow(intro_dir)
+        | Preset::Hd720(intro_dir)
+        | Preset::Sd480(intro_dir)
         | Preset::Gpu(intro_dir) => intro_dir.clone(),
         Preset::Copy => None,
     };
@@ -866,6 +868,8 @@ fn preset_without_intro(preset: &Preset) -> Preset {
         Preset::Standard(_) => Preset::Standard(None),
         Preset::VerySlow(_) => Preset::VerySlow(None),
         Preset::Gpu(_) => Preset::Gpu(None),
+        Preset::Hd720(_) => Preset::Hd720(None),
+        Preset::Sd480(_) => Preset::Sd480(None),
         Preset::Copy => Preset::Copy,
     }
 }
@@ -1032,7 +1036,7 @@ async fn queue_download_job(
                     Preset::Standard(_) => Some(DownloadAot::Standard),
                     Preset::PseudoLossless(_) => Some(DownloadAot::PseudoLossless),
                     Preset::Dummy(_) => Some(DownloadAot::Dummy),
-                    Preset::Gpu(_) | Preset::Copy => None,
+                    Preset::Gpu(_) | Preset::Hd720(_) | Preset::Sd480(_) | Preset::Copy => None,
                 }
             } else {
                 None
@@ -2678,6 +2682,9 @@ pub enum Preset {
     Standard(Option<String>),
     VerySlow(Option<String>),
     Gpu(Option<String>),
+    // Standard x264 settings at a capped frame height. API-only: no /edit choice offers them.
+    Hd720(Option<String>),
+    Sd480(Option<String>),
     Copy,
 }
 
@@ -3092,6 +3099,8 @@ impl Job {
                 | Preset::Dummy(candidates)
                 | Preset::Standard(candidates)
                 | Preset::VerySlow(candidates)
+                | Preset::Hd720(candidates)
+                | Preset::Sd480(candidates)
                 | Preset::Gpu(candidates) => Preset::Standard(candidates),
                 Preset::Copy => Preset::Standard(None),
             },
@@ -3180,6 +3189,8 @@ impl Job {
                 | Preset::Dummy(candidates)
                 | Preset::Standard(candidates)
                 | Preset::VerySlow(candidates)
+                | Preset::Hd720(candidates)
+                | Preset::Sd480(candidates)
                 | Preset::Gpu(candidates) => Preset::Standard(candidates),
                 Preset::Copy => Preset::Standard(None),
             },

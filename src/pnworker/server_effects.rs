@@ -22,6 +22,23 @@ pub struct AppliedServerEffects {
 // therefore consume the exact same generated subtitle file.
 const MAX_ASS_CENTISECONDS: u64 = 255 * 360_000 + 59 * 6_000 + 59 * 100 + 99;
 
+// Every name a preset can be written as, whether it arrives on line 11 of `meta.pandora` or in an
+// API payload's `preset`. `720p` and `480p` are the standard preset with a frame-height cap;
+// nothing else here changes the frame size. An unrecognised name is the caller's to reject or
+// default — the config reader defaults it, the API rejects it.
+pub fn preset_from_name(name: &str, candidates: Option<String>) -> Option<Preset> {
+    Some(match name.trim().to_ascii_lowercase().as_str() {
+        "standard" => Preset::Standard(candidates),
+        "gpu" => Preset::Gpu(candidates),
+        "pseudolossless" | "pseudo_lossless" => Preset::PseudoLossless(candidates),
+        "dummy" => Preset::Dummy(candidates),
+        "veryslow" | "very_slow" => Preset::VerySlow(candidates),
+        "720p" => Preset::Hd720(candidates),
+        "480p" => Preset::Sd480(candidates),
+        _ => return None,
+    })
+}
+
 pub fn load_server_settings(server_id: Option<u64>) -> ServerSettings {
     let Some(server_id) = server_id else {
         return ServerSettings {
@@ -43,13 +60,8 @@ pub fn load_server_settings(server_id: Option<u64>) -> ServerSettings {
         .filter(|value| !value.is_empty() && *value != "-");
     let candidates =
         concat_group.and_then(|group| crate::pnworker::util::IntrosConfig::load().resolve(group));
-    let preset = match preset_name.to_ascii_lowercase().as_str() {
-        "gpu" => Preset::Gpu(candidates),
-        "pseudolossless" | "pseudo_lossless" => Preset::PseudoLossless(candidates),
-        "dummy" => Preset::Dummy(candidates),
-        "veryslow" | "very_slow" => Preset::VerySlow(candidates),
-        _ => Preset::Standard(candidates),
-    };
+    let preset = preset_from_name(preset_name, candidates.clone())
+        .unwrap_or_else(|| Preset::Standard(candidates));
     let watermark_path = PathBuf::from("DB")
         .join("config")
         .join(server_id.to_string())
@@ -159,6 +171,24 @@ pub async fn server_effects(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preset_names_map_to_their_presets() {
+        assert!(matches!(
+            preset_from_name("720p", None),
+            Some(Preset::Hd720(None))
+        ));
+        assert!(matches!(
+            preset_from_name(" 480P ", Some("intro".to_string())),
+            Some(Preset::Sd480(Some(_)))
+        ));
+        assert!(matches!(
+            preset_from_name("very_slow", None),
+            Some(Preset::VerySlow(None))
+        ));
+        assert!(preset_from_name("1440p", None).is_none());
+        assert!(preset_from_name("", None).is_none());
+    }
 
     #[test]
     fn missing_server_settings_use_standard_without_effects() {

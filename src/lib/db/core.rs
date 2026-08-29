@@ -174,6 +174,8 @@ impl JobDb {
             Preset::Dummy(c)          => (3i64, candidates_to_db(c)),
             Preset::Copy              => (4i64, None),
             Preset::VerySlow(c)       => (5i64, candidates_to_db(c)),
+            Preset::Hd720(c)          => (6i64, candidates_to_db(c)),
+            Preset::Sd480(c)          => (7i64, candidates_to_db(c)),
         };
         let link = job
             .display_link
@@ -470,6 +472,8 @@ pub fn preset_label(preset_type: i64) -> &'static str {
         3 => "Dummy",
         4 => "Copy",
         5 => "VerySlow",
+        6 => "720p",
+        7 => "480p",
         _ => "Unknown",
     }
 }

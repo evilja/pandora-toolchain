@@ -158,7 +158,16 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 Preset::Standard(cc)       => (cc, "x264"),
                 Preset::VerySlow(cc)       => (cc, "veryslow"),
                 Preset::Dummy(cc)          => (cc, "dummy"),
+                Preset::Hd720(cc)          => (cc, "720p"),
+                Preset::Sd480(cc)          => (cc, "480p"),
                 Preset::Copy               => (None, "copy"),
+            };
+            // The release name is taken from the source height, which a downscaling preset is
+            // about to undercut.
+            let height_cap = match insert {
+                "720p" => Some(720),
+                "480p" => Some(480),
+                _ => None,
             };
             let intro_q = if intro_dir.is_some() { 2 } else { 1 };
             // Whichever ffmpeg run is this job's last one writes the HLS layout itself, so the
@@ -325,7 +334,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
 
                 match result {
                     ToolResult::Success => {
-                        persist_output_resolution(&directory, resolution_probe.take()).await;
+                        persist_output_resolution(&directory, resolution_probe.take(), height_cap).await;
                         tx.send((job_id, MessagePayload::Static(ENCODE_DONE), Some(Stage::Encoded))).await.unwrap();
                     }
                     ToolResult::Fail => {
@@ -342,7 +351,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 if encoded.exists() {
                     rename(encoded, directory.join("work").join("output.mp4")).await.unwrap();
                 }
-                persist_output_resolution(&directory, resolution_probe.take()).await;
+                persist_output_resolution(&directory, resolution_probe.take(), height_cap).await;
                 tx.send((job_id, MessagePayload::Static(ENCODE_DONE), Some(Stage::Encoded))).await.unwrap();
             }
         println!("[Pandora Encoder] End of Session");
@@ -352,6 +361,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
 async fn persist_output_resolution(
     directory: &Path,
     probe: Option<tokio::task::JoinHandle<Option<u32>>>,
+    height_cap: Option<u32>,
 ) {
     let Some(probe) = probe else {
         return;
@@ -359,6 +369,7 @@ async fn persist_output_resolution(
     let Ok(Ok(Some(height))) = tokio::time::timeout(Duration::from_secs(5), probe).await else {
         return;
     };
+    let height = height_cap.map(|cap| height.min(cap)).unwrap_or(height);
     let path = directory.join("work").join(OUTPUT_RESOLUTION_FILE);
     if let Err(e) = tokio::fs::write(&path, format!("{}p", height)).await {
         eprintln!(

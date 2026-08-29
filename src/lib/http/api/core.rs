@@ -14,7 +14,8 @@ use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, mpsc::Sender};
 
-use crate::pnworker::core::{HalfJob, Job, JobClass, JobType, KeepRequest, KeycodeRequest, SmartcodeDriveName, Stage};
+use crate::pnworker::core::{HalfJob, Job, JobClass, JobType, KeepRequest, KeycodeRequest, Preset, SmartcodeDriveName, Stage};
+use crate::pnworker::server_effects::preset_from_name;
 use crate::pnworker::acix::confirm_acix;
 use crate::pnworker::batch::batch_job_for_token;
 use crate::lib::http::acix::{AnimeCix, MediaType, MixedUpload};
@@ -540,10 +541,44 @@ async fn get_job(State(st): State<AppState>, Path(id): Path<u64>) -> Response {
     }
 }
 
+// A payload may name the preset its job encodes with, overriding the server default that
+// `Job::new_api` has already resolved. The intro group that default carries belongs to the server
+// rather than to the preset, so the override keeps it.
+fn apply_preset(job: &mut Job, requested: Option<&str>) -> Result<(), Response> {
+    let Some(name) = requested.map(str::trim).filter(|name| !name.is_empty()) else {
+        return Ok(());
+    };
+    let candidates = match &job.preset {
+        Preset::PseudoLossless(candidates)
+        | Preset::Dummy(candidates)
+        | Preset::Standard(candidates)
+        | Preset::VerySlow(candidates)
+        | Preset::Hd720(candidates)
+        | Preset::Sd480(candidates)
+        | Preset::Gpu(candidates) => candidates.clone(),
+        Preset::Copy => None,
+    };
+    match preset_from_name(name, candidates) {
+        Some(preset) => {
+            job.preset = preset;
+            Ok(())
+        }
+        None => Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "preset `{name}` is not standard, veryslow, gpu, pseudolossless, dummy, 720p, or 480p"
+            ),
+        )
+            .into_response()),
+    }
+}
+
 #[derive(Deserialize)]
 struct EncodeReq {
     torrent: String,
     subtitle_b64: String,
+    #[serde(default)]
+    preset: Option<String>,
     #[serde(default)]
     lang: Option<String>,
     #[serde(default)]
@@ -570,6 +605,9 @@ async fn submit_encode(State(st): State<AppState>, Extension(auth): Extension<Ap
         req.lang.unwrap_or_else(|| "EN".to_string()),
         effective_server_id(&auth, req.server_id),
     );
+    if let Err(response) = apply_preset(&mut job, req.preset.as_deref()) {
+        return response;
+    }
     if req.keep {
         job.keep = Some(KeepRequest::new(req.keyword));
     } else if req.keyword.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false) {
@@ -698,6 +736,8 @@ struct GitcodeReq {
     torrent: String,
     subtitle_url: String,
     #[serde(default)]
+    preset: Option<String>,
+    #[serde(default)]
     keep: bool,
     #[serde(default)]
     keyword: Option<String>,
@@ -718,6 +758,9 @@ async fn submit_gitcode(State(st): State<AppState>, Extension(auth): Extension<A
         "EN".to_string(),
         effective_server_id(&auth, None),
     );
+    if let Err(response) = apply_preset(&mut job, req.preset.as_deref()) {
+        return response;
+    }
     if req.keep {
         job.keep = Some(KeepRequest::new(req.keyword));
     } else if req.keyword.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false) {

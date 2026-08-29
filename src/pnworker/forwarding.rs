@@ -186,6 +186,8 @@ fn preset_forward_key(preset: &Preset) -> serde_json::Value {
         Preset::Standard(candidates) => serde_json::json!(["standard", candidates]),
         Preset::VerySlow(candidates) => serde_json::json!(["veryslow", candidates]),
         Preset::Gpu(candidates) => serde_json::json!(["gpu", candidates]),
+        Preset::Hd720(candidates) => serde_json::json!(["720p", candidates]),
+        Preset::Sd480(candidates) => serde_json::json!(["480p", candidates]),
         Preset::Copy => serde_json::json!(["copy", null]),
     }
 }

@@ -771,7 +771,11 @@ pub fn studio_render_presets(
         Preset::VerySlow(_) => (Preset::VerySlow(None), StudioVideoPreset::VerySlow),
         Preset::Gpu(_) => (Preset::Gpu(None), StudioVideoPreset::Gpu),
         Preset::Dummy(_) => (Preset::Dummy(None), StudioVideoPreset::Dummy),
-        Preset::Standard(_) | Preset::Copy => (Preset::Standard(None), StudioVideoPreset::Standard),
+        // Studio renders at the timeline's own resolution; the downscaling presets have no
+        // ffmpeg params on the Studio side, so they fall back to the standard one.
+        Preset::Standard(_) | Preset::Hd720(_) | Preset::Sd480(_) | Preset::Copy => {
+            (Preset::Standard(None), StudioVideoPreset::Standard)
+        }
     }
 }
 

@@ -775,11 +775,17 @@
       fields: [
         { name: "torrent",  label: "Torrent / Magnet / GDrive", type: "text", required: true, placeholder: "magnet:?... or https://..." },
         { name: "subtitle", label: "Subtitle (.ass)", type: "file", required: true, accept: ".ass" },
+        { name: "preset",   label: "Preset", type: "select", optional: true, options: [
+          { value: "", label: "Server default" }, { value: "standard", label: "Standard x264" },
+          { value: "veryslow", label: "Very Slow x264 (CRF 18)" }, { value: "720p", label: "720p" },
+          { value: "480p", label: "480p" }, { value: "gpu", label: "GPU" },
+          { value: "pseudolossless", label: "Pseudo Lossless" }, { value: "dummy", label: "DEV" }
+        ] },
         { name: "keep",     label: "Keep output for keycode", type: "checkbox" },
         { name: "keyword",  label: "Keyword", type: "text", optional: true, placeholder: "New keyword" }
       ],
       run: function (v) {
-        return api("POST", "/api/v1/jobs/encode", { torrent: v.torrent, subtitle_b64: v.subtitle, keep: !!v.keep, keyword: v.keyword || null });
+        return api("POST", "/api/v1/jobs/encode", { torrent: v.torrent, subtitle_b64: v.subtitle, preset: v.preset || null, keep: !!v.keep, keyword: v.keyword || null });
       },
       render: renderResult
     },
@@ -789,11 +795,17 @@
       fields: [
         { name: "torrent",      label: "Torrent / Magnet / GDrive", type: "text", required: true, placeholder: "magnet:?... or https://..." },
         { name: "subtitle_url", label: "Subtitle URL (.ass)", type: "text", required: true, placeholder: "https://.../sub.ass" },
+        { name: "preset",       label: "Preset", type: "select", optional: true, options: [
+          { value: "", label: "Server default" }, { value: "standard", label: "Standard x264" },
+          { value: "veryslow", label: "Very Slow x264 (CRF 18)" }, { value: "720p", label: "720p" },
+          { value: "480p", label: "480p" }, { value: "gpu", label: "GPU" },
+          { value: "pseudolossless", label: "Pseudo Lossless" }, { value: "dummy", label: "DEV" }
+        ] },
         { name: "keep",         label: "Keep output for keycode", type: "checkbox" },
         { name: "keyword",      label: "Keyword", type: "text", optional: true, placeholder: "New keyword" }
       ],
       run: function (v) {
-        return api("POST", "/api/v1/jobs/gitcode", { torrent: v.torrent, subtitle_url: v.subtitle_url, keep: !!v.keep, keyword: v.keyword || null });
+        return api("POST", "/api/v1/jobs/gitcode", { torrent: v.torrent, subtitle_url: v.subtitle_url, preset: v.preset || null, keep: !!v.keep, keyword: v.keyword || null });
       },
       render: renderResult
     },
@@ -910,7 +922,9 @@
       html += '<div class="field"><label for="' + id + '">' + esc(f.label) + optTag + "</label>";
       if (f.type === "select") {
         html += '<select id="' + id + '">' + f.options.map(function (o) {
-          return '<option value="' + esc(o) + '">' + esc(o) + "</option>";
+          var value = (o && typeof o === "object") ? o.value : o;
+          var label = (o && typeof o === "object") ? o.label : o;
+          return '<option value="' + esc(value) + '">' + esc(label) + "</option>";
         }).join("") + "</select>";
       } else if (f.type === "jobselect") {
         html += '<div class="selrow"><select id="' + id + '"><option value="">Loading…</option></select>' +
