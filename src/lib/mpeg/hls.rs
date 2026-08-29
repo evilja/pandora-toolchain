@@ -1,0 +1,205 @@
+// The names an HLS output publishes, and the ffmpeg options that produce them. Two places build
+// HLS: the broker remuxes a finished MP4 when it publishes one, and pnmpeg writes the layout
+// straight out of its final video/audio mux for a job whose server has made HLS the only release
+// output. Both name their files here so a chunk the broker will serve cannot be spelled one way by
+// the encoder and another by the route that has to recognise it.
+
+// One release's layout: `720p_<uuid>.m3u8` is the master, `720p_<uuid>_variant.m3u8` the media
+// playlist it points at, and the segments sit one directory down as `chunk-720p/p<n>-<uuid>.ts`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HlsNames {
+    pub master: String,
+    pub media: String,
+    pub chunk_directory: String,
+    pub chunk_base_url: String,
+    pub chunk_pattern: String,
+}
+
+// How long a segment is asked to be. Stream copy can only cut on a keyframe, so this is a target
+// the encoder's IDR spacing rounds up.
+const SEGMENT_SECONDS: &str = "6";
+
+impl HlsNames {
+    // A source whose height nothing could measure still has to be published; 1080p is the label the
+    // upload worker falls back to for the same reason, so the two stay consistent.
+    pub fn new(height: Option<u32>, id: &str) -> Self {
+        let resolution = format!("{}p", height.filter(|height| *height > 0).unwrap_or(1080));
+        let chunk_directory = format!("chunk-{resolution}");
+        Self {
+            master: format!("{resolution}_{id}.m3u8"),
+            media: format!("{resolution}_{id}_variant.m3u8"),
+            chunk_pattern: format!("{chunk_directory}/p%d-{id}.ts"),
+            chunk_base_url: format!("{chunk_directory}/"),
+            chunk_directory,
+        }
+    }
+
+    // The rest of a layout from the one file that names it. The publisher adopts directories it did
+    // not write — pnmpeg leaves one behind for a job that muxed its own HLS — and this is how it
+    // learns what the encoder called them without being told separately.
+    pub fn from_media_filename(filename: &str) -> Option<Self> {
+        let stem = filename.strip_suffix(".m3u8")?.strip_suffix("_variant")?;
+        let (resolution, id) = stem.split_once('_')?;
+        let height = resolution.strip_suffix('p')?.parse::<u32>().ok()?;
+        if !is_uuid(id) {
+            return None;
+        }
+        let names = Self::new(Some(height), id);
+        (names.media == filename).then_some(names)
+    }
+
+    // The ffmpeg options that turn a stream copy into this layout, ending with the playlist to
+    // write. The muxer records only a segment's basename in the playlist, so the chunk directory is
+    // put back in front of every entry with the base URL; it also will not create that directory,
+    // which is the caller's job before the mux starts.
+    pub fn muxer_args(&self) -> Vec<String> {
+        [
+            "-start_number",
+            "0",
+            "-hls_time",
+            SEGMENT_SECONDS,
+            "-hls_list_size",
+            "0",
+            "-hls_playlist_type",
+            "vod",
+            "-hls_flags",
+            "independent_segments",
+            "-hls_base_url",
+            &self.chunk_base_url,
+            "-hls_segment_filename",
+            &self.chunk_pattern,
+            &self.media,
+        ]
+        .iter()
+        .map(|value| value.to_string())
+        .collect()
+    }
+}
+
+// Everything an HLS capability may serve is one of these two shapes; anything else is not a name
+// this scheme produces, so the broker refuses it before joining it onto a path.
+pub fn is_playlist_filename(filename: &str) -> bool {
+    let Some(stem) = filename.strip_suffix(".m3u8") else {
+        return false;
+    };
+    let stem = stem.strip_suffix("_variant").unwrap_or(stem);
+    match stem.split_once('_') {
+        Some((resolution, id)) => is_resolution(resolution) && is_uuid(id),
+        None => false,
+    }
+}
+
+// `chunk-720p/p<n>-<uuid>.ts`. The one slash a public name is allowed to contain is the one this
+// spells out, so a traversal or a nested path fails the shape rather than needing to be stripped.
+pub fn is_chunk_path(resource: &str) -> bool {
+    let Some((directory, filename)) = resource.split_once('/') else {
+        return false;
+    };
+    let Some(resolution) = directory.strip_prefix("chunk-") else {
+        return false;
+    };
+    let Some(rest) = filename
+        .strip_suffix(".ts")
+        .and_then(|value| value.strip_prefix('p'))
+    else {
+        return false;
+    };
+    let Some((index, id)) = rest.split_once('-') else {
+        return false;
+    };
+    is_resolution(resolution)
+        && !index.is_empty()
+        && index.bytes().all(|byte| byte.is_ascii_digit())
+        && is_uuid(id)
+}
+
+fn is_resolution(value: &str) -> bool {
+    match value.strip_suffix('p') {
+        Some(height) => {
+            !height.is_empty()
+                && height.len() <= 5
+                && height.bytes().all(|byte| byte.is_ascii_digit())
+        }
+        None => false,
+    }
+}
+
+fn is_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(position, byte)| {
+            if matches!(position, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+            }
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ID: &str = "f28305c9-74d0-449e-920b-938155931dd6";
+
+    #[test]
+    fn names_are_derived_from_the_output_height_and_one_id() {
+        let names = HlsNames::new(Some(720), ID);
+        assert_eq!(names.master, format!("720p_{ID}.m3u8"));
+        assert_eq!(names.media, format!("720p_{ID}_variant.m3u8"));
+        assert_eq!(names.chunk_directory, "chunk-720p");
+        assert_eq!(names.chunk_base_url, "chunk-720p/");
+        assert_eq!(names.chunk_pattern, format!("chunk-720p/p%d-{ID}.ts"));
+        assert!(is_playlist_filename(&names.master));
+        assert!(is_playlist_filename(&names.media));
+        assert!(is_chunk_path(&format!("chunk-720p/p0-{ID}.ts")));
+        // A height nothing could measure is still published, under the upload worker's fallback.
+        assert_eq!(HlsNames::new(None, ID).master, format!("1080p_{ID}.m3u8"));
+    }
+
+    #[test]
+    fn a_media_playlist_names_the_layout_it_belongs_to() {
+        let names = HlsNames::new(Some(1080), ID);
+        assert_eq!(HlsNames::from_media_filename(&names.media), Some(names));
+        assert_eq!(
+            HlsNames::from_media_filename(&format!("1080p_{ID}.m3u8")),
+            None
+        );
+        assert_eq!(HlsNames::from_media_filename("master.m3u8"), None);
+        assert_eq!(
+            HlsNames::from_media_filename(&format!("1080p_{}_variant.m3u8", ID.to_uppercase())),
+            None
+        );
+        assert_eq!(
+            HlsNames::from_media_filename(&format!("1080_{ID}_variant.m3u8")),
+            None
+        );
+    }
+
+    #[test]
+    fn the_muxer_writes_chunks_below_the_playlist_and_names_them_in_it() {
+        let names = HlsNames::new(Some(720), ID);
+        let args = names.muxer_args();
+        let position = |flag: &str| args.iter().position(|value| value == flag).unwrap();
+        assert_eq!(args[position("-hls_segment_filename") + 1], names.chunk_pattern);
+        assert_eq!(args[position("-hls_base_url") + 1], names.chunk_base_url);
+        assert_eq!(args.last().unwrap(), &names.media);
+    }
+
+    #[test]
+    fn public_names_are_a_small_fixed_surface() {
+        assert!(!is_playlist_filename("master.m3u8"));
+        assert!(!is_playlist_filename(&format!("../720p_{ID}.m3u8")));
+        assert!(!is_playlist_filename(&format!("720p_{ID}")));
+        assert!(!is_playlist_filename(&format!("720_{ID}.m3u8")));
+        assert!(!is_playlist_filename("720p_not-a-uuid.m3u8"));
+        assert!(!is_playlist_filename(&format!(
+            "720p_{}.m3u8",
+            ID.to_uppercase()
+        )));
+        assert!(!is_chunk_path(&format!("chunk-720p/../p0-{ID}.ts")));
+        assert!(!is_chunk_path(&format!("chunk-720p/p0-{ID}.ts.ts")));
+        assert!(!is_chunk_path(&format!("chunk-720p/px-{ID}.ts")));
+        assert!(!is_chunk_path(&format!("chunk-720p/sub/p0-{ID}.ts")));
+        assert!(!is_chunk_path(&format!("p0-{ID}.ts")));
+    }
+}

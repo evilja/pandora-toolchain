@@ -8,6 +8,7 @@ use tokio::process::Command;
 use tokio_util::io::ReaderStream;
 
 use crate::lib::bin::resolve_runtime_binary;
+use crate::lib::mpeg::hls::{HlsNames, is_chunk_path, is_playlist_filename};
 
 use super::client::Config;
 use super::observe::{info, token_tag, warn};
@@ -29,34 +30,6 @@ impl HlsPublication {
 
     pub async fn revoke(self) {
         tokio::fs::remove_dir_all(self.directory).await.ok();
-    }
-}
-
-// Every name an HLS output publishes, derived from the source's height and one random v4 UUID:
-// `720p_<uuid>.m3u8` is the master, `720p_<uuid>_variant.m3u8` the media playlist it points at, and
-// the chunks live one directory down as `chunk-720p/p<n>-<uuid>.ts`. The serving side re-derives the
-// same shapes rather than trusting the request, so anything that is not one of these is a 404.
-struct HlsNames {
-    master: String,
-    media: String,
-    chunk_directory: String,
-    chunk_base_url: String,
-    chunk_pattern: String,
-}
-
-impl HlsNames {
-    // A source ffprobe could not measure still has to be published; 1080p is the label the upload
-    // worker falls back to for the same reason, so the two stay consistent.
-    fn new(height: Option<u32>, id: String) -> Self {
-        let resolution = format!("{}p", height.filter(|height| *height > 0).unwrap_or(1080));
-        let chunk_directory = format!("chunk-{resolution}");
-        Self {
-            master: format!("{resolution}_{id}.m3u8"),
-            media: format!("{resolution}_{id}_variant.m3u8"),
-            chunk_pattern: format!("{chunk_directory}/p%d-{id}.ts"),
-            chunk_base_url: format!("{chunk_directory}/"),
-            chunk_directory,
-        }
     }
 }
 
@@ -89,21 +62,35 @@ async fn probe_dimensions(source: &FsPath) -> Option<(u32, u32)> {
     ))
 }
 
+// `source` is the finished MP4 to remux. `prepared` is a directory an encoder already wrote the
+// layout into — a job whose server publishes HLS only muxes straight to it rather than producing an
+// MP4 for this to take apart again — and is adopted whole when it holds a playlist this recognises.
 pub async fn publish_hls(
     source: &FsPath,
+    prepared: Option<&FsPath>,
     config: &Config,
     cancel_file: Option<&FsPath>,
 ) -> Result<HlsPublication, String> {
     cleanup_expired_hls().await;
-    let source = tokio::fs::canonicalize(source)
-        .await
-        .map_err(|e| format!("HLS source is unavailable: {e}"))?;
-    let metadata = tokio::fs::metadata(&source)
-        .await
-        .map_err(|e| format!("HLS source metadata is unavailable: {e}"))?;
-    if !metadata.is_file() || metadata.len() == 0 {
-        return Err("HLS source is not a non-empty file".to_string());
-    }
+    let adoptable = match prepared {
+        Some(prepared) => prepared_media_playlist(prepared).await,
+        None => None,
+    };
+    // Only the remux needs the MP4, and a job that muxed its own HLS has no MP4 to offer.
+    let source = if adoptable.is_none() {
+        let source = tokio::fs::canonicalize(source)
+            .await
+            .map_err(|e| format!("HLS source is unavailable: {e}"))?;
+        let metadata = tokio::fs::metadata(&source)
+            .await
+            .map_err(|e| format!("HLS source metadata is unavailable: {e}"))?;
+        if !metadata.is_file() || metadata.len() == 0 {
+            return Err("HLS source is not a non-empty file".to_string());
+        }
+        Some(source)
+    } else {
+        None
+    };
 
     let root = PathBuf::from(HLS_ROOT);
     tokio::fs::create_dir_all(&root)
@@ -114,19 +101,36 @@ pub async fn publish_hls(
     let final_directory = root.join(&token);
     let temporary = root.join(format!(".{token}.tmp"));
     tokio::fs::remove_dir_all(&temporary).await.ok();
-    tokio::fs::create_dir(&temporary)
-        .await
-        .map_err(|e| format!("HLS staging directory could not be created: {e}"))?;
 
-    let dimensions = probe_dimensions(&source).await;
-    let names = HlsNames::new(
-        dimensions.map(|(_, height)| height),
-        crate::lib::secret::random_uuid_v4()
-            .map_err(|_| "secure HLS name generation failed".to_string())?,
-    );
+    // Adoption is one rename of the encoder's directory into the staging name, so the layout is
+    // never copied and never half-published; the ordinary path stages an empty directory and muxes
+    // into it. Either way what follows sees the same thing.
+    let names = match (adoptable, prepared) {
+        (Some(names), Some(prepared)) => {
+            tokio::fs::rename(prepared, &temporary).await.map_err(|e| {
+                format!("HLS output prepared by the encoder could not be published: {e}")
+            })?;
+            names
+        }
+        _ => {
+            tokio::fs::create_dir(&temporary)
+                .await
+                .map_err(|e| format!("HLS staging directory could not be created: {e}"))?;
+            let source = source.as_deref().unwrap_or(FsPath::new(""));
+            let names = HlsNames::new(
+                probe_dimensions(source).await.map(|(_, height)| height),
+                &crate::lib::secret::random_uuid_v4()
+                    .map_err(|_| "secure HLS name generation failed".to_string())?,
+            );
+            if let Err(error) = build_hls(source, &temporary, &names, cancel_file).await {
+                tokio::fs::remove_dir_all(&temporary).await.ok();
+                return Err(error);
+            }
+            names
+        }
+    };
 
-    let result = build_hls(&source, &temporary, &names, dimensions, cancel_file).await;
-    if let Err(error) = result {
+    if let Err(error) = finish_hls(&temporary, &names).await {
         tokio::fs::remove_dir_all(&temporary).await.ok();
         return Err(error);
     }
@@ -157,7 +161,10 @@ pub async fn publish_hls(
     }
     info(
         &format!("hls {}", token_tag(&token)),
-        format!("published {} as HLS for 12h", source.display()),
+        match source {
+            Some(source) => format!("published {} as HLS for 12h", source.display()),
+            None => format!("published the encoder's own HLS output ({}) for 12h", names.media),
+        },
     );
     Ok(HlsPublication {
         url: url.to_string(),
@@ -169,7 +176,6 @@ async fn build_hls(
     source: &FsPath,
     directory: &FsPath,
     names: &HlsNames,
-    dimensions: Option<(u32, u32)>,
     cancel_file: Option<&FsPath>,
 ) -> Result<(), String> {
     // ffmpeg writes chunks where it is told to and nowhere else — it will not create the directory
@@ -189,22 +195,8 @@ async fn build_hls(
             "0:a:0?",
             "-c",
             "copy",
-            "-start_number",
-            "0",
-            "-hls_time",
-            "6",
-            "-hls_list_size",
-            "0",
-            "-hls_playlist_type",
-            "vod",
-            "-hls_flags",
-            "independent_segments",
         ])
-        // The muxer writes only the basename of a segment into the playlist, so the chunk
-        // subdirectory has to be put back in front of every entry through the base URL.
-        .args(["-hls_base_url", &names.chunk_base_url])
-        .args(["-hls_segment_filename", &names.chunk_pattern])
-        .arg(&names.media);
+        .args(names.muxer_args());
     command.kill_on_drop(true);
     let output = {
         let output = command.output();
@@ -231,6 +223,33 @@ async fn build_hls(
         });
     }
 
+    Ok(())
+}
+
+// What a directory an encoder wrote for us is called, if it holds one playlist this scheme
+// recognises. A `None` here is not an error: it means the ordinary remux still has to run.
+async fn prepared_media_playlist(directory: &FsPath) -> Option<HlsNames> {
+    let mut entries = tokio::fs::read_dir(directory).await.ok()?;
+    let mut found = None;
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if let Some(names) = HlsNames::from_media_filename(&name) {
+            // Two layouts in one directory is a leftover from an earlier attempt, and there is no
+            // way to tell which one the chunks belong to. Remux instead of guessing.
+            if found.is_some() {
+                return None;
+            }
+            found = Some(names);
+        }
+    }
+    found
+}
+
+// The master playlist, written last for both paths: the media playlist is read back and every chunk
+// it names is measured, so a playlist pointing at something that is not there fails here rather
+// than in a player. The bandwidth is the average the chunks actually add up to, with the 10% of
+// headroom a player expects of the figure.
+async fn finish_hls(directory: &FsPath, names: &HlsNames) -> Result<(), String> {
     let playlist_path = directory.join(&names.media);
     let playlist = tokio::fs::read_to_string(&playlist_path)
         .await
@@ -248,7 +267,9 @@ async fn build_hls(
     let bandwidth = ((segment_bytes as f64 * 8.0 / duration) * 1.10)
         .ceil()
         .clamp(1.0, u64::MAX as f64) as u64;
-    let resolution = match dimensions {
+    // Read off a chunk rather than the source: it is the one thing both paths are certain to have,
+    // and it is what the player is actually going to be handed.
+    let resolution = match probe_dimensions(&directory.join(&segment_names[0])).await {
         Some((width, height)) => format!(",RESOLUTION={width}x{height}"),
         None => String::new(),
     };
@@ -402,64 +423,6 @@ fn is_public_hls_resource(resource: &str) -> bool {
     is_playlist_filename(resource) || is_chunk_path(resource)
 }
 
-// `720p_<uuid>.m3u8` and `720p_<uuid>_variant.m3u8`.
-fn is_playlist_filename(filename: &str) -> bool {
-    let Some(stem) = filename.strip_suffix(".m3u8") else {
-        return false;
-    };
-    let stem = stem.strip_suffix("_variant").unwrap_or(stem);
-    match stem.split_once('_') {
-        Some((resolution, id)) => is_resolution(resolution) && is_uuid(id),
-        None => false,
-    }
-}
-
-// `chunk-720p/p<n>-<uuid>.ts`. The one slash a public name is allowed to contain is the one this
-// spells out, so a traversal or a nested path fails the shape rather than needing to be stripped.
-fn is_chunk_path(resource: &str) -> bool {
-    let Some((directory, filename)) = resource.split_once('/') else {
-        return false;
-    };
-    let Some(resolution) = directory.strip_prefix("chunk-") else {
-        return false;
-    };
-    let Some(rest) = filename
-        .strip_suffix(".ts")
-        .and_then(|value| value.strip_prefix('p'))
-    else {
-        return false;
-    };
-    let Some((index, id)) = rest.split_once('-') else {
-        return false;
-    };
-    is_resolution(resolution)
-        && !index.is_empty()
-        && index.bytes().all(|byte| byte.is_ascii_digit())
-        && is_uuid(id)
-}
-
-fn is_resolution(value: &str) -> bool {
-    match value.strip_suffix('p') {
-        Some(height) => {
-            !height.is_empty()
-                && height.len() <= 5
-                && height.bytes().all(|byte| byte.is_ascii_digit())
-        }
-        None => false,
-    }
-}
-
-fn is_uuid(value: &str) -> bool {
-    value.len() == 36
-        && value.bytes().enumerate().all(|(position, byte)| {
-            if matches!(position, 8 | 13 | 18 | 23) {
-                byte == b'-'
-            } else {
-                byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
-            }
-        })
-}
-
 fn hls_not_found() -> Response {
     (StatusCode::NOT_FOUND, "HLS output not found").into_response()
 }
@@ -476,24 +439,6 @@ mod tests {
     use super::*;
 
     const ID: &str = "f28305c9-74d0-449e-920b-938155931dd6";
-
-    #[test]
-    fn names_are_derived_from_the_source_height_and_one_id() {
-        let names = HlsNames::new(Some(720), ID.to_string());
-        assert_eq!(names.master, format!("720p_{ID}.m3u8"));
-        assert_eq!(names.media, format!("720p_{ID}_variant.m3u8"));
-        assert_eq!(names.chunk_directory, "chunk-720p");
-        assert_eq!(names.chunk_base_url, "chunk-720p/");
-        assert_eq!(names.chunk_pattern, format!("chunk-720p/p%d-{ID}.ts"));
-        assert!(is_public_hls_resource(&names.master));
-        assert!(is_public_hls_resource(&names.media));
-        assert!(is_public_hls_resource(&format!("chunk-720p/p0-{ID}.ts")));
-        // An unmeasurable source is still published, under the upload worker's fallback label.
-        assert_eq!(
-            HlsNames::new(None, ID.to_string()).master,
-            format!("1080p_{ID}.m3u8")
-        );
-    }
 
     #[test]
     fn public_hls_names_are_a_small_fixed_surface() {
@@ -517,6 +462,27 @@ mod tests {
         assert!(!is_public_hls_resource(&format!(
             "chunk-720p/sub/p0-{ID}.ts"
         )));
+    }
+
+    // The encoder's directory is adopted whole, so what is in it decides what gets published: one
+    // recognisable playlist is a layout, and anything else has to be remuxed instead of guessed at.
+    #[tokio::test]
+    async fn a_prepared_directory_is_adopted_only_when_it_names_one_layout() {
+        let root = std::env::temp_dir().join(format!("pandora-hls-{}", std::process::id()));
+        tokio::fs::remove_dir_all(&root).await.ok();
+        tokio::fs::create_dir_all(&root).await.unwrap();
+        assert_eq!(prepared_media_playlist(&root).await, None);
+        assert_eq!(prepared_media_playlist(&root.join("absent")).await, None);
+
+        let names = HlsNames::new(Some(720), ID);
+        tokio::fs::write(root.join(&names.media), "").await.unwrap();
+        tokio::fs::write(root.join(&names.master), "").await.unwrap();
+        assert_eq!(prepared_media_playlist(&root).await, Some(names));
+
+        let other = HlsNames::new(Some(480), ID);
+        tokio::fs::write(root.join(&other.media), "").await.unwrap();
+        assert_eq!(prepared_media_playlist(&root).await, None);
+        tokio::fs::remove_dir_all(&root).await.ok();
     }
 
     #[test]

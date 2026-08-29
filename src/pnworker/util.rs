@@ -16,6 +16,9 @@ pub enum CliParam {
     Flag(&'static str),
     NegVer(&'static str),
     RepeatedPath(&'static str),
+    // A flag and its value that are only passed when the caller supplied one: `--hls` is given to
+    // the encodes whose server publishes HLS instead of an MP4 and left off every other one.
+    OptionalPair(&'static str, &'static str),
 }
 
 pub enum ToolResult {
@@ -107,6 +110,12 @@ pub fn tool_args(
                 Some(PathValue::Single(s)) => args.push(s.clone()),
                 _ => return Err(format!("Missing or wrong type for path key: {}", key)),
             },
+            CliParam::OptionalPair(flag, key) => {
+                if let Some(PathValue::Single(value)) = paths.get(key) {
+                    args.push(flag.to_string());
+                    args.push(value.clone());
+                }
+            }
             CliParam::RepeatedPath(key) => {
                 if let Some(PathValue::Multi(values)) = paths.get(key) {
                     for v in values {

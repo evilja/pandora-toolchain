@@ -15,7 +15,10 @@ use std::collections::HashMap;
 use crate::pnworker::core::{KeepKind, Preset, Stage, WorkerMsg};
 use crate::pnworker::util::PathValue;
 use crate::pnworker::core::CommData;
-pub type EncodeData = (PathBuf, Preset, u64, Option<u64>, Option<Vec<u8>>, bool);
+// The trailing flags are `cache_resolution` and `hls_only`: whether the job's output height is
+// worth recording for the release name, and whether this server publishes the release as HLS and
+// nothing else — in which case the encode writes that layout itself instead of an MP4.
+pub type EncodeData = (PathBuf, Preset, u64, Option<u64>, Option<Vec<u8>>, bool, bool);
 pub type StudioData = (PathBuf, PathBuf, u64);
 pub type KeycodeData = (PathBuf, Vec<PathBuf>, Option<String>, KeepKind, u64, Option<u64>);
 
@@ -134,7 +137,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 }
                 continue 'll;
             }
-            let WorkerMsg::Encode((directory, preset, job_id, server_id, watermark, cache_resolution)) = msg else {
+            let WorkerMsg::Encode((directory, preset, job_id, server_id, watermark, cache_resolution, hls_only)) = msg else {
                 continue 'll;
             };
             let _foreground = ForegroundEncodeGuard::acquire(&directory, job_id);
@@ -158,6 +161,14 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 Preset::Copy               => (None, "copy"),
             };
             let intro_q = if intro_dir.is_some() { 2 } else { 1 };
+            // An intro still has to be concatenated onto the encode afterwards, and that second
+            // pass needs a file it can read back — so those jobs keep the MP4 and let the broker
+            // remux it. Everything else muxes its own HLS and never writes an MP4 at all.
+            let hls_direct = hls_only && intro_dir.is_none();
+            let hls_directory = directory.join("work").join("hls");
+            // A retry of this job may have left a layout from the attempt before it; the upload
+            // worker adopts whatever is here, so it cannot be allowed to outlive its encode.
+            tokio::fs::remove_dir_all(&hls_directory).await.ok();
             let fontconfig_dir = PathBuf::from("DB").join("fontconfig").join(
                 server_id.map(|id| id.to_string()).unwrap_or_else(|| "global".to_string())
             );
@@ -187,10 +198,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 tx.try_send((job_id, MessagePayload::Progress(ENCODE_WARNING, vec![warning]), None)).ok();
             }
             tx.send((job_id, MessagePayload::Static(ENCODE_START), Some(Stage::Encoding))).await.ok();
-            let result = run_tool(
-                &pnmpeg_path,
-                PNMPEG_ENCODE,
-                &HashMap::from([
+            let mut encode_params = HashMap::from([
                     ("INPUT",      PathValue::from(path_to_ffmpeg(directory.join("contents").join("torrent").join("input.mkv").as_path()))),
                     ("OUTPUT",     PathValue::from(path_to_ffmpeg(directory.join("work").join("output_noconcat.mp4").as_path()))),
                     ("ASS",        PathValue::from(path_to_ffmpeg(effects.subtitle.as_path()))),
@@ -199,7 +207,14 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     ("NEGKEY",     PathValue::from("pn-encode-main".to_string())),
                     ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),
                     ("LOGFILE",    PathValue::from(directory.join("log").join(format!("PNmpeg_Encode{}.log", job_id)).display().to_string())),
-                ]),
+            ]);
+            if hls_direct {
+                encode_params.insert("HLS", PathValue::from(path_to_ffmpeg(hls_directory.as_path())));
+            }
+            let result = run_tool(
+                &pnmpeg_path,
+                PNMPEG_ENCODE,
+                &encode_params,
                 job_id,
                 &mut proto,
                 |data| {
@@ -316,10 +331,12 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     }
                 }
             } else {
-                rename(
-                    directory.join("work").join("output_noconcat.mp4"),
-                    directory.join("work").join("output.mp4"),
-                ).await.unwrap();
+                // An encode that muxed its own HLS has no MP4 to promote — the playlist and chunks
+                // in `work/hls` are the output, and the upload worker publishes them from there.
+                let encoded = directory.join("work").join("output_noconcat.mp4");
+                if encoded.exists() {
+                    rename(encoded, directory.join("work").join("output.mp4")).await.unwrap();
+                }
                 persist_output_resolution(&directory, resolution_probe.take()).await;
                 tx.send((job_id, MessagePayload::Static(ENCODE_DONE), Some(Stage::Encoded))).await.unwrap();
             }

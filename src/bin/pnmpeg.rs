@@ -13,6 +13,9 @@ use tokio::{fs::File, io::AsyncWriteExt, time::{Duration, Instant}};
 use pandora_toolchain::{pn_data, pn_emit, pn_schema};
 use pandora_toolchain::lib::mpeg::core::RpbData;
 use pandora_toolchain::lib::bin::resolve_runtime_binary;
+use pandora_toolchain::lib::mpeg::hls::HlsNames;
+use pandora_toolchain::lib::mpeg::probe::ffprobe_video_height;
+use pandora_toolchain::lib::secret::random_uuid_v4;
 use pandora_toolchain::lib::logging::diag::{exit_reason, memory_line, process_rss_mib, tail_line};
 use pandora_toolchain::lib::logging::tool::ToolLog;
 use pandora_toolchain::lib::mpeg::studio::{studio_ffmpeg_params, write_ffconcat, StudioRenderManifest};
@@ -170,6 +173,10 @@ struct Args {
     #[arg(long)]
     negver: Option<String>,
 
+    /// Write the final video/audio mux as HLS into this directory instead of an MP4 at --output.
+    #[arg(long)]
+    hls: Option<String>,
+
     #[arg(long)]
     cancelfile: Option<String>,
 
@@ -271,6 +278,57 @@ fn directory_names(directory: &Path) -> String {
     }
     names.sort();
     names.join(",")
+}
+
+// The AOT final mux, written as HLS. The names come from the height of the video that was actually
+// encoded — the broker re-derives the rest from the playlist it finds here — and the chunk
+// directory has to exist first, because ffmpeg will not create the one its segment pattern points
+// into. Inputs are resolved to absolute paths because the mux runs with the HLS directory as its
+// working directory, which is the only way the playlist ends up holding relative chunk paths.
+fn mux_linear_aot_hls(
+    video: &Path,
+    audio: &Path,
+    directory: &Path,
+    mux_errors: &Path,
+    log: &mut ToolLog,
+) -> Result<String, String> {
+    let video = std::fs::canonicalize(video)
+        .map_err(|e| format!("linear AOT HLS mux cannot resolve its video {}: {e}", video.display()))?;
+    let audio = std::fs::canonicalize(audio)
+        .map_err(|e| format!("linear AOT HLS mux cannot resolve its audio {}: {e}", audio.display()))?;
+    let id = random_uuid_v4().map_err(|e| format!("linear AOT HLS mux has no entropy: {e}"))?;
+    let names = HlsNames::new(ffprobe_video_height(&video.display().to_string()), &id);
+    // An earlier attempt at this job may have left a layout here; adopting a mix of the two would
+    // publish chunks from both encodes.
+    std::fs::remove_dir_all(directory).ok();
+    std::fs::create_dir_all(directory.join(&names.chunk_directory))
+        .map_err(|e| format!("linear AOT HLS directory {} could not be created: {e}", directory.display()))?;
+    let status = Command::new(resolve_runtime_binary("ffmpeg"))
+        .current_dir(directory)
+        .args(["-v", "error", "-i"])
+        .arg(&video)
+        .args(["-i"])
+        .arg(&audio)
+        .args(["-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-y"])
+        .args(names.muxer_args())
+        .stderr(std::fs::File::create(mux_errors).map(Stdio::from).unwrap_or_else(|_| Stdio::null()))
+        .status()
+        .map_err(|e| format!("spawn linear AOT HLS mux: {e}"))?;
+    if !status.success() {
+        std::fs::remove_dir_all(directory).ok();
+        return Err(format!(
+            "linear AOT HLS mux failed: {}; ffmpeg said: {}",
+            exit_reason(&status),
+            tail_line(mux_errors, 3)
+        ));
+    }
+    log.line(&format!(
+        "linear AOT muxed HLS into {}: {} pointing at {}",
+        directory.display(),
+        names.media,
+        names.chunk_directory
+    ));
+    Ok(format!("{}/{}", directory.display(), names.media))
 }
 
 fn finish_linear_aot(
@@ -599,28 +657,39 @@ fn finish_linear_aot(
             tail_line(&audio_errors, 3)
         ));
     }
-    let mux_status = Command::new(resolve_runtime_binary("ffmpeg"))
-        .args(["-v", "error", "-i"])
-        .arg(&aot_video)
-        .args(["-i"])
-        .arg(&audio)
-        .args(["-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-movflags", "+faststart", "-y"])
-        .arg(&output)
-        .stderr(std::fs::File::create(&mux_errors).map(Stdio::from).unwrap_or_else(|_| Stdio::null()))
-        .status()
-        .map_err(|e| format!("spawn linear AOT final mux: {e}"))?;
-    if !mux_status.success() {
-        return Err(format!(
-            "linear AOT final mux failed: {}; ffmpeg said: {}",
-            exit_reason(&mux_status),
-            tail_line(&mux_errors, 3)
-        ));
-    }
+    // A job whose server publishes HLS and nothing else has no use for the MP4 this would
+    // otherwise write: the broker would only take it apart again into the same chunks. Mux the
+    // finished video and its AAC track straight into the layout the broker publishes instead.
+    let destination = match args.hls.as_deref() {
+        Some(directory) => {
+            mux_linear_aot_hls(&aot_video, &audio, Path::new(directory), &mux_errors, log)?
+        }
+        None => {
+            let mux_status = Command::new(resolve_runtime_binary("ffmpeg"))
+                .args(["-v", "error", "-i"])
+                .arg(&aot_video)
+                .args(["-i"])
+                .arg(&audio)
+                .args(["-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-movflags", "+faststart", "-y"])
+                .arg(&output)
+                .stderr(std::fs::File::create(&mux_errors).map(Stdio::from).unwrap_or_else(|_| Stdio::null()))
+                .status()
+                .map_err(|e| format!("spawn linear AOT final mux: {e}"))?;
+            if !mux_status.success() {
+                return Err(format!(
+                    "linear AOT final mux failed: {}; ffmpeg said: {}",
+                    exit_reason(&mux_status),
+                    tail_line(&mux_errors, 3)
+                ));
+            }
+            output.display().to_string()
+        }
+    };
     log.line(&format!(
         "linear AOT handoff complete: {} frames, {} bytes muxed to {}",
         completed.frames,
         completed.bytes,
-        output.display()
+        destination
     ));
     std::fs::remove_file(&aot_video).ok();
     std::fs::remove_file(&state_path).ok();

@@ -100,6 +100,7 @@ pub const PNMPEG_ENCODE: &[CliParam] = &[
     CliParam::Path("INPUT"),
     CliParam::Literal("--output"),
     CliParam::Path("OUTPUT"),
+    CliParam::OptionalPair("--hls", "HLS"),
     CliParam::Literal("--ass"),
     CliParam::Path("ASS"),
     CliParam::Literal("--fontconfig"),

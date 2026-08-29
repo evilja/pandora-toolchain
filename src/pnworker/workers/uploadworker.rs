@@ -251,7 +251,17 @@ async fn run_lumiere_single_upload(
     drop(event_tx);
 
     let mut hls_publication = if hls_enabled {
-        match publish_hls(&output_path, client.config(), cancel_file.as_deref()).await {
+        // Where pnmpeg leaves the layout when it muxed its own HLS instead of an MP4. Absent for
+        // every other encode, and then the publisher remuxes `output.mp4` as before.
+        let prepared = directory.join("work").join("hls");
+        match publish_hls(
+            &output_path,
+            Some(prepared.as_path()),
+            client.config(),
+            cancel_file.as_deref(),
+        )
+        .await
+        {
             Ok(publication) => Some(publication),
             Err(error) => {
                 eprintln!("[lumiere] job {job_id}: Lumiere HLS failed: {error}");

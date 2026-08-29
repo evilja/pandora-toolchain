@@ -2448,6 +2448,13 @@ async fn do_job_progression_things(
                         job.server_id,
                         job.server_watermark.clone(),
                         job.smartcode_drive_name.is_some(),
+                        // The same three conditions the upload worker publishes HLS under, asked
+                        // before the encode instead of after it: a kept job needs its MP4 on disk,
+                        // and a Dummy encode is never released.
+                        job.keep.is_none()
+                            && !matches!(job.preset, Preset::Dummy(_))
+                            && crate::pnworker::server_config::server_hls_enabled(job.server_id)
+                                .await,
                     )),
                     job,
                     db,
