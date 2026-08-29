@@ -229,6 +229,14 @@ fn encoder_compatibility(encoder: &pnx264::Config) -> String {
     )
 }
 
+fn media_bitrate_kbps(bytes: u64, media_micros: u64) -> u64 {
+    if bytes == 0 || media_micros == 0 {
+        return 0;
+    }
+    let kbps = u128::from(bytes) * 8 * 1000 / u128::from(media_micros);
+    kbps.min(u128::from(u64::MAX)) as u64
+}
+
 // A frame total for the handoff to count against. The input itself is the obvious source and is
 // often the one thing that cannot be read: while the speculative encoder holds the downloaded file
 // open, the production bind mount stops resolving the name it was renamed to, so every probe of it
@@ -514,9 +522,7 @@ fn finish_linear_aot(
         if last_emit.is_none_or(|last: std::time::Instant| now.duration_since(last) >= Duration::from_secs(5)) {
             let fps = (state.frames.saturating_sub(initial_frames) as f64
                 / wait_started.elapsed().as_secs_f64().max(0.001)).round() as u64;
-            let bitrate = if state.frames == 0 { 0 } else {
-                state.bytes.saturating_mul(8).saturating_mul(fps) / state.frames / 1000
-            };
+            let bitrate = media_bitrate_kbps(state.bytes, state.media_micros);
             let fps_value = fps.to_string();
             let frame_value = state.frames.to_string();
             let total_value = total.to_string();
@@ -1239,11 +1245,7 @@ async fn main() {
             },
             |update| {
                 let fps = update.fps.round() as u64;
-                let bitrate = if update.frames == 0 || update.fps <= 0.0 {
-                    0
-                } else {
-                    (update.bytes as f64 * 8.0 * update.fps / update.frames as f64 / 1000.0) as u64
-                };
+                let bitrate = media_bitrate_kbps(update.bytes, update.media_micros);
                 let frame = update.frames;
                 let total = update.total_frames;
                 println!("{}", pn_emit!(
@@ -1644,7 +1646,7 @@ fn escape_filter_value(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::quote_filter_value;
+    use super::{media_bitrate_kbps, quote_filter_value};
 
     #[test]
     fn quote_filter_value_escapes_filter_specials() {
@@ -1652,5 +1654,11 @@ mod tests {
             quote_filter_value("C:\\work,subs\\a'b.ass"),
             "'C\\:\\\\work\\,subs\\\\a\\'b.ass'"
         );
+    }
+
+    #[test]
+    fn bitrate_uses_media_time_instead_of_encoding_speed() {
+        assert_eq!(media_bitrate_kbps(1_532_493_872, 878_493_493), 13_955);
+        assert_eq!(media_bitrate_kbps(1_000, 0), 0);
     }
 }

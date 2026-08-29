@@ -53,6 +53,7 @@ pub struct ParallelProgress {
     pub total_frames: u64,
     pub fps: f64,
     pub bytes: u64,
+    pub media_micros: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -91,6 +92,15 @@ struct Source {
     fps_num: u32,
     fps_den: u32,
     frames: u64,
+}
+
+fn frame_duration_micros(frames: u64, fps_num: u32, fps_den: u32) -> u64 {
+    if frames == 0 || fps_num == 0 || fps_den == 0 {
+        return 0;
+    }
+    let micros = u128::from(frames) * u128::from(fps_den) * 1_000_000
+        / u128::from(fps_num);
+    micros.min(u128::from(u64::MAX)) as u64
 }
 
 enum WorkerEvent {
@@ -608,6 +618,7 @@ where
                     total_frames: source.frames,
                     fps: frames as f64 / start.elapsed().as_secs_f64().max(0.001),
                     bytes: bytes.load(Ordering::Relaxed),
+                    media_micros: frame_duration_micros(frames, source.fps_num, source.fps_den),
                 });
                 last_emit = Some(now);
             }
@@ -681,6 +692,7 @@ where
         total_frames: source.frames,
         fps: source.frames as f64 / elapsed.as_secs_f64().max(0.001),
         bytes: std::fs::metadata(&config.output).map(|value| value.len()).unwrap_or(0),
+        media_micros: frame_duration_micros(source.frames, source.fps_num, source.fps_den),
     });
     std::fs::remove_dir_all(&scratch).ok();
     if let Some(directory) = aot.as_ref() {
@@ -703,6 +715,12 @@ mod tests {
 
     fn source() -> Source {
         Source { width: 1920, height: 1080, fps_num: 24, fps_den: 1, frames: 1500 }
+    }
+
+    #[test]
+    fn media_duration_uses_source_frame_rate() {
+        assert_eq!(frame_duration_micros(24_000, 24_000, 1001), 1_001_000_000);
+        assert_eq!(frame_duration_micros(0, 24, 1), 0);
     }
 
     #[test]

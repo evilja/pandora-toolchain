@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::Duration;
 
-const VERSION: &str = "PNLINEAR1";
+const VERSION: &str = "PNLINEAR2";
+const LEGACY_VERSION: &str = "PNLINEAR1";
 
 #[derive(Clone, Debug)]
 pub struct LinearAotConfig {
@@ -32,6 +33,7 @@ pub struct LinearAotState {
     pub job_id: u64,
     pub frames: u64,
     pub bytes: u64,
+    pub media_micros: u64,
     pub compatibility: String,
 }
 
@@ -39,7 +41,8 @@ impl LinearAotState {
     pub fn read(path: &Path) -> Result<Self, String> {
         let value = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         let mut lines = value.lines();
-        if lines.next() != Some(VERSION) {
+        let version = lines.next().ok_or("linear AOT state has no version")?;
+        if version != VERSION && version != LEGACY_VERSION {
             return Err("unsupported linear AOT state".to_string());
         }
         let complete = match lines.next() {
@@ -51,8 +54,13 @@ impl LinearAotState {
         let job_id = lines.next().ok_or("linear AOT state has no job id")?.parse().map_err(|_| "invalid linear AOT job id")?;
         let frames = lines.next().ok_or("linear AOT state has no frame count")?.parse().map_err(|_| "invalid linear AOT frame count")?;
         let bytes = lines.next().ok_or("linear AOT state has no byte count")?.parse().map_err(|_| "invalid linear AOT byte count")?;
+        let media_micros = if version == VERSION {
+            lines.next().ok_or("linear AOT state has no media time")?.parse().map_err(|_| "invalid linear AOT media time")?
+        } else {
+            0
+        };
         let compatibility = lines.next().ok_or("linear AOT state has no compatibility key")?.to_string();
-        Ok(Self { complete, pid, job_id, frames, bytes, compatibility })
+        Ok(Self { complete, pid, job_id, frames, bytes, media_micros, compatibility })
     }
 
     pub fn process_alive(&self) -> bool {
@@ -75,8 +83,9 @@ fn publish(path: &Path, state: &LinearAotState) -> Result<(), String> {
     std::fs::write(
         &temporary,
         format!(
-            "{VERSION}\n{status}\n{}\n{}\n{}\n{}\n{}\n",
-            state.pid, state.job_id, state.frames, state.bytes, state.compatibility,
+            "{VERSION}\n{status}\n{}\n{}\n{}\n{}\n{}\n{}\n",
+            state.pid, state.job_id, state.frames, state.bytes, state.media_micros,
+            state.compatibility,
         ),
     ).map_err(|e| e.to_string())?;
     std::fs::rename(&temporary, path).map_err(|e| e.to_string())
@@ -186,6 +195,7 @@ pub fn run_linear_aot(config: LinearAotConfig) -> Result<LinearAotState, String>
         job_id: config.job_id,
         frames: 0,
         bytes: 0,
+        media_micros: 0,
         compatibility: config.compatibility.clone(),
     };
     publish(&config.state, &state)?;
@@ -240,12 +250,15 @@ pub fn run_linear_aot(config: LinearAotConfig) -> Result<LinearAotState, String>
     let progress = std::thread::spawn(move || -> Result<(), String> {
         let mut frames = None;
         let mut bytes = None;
+        let mut media_micros = None;
         for line in BufReader::new(stdout).lines() {
             let line = line.map_err(|e| e.to_string())?;
             if let Some(value) = line.strip_prefix("frame=") {
                 frames = value.trim().parse::<u64>().ok();
             } else if let Some(value) = line.strip_prefix("total_size=") {
                 bytes = value.trim().parse::<u64>().ok();
+            } else if let Some(value) = line.strip_prefix("out_time_us=") {
+                media_micros = value.trim().parse::<u64>().ok();
             } else if line == "progress=continue" || line == "progress=end" {
                 let mut state = progress_state.lock().map_err(|_| "linear AOT state lock poisoned")?;
                 if let Some(value) = frames {
@@ -253,6 +266,9 @@ pub fn run_linear_aot(config: LinearAotConfig) -> Result<LinearAotState, String>
                 }
                 if let Some(value) = bytes {
                     state.bytes = value;
+                }
+                if let Some(value) = media_micros {
+                    state.media_micros = value;
                 }
                 publish(&progress_path, &state)?;
             }
@@ -309,10 +325,26 @@ mod tests {
             job_id: 42,
             frames: 1200,
             bytes: 9000,
+            media_micros: 50_000_000,
             compatibility: "standard-v1".to_string(),
         };
         publish(&path, &state).unwrap();
         assert_eq!(LinearAotState::read(&path).unwrap(), state);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn reads_legacy_state_without_media_time() {
+        let root = std::env::temp_dir().join(format!("pnx264-linear-legacy-state-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("state");
+        std::fs::write(&path, format!(
+            "{LEGACY_VERSION}\nrunning\n{}\n42\n1200\n9000\nstandard-v1\n",
+            std::process::id(),
+        )).unwrap();
+        let state = LinearAotState::read(&path).unwrap();
+        assert_eq!(state.media_micros, 0);
+        assert_eq!(state.compatibility, "standard-v1");
         std::fs::remove_dir_all(root).ok();
     }
 }
