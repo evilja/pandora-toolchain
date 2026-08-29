@@ -288,11 +288,47 @@ fn directory_names(directory: &Path) -> String {
     names.join(",")
 }
 
-// The AOT final mux, written as HLS. The names come from the height of the video that was actually
-// encoded — the broker re-derives the rest from the playlist it finds here — and the chunk
-// directory has to exist first, because ffmpeg will not create the one its segment pattern points
-// into. Inputs are resolved to absolute paths because the mux runs with the HLS directory as its
-// working directory, which is the only way the playlist ends up holding relative chunk paths.
+// The chunk directory an HLS run writes into, and the names it will use. The height is read off
+// whatever this run is about to copy or encode, and the broker re-derives the rest of the layout
+// from the playlist it finds; ffmpeg will not create the directory its segment pattern points into,
+// so that happens here. An earlier attempt at the same job may have left a layout behind, and
+// publishing a mix of the two would serve chunks from both encodes.
+fn prepare_hls_output(directory: &Path, height_source: &str) -> Result<HlsNames, String> {
+    let id = random_uuid_v4().map_err(|e| format!("HLS output has no entropy: {e}"))?;
+    let names = HlsNames::new(ffprobe_video_height(height_source), &id);
+    std::fs::remove_dir_all(directory).ok();
+    std::fs::create_dir_all(directory.join(&names.chunk_directory))
+        .map_err(|e| format!("HLS directory {} could not be created: {e}", directory.display()))?;
+    Ok(names)
+}
+
+// Rewrite a preset that writes one MP4 into one that writes the HLS layout: `+faststart` belongs to
+// the MP4 muxer and is refused by any other, and the output filename becomes the options that name
+// the playlist and its chunks. Every preset ends in its output, which is the argument being
+// replaced — the encode's, and the intro concat's, which is a stream copy and just as final a mux.
+fn retarget_params_to_hls(
+    params: &mut Vec<FfmpegParams>,
+    directory: &Path,
+    height_source: &str,
+    log: &mut ToolLog,
+) -> Result<(), String> {
+    let names = prepare_hls_output(directory, height_source)?;
+    params.retain(|param| !matches!(param, FfmpegParams::Movflags));
+    let output = params
+        .iter()
+        .position(|param| matches!(param, FfmpegParams::Output(_)))
+        .ok_or("this ffmpeg preset has no output to write HLS to")?;
+    params[output] = FfmpegParams::Passthrough(names.muxer_args_in(directory));
+    log.line(&format!(
+        "writing HLS into {}: {} pointing at {}",
+        directory.display(),
+        names.media,
+        names.chunk_directory
+    ));
+    Ok(())
+}
+
+// The AOT final mux, written as HLS instead of an MP4.
 fn mux_linear_aot_hls(
     video: &Path,
     audio: &Path,
@@ -300,25 +336,14 @@ fn mux_linear_aot_hls(
     mux_errors: &Path,
     log: &mut ToolLog,
 ) -> Result<String, String> {
-    let video = std::fs::canonicalize(video)
-        .map_err(|e| format!("linear AOT HLS mux cannot resolve its video {}: {e}", video.display()))?;
-    let audio = std::fs::canonicalize(audio)
-        .map_err(|e| format!("linear AOT HLS mux cannot resolve its audio {}: {e}", audio.display()))?;
-    let id = random_uuid_v4().map_err(|e| format!("linear AOT HLS mux has no entropy: {e}"))?;
-    let names = HlsNames::new(ffprobe_video_height(&video.display().to_string()), &id);
-    // An earlier attempt at this job may have left a layout here; adopting a mix of the two would
-    // publish chunks from both encodes.
-    std::fs::remove_dir_all(directory).ok();
-    std::fs::create_dir_all(directory.join(&names.chunk_directory))
-        .map_err(|e| format!("linear AOT HLS directory {} could not be created: {e}", directory.display()))?;
+    let names = prepare_hls_output(directory, &video.display().to_string())?;
     let status = Command::new(resolve_runtime_binary("ffmpeg"))
-        .current_dir(directory)
         .args(["-v", "error", "-i"])
-        .arg(&video)
+        .arg(video)
         .args(["-i"])
-        .arg(&audio)
+        .arg(audio)
         .args(["-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-y"])
-        .args(names.muxer_args())
+        .args(names.muxer_args_in(directory))
         .stderr(std::fs::File::create(mux_errors).map(Stdio::from).unwrap_or_else(|_| Stdio::null()))
         .status()
         .map_err(|e| format!("spawn linear AOT HLS mux: {e}"))?;
@@ -336,7 +361,7 @@ fn mux_linear_aot_hls(
         names.media,
         names.chunk_directory
     ));
-    Ok(format!("{}/{}", directory.display(), names.media))
+    Ok(directory.join(&names.media).display().to_string())
 }
 
 fn finish_linear_aot(
@@ -1364,6 +1389,23 @@ async fn main() {
                 }
             },
             _ => ()
+        }
+    }
+
+    // A server that publishes HLS and nothing else has no use for the MP4 this run would otherwise
+    // write — the broker would only take it apart into the same chunks. The intro concat arrives
+    // here too, and is as much a final mux as the encode: it stream-copies what it joins.
+    if let Some(directory) = args.hls.as_deref() {
+        if let Err(error) = retarget_params_to_hls(&mut params, Path::new(directory), &args.input, &mut log) {
+            log.line(&format!("HLS output could not be prepared: {error}"));
+            eprintln!("pnmpeg HLS output could not be prepared: {error}");
+            println!("{}", pn_emit!(
+                protocol = proto,
+                negkey = &neg,
+                schema = [leaf, leaf],
+                data = ["2", "0"]
+            ).unwrap());
+            return;
         }
     }
 

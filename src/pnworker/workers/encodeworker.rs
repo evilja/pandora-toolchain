@@ -161,9 +161,10 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 Preset::Copy               => (None, "copy"),
             };
             let intro_q = if intro_dir.is_some() { 2 } else { 1 };
-            // An intro still has to be concatenated onto the encode afterwards, and that second
-            // pass needs a file it can read back — so those jobs keep the MP4 and let the broker
-            // remux it. Everything else muxes its own HLS and never writes an MP4 at all.
+            // Whichever ffmpeg run is this job's last one writes the HLS layout itself, so the
+            // broker never has to take an MP4 apart into the same chunks. With an intro that is the
+            // concat rather than the encode: the encode still has to leave a file the concat can
+            // read back.
             let hls_direct = hls_only && intro_dir.is_none();
             let hls_directory = directory.join("work").join("hls");
             // A retry of this job may have left a layout from the attempt before it; the upload
@@ -270,17 +271,21 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     tx.send((job_id, MessagePayload::Static(JOB_CANCELLED), Some(Stage::Cancelled))).await.unwrap();
                     continue 'll;
                 }
-                let result = run_tool(
-                    &pnmpeg_path,
-                    PNMPEG_CONCAT,
-                    &HashMap::from([
+                let mut concat_params = HashMap::from([
                         ("INPUT",      PathValue::from(path_to_ffmpeg(directory.join("work").join("output_noconcat.mp4").as_path()))),
                         ("OUTPUT",     PathValue::from(path_to_ffmpeg(directory.join("work").join("output.mp4").as_path()))),
                         ("INTRO_DIR",  PathValue::from(path_to_ffmpeg(Path::new(intro_dir)))),
                         ("NEGKEY",     PathValue::from("pn-encode-main".to_string())),
                         ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),
                         ("LOGFILE",    PathValue::from(directory.join("log").join(format!("PNmpeg_Concat{}.log", job_id)).display().to_string())),
-                    ]),
+                ]);
+                if hls_only {
+                    concat_params.insert("HLS", PathValue::from(path_to_ffmpeg(hls_directory.as_path())));
+                }
+                let result = run_tool(
+                    &pnmpeg_path,
+                    PNMPEG_CONCAT,
+                    &concat_params,
                     job_id,
                     &mut proto,
                     |data| {

@@ -63,6 +63,9 @@ pub enum FfmpegParams {
     NoOverwrite,
     Progress(Cow<'static, str>),
     Output(Cow<'static, str>),
+    // Options a caller assembled itself. The HLS muxer's arguments are built from the names of the
+    // output being written, so there is no fixed shape for them to take here.
+    Passthrough(Vec<String>),
 }
 
 impl Decode for FfmpegParams {
@@ -103,6 +106,7 @@ impl Decode for FfmpegParams {
             Self::NoOverwrite => vec!["-n".to_string()],
             Self::Progress(a) => vec!["-progress".to_string(), a.to_string()],
             Self::Output(a) => vec![a.to_string()],
+            Self::Passthrough(args) => args.clone(),
         }
     }
 }

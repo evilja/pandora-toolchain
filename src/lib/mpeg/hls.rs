@@ -4,6 +4,8 @@
 // output. Both name their files here so a chunk the broker will serve cannot be spelled one way by
 // the encoder and another by the route that has to recognise it.
 
+use std::path::Path;
+
 // One release's layout: `720p_<uuid>.m3u8` is the master, `720p_<uuid>_variant.m3u8` the media
 // playlist it points at, and the segments sit one directory down as `chunk-720p/p<n>-<uuid>.ts`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,11 +50,14 @@ impl HlsNames {
         (names.media == filename).then_some(names)
     }
 
-    // The ffmpeg options that turn a stream copy into this layout, ending with the playlist to
-    // write. The muxer records only a segment's basename in the playlist, so the chunk directory is
-    // put back in front of every entry with the base URL; it also will not create that directory,
-    // which is the caller's job before the mux starts.
-    pub fn muxer_args(&self) -> Vec<String> {
+    // The ffmpeg options that write this layout into `directory`, ending with the playlist itself.
+    // The muxer records only a segment's basename in the playlist, so the chunk directory is put
+    // back in front of every entry with the base URL — which stays relative however the files are
+    // addressed, and is what keeps the published playlist portable. The muxer will not create the
+    // directory its segments go in; that is the caller's job before the mux starts.
+    pub fn muxer_args_in(&self, directory: &Path) -> Vec<String> {
+        let segments = directory.join(&self.chunk_pattern);
+        let playlist = directory.join(&self.media);
         [
             "-start_number",
             "0",
@@ -67,8 +72,8 @@ impl HlsNames {
             "-hls_base_url",
             &self.chunk_base_url,
             "-hls_segment_filename",
-            &self.chunk_pattern,
-            &self.media,
+            &segments.to_string_lossy(),
+            &playlist.to_string_lossy(),
         ]
         .iter()
         .map(|value| value.to_string())
@@ -178,11 +183,24 @@ mod tests {
     #[test]
     fn the_muxer_writes_chunks_below_the_playlist_and_names_them_in_it() {
         let names = HlsNames::new(Some(720), ID);
-        let args = names.muxer_args();
+        let args = names.muxer_args_in(Path::new("/jobs/7/work/hls"));
         let position = |flag: &str| args.iter().position(|value| value == flag).unwrap();
-        assert_eq!(args[position("-hls_segment_filename") + 1], names.chunk_pattern);
+        assert_eq!(
+            args[position("-hls_segment_filename") + 1],
+            format!("/jobs/7/work/hls/{}", names.chunk_pattern)
+        );
+        // Relative however the files themselves are addressed: this is what a player resolves
+        // against the playlist's own URL, not a path on the encoder's disk.
         assert_eq!(args[position("-hls_base_url") + 1], names.chunk_base_url);
-        assert_eq!(args.last().unwrap(), &names.media);
+        assert_eq!(
+            args.last().unwrap(),
+            &format!("/jobs/7/work/hls/{}", names.media)
+        );
+        // A caller that runs the mux inside the directory addresses the same files by name.
+        assert_eq!(
+            HlsNames::new(Some(720), ID).muxer_args_in(Path::new("")).last(),
+            Some(&names.media)
+        );
     }
 
     #[test]

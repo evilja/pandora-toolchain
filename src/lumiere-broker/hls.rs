@@ -185,7 +185,6 @@ async fn build_hls(
         .map_err(|e| format!("HLS chunk directory could not be created: {e}"))?;
     let mut command = Command::new(resolve_runtime_binary("ffmpeg"));
     command
-        .current_dir(directory)
         .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
         .arg(source)
         .args([
@@ -196,7 +195,7 @@ async fn build_hls(
             "-c",
             "copy",
         ])
-        .args(names.muxer_args());
+        .args(names.muxer_args_in(directory));
     command.kill_on_drop(true);
     let output = {
         let output = command.output();
