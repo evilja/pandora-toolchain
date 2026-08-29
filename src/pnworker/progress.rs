@@ -112,13 +112,14 @@ pub(crate) async fn persist_side_effects(
 
 fn upload_links_json(args: &[String], encode_warnings: &[String]) -> serde_json::Value {
     let display_args = upload_display_args(args);
-    // Index 4 is a retired host slot: it is still emitted so the Drive metadata
-    // that follows keeps its positions, but it names no host and so gets no key.
+    // Index 4 was retired and now carries the optional Lumiere HLS master URL. Private Drive
+    // metadata remains at index 5 and later for compatibility with already stored rows.
     let mut v = serde_json::json!({
         "drive": display_args.get(0),
         "byse": display_args.get(1).map(|s| normalize_byse_link(s)),
         "lulustream": display_args.get(2).map(|s| normalize_lulu_link(s)),
         "voe": display_args.get(3).map(|s| normalize_voe_link(s)),
+        "hls": display_args.get(4),
     });
     if let Some(obj) = v.as_object_mut() {
         if let Some(file_id) = args.get(5).map(|s| s.trim()).filter(|s| !s.is_empty()) {
@@ -348,7 +349,7 @@ mod tests {
             "https://byse.sx/e/byse".to_string(),
             "https://luluvdo.com/e/lulu".to_string(),
             "https://voe.sx/e/voe".to_string(),
-            String::new(),
+            "https://files.example/lumiere/v1/hls/token/master.m3u8".to_string(),
             "file123".to_string(),
             "folder456".to_string(),
             "guild:1".to_string(),
@@ -362,6 +363,7 @@ mod tests {
         assert_eq!(links["drive_file_id"], "file123");
         assert_eq!(links["drive_folder_id"], "folder456");
         assert_eq!(links["drive_profile"], "guild:1");
+        assert_eq!(links["hls"], "https://files.example/lumiere/v1/hls/token/master.m3u8");
         assert!(!links.to_string().contains("private-delete-token"));
         assert!(!links.to_string().contains("smartcode"));
     }

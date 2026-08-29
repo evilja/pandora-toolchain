@@ -2,6 +2,7 @@ use crate::lib::db::core::JobDb;
 use crate::lib::p2p::core::cleanup_torrent_runtime;
 use crate::lib::p2p::nyaaise::TorrentType;
 use crate::lib::subs::ensure_ass_bytes;
+use crate::lumiere_broker::cleanup_expired_hls;
 use crate::pnworker::cache::{
     cache_encode_input, cleanup_expired_input_cache, cleanup_input_cache_startup,
     duplicate_input_path, duplicate_path_to_container, duplicate_source_orphaned,
@@ -87,6 +88,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
     cleanup_input_cache_startup().await;
     cleanup_keep_startup().await;
     cleanup_studios_startup().await;
+    cleanup_expired_hls().await;
 
     let mut queue: Vec<Job> = vec![];
     let mut shrine: TypedShrine<WorkerMsg> = TypedShrine::new();
@@ -121,6 +123,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
         }
         if tokio::time::Instant::now() >= next_studio_cleanup {
             cleanup_expired_studios().await;
+            cleanup_expired_hls().await;
             next_studio_cleanup = tokio::time::Instant::now() + Duration::from_secs(60);
         }
 

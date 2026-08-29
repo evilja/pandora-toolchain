@@ -338,6 +338,10 @@ args = 0
 text = "Google Driveのみのアップロード"
 args = 0
 
+[FIELD_HLS]
+text = "Lumiere HLSのみの出力（12時間）"
+args = 0
+
 [FIELD_ANIMECIX_FANSUB]
 text = "AnimeciXファンサブ"
 args = 0

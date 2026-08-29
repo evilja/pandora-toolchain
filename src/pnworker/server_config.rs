@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
-// Positional index of the server-level Drive-only upload policy in `meta.pandora`.
+// Positional indexes of server-level upload settings in `meta.pandora`.
 pub const SERVER_DRIVE_ONLY_LINE: usize = 14;
+pub const SERVER_HLS_LINE: usize = 17;
 
 // Every distribution site names its fansubs differently — AnimeciX addresses a numeric translator
 // template, OpenAnime a `fansubSecureName` string, Anizm a numeric staff-form fansub id — so each
@@ -92,6 +93,28 @@ pub async fn server_drive_only(server_id: Option<u64>) -> bool {
         .unwrap_or(false)
 }
 
+pub fn hls_from_meta(meta: &str) -> bool {
+    matches!(
+        meta.lines()
+            .nth(SERVER_HLS_LINE)
+            .map(str::trim)
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .as_str(),
+        "true" | "1" | "enabled" | "on"
+    )
+}
+
+pub async fn server_hls_enabled(server_id: Option<u64>) -> bool {
+    let Some(server_id) = server_id else {
+        return false;
+    };
+    tokio::fs::read_to_string(server_meta_path(server_id))
+        .await
+        .map(|meta| hls_from_meta(&meta))
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,6 +145,20 @@ mod tests {
     #[test]
     fn malformed_restrictive_policy_fails_closed() {
         assert!(drive_only_from_meta(&meta_with_policy(Some("tru"))));
+    }
+
+    #[test]
+    fn hls_is_opt_in_on_its_own_line() {
+        let mut lines = vec![String::new(); SERVER_HLS_LINE + 1];
+        assert!(!hls_from_meta(&lines.join("\n")));
+        for enabled in ["true", "1", "enabled", "ON"] {
+            lines[SERVER_HLS_LINE] = enabled.to_string();
+            assert!(hls_from_meta(&lines.join("\n")));
+        }
+        for disabled in ["", "false", "0", "tru"] {
+            lines[SERVER_HLS_LINE] = disabled.to_string();
+            assert!(!hls_from_meta(&lines.join("\n")));
+        }
     }
 
     #[test]
@@ -157,6 +194,7 @@ mod tests {
         for site in FansubSite::ALL {
             assert_eq!(FansubSite::from_option_name(site.option_name()), Some(site));
             assert_ne!(site.meta_line(), SERVER_DRIVE_ONLY_LINE);
+            assert_ne!(site.meta_line(), SERVER_HLS_LINE);
         }
         assert_eq!(FansubSite::from_option_name("concat"), None);
     }

@@ -214,6 +214,10 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
             "/lumiere/v1/files/:token/:filename",
             get(crate::lumiere_broker::serve_transfer),
         )
+        .route(
+            "/lumiere/v1/hls/:token/:filename",
+            get(crate::lumiere_broker::serve_hls),
+        )
         .nest("/api/v1", protected)
         .with_state(state);
 

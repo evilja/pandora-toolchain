@@ -18,7 +18,7 @@ Use separate hostnames when possible:
 
 In **Zero Trust > Networks > Tunnels > your tunnel > Public Hostnames**, add `pandora-files.example.com` with service `http://pndc:8787`. The Compose `cloudflared` container and `pndc` already share the `pandora` network.
 
-The file hostname must not require Cloudflare Access login because Byse/LuluStream/Voe cannot provide Access credentials. Lumiere URLs contain a random 256-bit capability, expire, are held only in memory, and are removed when the upload task ends. Configure Cloudflare to bypass cache and browser/Bot challenges for `/lumiere/v1/files/*`; provider fetchers must receive the file rather than an HTML challenge.
+The file hostname must not require Cloudflare Access login because Byse/LuluStream/Voe cannot provide Access credentials. Remote-upload Lumiere URLs contain a random 256-bit capability, are held only in memory, and are removed when the upload task ends. Optional HLS URLs use a separate persisted 256-bit capability and expire after 12 hours. Configure Cloudflare to bypass cache and browser/Bot challenges for `/lumiere/v1/files/*` and `/lumiere/v1/hls/*`; provider fetchers and HLS players must receive media rather than an HTML challenge.
 
 If Cloudflare must not carry file bytes at all, expose an HTTPS origin on the VDS directly and use that origin as `lumiere_public_url` instead of a Tunnel hostname.
 
@@ -182,7 +182,7 @@ Two optional keys: `lumiere_log_verbose|pntools|true` adds per-chunk/per-poll up
 docker compose up -d --build
 ```
 
-Use `/providers` to verify that the Worker reports the global/guild Drive profile and each configured streaming host. A server configured with `/edit drive_only:true` reports the streaming hosts as disabled by server policy even when their Worker secrets are present; use `/edit drive_only:false` to restore them for future releases.
+Use `/providers` to verify that the Worker reports the global/guild Drive profile and each configured streaming host. A server configured with `/edit drive_only:true` reports the external streaming hosts as disabled by server policy even when their Worker secrets are present; use `/edit drive_only:false` to restore them for future releases. `/edit hls:true` makes Lumiere Files HLS the exclusive release output for that server: no Drive or external-host upload starts; release MP4s are stream-copied into a master playlist, media playlist, and MPEG-TS chunks under a random capability URL retained on the VDS for 12 hours, and that master URL is the job's sole advertised link. The capability and expiry survive `pndc` restarts; expired outputs are removed by the worker cleanup loop and opportunistically on access/publication.
 
 ## 7b. Reading the upload log in production
 
@@ -220,7 +220,7 @@ Verify:
 
 1. Google Drive progress is produced by the VDS and the final file size and MD5 match.
 2. Byse/LuluStream/Voe fetch `/lumiere/v1/files/...` successfully, including `HEAD`, `GET`, retries, and byte ranges.
-3. Capability URLs return `404` after the upload task finishes.
+3. Remote-upload capability URLs return `404` after the upload task finishes. On an HLS-enabled test server, the HLS master/media/chunks remain available for 12 hours and then return `404`.
 4. Worker logs contain no bearer token, provider key, Google session URI, or capability URL.
 5. Smartcode replacement deletes the previous Drive file through its per-file Lumiere deletion capability. The first replacement of a pre-Lumiere state intentionally requires manual cleanup because legacy state has no such capability.
 6. Reacting 💔 on a completed encode as its author (or as a Witch) deletes its Drive file, removes the Drive link from Pandora's stored job data, and leaves its streaming-host links intact. A pre-feature job has no retained capability and intentionally does nothing.

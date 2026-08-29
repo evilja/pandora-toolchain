@@ -1,10 +1,12 @@
 mod client;
+mod hls;
 mod observe;
 mod protocol;
 mod transfer;
 mod upload;
 
 pub use client::{Config, Error, ErrorKind, LumiereClient};
+pub use hls::{HlsPublication, cleanup_expired_hls, publish_hls, serve_hls};
 pub use protocol::{DriveCandidate, ProviderStatus, RemoteProvider};
 pub use transfer::serve_transfer;
 pub use upload::{

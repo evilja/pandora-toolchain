@@ -338,6 +338,10 @@ args = 0
 text = "Yalnızca Google Drive yüklemeleri"
 args = 0
 
+[FIELD_HLS]
+text = "Yalnızca Lumiere HLS çıktısı (12 saat)"
+args = 0
+
 [FIELD_ANIMECIX_FANSUB]
 text = "AnimeciX fansub"
 args = 0

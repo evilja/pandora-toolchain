@@ -2,7 +2,7 @@ use crate::lib::mpeg::probe::ffprobe_video_height;
 use crate::lumiere_broker::{
     DriveCandidate, DriveUploadResult, DriveUploadSpec, GLOBAL_DRIVE_PROFILE, LumiereClient,
     RemoteProvider, RemoteUploadSpec, UploadError, UploadProgress, content_type_for_path,
-    guild_drive_profile,
+    guild_drive_profile, publish_hls,
 };
 use crate::pnworker::core::{CommData, SmartcodeDriveName};
 use crate::pnworker::core::{Stage, WorkerMsg};
@@ -10,7 +10,7 @@ use crate::pnworker::messages::{
     BACKUPALL_PROG, JOB_CANCELLED, MessagePayload, UPLOAD_BACKUP_PROG, UPLOAD_DONE, UPLOAD_FAIL,
     UPLOAD_PROG, WORKER_ASSIGN,
 };
-use crate::pnworker::server_config::server_drive_only;
+use crate::pnworker::server_config::{server_drive_only, server_hls_enabled};
 use crate::pnworker::util::string_byte_to_mb;
 use crate::pnworker::util::{OUTPUT_RESOLUTION_FILE, WorkerNamePool, job_cancelled};
 use crate::pnworker::worker_slots::upload_worker_slots;
@@ -186,8 +186,11 @@ async fn run_lumiere_single_upload(
     let output_path = directory.join("work").join("output.mp4");
     let cancel_file = Some(directory.join("CANCEL"));
     let is_smartcode = gdrive_folder_local.is_some();
+    let hls_enabled = release && server_hls_enabled(server_id).await;
     let drive_only = release && server_drive_only(server_id).await;
-    if drive_only {
+    if hls_enabled {
+        println!("[lumiere] job {job_id}: server policy restricts release output to Lumiere HLS");
+    } else if drive_only {
         println!("[lumiere] job {job_id}: server policy restricts uploads to Google Drive");
     }
     let named_filename = match smartcode_drive_name.as_ref() {
@@ -208,18 +211,20 @@ async fn run_lumiere_single_upload(
     let (event_tx, mut event_rx) = unbounded_channel();
     let mut tasks = Vec::new();
 
-    tasks.extend(spawn_drive_upload(
-        client.clone(),
-        DriveUploadSpec {
-            path: output_path.clone(),
-            request_id: format!("pandora:{job_id}:drive"),
-            candidates,
-            content_type: content_type.clone(),
-            cancel_file: cancel_file.clone(),
-        },
-        event_tx.clone(),
-    ));
-    if remote_uploads_enabled(release, drive_only) {
+    if !hls_enabled {
+        tasks.extend(spawn_drive_upload(
+            client.clone(),
+            DriveUploadSpec {
+                path: output_path.clone(),
+                request_id: format!("pandora:{job_id}:drive"),
+                candidates,
+                content_type: content_type.clone(),
+                cancel_file: cancel_file.clone(),
+            },
+            event_tx.clone(),
+        ));
+    }
+    if !hls_enabled && remote_uploads_enabled(release, drive_only) {
         for (host, provider) in [
             (LumiereHost::Byse, RemoteProvider::Byse),
             (LumiereHost::Lulustream, RemoteProvider::Lulustream),
@@ -245,9 +250,26 @@ async fn run_lumiere_single_upload(
     }
     drop(event_tx);
 
-    let expected_hosts = expected_lumiere_hosts(release, drive_only);
+    let mut hls_publication = if hls_enabled {
+        match publish_hls(&output_path, client.config(), cancel_file.as_deref()).await {
+            Ok(publication) => Some(publication),
+            Err(error) => {
+                eprintln!("[lumiere] job {job_id}: Lumiere HLS failed: {error}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let hls_link = match hls_publication.as_ref() {
+        Some(publication) => publication.url().to_string(),
+        None if hls_enabled => "Lumiere HLS Başarısız".to_string(),
+        None => String::new(),
+    };
+
+    let expected_hosts = expected_lumiere_hosts(release, drive_only, hls_enabled);
     println!(
-        "[lumiere] job {job_id}: waiting on {} host(s) for {} (release={release}, drive_only={drive_only}, smartcode={is_smartcode})",
+        "[lumiere] job {job_id}: waiting on {} external host(s) for {} (release={release}, drive_only={drive_only}, hls_only={hls_enabled}, smartcode={is_smartcode})",
         expected_hosts,
         output_path.display()
     );
@@ -255,10 +277,10 @@ async fn run_lumiere_single_upload(
     let mut next_heartbeat = Instant::now() + HOST_WAIT_HEARTBEAT;
     let mut completed = 0usize;
     let mut any_success = false;
-    let mut gd_link = "Google Bekleniyor".to_string();
-    let mut byse_link = if drive_only { String::new() } else { "Byse Bekleniyor".to_string() };
-    let mut lulu_link = if drive_only { String::new() } else { "Lulustream Bekleniyor".to_string() };
-    let mut voe_link = if drive_only { String::new() } else { "Voe Bekleniyor".to_string() };
+    let mut gd_link = if hls_enabled { String::new() } else { "Google Bekleniyor".to_string() };
+    let mut byse_link = if hls_enabled || drive_only { String::new() } else { "Byse Bekleniyor".to_string() };
+    let mut lulu_link = if hls_enabled || drive_only { String::new() } else { "Lulustream Bekleniyor".to_string() };
+    let mut voe_link = if hls_enabled || drive_only { String::new() } else { "Voe Bekleniyor".to_string() };
     let mut done = [false; 4];
     let mut last_progress = [None; 4];
     let mut drive_meta: Option<(String, String, String, String, String)> = None;
@@ -388,6 +410,7 @@ async fn run_lumiere_single_upload(
                 &byse_link,
                 &lulu_link,
                 &voe_link,
+                &hls_link,
                 drive_meta.clone(),
                 None,
             ))
@@ -425,6 +448,9 @@ async fn run_lumiere_single_upload(
     }
 
     if cancelled || job_cancelled(&directory) {
+        if let Some(publication) = hls_publication.take() {
+            publication.revoke().await;
+        }
         if any_success {
             tx.send(lumiere_upload_payload(
                 job_id,
@@ -434,6 +460,7 @@ async fn run_lumiere_single_upload(
                 &byse_link,
                 &lulu_link,
                 &voe_link,
+                "",
                 drive_meta,
                 Some(Stage::Cancelled),
             ))
@@ -448,7 +475,7 @@ async fn run_lumiere_single_upload(
             .await
             .ok();
         }
-    } else if any_success {
+    } else if any_success || hls_publication.is_some() {
         tx.send(lumiere_upload_payload(
             job_id,
             release,
@@ -457,6 +484,7 @@ async fn run_lumiere_single_upload(
             &byse_link,
             &lulu_link,
             &voe_link,
+            &hls_link,
             drive_meta,
             Some(Stage::Uploaded),
         ))
@@ -783,13 +811,18 @@ fn remote_uploads_enabled(release: bool, drive_only: bool) -> bool {
     release && !drive_only
 }
 
-fn expected_lumiere_hosts(release: bool, drive_only: bool) -> usize {
-    if remote_uploads_enabled(release, drive_only) { 4 } else { 1 }
+fn expected_lumiere_hosts(release: bool, drive_only: bool, hls_only: bool) -> usize {
+    if hls_only {
+        0
+    } else if remote_uploads_enabled(release, drive_only) {
+        4
+    } else {
+        1
+    }
 }
 
-// Payload positions, not a host count: index 4 is a retired slot that no host
-// occupies any more, and it stays present-but-empty so the Drive metadata that
-// follows it keeps the positions already stored against finished jobs.
+// Payload positions, not an external-host count: index 4 carries the HLS master URL while private
+// Drive metadata remains at index 5 and later.
 fn lumiere_host_index(host: LumiereHost) -> usize {
     match host {
         LumiereHost::Drive => 0,
@@ -834,6 +867,7 @@ fn lumiere_upload_payload(
     byse_link: &str,
     lulu_link: &str,
     voe_link: &str,
+    hls_link: &str,
     drive_meta: Option<(String, String, String, String, String)>,
     stage: Option<Stage>,
 ) -> CommData {
@@ -848,6 +882,7 @@ fn lumiere_upload_payload(
         byse_link,
         lulu_link,
         voe_link,
+        hls_link,
         visible_meta,
         stage,
     );
@@ -1066,13 +1101,15 @@ mod tests {
     }
 
     #[test]
-    fn drive_only_release_schedules_only_drive() {
-        assert_eq!(expected_lumiere_hosts(true, true), 1);
+    fn release_output_policies_choose_external_host_count() {
+        assert_eq!(expected_lumiere_hosts(true, true, false), 1);
         assert!(!remote_uploads_enabled(true, true));
-        assert_eq!(expected_lumiere_hosts(true, false), 4);
+        assert_eq!(expected_lumiere_hosts(true, false, false), 4);
         assert!(remote_uploads_enabled(true, false));
-        assert_eq!(expected_lumiere_hosts(false, false), 1);
+        assert_eq!(expected_lumiere_hosts(false, false, false), 1);
         assert!(!remote_uploads_enabled(false, false));
+        assert_eq!(expected_lumiere_hosts(true, false, true), 0);
+        assert_eq!(expected_lumiere_hosts(true, true, true), 0);
     }
 
     #[test]
@@ -1082,6 +1119,7 @@ mod tests {
             true,
             UPLOAD_DONE,
             "https://drive.google.com/file/d/file/view",
+            "",
             "",
             "",
             "",
@@ -1100,12 +1138,34 @@ mod tests {
         };
         assert_eq!(args.len(), 10);
         assert!(args[1..5].iter().all(|arg| arg.is_empty()));
-        // Index 4 is the retired host slot: present, empty, and never occupied.
+        // Index 4 is the optional HLS slot and remains empty when HLS is disabled.
         assert_eq!(args[5], "file");
         assert_eq!(args[6], "folder");
         assert_eq!(args[7], "guild:1");
         assert_eq!(args[8], "delete-token");
         assert_eq!(args[9], "smartcode");
+    }
+
+    #[test]
+    fn hls_only_payload_advertises_the_capability_as_the_only_link() {
+        let hls = "https://files.example/lumiere/v1/hls/token/master.m3u8";
+        let payload = lumiere_upload_payload(
+            1,
+            true,
+            UPLOAD_DONE,
+            "",
+            "",
+            "",
+            "",
+            hls,
+            None,
+            Some(Stage::Uploaded),
+        );
+        assert_eq!(crate::pnworker::messages::format_payload(&payload.1, "en"), hls);
+        let MessagePayload::Progress(_, args) = payload.1 else {
+            panic!("expected progress payload");
+        };
+        assert_eq!(args, vec!["", "", "", "", hls]);
     }
 
     #[test]
@@ -1118,6 +1178,7 @@ mod tests {
             "byse",
             "lulu",
             "voe",
+            "https://files.example/lumiere/v1/hls/token/master.m3u8",
             Some((
                 "file".to_string(),
                 "folder".to_string(),
@@ -1135,9 +1196,9 @@ mod tests {
             panic!("expected progress payload");
         };
         assert_eq!(args.len(), 10);
-        // A retired host still costs its position so Drive metadata stays at 5+.
+        // HLS reuses the retired display slot, so Drive metadata stays at 5+.
         assert_eq!(args[1], "byse");
-        assert_eq!(args[4], "");
+        assert_eq!(args[4], "https://files.example/lumiere/v1/hls/token/master.m3u8");
         assert_eq!(args[7], "guild:1");
         assert_eq!(args[8], "delete-token");
         assert_eq!(args[9], "smartcode");
@@ -1150,6 +1211,7 @@ mod tests {
             false,
             UPLOAD_DONE,
             "drive",
+            "",
             "",
             "",
             "",
@@ -1169,6 +1231,7 @@ mod tests {
             false,
             UPLOAD_DONE,
             "drive",
+            "",
             "",
             "",
             "",
@@ -1201,6 +1264,7 @@ fn upload_payload(
     byse_link: &str,
     lulu_link: &str,
     voesx_link: &str,
+    hls_link: &str,
     drive_meta: Option<(String, String)>,
     stage: Option<Stage>,
 ) -> CommData {
@@ -1210,11 +1274,9 @@ fn upload_payload(
             byse_link.to_string(),
             lulu_link.to_string(),
             voesx_link.to_string(),
-            // Index 4 held a host that no longer exists. The slot stays present
-            // and empty because the Drive metadata appended below is read by
-            // position, and rows written before the host was retired are still
-            // being served from the database.
-            String::new(),
+            // Index 4 was retired and is reused for the optional Lumiere HLS master URL. Keeping
+            // HLS in that slot leaves the private Drive metadata at its established positions.
+            hls_link.to_string(),
         ];
         if let Some((file_id, folder_id)) = drive_meta {
             args.push(file_id);

@@ -1,5 +1,7 @@
 use super::*;
-use pandora_toolchain::pnworker::server_config::{drive_only_from_meta, fansub_from_meta, FansubSite};
+use pandora_toolchain::pnworker::server_config::{
+    drive_only_from_meta, fansub_from_meta, hls_from_meta, FansubSite,
+};
 
 pub async fn handle_configure(
     ctx: &Context,
@@ -57,6 +59,7 @@ pub async fn handle_configure(
     let existing_preset = existing_lines.get(11).copied().unwrap_or("standard").to_string();
     let existing_concat = existing_lines.get(12).copied().unwrap_or("").to_string();
     let existing_drive_only = drive_only_from_meta(&existing_meta);
+    let existing_hls = hls_from_meta(&existing_meta);
     let existing_fansub = |site: FansubSite| fansub_from_meta(&existing_meta, site).unwrap_or_default();
 
     let wrap_style = match option_str(command, "wrapstyle").map(str::trim) {
@@ -98,6 +101,7 @@ pub async fn handle_configure(
         drive_only: existing_drive_only.to_string(),
         openanime_fansub: existing_fansub(FansubSite::OpenAnime),
         anizm_fansub: existing_fansub(FansubSite::Anizm),
+        hls: existing_hls.to_string(),
     });
     let path = dir.join("meta.pandora");
     if let Err(e) = tokio::fs::write(&path, body).await {
@@ -132,6 +136,11 @@ pub async fn handle_configure(
         .field(command_message(command, FIELD_GDRIVE), gdrive_display, true)
         .field(command_message(command, FIELD_GDRIVE_ANONYMOUS), gdrive_anon_display, true)
         .field(command_message(command, FIELD_DRIVE_ONLY), drive_only_display, true)
+        .field(
+            command_message(command, FIELD_HLS),
+            command_message(command, if existing_hls { VALUE_ENABLED } else { VALUE_DISABLED }),
+            true,
+        )
         .field(command_message(command, FIELD_WRAPSTYLE), wrap_display, true)
         .field(
             command_message(command, FIELD_ANNOUNCEMENT),

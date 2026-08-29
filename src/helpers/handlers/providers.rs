@@ -2,7 +2,7 @@ use super::*;
 use pandora_toolchain::lib::env::standard::{
     AKIRA_API, AKIRA_TOKEN, ANIZM_EMAIL, ANIZM_PASSWORD, OPENANIME_EMAIL, OPENANIME_PASSWORD,
 };
-use pandora_toolchain::pnworker::server_config::drive_only_from_meta;
+use pandora_toolchain::pnworker::server_config::{drive_only_from_meta, hls_from_meta};
 
 pub async fn handle_providers(ctx: &Context, command: &serenity::all::CommandInteraction) {
     let env = get_pandora_env();
@@ -15,6 +15,10 @@ pub async fn handle_providers(ctx: &Context, command: &serenity::all::CommandInt
     let drive_only = server_meta
         .as_deref()
         .map(drive_only_from_meta)
+        .unwrap_or(false);
+    let hls = server_meta
+        .as_deref()
+        .map(hls_from_meta)
         .unwrap_or(false);
 
     let local_gdrive_enabled = !matches!(
@@ -49,15 +53,22 @@ pub async fn handle_providers(ctx: &Context, command: &serenity::all::CommandInt
     let forgejo_attached = !persistence.is_empty() && !github_attached;
 
     let upload_lines = vec![
-        if drive_only {
+        if hls {
+            "🔒 Server policy: Lumiere HLS only".to_string()
+        } else if drive_only {
             "🔒 Server policy: Google Drive only".to_string()
         } else {
             "Server policy: all configured providers".to_string()
         },
-        attached_line_with_note("Google Drive", active_server_gdrive || global_gdrive, gdrive_label),
-        policy_provider_line("Byse (via Lumiere)", broker_status.byse, drive_only),
-        policy_provider_line("LuluStream (via Lumiere)", broker_status.lulustream, drive_only),
-        policy_provider_line("Voe (via Lumiere)", broker_status.voe, drive_only),
+        if hls {
+            "— Google Drive (disabled by HLS-only policy)".to_string()
+        } else {
+            attached_line_with_note("Google Drive", active_server_gdrive || global_gdrive, gdrive_label)
+        },
+        policy_provider_line("Byse (via Lumiere)", broker_status.byse, drive_only || hls),
+        policy_provider_line("LuluStream (via Lumiere)", broker_status.lulustream, drive_only || hls),
+        policy_provider_line("Voe (via Lumiere)", broker_status.voe, drive_only || hls),
+        attached_line("Lumiere Files HLS-only output (12 hours)", hls),
     ].join("\n");
 
     let distribution_lines = vec![

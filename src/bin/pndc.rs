@@ -2733,6 +2733,10 @@ impl EventHandler for Handler {
                         .required(false)
                 )
                 .add_option(
+                    CreateCommandOption::new(CommandOptionType::Boolean, "hls", "Use only Lumiere HLS output for releases; retain it for 12 hours.")
+                        .required(false)
+                )
+                .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "wrapstyle", "ASS WrapStyle normalization. Use dont_touch to clear.")
                         .required(false)
                         .add_string_choice("dont_touch", "dont_touch")
