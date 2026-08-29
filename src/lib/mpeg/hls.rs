@@ -18,8 +18,9 @@ pub struct HlsNames {
 }
 
 // How long a segment is asked to be. Stream copy can only cut on a keyframe, so this is a target
-// the encoder's IDR spacing rounds up.
-const SEGMENT_SECONDS: &str = "6";
+// the encoder's IDR spacing rounds up: the muxer closes a segment at the first keyframe at or past
+// this mark, and x264 places those on scene cuts rather than on a fixed grid.
+const SEGMENT_SECONDS: &str = "4";
 
 impl HlsNames {
     // A source whose height nothing could measure still has to be published; 1080p is the label the
@@ -189,6 +190,9 @@ mod tests {
             args[position("-hls_segment_filename") + 1],
             format!("/jobs/7/work/hls/{}", names.chunk_pattern)
         );
+        // Deliberate, and the number players buffer around: the segment target is asserted here
+        // rather than against the constant so that changing it has to be a decision.
+        assert_eq!(args[position("-hls_time") + 1], "4");
         // Relative however the files themselves are addressed: this is what a player resolves
         // against the playlist's own URL, not a path on the encoder's disk.
         assert_eq!(args[position("-hls_base_url") + 1], names.chunk_base_url);
