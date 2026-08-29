@@ -1,8 +1,8 @@
 use pandora_toolchain::lib::mpeg::{
     core::{
         FFmpeg, FfmpegParams, do_comm_encode_ffmpeg}, preset::{
-        CONCAT, CONCAT_LEGACY, CPU_DUMMY, CPU_PSEUDOLOSSLESS, CPU_SANE_DEFAULTS, CPU_VERYSLOW,
-        GPU_SANE_DEFAULTS
+        CONCAT, CONCAT_LEGACY, CPU_DUMMY, CPU_PSEUDOLOSSLESS, CPU_PSEUDOLOSSLESS_X264_PARAMS,
+        CPU_SANE_DEFAULTS, CPU_SANE_X264_PARAMS, CPU_VERYSLOW, GPU_SANE_DEFAULTS
     }, probe::{
         ConcatMedia, ffprobe_concat_media, ffprobe_estimated_frames, ffprobe_frame,
         ffprobe_framerate, ffprobe_lang,
@@ -194,7 +194,7 @@ fn planner_encoder_config(args: &Args) -> pnx264::Config {
         (
             "fast",
             17.0,
-            Some("me=umh:subme=8:merange=24:trellis=2:psy-rd=1:aq-strength=1.1:aq-mode=3".to_string()),
+            Some(CPU_PSEUDOLOSSLESS_X264_PARAMS.to_string()),
         )
     } else if args.veryslow {
         ("veryslow", 18.0, None)
@@ -202,7 +202,7 @@ fn planner_encoder_config(args: &Args) -> pnx264::Config {
         (
             "fast",
             17.0,
-            Some("aq-strength=1.0:aq-mode=3".to_string()),
+            Some(CPU_SANE_X264_PARAMS.to_string()),
         )
     };
     pnx264::Config {
