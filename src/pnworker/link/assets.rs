@@ -196,7 +196,7 @@ pub fn manifest() -> AssetManifest {
 pub fn read_asset(hash: &str) -> Option<(AssetEntry, Vec<u8>)> {
     let manifest = manifest();
     let entry = manifest.find(hash)?.clone();
-    let path = local_path(&entry)?;
+    let path = source_path(&entry)?;
     let bytes = std::fs::read(&path).ok()?;
     if format!("{:x}", Sha256::digest(&bytes)) != entry.hash {
         // The file changed under the cached manifest. Answering nothing is right: the node will
@@ -206,14 +206,36 @@ pub fn read_asset(hash: &str) -> Option<(AssetEntry, Vec<u8>)> {
     Some((entry, bytes))
 }
 
-// Where an entry lives on the coordinator, which is also where a node writes it. Fonts go to the
-// bucket the startup installer already copies into the OS font path; intros go to the node's own
-// synced folder, since pnmpeg writes compatibility variants back into whatever folder it is given.
-pub fn local_path(entry: &AssetEntry) -> Option<PathBuf> {
-    if entry.name.contains('/') || entry.name.contains('\\') || entry.name.starts_with('.') {
+// A name and a group both arrive off the wire and both become path components, so neither may
+// address anything outside the root it belongs to.
+fn safe_component(value: &str) -> bool {
+    !value.is_empty()
+        && !value.contains('/')
+        && !value.contains('\\')
+        && !value.starts_with('.')
+}
+
+// Where the coordinator reads an entry from. Fonts sit under `DB/fontconfig/<bucket>`, but an
+// intro lives wherever that group resolves to in `intros.toml` — which is emphatically not where a
+// node puts it. Conflating the two served every font correctly and answered 404 for every intro.
+pub fn source_path(entry: &AssetEntry) -> Option<PathBuf> {
+    if !safe_component(&entry.name) || !safe_component(&entry.group) {
         return None;
     }
-    if entry.group.contains('/') || entry.group.contains('\\') || entry.group.starts_with('.') {
+    Some(match entry.kind {
+        AssetKind::Font => PathBuf::from(FONT_ROOT).join(&entry.group).join(&entry.name),
+        AssetKind::Intro => {
+            PathBuf::from(IntrosConfig::load().resolve(&entry.group)?).join(&entry.name)
+        }
+    })
+}
+
+// Where a node writes an entry. Fonts go to the bucket the startup installer already copies into
+// the OS font path; intros go to the node's own synced folder, deliberately apart from anything an
+// operator hand-placed, since pnmpeg writes compatibility variants back into whatever folder it is
+// given.
+pub fn install_path(entry: &AssetEntry) -> Option<PathBuf> {
+    if !safe_component(&entry.name) || !safe_component(&entry.group) {
         return None;
     }
     Some(match entry.kind {
@@ -234,7 +256,7 @@ pub fn missing(manifest: &AssetManifest) -> Vec<AssetEntry> {
         .entries
         .iter()
         .filter(|entry| {
-            let Some(path) = local_path(entry) else {
+            let Some(path) = install_path(entry) else {
                 return false;
             };
             match hash_file(&path) {
@@ -250,7 +272,7 @@ pub fn write_asset(entry: &AssetEntry, bytes: &[u8]) -> Result<(), String> {
     if format!("{:x}", Sha256::digest(bytes)) != entry.hash {
         return Err(format!("{} did not hash to what the manifest said", entry.name));
     }
-    let Some(path) = local_path(entry) else {
+    let Some(path) = install_path(entry) else {
         return Err(format!("{}/{} is not a name this can write", entry.group, entry.name));
     };
     if let Some(parent) = path.parent() {
@@ -319,14 +341,38 @@ mod tests {
     }
 
     // Entries name a bucket and a filename, and both come off the wire. Neither may address
-    // anything outside the two roots this is allowed to write.
+    // anything outside the roots these are allowed to touch — on either side of the link.
     #[test]
     fn entry_names_cannot_escape_their_root() {
-        assert!(local_path(&entry(AssetKind::Font, "main", "../../etc/passwd", "x")).is_none());
-        assert!(local_path(&entry(AssetKind::Font, "../..", "a.ttf", "x")).is_none());
-        assert!(local_path(&entry(AssetKind::Intro, "grp", "..", "x")).is_none());
-        assert!(local_path(&entry(AssetKind::Font, "main", ".hidden", "x")).is_none());
-        assert!(local_path(&entry(AssetKind::Font, "main", "Roboto.ttf", "x")).is_some());
+        for build in [install_path, source_path] {
+            assert!(build(&entry(AssetKind::Font, "main", "../../etc/passwd", "x")).is_none());
+            assert!(build(&entry(AssetKind::Font, "../..", "a.ttf", "x")).is_none());
+            assert!(build(&entry(AssetKind::Intro, "grp", "..", "x")).is_none());
+            assert!(build(&entry(AssetKind::Font, "main", ".hidden", "x")).is_none());
+            assert!(build(&entry(AssetKind::Font, "main", "", "x")).is_none());
+        }
+        assert!(install_path(&entry(AssetKind::Font, "main", "Roboto.ttf", "x")).is_some());
+        assert!(source_path(&entry(AssetKind::Font, "main", "Roboto.ttf", "x")).is_some());
+    }
+
+    // A font is read from and written to the same place, so conflating the two sides looked
+    // correct for 105 of 142 entries and answered 404 for the rest: an intro lives wherever
+    // `intros.toml` points on the coordinator, and under the node's own synced root on a node.
+    #[test]
+    fn an_intro_is_not_read_from_where_a_node_writes_it() {
+        let intro = entry(AssetKind::Intro, "opening", "op1.mkv", "x");
+        let install = install_path(&intro).expect("a node must have somewhere to put it");
+        assert!(install.starts_with(LINK_INTRO_ROOT), "{}", install.display());
+        // The source resolves through the intro config, so it is only `Some` where that group is
+        // actually configured — and it is never the node's synced root.
+        if let Some(source) = source_path(&intro) {
+            assert_ne!(source, install);
+            assert!(!source.starts_with(LINK_INTRO_ROOT), "{}", source.display());
+        }
+
+        // A font is genuinely the same path on both sides; that coincidence is what hid the bug.
+        let font = entry(AssetKind::Font, "main", "Roboto.ttf", "x");
+        assert_eq!(source_path(&font), install_path(&font));
     }
 
     // A node must never install bytes that are not what the manifest promised, whatever the reason

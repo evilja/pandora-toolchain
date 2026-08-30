@@ -380,11 +380,16 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
     );
 
     let renew_secs;
+    let registered_revision;
     loop {
         match register(&client, &config).await {
             Ok(registered) if registered.accepted => {
                 renew_secs = registered.renew_secs.max(1);
                 println!("[link] node {} registered", config.node);
+                // Remembered so a sync that fails here is retried between polls. Without it a node
+                // whose first sync failed would sit unsynced until a job happened to arrive, and
+                // then decline it — correct, but it would never recover on its own.
+                registered_revision = registered.assets_revision.clone();
                 // Sync before the first poll rather than after, so the common case is a node that
                 // is already current by the time it is offered anything.
                 if let Err(e) = reconcile_assets(&client, &config, refresh_fonts).await {
@@ -405,7 +410,7 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
 
     let mut active: Vec<ActiveLease> = Vec::new();
     let mut draining = false;
-    let mut wanted_revision = String::new();
+    let mut wanted_revision = registered_revision;
     // How much of each of a job's logs has been shipped. Advanced only once the renew carrying a
     // chunk succeeded, so a failed request costs a repeat rather than a hole in the transcript.
     let mut log_offsets: HashMap<u64, HashMap<String, u64>> = HashMap::new();
