@@ -1,0 +1,338 @@
+use serde::{Deserialize, Serialize};
+
+use crate::lib::db::core::{stage_label, stage_to_int};
+use crate::lib::p2p::nyaaise::TorrentType;
+use crate::pnworker::core::{JobType, Preset, Stage};
+use crate::pnworker::messages::{MessagePayload, intern_message_id};
+
+// The wire contract between a coordinator and a Pandora Mini node. Both sides compile this same
+// file, so a field added to one is added to the other; nothing here is versioned by hand. Job ids
+// and server ids travel as strings because they are Discord snowflakes and nanosecond timestamps,
+// and a JSON number cannot carry either without loss.
+
+// What a node reports about itself when it comes up. `encoder_digest` is the SHA-256 of its own
+// pnmpeg binary, which links x264 statically — so equal digests mean the same encoder, without
+// asking x264 for a version number it does not export. The coordinator refuses a mismatch by
+// default: an episode is encoded entirely on one machine so a mismatch cannot corrupt a file, but
+// two builds make different rate decisions at the same CRF, and a cluster that quietly ships two
+// quality tiers is not worth debugging later.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NodeRegister {
+    pub node: String,
+    pub pandora_version: String,
+    pub pnmpeg_build: String,
+    pub encoder_digest: String,
+    pub ffmpeg_version: String,
+    pub threads: u32,
+    pub max_jobs: u32,
+    pub presets: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NodeRegistered {
+    pub accepted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub renew_secs: u64,
+    pub lease_timeout_secs: u64,
+}
+
+// One job handed to one node. Everything the node needs to run it is in here: there is no second
+// lookup, and in particular no server id to resolve against a `meta.pandora` the node does not
+// have. `Job::new` already snapshots the server's preset, watermark and Drive folders at creation
+// time, so this is that same snapshot travelling one hop further.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LinkJobSpec {
+    pub job_id: String,
+    pub job_type: String,
+    pub source_kind: String,
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_link: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_index: Option<u64>,
+    // A Pancode's originating probe. The node has no such job and will not find its saved
+    // `.torrent`, which is exactly why the source link travels beside it: `adopt_probe_torrent`
+    // failing is survivable, an absent probe id is not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_job_id: Option<String>,
+    #[serde(default)]
+    pub subtitle_b64: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watermark_b64: Option<String>,
+    pub preset: String,
+    pub lang: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gdrive_folder_global: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gdrive_folder_local: Option<String>,
+    // Set for an HLS-only server: the node encodes and uploads nothing, because the 12-hour
+    // playback capability has to be served from the one hostname that is already public.
+    #[serde(default)]
+    pub return_output: bool,
+    pub expires_at: u64,
+    pub renew_secs: u64,
+}
+
+// Sent by the node roughly every `renew_secs`. It doubles as the liveness heartbeat and as the
+// progress feed, so a node that is encoding is by definition a node that is proving it is alive.
+//
+// `reports` is the node's `CommData` stream forwarded verbatim — payload plus the stage transition
+// it carried, in order. The coordinator replays them through `persist_side_effects` and `render`,
+// which is why a remote job needs no rendering path of its own.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LeaseRenew {
+    pub node: String,
+    #[serde(default)]
+    pub worker: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reports: Vec<LinkReport>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LinkReport {
+    pub payload: LinkPayload,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+}
+
+// The renew response is the only channel the coordinator has back to a node, since a node has no
+// inbound surface at all. Every out-of-band instruction rides here.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct LeaseControl {
+    #[serde(default)]
+    pub cancel: bool,
+    // The coordinator has already reclaimed this lease (the node went quiet long enough to be
+    // presumed lost) and given the job to someone else. Drop the work rather than finishing it.
+    #[serde(default)]
+    pub abandon: bool,
+    #[serde(default)]
+    pub drain: bool,
+}
+
+// The node's last word on a lease. Any reports it had not sent yet ride along, so the payload that
+// carried the final links or the failure reason is never lost to a renew that never happened.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LeaseResult {
+    pub node: String,
+    pub outcome: LinkOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reports: Vec<LinkReport>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LinkOutcome {
+    Uploaded,
+    Failed,
+    Cancelled,
+    // The node cannot run this job at all — a preset it does not have, an asset it cannot resolve.
+    // Distinct from Failed because the coordinator requeues it without spending a retry.
+    Declined,
+}
+
+pub fn stage_name(stage: Stage) -> String {
+    stage_label(stage_to_int(stage)).to_string()
+}
+
+pub fn stage_from_name(name: &str) -> Option<Stage> {
+    Some(match name {
+        "Queued" => Stage::Queued,
+        "Downloading" => Stage::Downloading,
+        "Downloaded" => Stage::Downloaded,
+        "Encoding" => Stage::Encoding,
+        "Encoded" => Stage::Encoded,
+        "Uploading" => Stage::Uploading,
+        "Uploaded" => Stage::Uploaded,
+        "Failed" => Stage::Failed,
+        "Declined" => Stage::Declined,
+        "Cancelled" => Stage::Cancelled,
+        "Probing" => Stage::Probing,
+        "Probed" => Stage::Probed,
+        _ => return None,
+    })
+}
+
+// The inverse of `server_effects::preset_from_name`, which is the single name table this has to
+// agree with. `copy` is not in that table because no server setting or API payload selects it.
+pub fn preset_name(preset: &Preset) -> String {
+    match preset {
+        Preset::PseudoLossless(_) => "pseudolossless",
+        Preset::Dummy(_) => "dummy",
+        Preset::Standard(_) => "standard",
+        Preset::VerySlow(_) => "veryslow",
+        Preset::Gpu(_) => "gpu",
+        Preset::Hd720(_) => "720p",
+        Preset::Sd480(_) => "480p",
+        Preset::Copy => "copy",
+    }
+    .to_string()
+}
+
+pub fn job_type_name(job_type: JobType) -> String {
+    format!("{:?}", job_type)
+}
+
+pub fn job_type_from_name(name: &str) -> Option<JobType> {
+    Some(match name {
+        "Encode" => JobType::Encode,
+        "Pancode" => JobType::Pancode,
+        "Backup" => JobType::Backup,
+        "Probe" => JobType::Probe,
+        _ => return None,
+    })
+}
+
+pub fn source_to_wire(torrent: &TorrentType) -> (String, String) {
+    (torrent.get_arg(), torrent.get())
+}
+
+pub fn source_from_wire(kind: &str, value: &str) -> Option<TorrentType> {
+    let value = value.to_string();
+    Some(match kind {
+        "magnet" => TorrentType::Magnet(value),
+        "gdrive" => TorrentType::GDrive(value),
+        "direct" => TorrentType::Direct(value),
+        "nomagnet" => TorrentType::Link(value),
+        _ => return None,
+    })
+}
+
+// A worker payload as it crosses the link. Reporting the payload itself, rather than a summary the
+// coordinator would have to invert, is what lets a remote job go through `persist_side_effects` and
+// `render` unchanged: the coordinator sees exactly the message the node's workers produced, and
+// localises it against the job's own `lang` rather than the node's.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LinkPayload {
+    pub id: String,
+    // Absent for `MessagePayload::Static`, present (possibly empty) for `Progress`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<Vec<String>>,
+}
+
+impl LinkPayload {
+    pub fn from_payload(payload: &MessagePayload) -> Self {
+        match payload {
+            MessagePayload::Static(id) => Self { id: (*id).to_string(), args: None },
+            MessagePayload::Progress(id, args) => Self {
+                id: (*id).to_string(),
+                args: Some(args.clone()),
+            },
+        }
+    }
+
+    // `None` when the node named a message this build does not have a translation for — a version
+    // skew the coordinator reports rather than renders as the wrong text.
+    pub fn to_payload(&self) -> Option<MessagePayload> {
+        let id = intern_message_id(&self.id)?;
+        Some(match &self.args {
+            None => MessagePayload::Static(id),
+            Some(args) => MessagePayload::Progress(id, args.clone()),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stage_names_round_trip() {
+        for stage in [
+            Stage::Queued,
+            Stage::Downloading,
+            Stage::Downloaded,
+            Stage::Encoding,
+            Stage::Encoded,
+            Stage::Uploading,
+            Stage::Uploaded,
+            Stage::Failed,
+            Stage::Declined,
+            Stage::Cancelled,
+            Stage::Probing,
+            Stage::Probed,
+        ] {
+            assert_eq!(stage_from_name(&stage_name(stage)), Some(stage));
+        }
+    }
+
+    #[test]
+    fn source_kinds_round_trip() {
+        for source in [
+            TorrentType::Magnet("magnet:?xt=urn:btih:abc".to_string()),
+            TorrentType::Link("https://nyaa.si/download/1.torrent".to_string()),
+            TorrentType::GDrive("https://drive.google.com/file/d/x".to_string()),
+            TorrentType::Direct("https://host/video.mkv".to_string()),
+        ] {
+            let (kind, value) = source_to_wire(&source);
+            let back = source_from_wire(&kind, &value).expect("wire kind is not classifiable");
+            assert_eq!(back.get_arg(), kind);
+            assert_eq!(back.get(), value);
+        }
+    }
+
+    // The wire name a node receives has to be one `preset_from_name` accepts, or a leased job dies
+    // on arrival with an unparseable preset.
+    #[test]
+    fn preset_names_are_accepted_by_the_name_table() {
+        for preset in [
+            Preset::Standard(None),
+            Preset::VerySlow(None),
+            Preset::Gpu(None),
+            Preset::PseudoLossless(None),
+            Preset::Dummy(None),
+            Preset::Hd720(None),
+            Preset::Sd480(None),
+        ] {
+            let name = preset_name(&preset);
+            assert!(
+                crate::pnworker::server_effects::preset_from_name(&name, None).is_some(),
+                "preset name {name} is not in the shared name table",
+            );
+        }
+    }
+
+    #[test]
+    fn job_type_names_round_trip() {
+        for job_type in [JobType::Encode, JobType::Pancode, JobType::Backup, JobType::Probe] {
+            assert_eq!(job_type_from_name(&job_type_name(job_type)), Some(job_type));
+        }
+    }
+
+    #[test]
+    fn payloads_round_trip_through_the_wire() {
+        let progress = MessagePayload::Progress(
+            crate::pnworker::messages::ENCODE_PROG,
+            vec!["a".to_string(), "1".to_string()],
+        );
+        let wire = LinkPayload::from_payload(&progress);
+        match wire.to_payload().expect("known id did not intern") {
+            MessagePayload::Progress(id, args) => {
+                assert_eq!(id, crate::pnworker::messages::ENCODE_PROG);
+                assert_eq!(args, vec!["a".to_string(), "1".to_string()]);
+            }
+            _ => panic!("progress payload came back static"),
+        }
+
+        let static_payload = MessagePayload::Static(crate::pnworker::messages::QUEUED);
+        let wire = LinkPayload::from_payload(&static_payload);
+        assert!(matches!(
+            wire.to_payload().expect("known id did not intern"),
+            MessagePayload::Static(id) if id == crate::pnworker::messages::QUEUED
+        ));
+    }
+
+    // A node running a newer build can name a message this one has no translation for. Rendering
+    // the wrong text for a real job is worse than rendering none, so it has to come back empty.
+    #[test]
+    fn an_unknown_message_id_does_not_intern() {
+        let wire = LinkPayload { id: "NOT_A_REAL_MESSAGE".to_string(), args: None };
+        assert!(wire.to_payload().is_none());
+    }
+}

@@ -21,6 +21,7 @@ API bearer tokens live one-per-line in `DB/config/global/environment/api.pandora
 - `Authorization: Bearer <token>` checked against the lines of `api.pandora` (blanks and `;` comments ignored) by an axum middleware layered on the `/api/v1` routes. The page routes (`GET /`, `/encode`, `/git`, `/studio`, `/trace`, `/favicon`, `/favicon.ico`) and `/health` are unauthenticated; every operation they submit, including tracing and ASS export, is protected. `GET /batch/:token` and `GET /batch/:token/output` are authorized by the 256-bit capability in the path — the link is posted to Discord, where nobody holds an API token — and expose nothing but that one batch; `GET`/`HEAD /lumiere/v1/files/:token/:filename` is separately authorized by a memory-only 256-bit capability, restricted to the exact registered file, range-capable, non-cacheable, and removed when the corresponding upload ends. `GET`/`HEAD /lumiere/v1/hls/:token/*resource` uses a persisted 256-bit capability restricted to the three name shapes an output publishes — `<height>p_<uuid>.m3u8`, `<height>p_<uuid>_variant.m3u8`, and `chunk-<height>p/p<n>-<uuid>.ts`, all built from the source's height and one random v4 UUID; it is non-cacheable, CORS-readable, survives restarts, and expires after 12 hours.
 - **Rate limit**: the same `auth` middleware rate-limits **write** requests only (any method that isn't `GET`/`HEAD`, so status polling is never throttled), keyed by an md5 of the token (`ApiRateLimiter` in `core.rs`). Default `30` requests per `60`s sliding window, configurable via `api_rate_limit` / `api_rate_window_secs`. On exceed it returns `429` with a `Retry-After` header (seconds until the window resets) and body `"rate limit exceeded"`. The web consoles read `Retry-After` and render a friendly "rate limit hit — try again in Ns" notice on `429`.
 - **PNwitch tokens**: `parse_token_file` also keeps the `;` comment line preceding a token as its **label** (`/gentoken label:<note>` writes `; <label> (added <unix>)`), and `require_pnwitch` restricts the operator-only endpoints — `POST /gitsync`, `POST /acix/publish`, `GET /workers`, and the job-log routes — to a token labelled exactly `PNwitch`. It is the API's stand-in for the Discord Witch tier; every other token gets `403 PNwitch token required`.
+- **Link tokens**: a token line may be `<token>|link|<node_name>` (mint with `/gentoken link:<node>`). It authorises a Pandora Mini node and opens **only** the `/api/v1/link/*` routes — no job submits, no logs, no git. `require_link(&auth)` returns the bound node name, and every link route additionally checks that the node named in the request body matches it, so one node cannot renew or finish another's lease. Link routes are also exempt from the write rate limit: a node renews every lease every ten seconds for as long as it works, which is a heartbeat on a fixed cadence rather than user traffic. See [LINK.md](LINK.md).
 - **Local tokens**: a token line in `api.pandora` may be `<token>|local|<server_id>` (mint with `/gentoken local`). `api_auth_for_token` parses it into `ApiAuth { local_server_id }`; `effective_server_id` makes a local token force its `server_id` onto job submits. The **git endpoints require a local token** — `require_local(&auth)` returns `403` for a plain token, since repo ops need a server to resolve the Forgejo org config and per-channel meta. API cancel also requires a local token and only allows cancelling non-terminal `Encode` jobs whose persisted DB `server_id` equals the token's `local_server_id`.
 
 ## Git routes
@@ -70,6 +71,7 @@ Any API token may use the tracing routes; a local token is not required. `POST /
 - `GET /api/v1/jobs/:id/logs`, `GET /api/v1/jobs/:id/logs.zip`, `GET /api/v1/jobs/:id/logs/:name` (PNwitch token only — see [Job logs](#job-logs))
 - `GET /api/v1/workers` (PNwitch token only — see [Worker snapshot](#worker-snapshot))
 - `POST /api/v1/token/revoke` (any token — see [Token revocation](#token-revocation))
+- `POST /api/v1/link/register`, `GET /api/v1/link/lease`, `POST /api/v1/link/lease/:id/renew`, `POST /api/v1/link/lease/:id/result` (link token only — see [LINK.md](LINK.md))
 
 Subtitles travel as base64 (`subtitle_b64`), decoded by a local `base64_decode_bytes`; `gitcode` fetches the subtitle from `subtitle_url` (GitHub blob links auto-rewritten to raw). Either may carry ASS or any text subtitle format ffmpeg can read — the worker normalises it to ASS when the job is queued (see [DISCORD.md](DISCORD.md#subtitle-formats)); image-based or non-UTF-8 payloads decline the job with that reason instead of failing later in the encoder. `pancode` takes `probe_job_id` as a **string** (job ids exceed JS's safe-integer range) + a `file_index`, looks up the probe job's torrent from the DB, and builds a `Pancode` job. `encode` and `gitcode` accept an optional `preset` naming the encoder for that one job — `standard`, `veryslow`, `gpu`, `pseudolossless`, `dummy`, `720p`, or `480p` (case-insensitive; `very_slow` and `pseudo_lossless` also parse) — overriding the server default for that request only; an unrecognised name is a `400`, and the server's intro group is kept either way because it belongs to the server rather than to the preset. `720p` and `480p` are the standard preset with the frame height capped there (never upscaled), and they are the only way to reach those presets: `/edit` does not offer them. Pancode, git-smartcode, and Studio requests accept no preset/concat controls at all. Without a `preset`, local-token jobs derive preset and concat from the bound server's `/edit` settings, while jobs without a server id use Standard with no intro. Submits return `202 { job_id }`. Cancel first DB-checks the target: it requires a local token, refuses cross-server jobs (`row.server_id != token.local_server_id`), accepts `Encode`, `Studio`, and `StudioPreview` jobs, refuses archived/terminal jobs, then sends `HalfJob(Cancel)` and returns `202`. Exposed over the API: encode/backup/probe/pancode/gitcode (jobs), the full Studio workflow (local-token only), init/attach/source/detach/destruct/smartcode (git, local-token only — see above), and `gitsync` (`POST /api/v1/gitsync`). **Not** exposed: `/configure`, `/edit`, `/job`, `/hearts`, translation commands, `!auth`/`!ban` — they need richer Discord guild context, Discord attachments, or the live shrine handle.
 
@@ -90,13 +92,23 @@ in the jobs table: shrine heartbeats and the in-memory queue. This is what tells
 never blocks the loop. `503 worker has not published a snapshot yet` means the API is up but the
 worker loop is not — `serve` is its own task, so that is a real and distinguishable state.
 
+`nodes` is the Pandora Mini roster, which is in-memory for the same reason the queue is: a node's
+liveness is nowhere in the jobs table. Queue entries carry `link_node` and `link_attempts` — a job
+with `link_node` set is executing on that node and progresses only through the link.
+
 ```json
 {
   "updated_at": 1787003523, "queue_len": 1, "gitquery_pending": false, "encode_reboot_count": 0,
   "hearts": [{ "worker": "Encode", "alive": true, "last_beat_secs": 3, "reboot_count": 0 }],
+  "nodes": [{
+    "node": "mini-osaka", "threads": 16, "max_jobs": 1, "presets": [], "drain": false,
+    "last_seen_secs": 4, "jobs": ["4242"], "pandora_version": "3.5.0-lumiere",
+    "encoder_digest": "9f2c…"
+  }],
   "queue": [{
-    "job_id": "4242", "job_type": "Encode", "stage": "Downloaded", "worker": "enc-main",
-    "server_id": null, "forward_parent": null, "batch_parent": null, "waiting_on_cache": false,
+    "job_id": "4242", "job_type": "Encode", "stage": "Downloaded", "worker": "lnk-mini-osaka",
+    "server_id": null, "forward_parent": null, "link_node": "mini-osaka", "link_attempts": 0,
+    "batch_parent": null, "waiting_on_cache": false,
     "encode_dispatched": true, "encode_dispatch_order": 1, "encode_dispatch_epoch": 3,
     "secs_since_dispatch": 91, "secs_since_frame": null, "secs_since_request": 140,
     "encode_frame": null, "encode_total": null, "encode_fps": null

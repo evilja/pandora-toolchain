@@ -263,6 +263,9 @@ mod tests {
             studio: None,
             batch: None,
             batch_parent: None,
+            link_node: None,
+            link_attempts: 0,
+            link_pin: None,
         }
     }
 

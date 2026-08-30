@@ -907,8 +907,8 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "admin",
             name: "gentoken",
             summary: "Generate a new API bearer token.",
-            usage: "/gentoken [label:<note>] [local:<true|false>]",
-            details: "Mints a random bearer token for the HTTP API and appends it to the token file. With local enabled, jobs submitted with the token prefer this server's Lumiere Drive profile when configured, falling back to the global Lumiere profile. The token is shown once, privately. Upper only.",
+            usage: "/gentoken [label:<note>] [local:<true|false>] [link:<node>]",
+            details: "Mints a random bearer token for the HTTP API and appends it to the token file. With local enabled, jobs submitted with the token prefer this server's Lumiere Drive profile when configured, falling back to the global Lumiere profile. With link set, it becomes a Pandora Mini node token bound to that node name, opening only the link routes. The token is shown once, privately. Upper only.",
         },
         HelpCommand {
             section: "admin",
@@ -2860,6 +2860,10 @@ impl EventHandler for Handler {
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::Boolean, "local", "Bind token to this server for Drive creds and git console access")
                         .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "link", "Mint a Pandora Mini node token under this node name")
+                        .required(false)
                 ),
             CreateCommand::new("exportdrive")
                 .description("Export Drive profiles encrypted to an age recipient (Witch only)")
@@ -3368,6 +3372,18 @@ async fn main() {
         });
     }
     pandora_toolchain::pnworker::messages::init_language_files();
+
+    // Pandora Mini. Everything above this line is the runtime a node needs — the worker loop, the
+    // tool binaries, the fonts, the localisation — and everything below it is Discord. A node runs
+    // the first and none of the second: it takes its work from a coordinator's link instead of
+    // from a guild, and every job it runs uses `Frontend::None`, which the worker pipeline already
+    // treats as a no-op for every message edit, reaction and presence update.
+    if pandora_toolchain::pnworker::link::client::is_mini() {
+        println!("[Pandora] starting in mini mode: no Discord client will be started");
+        pandora_toolchain::pnworker::link::client::run(tx).await;
+        return;
+    }
+
     let mut discord = Client::builder(env.get(TOKEN).cloned().unwrap_or_default(), GatewayIntents::all())
         .event_handler(Handler { tx })
         .await

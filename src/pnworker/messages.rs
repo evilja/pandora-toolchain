@@ -258,6 +258,21 @@ pub fn get_message(id: &str, lang: &str) -> String {
     lookup(id, lang).map(|(text, _)| text).unwrap_or_default()
 }
 
+// A message id that arrived as text — a Pandora Mini node reporting the payload its own workers
+// produced — turned back into the `&'static str` that `MessagePayload` carries, so the coordinator
+// can render and persist a remote job through exactly the same path as a local one. Ids are
+// checked against the built-in locale table rather than a hand-kept list: an id is acceptable
+// precisely when it has a translation, which is already enforced across every locale by test, and
+// the table's own keys live for the process, so nothing is leaked or allocated to hand one back.
+// An unknown id is `None` rather than a default, because rendering the wrong message for a remote
+// job is worse than rendering none.
+pub fn intern_message_id(id: &str) -> Option<&'static str> {
+    builtin_cache()
+        .get(DEFAULT_LANGS[0])?
+        .get_key_value(id)
+        .map(|(key, _)| key.as_str())
+}
+
 pub fn get_arg_count(id: &str, lang: &str) -> Option<usize> {
     lookup(id, lang).map(|(_, args)| args)
 }
@@ -729,6 +744,9 @@ mod tests {
             studio: None,
             batch: None,
             batch_parent: None,
+            link_node: None,
+            link_attempts: 0,
+            link_pin: None,
         }
     }
 

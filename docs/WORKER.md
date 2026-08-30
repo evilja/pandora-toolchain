@@ -182,6 +182,30 @@ Reading is forgiving in the same direction: `log_files` skips an entry it cannot
 stdout, and fails the request only when nothing readable turned up. One unresolvable name in the
 directory must never answer `500` in place of every transcript sitting beside it.
 
+## Linked nodes (Pandora Mini)
+
+`pndc --mini` runs the worker runtime with a link client in place of the Discord client, taking
+whole jobs from a coordinating `pndc`. On the coordinator, `do_link_things` (run once per loop pass,
+before the stall watchdog) is the entire lifecycle of a remote job: every local dispatch skips a job
+whose `link_node` is set, so nothing else can touch it.
+
+- **Offload happens at submit**, in `try_link_offload`, before `queue_new_job` — everything that
+  function does (preparing a work directory, dispatching a download) is what the node will do
+  instead. A job that finds no free node falls straight through and runs locally, so a full,
+  drained or absent cluster is never a reason for work to wait. Subtitle normalisation still runs
+  here, so a node can never be the thing that discovers an attachment was a PGS stream.
+- **A node forwards payloads, not summaries.** `lifecycle::render` is tapped on the node side —
+  not the `CommData` stream, because declines and cancellations never reach it — and the coordinator
+  replays each payload through `persist_side_effects` and `render`. A remote job therefore needs no
+  rendering path of its own and localises against its own `lang`.
+- **Requeue, not recovery.** A remote job's inputs are a link and a few KB of subtitle, so a lost
+  lease, an abandoned node or a declined job all return it to the queue as an ordinary local
+  candidate. `LINK_MAX_ATTEMPTS` (2) stops a poisoned job touring the cluster.
+- **A leased job is never a duplicate source.** Its input was downloaded on the node, so this
+  machine's copy of its work directory is empty.
+
+Full protocol, token tier, offload rules and failure handling in [LINK.md](LINK.md).
+
 ## Worker snapshot
 
 The queue is a `Vec<Job>` owned by `pn_worker` and shrine heartbeats are in-memory, so none of the

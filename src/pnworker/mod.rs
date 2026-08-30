@@ -25,3 +25,4 @@ pub mod snapshot;
 pub mod keep;
 pub mod batch;
 pub mod studio;
+pub mod link;

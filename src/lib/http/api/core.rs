@@ -46,6 +46,9 @@ pub(super) struct AppState {
 #[derive(Clone)]
 pub(super) struct ApiAuth {
     pub(super) local_server_id: Option<u64>,
+    // Set by a `<token>|link|<node>` line. Such a token authorises the link routes and nothing
+    // else: a node cannot submit jobs, read another job's logs, or touch git.
+    pub(super) link_node: Option<String>,
     // The token as presented. Request-scoped and never logged or serialised; the self-revoke route
     // needs the value itself, since the token file stores tokens and not their hashes.
     token: String,
@@ -181,6 +184,10 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/git/detach", post(git_detach))
         .route("/git/destruct", post(git_destruct))
         .route("/git/smartcode", post(git_smartcode))
+        .route("/link/register", post(super::link::register))
+        .route("/link/lease", get(super::link::lease))
+        .route("/link/lease/:id/renew", post(super::link::renew))
+        .route("/link/lease/:id/result", post(super::link::result))
         .route("/gitsync", post(gitsync))
         .route("/acix/search", post(acix_search))
         .route("/acix/tmdb", post(acix_tmdb))
@@ -415,7 +422,18 @@ fn should_rate_limit(method: &Method, path: &str) -> bool {
     if method == Method::GET || method == Method::HEAD {
         return false;
     }
+    // A node renews every lease every ten seconds for as long as it is working. That is a
+    // heartbeat on a fixed cadence, not user traffic, and throttling it would sever the cluster
+    // rather than protect anything — the token is already restricted to these routes alone.
+    if is_link_path(path) {
+        return false;
+    }
     !(method == Method::POST && is_cancel_path(path))
+}
+
+fn is_link_path(path: &str) -> bool {
+    let path = path.strip_prefix("/api/v1").unwrap_or(path);
+    path.trim_start_matches('/').starts_with("link/")
 }
 
 fn is_cancel_path(path: &str) -> bool {
@@ -429,6 +447,7 @@ fn is_cancel_path(path: &str) -> bool {
 
 struct TokenEntry {
     local_server_id: Option<u64>,
+    link_node: Option<String>,
     label: Option<String>,
 }
 
@@ -450,12 +469,16 @@ fn parse_token_file(contents: &str) -> std::collections::HashMap<String, TokenEn
         if stored.is_empty() {
             continue;
         }
-        let local_server_id = match (parts.next(), parts.next()) {
-            (Some("local"), Some(server_id)) => server_id.trim().parse::<u64>().ok(),
-            _ => None,
+        let (local_server_id, link_node) = match (parts.next(), parts.next()) {
+            (Some("local"), Some(server_id)) => (server_id.trim().parse::<u64>().ok(), None),
+            (Some("link"), Some(node)) => {
+                let node = node.trim();
+                (None, (!node.is_empty()).then(|| node.to_string()))
+            }
+            _ => (None, None),
         };
         map.entry(stored.to_string())
-            .or_insert(TokenEntry { local_server_id, label });
+            .or_insert(TokenEntry { local_server_id, link_node, label });
     }
     map
 }
@@ -481,6 +504,7 @@ fn api_auth_for_token(token: &str) -> Option<ApiAuth> {
     let entry = guard.1.get(token)?;
     Some(ApiAuth {
         local_server_id: entry.local_server_id,
+        link_node: entry.link_node.clone(),
         token: token.to_string(),
         token_hash: format!("{:x}", md5::compute(token.as_bytes())),
         label: entry.label.clone(),
@@ -508,6 +532,20 @@ pub(super) fn require_pnwitch(auth: &ApiAuth) -> Result<(), Response> {
         Ok(())
     } else {
         Err((StatusCode::FORBIDDEN, "PNwitch token required").into_response())
+    }
+}
+
+// The link routes are the only ones a node token opens, and they are bound to the node named on
+// the token line: a node cannot renew or finish a lease held by another. That binding is what makes
+// the roster meaningful, since nothing else about a node is authenticated.
+pub(super) fn require_link(auth: &ApiAuth) -> Result<String, Response> {
+    match auth.link_node.clone() {
+        Some(node) => Ok(node),
+        None => Err((
+            StatusCode::FORBIDDEN,
+            "this endpoint requires a link token (mint one with `/gentoken link`)",
+        )
+            .into_response()),
     }
 }
 
@@ -1298,4 +1336,56 @@ pub(super) fn base64_decode_bytes(input: &str) -> Result<Vec<u8>, String> {
         i += 4;
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Node tokens share the token file with every other kind, so the parser has to keep the three
+    // line shapes apart: a plain token, a server-bound one, and a node-bound one.
+    #[test]
+    fn the_token_file_keeps_link_local_and_plain_tokens_apart() {
+        let entries = parse_token_file(
+            "; PNwitch (added 1)\n\
+             aaaa\n\
+             ; console (added 2)\n\
+             bbbb|local|1234\n\
+             ; osaka box (added 3)\n\
+             cccc|link|mini-osaka\n",
+        );
+        let plain = entries.get("aaaa").expect("plain token missing");
+        assert_eq!(plain.local_server_id, None);
+        assert_eq!(plain.link_node, None);
+        assert_eq!(plain.label.as_deref(), Some("PNwitch"));
+
+        let local = entries.get("bbbb").expect("local token missing");
+        assert_eq!(local.local_server_id, Some(1234));
+        assert_eq!(local.link_node, None);
+
+        let link = entries.get("cccc").expect("link token missing");
+        assert_eq!(link.local_server_id, None);
+        assert_eq!(link.link_node.as_deref(), Some("mini-osaka"));
+    }
+
+    // A node token must not be mistaken for a server-bound one: `require_local` gates the git
+    // endpoints, and a node has no business there.
+    #[test]
+    fn a_link_token_is_not_a_local_token() {
+        let entries = parse_token_file("dddd|link|mini-a\n");
+        assert_eq!(entries["dddd"].local_server_id, None);
+    }
+
+    // A node renews every lease every ten seconds for as long as it works. Under the default
+    // thirty-writes-per-minute limit that alone would start returning 429 and sever the cluster.
+    #[test]
+    fn link_traffic_is_not_rate_limited() {
+        assert!(!should_rate_limit(&Method::POST, "/api/v1/link/lease/42/renew"));
+        assert!(!should_rate_limit(&Method::POST, "/api/v1/link/register"));
+        assert!(!should_rate_limit(&Method::POST, "/api/v1/link/lease/42/result"));
+        // Everything else still is.
+        assert!(should_rate_limit(&Method::POST, "/api/v1/jobs/encode"));
+        // Including a path that merely mentions the word.
+        assert!(should_rate_limit(&Method::POST, "/api/v1/jobs/linkedy"));
+    }
 }

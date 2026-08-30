@@ -9,6 +9,35 @@ pub async fn handle_gentoken(
 ) {
     let label = option_trimmed(command, "label");
     let local = option_bool(command, "local").unwrap_or(false);
+    let link_node = option_trimmed(command, "link");
+    if local && link_node.is_some() {
+        command_error(
+            ctx,
+            command,
+            "Error: a token is either `local` or a `link` node token, not both.",
+        )
+        .await;
+        return;
+    }
+    if let Some(node) = &link_node {
+        // The node name is a field in a `|`-separated line and the identity a node authenticates
+        // under, so anything that could split the line or arrive with invisible edges is refused
+        // here rather than producing a token nothing can ever match.
+        if node.is_empty()
+            || node.contains('|')
+            || node.contains('\n')
+            || node.contains('\r')
+            || node.chars().any(|c| c.is_whitespace())
+        {
+            command_error(
+                ctx,
+                command,
+                "Error: `link` must be a node name with no spaces or `|`.",
+            )
+            .await;
+            return;
+        }
+    }
     let local_server_id = if local {
         match command_server_id(ctx, command, "/gentoken local").await {
             Some(id) => Some(id),
@@ -47,9 +76,10 @@ pub async fn handle_gentoken(
             .unwrap_or(0);
         blob.push_str(&format!("; {} (added {})\n", l, ts));
     }
-    match local_server_id {
-        Some(id) => blob.push_str(&format!("{}|local|{}", token, id)),
-        None => blob.push_str(&token),
+    match (local_server_id, link_node.as_deref()) {
+        (Some(id), _) => blob.push_str(&format!("{}|local|{}", token, id)),
+        (None, Some(node)) => blob.push_str(&format!("{}|link|{}", token, node)),
+        (None, None) => blob.push_str(&token),
     }
     blob.push('\n');
 
@@ -69,9 +99,11 @@ pub async fn handle_gentoken(
     }
 
     let labelled = label.map(|l| format!(" for `{}`", l)).unwrap_or_default();
-    let scope = local_server_id
-        .map(|id| format!(" It's bound to this server (`{}`): it prefers this server's Lumiere Drive profile when configured, and unlocks the git console (`/init`, `/attach`, `/source`) at `/git`.", id))
-        .unwrap_or_default();
+    let scope = match (local_server_id, link_node.as_deref()) {
+        (Some(id), _) => format!(" It's bound to this server (`{}`): it prefers this server's Lumiere Drive profile when configured, and unlocks the git console (`/init`, `/attach`, `/source`) at `/git`.", id),
+        (None, Some(node)) => format!(" It's a Pandora Mini node token for `{}`: it opens the link routes and nothing else — it cannot submit jobs, read logs, or reach git. Set it as `link_node_token` on that node, with `link_node_name|pntools|{}`.", node, node),
+        (None, None) => String::new(),
+    };
     let embed = success_embed(command, COMMAND_UPDATED)
         .description(format!(
             "Created an API bearer token{}.{} It is stored in `{}` and shown only here.",

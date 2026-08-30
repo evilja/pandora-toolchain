@@ -6,10 +6,15 @@ use crate::pnworker::core::Job;
 use crate::pnworker::frontend::Frontend;
 use crate::pnworker::messages::MessagePayload;
 
+// Every user-visible effect in the worker goes through here, which is exactly why the link's node
+// side taps it: declines and cancellations never reach a `CommData` stream, so hooking the message
+// bus would have reported a node's encode progress faithfully and lost the reason a job was
+// refused. On a coordinator the report call returns immediately.
 pub(crate) async fn render(job: &mut Job, payload: MessagePayload) {
     let mut fe = std::mem::replace(&mut job.frontend, Frontend::None);
     fe.update(job, &payload).await;
     job.frontend = fe;
+    crate::pnworker::link::client::report(job.job_id, &payload, job.ready, &job.worker);
 }
 
 pub(crate) async fn cleanup_job(source: &PathBuf, dest: &PathBuf) {

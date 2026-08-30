@@ -49,3 +49,17 @@ pub const API_RATE_LIMIT: &str = "api_rate_limit";
 pub const API_RATE_WINDOW_SECS: &str = "api_rate_window_secs";
 pub const API_TOKENS_PATH: &str = "DB/config/global/environment/api.pandora";
 pub const FLAVOR_PATH: &str = "DB/config/global/environment/flavor.pandora";
+
+// Pandora Mini link. `PANDORA_MODE` set to `mini` runs the node side (equivalently `pndc --mini`):
+// the worker runtime and a link client, no Discord. Everything else is coordinator-side, and a
+// coordinator with no registered nodes behaves exactly as it did before the link existed.
+pub const PANDORA_MODE: &str = "pandora_mode";
+pub const LINK_COORDINATOR_URL: &str = "link_coordinator_url";
+pub const LINK_NODE_TOKEN: &str = "link_node_token";
+pub const LINK_NODE_NAME: &str = "link_node_name";
+pub const LINK_MAX_JOBS: &str = "link_max_jobs";
+pub const LINK_ENABLED: &str = "link_enabled";
+pub const LINK_ONLY_NODE: &str = "link_only_node";
+pub const LINK_LEASE_TIMEOUT_SECS: &str = "link_lease_timeout_secs";
+pub const LINK_ALLOW_BUILD_MISMATCH: &str = "link_allow_build_mismatch";
+pub const LINK_NODES_PATH: &str = "DB/config/global/environment/link_nodes.json";

@@ -131,6 +131,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
             check_encode_reboot_epoch(&shrine, &mut encode_reboot_epoch, &mut queue);
             continue;
         }
+        do_link_things(&db, &mut queue, &mut shrine).await;
         do_probe_timeout_things(&db, &mut queue).await;
         do_encode_stall_things(&db, &mut queue, &mut shrine).await;
         check_encode_reboot_epoch(&shrine, &mut encode_reboot_epoch, &mut queue);
@@ -187,6 +188,20 @@ async fn do_queue_things(
                     remove_dir_all(&job.directory).await.ok();
                 }
                 return true;
+            }
+            match try_link_offload(db, &mut job).await {
+                LinkOffload::Offered => {
+                    if let Err(e) = db.insert_job(&job).await {
+                        eprintln!("[Pandora] job {} insert failed: {}", job.job_id, e);
+                        decline_job_setup(&mut job, "internal error").await;
+                        crate::pnworker::link::board::release(job.job_id);
+                        return true;
+                    }
+                    queue.push(job);
+                    return true;
+                }
+                LinkOffload::Declined => return true,
+                LinkOffload::Local => {}
             }
             if queue_new_job(db, queue, shrine, &mut job).await {
                 return true;
@@ -317,6 +332,53 @@ fn check_encode_reboot_epoch(
         reset_encode_dispatches_after_reboot(queue, current_encode_reboot_epoch);
         *encode_reboot_epoch = current_encode_reboot_epoch;
     }
+}
+
+enum LinkOffload {
+    // Handed to a node. The mirror row is inserted and queued, but nothing is dispatched here.
+    Offered,
+    // Keep it on this machine, exactly as before the link existed.
+    Local,
+    // Setup refused the job outright (an unusable subtitle); it is already finished.
+    Declined,
+}
+
+// The one place a job leaves this machine. It runs before `queue_new_job`, because everything that
+// function does — preparing a work directory, dispatching a download — is what the node will do
+// instead. A job that finds no free node simply falls through and runs here, so the cluster being
+// full, drained, or absent is never a reason for work to wait.
+async fn try_link_offload(db: &JobDb, job: &mut Job) -> LinkOffload {
+    let Some(node) = crate::pnworker::link::coordinator::choose_node(job) else {
+        return LinkOffload::Local;
+    };
+    // An HLS-only release is served for twelve hours from the machine that made it, and a node has
+    // no public hostname to serve it from. Until the finished release is shipped back here for
+    // publication, those jobs stay where their playback URL can live.
+    if crate::pnworker::server_config::server_hls_enabled(job.server_id).await {
+        return LinkOffload::Local;
+    }
+    let label = crate::pnworker::link::coordinator::worker_label(&node);
+    // The same preparation a local job gets, and for the same reason: this is where a subtitle is
+    // normalised to ASS and where an unusable one is refused with its own message, so a node can
+    // never be the thing that discovers the attachment was a PGS stream.
+    if let Err(reason) = prepare_queued_job(job, &label, true).await {
+        decline_job_setup(job, &reason).await;
+        return LinkOffload::Declined;
+    }
+    let settings = crate::pnworker::link::board::settings();
+    let spec = crate::pnworker::link::coordinator::build_spec(
+        job,
+        unix_now().as_secs() + settings.lease_timeout_secs,
+        crate::pnworker::link::board::DEFAULT_RENEW_SECS,
+        false,
+    );
+    crate::pnworker::link::board::offer(&node, spec);
+    job.link_node = Some(node.clone());
+    job.worker = label;
+    job.ready = Stage::Queued;
+    db.update_worker(job.job_id, &job.worker).await.ok();
+    println!("[link] job {} offered to {}", job.job_id, node);
+    LinkOffload::Offered
 }
 
 async fn queue_new_job(
@@ -1124,6 +1186,19 @@ async fn handle_half_job(
                         File::create(directory.join("CANCEL")).await.ok();
                     }
                 }
+                // A leased job is cancelled where it is running. The request rides the node's
+                // next renew; the node then takes its own local cancel path and reports back, so
+                // the job ends through exactly the same events as any other remote transition.
+                if let Some(node) = queue[pos].link_node.clone() {
+                    if crate::pnworker::link::board::request_cancel(queue[pos].job_id) {
+                        println!(
+                            "[link] {node} | cancel requested for job {}",
+                            queue[pos].job_id
+                        );
+                        return;
+                    }
+                    // The lease is already gone; fall through and end it here.
+                }
                 let disposition = cancel_disposition(&queue[pos]);
                 if let Err(e) = File::create(queue[pos].directory.join("CANCEL")).await {
                     if disposition == CancelDisposition::CancelFile {
@@ -1536,6 +1611,246 @@ async fn finalize_cancelled_job(db: &JobDb, queue: &mut Vec<Job>, pos: usize) {
     .await;
     queue.remove(pos);
     frontend.set_presence(presence_from_queue(queue)).await;
+}
+
+// Everything a Pandora Mini node has said since the last pass, plus the leases it has stopped
+// saying anything about. Remote jobs progress only through here: they are skipped by every local
+// dispatch, so this function is the whole of their lifecycle on this machine.
+async fn do_link_things(db: &JobDb, queue: &mut Vec<Job>, shrine: &mut TypedShrine<WorkerMsg>) {
+    use crate::pnworker::link::board::{self, LinkEvent};
+    use crate::pnworker::link::spec::LinkOutcome;
+
+    let settings = board::settings();
+    let mut events = board::drain_events();
+    // A node that has gone quiet takes the same path out as one that reported failure, so that
+    // losing a machine and a machine losing a job are one code path and not two.
+    for (job_id, node) in board::expire_leases(settings.lease_timeout_secs) {
+        eprintln!("[link] {node} | job {job_id} lease expired; taking it back");
+        events.push(LinkEvent::Lost { job_id, node });
+    }
+
+    for event in events {
+        match event {
+            LinkEvent::Reports {
+                job_id,
+                node,
+                worker,
+                reports,
+            } => {
+                apply_link_reports(db, queue, job_id, &node, &worker, reports).await;
+            }
+            LinkEvent::Finished {
+                job_id,
+                node,
+                outcome,
+                reason,
+                reports,
+                warnings,
+            } => {
+                if let Some(pos) = link_job_position(queue, job_id, &node) {
+                    queue[pos].encode_warnings.extend(warnings);
+                }
+                apply_link_reports(db, queue, job_id, &node, "", reports).await;
+                match outcome {
+                    // A node that cannot run this job at all — a preset it does not have, an asset
+                    // it cannot resolve. Nothing was attempted, so it costs no retry.
+                    LinkOutcome::Declined => {
+                        eprintln!(
+                            "[link] {node} | job {job_id} declined ({}); running it here",
+                            reason.unwrap_or_else(|| "no reason given".to_string())
+                        );
+                        requeue_link_job(db, queue, shrine, job_id, false).await;
+                    }
+                    _ => {
+                        // Uploaded, Failed and Cancelled all arrive as reports carrying their own
+                        // terminal stage, which `apply_link_reports` has already settled. Anything
+                        // still in the queue reported no terminal payload, and is finished here so
+                        // a job cannot outlive its lease.
+                        settle_link_terminal(db, queue, job_id, &node, outcome, reason).await;
+                    }
+                }
+            }
+            LinkEvent::Lost { job_id, node } => {
+                requeue_link_job(db, queue, shrine, job_id, true).await;
+                let _ = node;
+            }
+        }
+    }
+}
+
+fn link_job_position(queue: &[Job], job_id: u64, node: &str) -> Option<usize> {
+    queue
+        .iter()
+        .position(|job| job.job_id == job_id && job.link_node.as_deref() == Some(node))
+}
+
+// Replays a node's worker output through the same chokepoint a local job uses. Forwarding the
+// payload itself rather than a summary is what makes this possible: `persist_side_effects` writes
+// the progress JSON the web console reads, the Drive helpers keep their deletion capability, and
+// `render` localises the message against the job's own language rather than the node's.
+async fn apply_link_reports(
+    db: &JobDb,
+    queue: &mut Vec<Job>,
+    job_id: u64,
+    node: &str,
+    worker: &str,
+    reports: Vec<crate::pnworker::link::spec::LinkReport>,
+) {
+    use crate::pnworker::link::spec::stage_from_name;
+
+    for report in reports {
+        let Some(pos) = link_job_position(queue, job_id, node) else {
+            return;
+        };
+        let Some(payload) = report.payload.to_payload() else {
+            eprintln!(
+                "[link] {node} | job {job_id} sent message id {} this build cannot render",
+                report.payload.id
+            );
+            continue;
+        };
+        let stage = report.stage.as_deref().and_then(stage_from_name);
+        {
+            let job = &mut queue[pos];
+            if !worker.is_empty() {
+                let label = crate::pnworker::link::coordinator::worker_label(node);
+                if job.worker != label {
+                    job.worker = label.clone();
+                    db.update_worker(job_id, &label).await.ok();
+                }
+            }
+            if let Some(stage) = stage {
+                job.ready = stage;
+                db.update_stage(job_id, stage).await.ok();
+            }
+            if stage == Some(Stage::Uploaded) {
+                if let Some(acix) = job.acix.clone() {
+                    if let Some(drive) = drive_link_from_payload(&payload) {
+                        if drive.starts_with("http") {
+                            let pending = crate::pnworker::acix::AcixPending::new(acix, drive);
+                            if let Ok(encoded) = serde_json::to_string(&pending) {
+                                db.set_acix_pending(job_id, &encoded).await.ok();
+                            }
+                        }
+                    }
+                }
+            }
+            persist_side_effects(db, job_id, &payload, stage, &job.encode_warnings).await;
+            if let Err(error) = persist_job_drive_upload(job, &payload, stage).await {
+                eprintln!(
+                    "[drive-delete] failed to retain deletion capability for job {}: {}",
+                    job_id, error
+                );
+            }
+            persist_smartcode_drive_upload(job, &payload, stage).await;
+            render(job, payload).await;
+        }
+        let terminal = queue
+            .get(pos)
+            .map(|job| matches!(job.ready, Stage::Uploaded | Stage::Failed | Stage::Cancelled))
+            .unwrap_or(false);
+        if terminal {
+            finish_link_job(db, queue, job_id).await;
+            return;
+        }
+    }
+}
+
+// A node reported a terminal outcome without a payload that carried it — it died mid-upload, or a
+// build skew meant its final message could not be rendered here. The job still has to end.
+async fn settle_link_terminal(
+    db: &JobDb,
+    queue: &mut Vec<Job>,
+    job_id: u64,
+    node: &str,
+    outcome: crate::pnworker::link::spec::LinkOutcome,
+    reason: Option<String>,
+) {
+    use crate::pnworker::link::spec::LinkOutcome;
+
+    let Some(pos) = link_job_position(queue, job_id, node) else {
+        return;
+    };
+    let (stage, payload) = match outcome {
+        LinkOutcome::Cancelled => (
+            Stage::Cancelled,
+            MessagePayload::Static(crate::pnworker::messages::JOB_CANCELLED),
+        ),
+        _ => (
+            Stage::Failed,
+            MessagePayload::Progress(
+                crate::pnworker::messages::ENCODE_FAIL,
+                vec![reason.unwrap_or_else(|| format!("node {node} reported no outcome"))],
+            ),
+        ),
+    };
+    queue[pos].ready = stage;
+    db.update_stage(job_id, stage).await.ok();
+    render(&mut queue[pos], payload).await;
+    finish_link_job(db, queue, job_id).await;
+}
+
+async fn finish_link_job(db: &JobDb, queue: &mut Vec<Job>, job_id: u64) {
+    crate::pnworker::link::board::release(job_id);
+    let Some(pos) = queue.iter().position(|job| job.job_id == job_id) else {
+        return;
+    };
+    let directory = queue[pos].directory.clone();
+    let frontend = queue[pos].frontend.clone();
+    let probe_job_id = queue[pos].probe_job_id;
+    if let Some(probe_id) = probe_job_id {
+        if let Some(probe_pos) = queue.iter().position(|job| job.job_id == probe_id) {
+            let probe_directory = queue[probe_pos].directory.clone();
+            cleanup_job(
+                &probe_directory,
+                &PathBuf::from("DB").join("saved_data").join(probe_id.to_string()),
+            )
+            .await;
+            db.archive_job(probe_id).await.ok();
+            queue.remove(probe_pos);
+        }
+    }
+    db.archive_job(job_id).await.ok();
+    cleanup_job(
+        &directory,
+        &PathBuf::from("DB").join("saved_data").join(job_id.to_string()),
+    )
+    .await;
+    queue.retain(|job| job.job_id != job_id);
+    frontend.set_presence(presence_from_queue(queue)).await;
+}
+
+// A job whose node was lost, or which the node refused. It goes back through the ordinary local
+// queue path — the source is a link and the subtitle is bytes, so nothing about a remote job is
+// unreproducible, and requeueing is always cheaper than trying to recover it.
+async fn requeue_link_job(
+    db: &JobDb,
+    queue: &mut Vec<Job>,
+    shrine: &mut TypedShrine<WorkerMsg>,
+    job_id: u64,
+    spend_attempt: bool,
+) {
+    crate::pnworker::link::board::release(job_id);
+    let Some(pos) = queue.iter().position(|job| job.job_id == job_id && job.link_node.is_some())
+    else {
+        return;
+    };
+    let mut job = queue.remove(pos);
+    job.link_node = None;
+    job.link_pin = None;
+    if spend_attempt {
+        job.link_attempts = job.link_attempts.saturating_add(1);
+    }
+    job.ready = Stage::Queued;
+    job.encode_dispatched = false;
+    job.encode_dispatch_order = None;
+    job.encode_dispatched_at = None;
+    job.encode_last_frame_at = None;
+    db.update_stage(job_id, Stage::Queued).await.ok();
+    println!("[link] job {job_id} requeued locally (attempt {})", job.link_attempts);
+    if !queue_new_job(db, queue, shrine, &mut job).await {
+        queue.push(job);
+    }
 }
 
 async fn do_probe_timeout_things(db: &JobDb, queue: &mut Vec<Job>) {
@@ -2190,6 +2505,10 @@ async fn do_job_progression_things(
         .iter()
         .filter(|j| {
             j.forward_parent.is_none()
+                // A leased job's input was downloaded on the node, so this machine's copy of its
+                // work directory is empty. Offering it as a duplicate source would hand another
+                // job a path with no video behind it.
+                && j.link_node.is_none()
                 && j.job_type != JobType::Preview
                 && (j.ready == Stage::Encoding
                     || (j.ready == Stage::Downloaded && j.encode_dispatched))
@@ -2226,6 +2545,11 @@ async fn do_job_progression_things(
     }
     for (idx, job) in queue.iter_mut().enumerate() {
         if job.forward_parent.is_some() {
+            continue;
+        }
+        // A leased job is executing on another machine. Every stage it reaches arrives through
+        // `do_link_things`; dispatching anything for it here would put two encoders on one job.
+        if job.link_node.is_some() {
             continue;
         }
         // A batch parent never encodes anything itself; its download feeds the child jobs and
@@ -3066,6 +3390,15 @@ pub struct Job {
     // encodes it spawns. Exactly one of the two is ever populated.
     pub batch: Option<BatchRequest>,
     pub batch_parent: Option<u64>,
+    // Set while a Pandora Mini node is executing this job. The row, the message and the DB stay
+    // here; only the work is elsewhere, so a job with this set is skipped by every local dispatch
+    // and progresses solely through `do_link_things`.
+    pub link_node: Option<String>,
+    // Nodes this job has already been lost on. A job that reliably kills whatever runs it must not
+    // become an endless tour of the cluster, so past `LINK_MAX_ATTEMPTS` it stays local.
+    pub link_attempts: u32,
+    // A node named on submit. The job waits for that node instead of running locally.
+    pub link_pin: Option<String>,
 }
 
 impl PartialEq for Job {
@@ -3162,6 +3495,9 @@ impl Job {
             studio: None,
             batch: None,
             batch_parent: None,
+            link_node: None,
+            link_attempts: 0,
+            link_pin: None,
         }
     }
 
@@ -3252,6 +3588,9 @@ impl Job {
             studio: None,
             batch: None,
             batch_parent: None,
+            link_node: None,
+            link_attempts: 0,
+            link_pin: None,
         }
     }
 }

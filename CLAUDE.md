@@ -13,6 +13,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **docs/TOOLS.md** — `pncurl`, `pnass`, libkagami parsing, ASS line-length checks.
 - **docs/LUMIERE_BROKER.md** — Cloudflare Worker, Drive profiles, secret migration, upload data flow.
 - **docs/LOCALIZATION.md** — message IDs and translation TOMLs.
+- **docs/LINK.md** — Pandora Mini linked nodes: `pndc --mini`, the lease protocol, what can be offloaded, failure handling.
 
 `AGENTS.md` is the same index for other agents; keep the two consistent if you change the doc set.
 

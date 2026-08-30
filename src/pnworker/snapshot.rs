@@ -39,6 +39,9 @@ pub fn publish(shrine: &TypedShrine<WorkerMsg>, queue: &[Job], gitquery_pending:
         "gitquery_pending": gitquery_pending,
         "encode_reboot_count": shrine.reboot_epoch(&Worker::Encode),
         "hearts": hearts,
+        // The cluster is nowhere in the jobs table either, for the same reason the queue is not:
+        // a node's liveness is in-memory state that a restart forgets.
+        "nodes": crate::pnworker::link::board::nodes_view(),
         "queue": jobs,
     });
     if let Ok(mut guard) = cell().write() {
@@ -60,6 +63,8 @@ fn job_view(job: &Job, now: u64) -> Value {
         "worker": job.worker,
         "server_id": job.server_id.map(|id| id.to_string()),
         "forward_parent": job.forward_parent.map(|id| id.to_string()),
+        "link_node": job.link_node,
+        "link_attempts": job.link_attempts,
         "batch_parent": job.batch_parent.map(|id| id.to_string()),
         "waiting_on_cache": job.duplicate_source.is_some(),
         "encode_dispatched": job.encode_dispatched,
