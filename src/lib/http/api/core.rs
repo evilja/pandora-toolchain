@@ -188,6 +188,8 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/link/lease", get(super::link::lease))
         .route("/link/lease/:id/renew", post(super::link::renew))
         .route("/link/lease/:id/result", post(super::link::result))
+        .route("/link/assets/manifest", get(super::link::assets_manifest))
+        .route("/link/assets/:hash", get(super::link::asset))
         .route("/gitsync", post(gitsync))
         .route("/acix/search", post(acix_search))
         .route("/acix/tmdb", post(acix_tmdb))

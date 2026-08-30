@@ -92,6 +92,8 @@ All under `/api/v1/link/`, all requiring a link token.
 - `POST /link/lease/:id/result` — the terminal report. `409` when the lease is already gone or
   belongs to another node, which tells the node to stop retrying without looking like a transport
   fault.
+- `GET /link/assets/manifest` — the font and intro corpus, with its revision. See [Assets](#assets).
+- `GET /link/assets/:hash` — one asset, addressed by content hash.
 
 ## Build parity
 
@@ -104,6 +106,55 @@ a mismatch cannot corrupt a file; but two builds make different rate decisions a
 a cluster that quietly ships two quality tiers is not worth debugging later. A deliberately
 heterogeneous cluster — mixed architectures, say — has genuinely different builds and says so with
 `link_allow_build_mismatch` rather than having the check weakened for everybody.
+
+## Assets
+
+Fonts and intro videos are the two things a node needs that do not travel in a job spec, and a
+missing font **does not fail** — libass substitutes one and the release goes out in the wrong
+typeface with nothing to show for it. The link closes that by syncing the coordinator's whole asset
+corpus and refusing any job a node cannot prove it holds the corpus for.
+
+The corpus is compared **by content**, never by name or timestamp: two machines agree when their
+files hash the same, which is the only definition that survives a copy, a re-download, or a
+filesystem that rounds mtimes.
+
+- **The manifest** (`GET /link/assets/manifest`) lists every file under `DB/fontconfig/<bucket>/`
+  and every file in every folder an `intros.toml` group resolves to, as
+  `{ hash, kind, group, name, bytes }`. Its `revision` is a SHA-256 over the sorted entries, so it
+  changes exactly when the corpus does and needs no counter to bump and no hook in `/cfont` to
+  remember to call. Files are hashed once per `(path, mtime, len)` and the assembled manifest is
+  held for a minute, so a node polling every ten seconds costs one scan.
+- **Fetching** (`GET /link/assets/:hash`) serves strictly by content hash, and only for a hash the
+  current manifest lists. A node cannot ask for a path, which is what keeps this from being an
+  arbitrary read of the coordinator's disk. Entry names that contain a separator or begin with a
+  dot are refused on both sides.
+- **Reconciling** happens on registration — before the first lease poll, so the common case is a
+  node that is already current when it is offered work — and again between jobs whenever a renew
+  reports a revision the node has not reached. Only missing entries are fetched, and each is
+  verified against its hash before it is written beside its target and renamed into place, so a
+  half-downloaded font is never a font libass can find.
+- **Installing.** libass resolves through **system fontconfig**, not `DB/fontconfig` — the `ass=`
+  filter passes no `fontsdir` — so a synced font is not yet a usable font. After a reconcile that
+  added any font, the node re-runs the same startup installer that copies `DB/fontconfig/<bucket>`
+  into the OS font path and runs `fc-cache`, then re-warms the font-name index.
+- **Refusing.** A leased job whose `assets_revision` the node has not reached triggers one inline
+  reconcile; if it still does not match, the node **declines the lease** and the coordinator runs
+  the job locally. Declining costs no retry, since nothing was attempted.
+
+Synced files land in `DB/fontconfig/<bucket>/` (fonts, the same place the startup installer reads)
+and `DB/cache/link-intros/<group>/` (intros, deliberately apart from anything an operator
+hand-placed, since pnmpeg writes compatibility variants back into whatever intro folder it is
+given). The last fully-synced revision is recorded in `DB/cache/link-assets-revision`.
+
+### Intro groups
+
+A job snapshots the **folder** its server's intro group resolved to, inside its `Preset` variant's
+`Option<String>` — and that path means nothing on another machine. What travels is the group's
+*name*, recovered by reverse lookup against `intros.toml` so it reflects the job's own snapshot
+rather than settings that may have changed since. The node rebuilds the preset with its own synced
+folder for that group, and declines the lease if the group materialised no files — an empty intro
+folder would otherwise produce a release with no intro, which is the same class of silent failure as
+a substituted font.
 
 ## What can be leased
 
@@ -197,10 +248,6 @@ node, matching the `[lumiere]` convention.
 - **Log proxying.** A node's tool logs stay on the node; `/catlogs` and `GET /jobs/:id/logs` answer
   only from the coordinator's own copy. Nodes are to push a bounded tail on renew and a bundle with
   the result.
-- **Asset sync.** Fonts and intro videos must already match on a node. There is no manifest, no
-  content-addressed fetch, and no per-job refusal for an unresolvable font yet, so a node missing a
-  font will substitute one silently. Provision `DB/fontconfig` and the intro groups identically
-  until this lands.
 - **HLS return path.** HLS-only jobs are kept local rather than encoded remotely and shipped back.
 - **Batch split.** Batch children carry no source of their own. Assigning each an index of the same
   torrent via `pnp2p --selects` keeps cluster-wide download at ≈1× the torrent, but needs the

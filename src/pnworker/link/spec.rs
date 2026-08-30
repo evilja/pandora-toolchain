@@ -35,6 +35,9 @@ pub struct NodeRegistered {
     pub reason: Option<String>,
     pub renew_secs: u64,
     pub lease_timeout_secs: u64,
+    // The corpus the node should hold. It reconciles against this before it polls for work.
+    #[serde(default)]
+    pub assets_revision: String,
 }
 
 // One job handed to one node. Everything the node needs to run it is in here: there is no second
@@ -72,6 +75,15 @@ pub struct LinkJobSpec {
     // playback capability has to be served from the one hostname that is already public.
     #[serde(default)]
     pub return_output: bool,
+    // The intro group this job's server selected. The node materialises the group under its own
+    // synced intro root and rebuilds the preset's concat folder from it — the coordinator's own
+    // folder path means nothing on another machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intro_group: Option<String>,
+    // The asset corpus this job was built against. A node that has not synced this revision
+    // refuses the lease rather than encoding with whatever fonts it happens to hold.
+    #[serde(default)]
+    pub assets_revision: String,
     pub expires_at: u64,
     pub renew_secs: u64,
 }
@@ -102,6 +114,10 @@ pub struct LinkReport {
 // inbound surface at all. Every out-of-band instruction rides here.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct LeaseControl {
+    // Carried on every renew so a font added on the coordinator reaches every working node without
+    // waiting for it to finish and re-register.
+    #[serde(default)]
+    pub assets_revision: String,
     #[serde(default)]
     pub cancel: bool,
     // The coordinator has already reclaimed this lease (the node went quiet long enough to be

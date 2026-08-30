@@ -13,6 +13,7 @@ use crate::lib::env::standard::{
 use crate::lib::p2p::nyaaise::TorrentType;
 use crate::pnworker::core::{HalfJob, Job, JobClass, JobType, Stage};
 use crate::pnworker::frontend::Frontend;
+use crate::pnworker::link::assets::{self, AssetKind, AssetManifest};
 use crate::pnworker::link::spec::{
     LeaseControl, LeaseRenew, LeaseResult, LinkJobSpec, LinkOutcome, LinkPayload, LinkReport,
     NodeRegister, NodeRegistered, job_type_from_name, source_from_wire, stage_name,
@@ -30,6 +31,15 @@ use crate::pnworker::server_effects::preset_from_name;
 const LEASE_POLL_TIMEOUT_SECS: u64 = 45;
 const REQUEST_TIMEOUT_SECS: u64 = 30;
 const REGISTER_RETRY_SECS: u64 = 15;
+// A single font or intro variant, which is a much larger body than any control message.
+const ASSET_TIMEOUT_SECS: u64 = 300;
+
+// Installing fonts into the OS font path and refreshing fontconfig lives in `src/helpers`, which
+// is compiled into the `pndc` binary and not into this library, so the node is handed the call
+// rather than reaching for it. It runs after a reconcile that added fonts, because libass resolves
+// through system fontconfig — a font sitting in `DB/fontconfig` that has not been installed is a
+// font that is still not found.
+pub type FontRefresh = fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
 
 pub struct LinkConfig {
     pub coordinator: String,
@@ -198,7 +208,81 @@ fn forget(job_id: u64) {
     }
 }
 
-pub async fn run(tx: Sender<JobClass>) {
+async fn fetch_manifest(
+    client: &reqwest::Client,
+    config: &LinkConfig,
+) -> Result<AssetManifest, String> {
+    let response = client
+        .get(format!("{}/api/v1/link/assets/manifest", config.coordinator))
+        .bearer_auth(&config.token)
+        .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("coordinator answered {}", response.status()));
+    }
+    response.json::<AssetManifest>().await.map_err(|e| e.to_string())
+}
+
+async fn fetch_asset(
+    client: &reqwest::Client,
+    config: &LinkConfig,
+    hash: &str,
+) -> Result<Vec<u8>, String> {
+    let response = client
+        .get(format!("{}/api/v1/link/assets/{hash}", config.coordinator))
+        .bearer_auth(&config.token)
+        .timeout(Duration::from_secs(ASSET_TIMEOUT_SECS))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("coordinator answered {}", response.status()));
+    }
+    response
+        .bytes()
+        .await
+        .map(|bytes| bytes.to_vec())
+        .map_err(|e| e.to_string())
+}
+
+// Brings this node's font and intro corpus up to the coordinator's, and records the revision it
+// reached. Only what is missing is fetched, compared by content — a node that already holds a font
+// under a different mtime does not download it again.
+async fn reconcile_assets(
+    client: &reqwest::Client,
+    config: &LinkConfig,
+    refresh_fonts: FontRefresh,
+) -> Result<String, String> {
+    let manifest = fetch_manifest(client, config).await?;
+    let missing = assets::missing(&manifest);
+    if missing.is_empty() {
+        assets::record_revision(&manifest.revision);
+        return Ok(manifest.revision);
+    }
+    println!(
+        "[link] syncing {} asset(s) for revision {}",
+        missing.len(),
+        &manifest.revision[..manifest.revision.len().min(12)]
+    );
+    let mut installed_fonts = false;
+    for entry in &missing {
+        let bytes = fetch_asset(client, config, &entry.hash).await?;
+        assets::write_asset(entry, &bytes)?;
+        installed_fonts |= entry.kind == AssetKind::Font;
+    }
+    // libass reads the OS font path, not `DB/fontconfig`, so a synced font is not a usable font
+    // until this has run.
+    if installed_fonts {
+        refresh_fonts().await;
+    }
+    assets::record_revision(&manifest.revision);
+    println!("[link] asset sync complete ({} file(s))", missing.len());
+    Ok(manifest.revision)
+}
+
+pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
     let config = match load_config() {
         Ok(config) => config,
         Err(reason) => {
@@ -227,6 +311,11 @@ pub async fn run(tx: Sender<JobClass>) {
             Ok(registered) if registered.accepted => {
                 renew_secs = registered.renew_secs.max(1);
                 println!("[link] node {} registered", config.node);
+                // Sync before the first poll rather than after, so the common case is a node that
+                // is already current by the time it is offered anything.
+                if let Err(e) = reconcile_assets(&client, &config, refresh_fonts).await {
+                    eprintln!("[link] asset sync failed: {e}");
+                }
                 break;
             }
             Ok(registered) => {
@@ -242,6 +331,7 @@ pub async fn run(tx: Sender<JobClass>) {
 
     let mut active: Vec<u64> = Vec::new();
     let mut draining = false;
+    let mut wanted_revision = String::new();
     loop {
         let mut finished: Vec<u64> = Vec::new();
         for job_id in active.clone() {
@@ -274,6 +364,9 @@ pub async fn run(tx: Sender<JobClass>) {
             match send_renew(&client, &config, job_id, reports, worker).await {
                 Ok(control) => {
                     draining = control.drain;
+                    if !control.assets_revision.is_empty() {
+                        wanted_revision = control.assets_revision.clone();
+                    }
                     if control.abandon {
                         eprintln!("[link] job {job_id} was reclaimed by the coordinator; dropping it");
                         cancel_locally(&tx, job_id).await;
@@ -288,9 +381,18 @@ pub async fn run(tx: Sender<JobClass>) {
         }
         active.retain(|job_id| !finished.contains(job_id));
 
+        // A font added on the coordinator reaches a working node here, between jobs, rather than
+        // waiting for it to restart. Syncing before the poll is what keeps the refusal below rare.
+        if !wanted_revision.is_empty() && assets::local_revision().as_deref() != Some(&wanted_revision)
+        {
+            if let Err(e) = reconcile_assets(&client, &config, refresh_fonts).await {
+                eprintln!("[link] asset sync failed: {e}");
+            }
+        }
+
         if !draining && (active.len() as u32) < config.max_jobs {
             match poll_lease(&client, &config).await {
-                Ok(Some(spec)) => match accept(&tx, spec).await {
+                Ok(Some(spec)) => match accept(&tx, &client, &config, refresh_fonts, spec).await {
                     Ok(job_id) => {
                         println!("[link] job {job_id} leased");
                         active.push(job_id);
@@ -443,11 +545,33 @@ async fn cancel_locally(tx: &Sender<JobClass>, job_id: u64) {
 // Turns a leased spec into an ordinary local job. Anything it cannot honour — a preset this build
 // does not know, a source kind it cannot classify — is declined rather than guessed at, because a
 // node quietly encoding with the wrong preset is worse than a coordinator re-running the job.
-async fn accept(tx: &Sender<JobClass>, spec: LinkJobSpec) -> Result<u64, (u64, String)> {
+async fn accept(
+    tx: &Sender<JobClass>,
+    client: &reqwest::Client,
+    config: &LinkConfig,
+    refresh_fonts: FontRefresh,
+    spec: LinkJobSpec,
+) -> Result<u64, (u64, String)> {
     let job_id = spec.job_id.parse::<u64>().unwrap_or(0);
     let decline = |reason: String| Err((job_id, reason));
     if job_id == 0 {
         return decline("job id is not a number".to_string());
+    }
+    // The corpus check, and the reason this exists at all: a missing font does not fail, it
+    // substitutes, and a release goes out in the wrong typeface with nothing to show for it. A
+    // node that cannot prove it holds what the job was built against refuses the work instead.
+    if !spec.assets_revision.is_empty()
+        && assets::local_revision().as_deref() != Some(spec.assets_revision.as_str())
+    {
+        if let Err(e) = reconcile_assets(client, config, refresh_fonts).await {
+            return decline(format!("assets could not be synced: {e}"));
+        }
+        if assets::local_revision().as_deref() != Some(spec.assets_revision.as_str()) {
+            return decline(format!(
+                "asset revision {} is not what this node holds",
+                &spec.assets_revision[..spec.assets_revision.len().min(12)]
+            ));
+        }
     }
     let Some(job_type) = job_type_from_name(&spec.job_type) else {
         return decline(format!("unsupported job type {}", spec.job_type));
@@ -455,7 +579,20 @@ async fn accept(tx: &Sender<JobClass>, spec: LinkJobSpec) -> Result<u64, (u64, S
     let Some(source) = source_from_wire(&spec.source_kind, &spec.source) else {
         return decline(format!("unsupported source kind {}", spec.source_kind));
     };
-    let Some(preset) = preset_from_name(&spec.preset, None) else {
+    // The concat folder inside a preset is a path on the coordinator. What arrived is the group's
+    // name; the folder is wherever this node materialised it. An empty group would hand pnmpeg a
+    // folder with no variants and quietly produce a release with no intro, which is the same class
+    // of failure as a substituted font.
+    let intro_candidates = match spec.intro_group.as_deref() {
+        None => None,
+        Some(group) => {
+            if !assets::intro_group_is_populated(group) {
+                return decline(format!("intro group {group} synced no files"));
+            }
+            Some(assets::intro_dir(group).display().to_string())
+        }
+    };
+    let Some(preset) = preset_from_name(&spec.preset, intro_candidates) else {
         return decline(format!("unsupported preset {}", spec.preset));
     };
     let attachment = match decode_base64(&spec.subtitle_b64) {

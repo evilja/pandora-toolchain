@@ -1,4 +1,5 @@
-use crate::pnworker::core::{Job, JobType};
+use crate::pnworker::core::{Job, JobType, Preset};
+use crate::pnworker::util::IntrosConfig;
 use crate::pnworker::link::board;
 use crate::pnworker::link::client::{encode_base64, job_type_is_leasable};
 use crate::pnworker::link::spec::{
@@ -61,6 +62,11 @@ pub fn choose_node(job: &Job) -> Option<String> {
 // is that same snapshot travelling one hop further.
 pub fn build_spec(job: &Job, expires_at: u64, renew_secs: u64, return_output: bool) -> LinkJobSpec {
     let (source_kind, source) = source_to_wire(&job.torrent);
+    // The concat folder lives inside the preset variant, and `preset_name` cannot carry it: it is a
+    // path on this machine and means nothing on another. What travels is the group's name, which
+    // the node resolves against the copy it synced.
+    let intro_group = intro_candidates(&job.preset)
+        .and_then(|folder| IntrosConfig::load().group_for_folder(&folder));
     LinkJobSpec {
         job_id: job.job_id.to_string(),
         job_type: job_type_name(job.job_type),
@@ -77,9 +83,26 @@ pub fn build_spec(job: &Job, expires_at: u64, renew_secs: u64, return_output: bo
         gdrive_folder_global: job.gdrive_folder_global.clone(),
         gdrive_folder_local: job.gdrive_folder_local.clone(),
         return_output,
+        intro_group,
+        assets_revision: crate::pnworker::link::assets::manifest().revision,
         expires_at,
         renew_secs,
     }
+}
+
+// The intro/concat folder a preset carries. Every encoding variant holds one; `Copy` never does.
+pub fn intro_candidates(preset: &Preset) -> Option<String> {
+    match preset {
+        Preset::PseudoLossless(candidates)
+        | Preset::Dummy(candidates)
+        | Preset::Standard(candidates)
+        | Preset::VerySlow(candidates)
+        | Preset::Gpu(candidates)
+        | Preset::Hd720(candidates)
+        | Preset::Sd480(candidates) => candidates.clone(),
+        Preset::Copy => None,
+    }
+    .filter(|folder| !folder.trim().is_empty())
 }
 
 // The worker label a leased job wears. `/workers` and the job embed both render `Job.worker`
@@ -164,6 +187,35 @@ mod tests {
 
     // The spec is the node's only source of truth, so what the coordinator snapshotted has to be
     // in it — including the probe reference a Pancode needs to survive `queue_pancode_job`.
+    // The concat folder lives inside the preset variant and is easy to drop on the way out — which
+    // is exactly what happened before this existed, leaving leased jobs with no intro at all.
+    #[test]
+    fn every_encoding_preset_yields_its_concat_folder() {
+        let folder = Some("DB/intros/summer".to_string());
+        for preset in [
+            Preset::Standard(folder.clone()),
+            Preset::VerySlow(folder.clone()),
+            Preset::Gpu(folder.clone()),
+            Preset::PseudoLossless(folder.clone()),
+            Preset::Dummy(folder.clone()),
+            Preset::Hd720(folder.clone()),
+            Preset::Sd480(folder.clone()),
+        ] {
+            assert_eq!(intro_candidates(&preset).as_deref(), Some("DB/intros/summer"));
+        }
+        assert_eq!(intro_candidates(&Preset::Copy), None);
+        assert_eq!(intro_candidates(&Preset::Standard(None)), None);
+        // A blank folder is no folder; it must not travel as a group name to look up.
+        assert_eq!(intro_candidates(&Preset::Standard(Some("  ".to_string()))), None);
+    }
+
+    // A node refuses a job whose corpus it cannot prove it holds, so the spec has to name one.
+    #[test]
+    fn the_spec_names_the_asset_revision_it_was_built_against() {
+        let spec = build_spec(&job(JobType::Encode), 100, 10, false);
+        assert!(!spec.assets_revision.is_empty());
+    }
+
     #[test]
     fn the_spec_carries_the_whole_snapshot() {
         let mut source = job(JobType::Pancode);

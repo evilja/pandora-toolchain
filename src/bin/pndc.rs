@@ -3342,6 +3342,25 @@ impl EventHandler for Handler {
     }
 }
 
+// Handed to the link client so a node can install fonts it has just synced. libass resolves
+// through system fontconfig, so a font sitting in `DB/fontconfig` is not a font it can find until
+// this has copied it into the OS font path and refreshed the cache. It lives here because
+// `src/helpers` is compiled into this binary and not into the library the client is part of.
+fn refresh_pandora_fonts() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+    Box::pin(async {
+        match install_persisted_pandora_fonts().await {
+            Ok(Some(installed)) => println!(
+                "[link] installed {} synced font file(s) (font cache {})",
+                installed.count,
+                if installed.cache_refreshed { "refreshed" } else { "not refreshed" }
+            ),
+            Ok(None) => {}
+            Err(e) => eprintln!("[link] synced font install failed: {e}"),
+        }
+        warm_font_name_cache();
+    })
+}
+
 #[tokio::main]
 async fn main() {
     migrate_pandora_files().await;
@@ -3380,7 +3399,7 @@ async fn main() {
     // treats as a no-op for every message edit, reaction and presence update.
     if pandora_toolchain::pnworker::link::client::is_mini() {
         println!("[Pandora] starting in mini mode: no Discord client will be started");
-        pandora_toolchain::pnworker::link::client::run(tx).await;
+        pandora_toolchain::pnworker::link::client::run(tx, refresh_pandora_fonts).await;
         return;
     }
 

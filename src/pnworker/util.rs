@@ -238,6 +238,25 @@ impl IntrosConfig {
     pub fn resolve(&self, group: &str) -> Option<String> {
         self.groups.get(group).filter(|folder| !folder.trim().is_empty()).cloned()
     }
+
+    // A job snapshots the folder its intro group resolved to, not the group's name, because that is
+    // all the encoder needs. Naming it again — to tell a linked node which intro to sync — means
+    // asking the config which group that folder belongs to, rather than re-reading the server's
+    // settings, which may have changed since the job was created.
+    pub fn group_for_folder(&self, folder: &str) -> Option<String> {
+        let folder = folder.trim();
+        if folder.is_empty() {
+            return None;
+        }
+        let mut names = self
+            .groups
+            .iter()
+            .filter(|(_, value)| value.trim() == folder)
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>();
+        names.sort();
+        names.into_iter().next()
+    }
 }
 
 pub fn migrate_intro_config() -> Result<bool, String> {
@@ -340,7 +359,28 @@ fn write_intro_config(config: &IntrosConfig) -> Result<(), String> {
 
 #[cfg(test)]
 mod intro_tests {
-    use super::migrate_intro_config_contents;
+    use super::{IntrosConfig, migrate_intro_config_contents};
+
+    // A job snapshots the folder its group resolved to, so naming the group again is a reverse
+    // lookup. Two groups can legitimately point at one folder; the answer has to be stable rather
+    // than whichever the map happened to yield first.
+    #[test]
+    fn a_folder_resolves_back_to_its_intro_group() {
+        let mut groups = std::collections::HashMap::new();
+        groups.insert("summer".to_string(), "DB/intros/summer".to_string());
+        groups.insert("winter".to_string(), "DB/intros/winter".to_string());
+        groups.insert("alias".to_string(), "DB/intros/summer".to_string());
+        let config = IntrosConfig { groups };
+
+        assert_eq!(config.group_for_folder("DB/intros/winter"), Some("winter".to_string()));
+        assert_eq!(config.group_for_folder("DB/intros/summer"), Some("alias".to_string()));
+        assert_eq!(
+            config.group_for_folder("DB/intros/summer"),
+            config.group_for_folder("DB/intros/summer")
+        );
+        assert_eq!(config.group_for_folder("DB/intros/nothing"), None);
+        assert_eq!(config.group_for_folder("   "), None);
+    }
 
     #[test]
     fn folder_intro_config_needs_no_migration() {

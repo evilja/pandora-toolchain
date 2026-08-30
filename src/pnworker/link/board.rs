@@ -244,6 +244,7 @@ pub fn register(request: NodeRegister, coordinator_digest: &str) -> NodeRegister
             )),
             renew_secs: DEFAULT_RENEW_SECS,
             lease_timeout_secs: settings.lease_timeout_secs,
+            assets_revision: crate::pnworker::link::assets::manifest().revision,
         };
     }
     let existing = state.nodes.get(&request.node);
@@ -272,6 +273,7 @@ pub fn register(request: NodeRegister, coordinator_digest: &str) -> NodeRegister
         reason: None,
         renew_secs: DEFAULT_RENEW_SECS,
         lease_timeout_secs: settings.lease_timeout_secs,
+        assets_revision: crate::pnworker::link::assets::manifest().revision,
     }
 }
 
@@ -359,6 +361,9 @@ pub fn claim(node: &str) -> Option<LinkJobSpec> {
 }
 
 pub fn renew(job_id: u64, request: LeaseRenew) -> LeaseControl {
+    // Read before the board is locked: building a manifest touches the filesystem, and the loop
+    // publishing into this board must never wait behind a directory scan.
+    let assets_revision = crate::pnworker::link::assets::manifest().revision;
     let mut state = board().lock().unwrap();
     ensure_loaded(&mut state);
     let mut drain = false;
@@ -370,6 +375,7 @@ pub fn renew(job_id: u64, request: LeaseRenew) -> LeaseControl {
         // The coordinator already reclaimed this job and gave it to somebody else. Telling the node
         // to drop it is the only thing that stops two machines finishing the same work.
         return LeaseControl {
+            assets_revision,
             cancel: false,
             abandon: true,
             drain,
@@ -377,6 +383,7 @@ pub fn renew(job_id: u64, request: LeaseRenew) -> LeaseControl {
     };
     if lease.node != request.node {
         return LeaseControl {
+            assets_revision,
             cancel: false,
             abandon: true,
             drain,
@@ -394,6 +401,7 @@ pub fn renew(job_id: u64, request: LeaseRenew) -> LeaseControl {
         });
     }
     LeaseControl {
+        assets_revision,
         cancel,
         abandon: false,
         drain,
@@ -544,6 +552,8 @@ mod tests {
             gdrive_folder_global: None,
             gdrive_folder_local: None,
             return_output: false,
+            intro_group: None,
+            assets_revision: String::new(),
             expires_at: 0,
             renew_secs: DEFAULT_RENEW_SECS,
         }

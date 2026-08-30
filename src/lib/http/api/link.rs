@@ -9,6 +9,7 @@ use axum::{
 use serde::Deserialize;
 
 use super::core::{ApiAuth, require_link};
+use crate::pnworker::link::assets;
 use crate::pnworker::link::board;
 use crate::pnworker::link::client::encoder_digest;
 use crate::pnworker::link::spec::{LeaseRenew, LeaseResult, NodeRegister};
@@ -116,6 +117,39 @@ pub(super) async fn result(
     }
     println!("[link] {node} | job {job_id} reported {outcome:?}");
     StatusCode::ACCEPTED.into_response()
+}
+
+pub(super) async fn assets_manifest(Extension(auth): Extension<ApiAuth>) -> Response {
+    if let Err(response) = require_link(&auth) {
+        return response;
+    }
+    Json(assets::manifest()).into_response()
+}
+
+pub(super) async fn asset(
+    Extension(auth): Extension<ApiAuth>,
+    Path(hash): Path<String>,
+) -> Response {
+    if let Err(response) = require_link(&auth) {
+        return response;
+    }
+    // Addressed by content, and only content the current manifest lists. A node cannot ask for a
+    // path, which is what keeps this from being an arbitrary read of the coordinator's disk.
+    let Some((entry, bytes)) = assets::read_asset(&hash) else {
+        return (StatusCode::NOT_FOUND, "no such asset in the current manifest").into_response();
+    };
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "application/octet-stream".to_string()),
+            (axum::http::header::CACHE_CONTROL, "no-store".to_string()),
+            (
+                axum::http::header::HeaderName::from_static("x-pandora-asset-name"),
+                entry.name,
+            ),
+        ],
+        bytes,
+    )
+        .into_response()
 }
 
 // The token names the node; the body has to agree. Without this a node holding a valid token could
