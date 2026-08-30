@@ -176,6 +176,12 @@ holds the server's HLS setting, so it produces no HLS layout of its own — and 
 to `/link/lease/:id/output`, the node's worker loop releases the work directory once the file is
 gone, and the client reports `returned`.
 
+A probe is the other outcome that does not end its job. `Probed` is where a probe stops locally
+too — it then waits for a file to be selected, and the probe timeout archives it — so the node
+reports `probed`, the coordinator releases the lease and clears `link_node`, and the job stays in
+the queue exactly where a local probe would leave it. Without that the lease would simply expire
+and the coordinator would re-run a probe that had already answered.
+
 `returned` is not a terminal outcome. The coordinator clears `link_node`, leaves the job at
 `Encoded`, and the ordinary local pipeline dispatches the upload — so the HLS publication, its
 capability and its playback URL are all produced here, on the hostname that is already public.

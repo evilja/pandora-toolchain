@@ -176,6 +176,10 @@ pub enum LinkOutcome {
     // The node encoded and handed its output back instead of publishing it. Not a terminal state
     // on the coordinator: the job resumes there at `Encoded` and is uploaded locally.
     Returned,
+    // A probe listed its files and is done. `Probed` is where a probe job stops even locally — it
+    // then waits for someone to select a file, and the probe timeout archives it — so the node's
+    // work is over while the job itself is not.
+    Probed,
     Failed,
     Cancelled,
     // The node cannot run this job at all — a preset it does not have, an asset it cannot resolve.
@@ -383,6 +387,7 @@ mod tests {
         for (outcome, name) in [
             (LinkOutcome::Uploaded, "\"uploaded\""),
             (LinkOutcome::Returned, "\"returned\""),
+            (LinkOutcome::Probed, "\"probed\""),
             (LinkOutcome::Failed, "\"failed\""),
             (LinkOutcome::Cancelled, "\"cancelled\""),
             (LinkOutcome::Declined, "\"declined\""),

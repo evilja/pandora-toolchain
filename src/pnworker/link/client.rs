@@ -159,9 +159,12 @@ pub fn report(job_id: u64, payload: &MessagePayload, stage: Stage, worker: &str)
     });
     entry.worker = worker.to_string();
     entry.stage = Some(stage);
+    // Where the node's involvement ends. `Probed` belongs here even though the job lives on: a
+    // probe stops there locally too, waiting for a file to be selected, and holding the lease past
+    // it would let the lease expire and have the coordinator re-run a probe that already answered.
     if matches!(
         stage,
-        Stage::Uploaded | Stage::Failed | Stage::Declined | Stage::Cancelled
+        Stage::Uploaded | Stage::Failed | Stage::Declined | Stage::Cancelled | Stage::Probed
     ) {
         entry.terminal = Some(stage);
     }
@@ -426,6 +429,7 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
                 flush_logs(&client, &config, job_id, offsets).await;
                 let outcome = match stage {
                     Stage::Uploaded => LinkOutcome::Uploaded,
+                    Stage::Probed => LinkOutcome::Probed,
                     Stage::Cancelled => LinkOutcome::Cancelled,
                     Stage::Declined => LinkOutcome::Declined,
                     _ => LinkOutcome::Failed,

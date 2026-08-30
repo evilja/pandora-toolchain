@@ -1676,6 +1676,12 @@ async fn do_link_things(db: &JobDb, queue: &mut Vec<Job>, shrine: &mut TypedShri
                     LinkOutcome::Returned => {
                         resume_returned_job(db, queue, job_id, &node).await;
                     }
+                    // The probe answered. The job stays in the queue at `Probed` exactly as a
+                    // local probe would, waiting for a file to be selected and archived by the
+                    // probe timeout; only the lease is over.
+                    LinkOutcome::Probed => {
+                        release_probed_job(db, queue, job_id, &node).await;
+                    }
                     _ => {
                         // Uploaded, Failed and Cancelled all arrive as reports carrying their own
                         // terminal stage, which `apply_link_reports` has already settled. Anything
@@ -1840,6 +1846,20 @@ async fn resume_returned_job(db: &JobDb, queue: &mut Vec<Job>, job_id: u64, node
     db.update_stage(job_id, Stage::Encoded).await.ok();
     db.update_worker(job_id, &job.worker).await.ok();
     println!("[link] {node} | job {job_id} output received; publishing here");
+}
+
+// Hands a finished probe back to the local queue without ending it. Clearing `link_node` is what
+// lets `do_probe_timeout_things` own the rest of its life, and releasing the lease is what stops
+// the watchdog from reclaiming a job that was never lost.
+async fn release_probed_job(db: &JobDb, queue: &mut Vec<Job>, job_id: u64, node: &str) {
+    crate::pnworker::link::board::release(job_id);
+    let Some(pos) = link_job_position(queue, job_id, node) else {
+        return;
+    };
+    queue[pos].link_node = None;
+    queue[pos].ready = Stage::Probed;
+    db.update_stage(job_id, Stage::Probed).await.ok();
+    println!("[link] {node} | job {job_id} probed; waiting on a file selection here");
 }
 
 async fn finish_link_job(db: &JobDb, queue: &mut Vec<Job>, job_id: u64) {
