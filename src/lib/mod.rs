@@ -12,5 +12,6 @@ pub mod p2p;
 pub mod protocol;
 pub mod publishlog;
 pub mod secret;
+pub mod setup;
 pub mod subs;
 pub mod torrent;

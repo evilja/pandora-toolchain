@@ -3529,6 +3529,14 @@ fn refresh_pandora_fonts() -> std::pin::Pin<Box<dyn std::future::Future<Output =
 #[tokio::main]
 async fn main() {
     migrate_pandora_files().await;
+    // Before anything reads configuration, and before the role is cached anywhere: a first run has
+    // none, and every step below assumes some. Exits with EX_CONFIG rather than starting into a
+    // failure nobody can read.
+    if let pandora_toolchain::lib::setup::Outcome::Stop =
+        pandora_toolchain::lib::setup::ensure_configured().await
+    {
+        std::process::exit(78);
+    }
     ensure_command_ranks_file();
     pandora_toolchain::lib::bin::ensure_startup_binaries().await;
     warm_font_name_cache();
