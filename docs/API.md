@@ -103,7 +103,7 @@ with `link_node` set is executing on that node and progresses only through the l
   "nodes": [{
     "node": "mini-osaka", "threads": 16, "max_jobs": 1, "presets": [], "drain": false,
     "last_seen_secs": 4, "jobs": ["4242"], "pandora_version": "3.5.0-lumiere",
-    "encoder_digest": "9f2c…"
+    "encoder_identity": "x264-165-0.165.x-pandora"
   }],
   "queue": [{
     "job_id": "4242", "job_type": "Encode", "stage": "Downloaded", "worker": "lnk-mini-osaka",

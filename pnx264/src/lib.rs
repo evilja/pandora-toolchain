@@ -37,6 +37,7 @@ pub struct PlanEntry {
 }
 
 unsafe extern "C" {
+    fn pnx264_identity() -> *const c_char;
     fn pnx264_open(cfg: *const RawConfig, err: *mut *const c_char) -> *mut c_void;
     fn pnx264_headers(e: *mut c_void, out: *mut *const u8) -> c_int;
     fn pnx264_encode(
@@ -56,6 +57,18 @@ unsafe extern "C" {
     ) -> c_int;
     fn pnx264_plan_flush(e: *mut c_void, out: *mut PlanEntry) -> c_int;
     fn pnx264_close(e: *mut c_void);
+}
+
+// Which libx264 this build encodes with. Two builds that agree here make the same rate decisions
+// at the same CRF; everything else about the binary — the Rust compiler, the libc, the host
+// architecture — can differ without changing a single output frame.
+pub fn identity() -> String {
+    // Safety: the shim returns a pointer to a string literal with static lifetime.
+    unsafe {
+        std::ffi::CStr::from_ptr(pnx264_identity())
+            .to_string_lossy()
+            .into_owned()
+    }
 }
 
 // Mirrors the CPU_* entries in src/lib/mpeg/preset.rs. `x264_params` carries the same string
@@ -228,6 +241,23 @@ impl Encoder {
 impl Drop for Encoder {
     fn drop(&mut self) {
         unsafe { pnx264_close(self.raw) };
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    // Deliberately shape-only. `build.rs` supports linking the distro libx264 for stock-parity
+    // work, so asserting "pandora" here would fail a build the project explicitly allows.
+    #[test]
+    fn the_identity_names_a_build_and_says_which_x264_it_is() {
+        let identity = super::identity();
+        assert!(identity.starts_with("x264-"), "{identity}");
+        assert!(
+            identity.ends_with("-pandora") || identity.ends_with("-stock"),
+            "{identity}"
+        );
+        let build = identity.trim_start_matches("x264-").split('-').next().unwrap_or("");
+        assert!(build.parse::<u32>().is_ok(), "no x264 build number in {identity}");
     }
 }
 

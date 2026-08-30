@@ -62,7 +62,7 @@ Coordinator side:
 State:
 
 - `DB/config/global/environment/link_nodes.json` (coordinator, mode `0600`) — the node roster as a
-  JSON array of `{ name, pandora_version, pnmpeg_build, encoder_digest, ffmpeg_version, threads,
+  JSON array of `{ name, pandora_version, encoder_identity, ffmpeg_version, threads,
   max_jobs, presets, registered_at, last_seen, drain }`. The roster is advisory: a node
   re-registers within seconds of coming up. It is persisted for the one field a restart must not
   forget — an operator's drain flag.
@@ -83,8 +83,8 @@ for as long as it works, which is a heartbeat on a fixed cadence rather than use
 
 All under `/api/v1/link/`, all requiring a link token.
 
-- `POST /link/register` — the node announces itself (name, versions, `encoder_digest`, thread count,
-  `max_jobs`). Returns `{ accepted, reason?, renew_secs, lease_timeout_secs }`.
+- `POST /link/register` — the node announces itself (name, version, `encoder_identity`, thread
+  count, `max_jobs`). Returns `{ accepted, reason?, renew_secs, lease_timeout_secs }`.
 - `GET /link/lease?node=<name>` — **long poll**, up to 30s. Returns a job spec, or `204` when there
   is nothing waiting. This is the only dispatch mechanism.
 - `POST /link/lease/:id/renew` — heartbeat plus the node's worker output. Returns
@@ -98,66 +98,45 @@ All under `/api/v1/link/`, all requiring a link token.
 - `GET /link/assets/manifest` — the font and intro corpus, with its revision. See [Assets](#assets).
 - `GET /link/assets/:hash` — one asset, addressed by content hash.
 
-## Build parity
+## Encoder parity
 
-`register` carries an `encoder_digest`: the SHA-256 of the node's own `pnmpeg` binary. pnmpeg links
-x264 statically, so equal digests mean the same encoder — a stronger guarantee than comparing
-version strings, and one that costs a single hash at startup.
+`register` carries an `encoder_identity`: the libx264 the node encodes with, as
+`x264-<build>-<pointver>-<pandora|stock>` — for the pinned fork, `x264-165-0.165.x-pandora`. That,
+and nothing else about the binary, is what decides an encode. A node on a different distribution,
+with a different Rust compiler or libc, produces identical frames as long as this matches.
 
-The coordinator **refuses a mismatch by default**. An episode is encoded entirely on one machine, so
-a mismatch cannot corrupt a file; but two builds make different rate decisions at the same CRF, and
-a cluster that quietly ships two quality tiers is not worth debugging later. A deliberately
-heterogeneous cluster — mixed architectures, say — has genuinely different builds and says so with
-`link_allow_build_mismatch` rather than having the check weakened for everybody.
+The coordinator **refuses a mismatch by default**, and refuses a node that reports no identity at
+all. An episode is encoded entirely on one machine, so a mismatch cannot corrupt a file; but two
+x264 builds make different rate decisions at the same CRF, and a cluster that quietly ships two
+quality tiers is not worth debugging later. Treating an absent identity as "no opinion" would have
+made the check optional for anyone who omitted the field.
 
-## Assets
+`link_allow_build_mismatch` disables both refusals. It is the escape hatch for a cluster that
+knowingly runs different encoders; it is not a way to work around a build that merely *looks*
+different.
 
-Fonts and intro videos are the two things a node needs that do not travel in a job spec, and a
-missing font **does not fail** — libass substitutes one and the release goes out in the wrong
-typeface with nothing to show for it. The link closes that by syncing the coordinator's whole asset
-corpus and refusing any job a node cannot prove it holds the corpus for.
+This deliberately replaced hashing the pnmpeg binary. A hash covers the whole toolchain, so it
+refuses nodes that are genuinely encoder-equivalent — a build on another distribution never
+matches — which leaves an operator no option but to turn the check off entirely, including for the
+case it exists to catch.
 
-The corpus is compared **by content**, never by name or timestamp: two machines agree when their
-files hash the same, which is the only definition that survives a copy, a re-download, or a
-filesystem that rounds mtimes.
+### Building a node against the fork
 
-- **The manifest** (`GET /link/assets/manifest`) lists every file under `DB/fontconfig/<bucket>/`
-  and every file in every folder an `intros.toml` group resolves to, as
-  `{ hash, kind, group, name, bytes }`. Its `revision` is a SHA-256 over the sorted entries, so it
-  changes exactly when the corpus does and needs no counter to bump and no hook in `/cfont` to
-  remember to call. Files are hashed once per `(path, mtime, len)` and the assembled manifest is
-  held for a minute, so a node polling every ten seconds costs one scan.
-- **Fetching** (`GET /link/assets/:hash`) serves strictly by content hash, and only for a hash the
-  current manifest lists. A node cannot ask for a path, which is what keeps this from being an
-  arbitrary read of the coordinator's disk. Entry names that contain a separator or begin with a
-  dot are refused on both sides.
-- **Reconciling** happens on registration — before the first lease poll, so the common case is a
-  node that is already current when it is offered work — and again between jobs whenever a renew
-  reports a revision the node has not reached. Only missing entries are fetched, and each is
-  verified against its hash before it is written beside its target and renamed into place, so a
-  half-downloaded font is never a font libass can find.
-- **Installing.** libass resolves through **system fontconfig**, not `DB/fontconfig` — the `ass=`
-  filter passes no `fontsdir` — so a synced font is not yet a usable font. After a reconcile that
-  added any font, the node re-runs the same startup installer that copies `DB/fontconfig/<bucket>`
-  into the OS font path and runs `fc-cache`, then re-warms the font-name index.
-- **Refusing.** A leased job whose `assets_revision` the node has not reached triggers one inline
-  reconcile; if it still does not match, the node **declines the lease** and the coordinator runs
-  the job locally. Declining costs no retry, since nothing was attempted.
+`pnx264/build.rs` finds libx264 through `PNX264_INCLUDE_DIR`, `PNX264_LIB_DIR` and
+`PNX264_STATIC=1`; without them it links whatever the linker already sees, which is the distro
+x264 and reports itself as `-stock`. A node meant to join a Pandora cluster wants the fork:
 
-Synced files land in `DB/fontconfig/<bucket>/` (fonts, the same place the startup installer reads)
-and `DB/cache/link-intros/<group>/` (intros, deliberately apart from anything an operator
-hand-placed, since pnmpeg writes compatibility variants back into whatever intro folder it is
-given). The last fully-synced revision is recorded in `DB/cache/link-assets-revision`.
+```bash
+export PNX264_INCLUDE_DIR=/path/to/x264-pandora/include
+export PNX264_LIB_DIR=/path/to/x264-pandora/lib
+export PNX264_STATIC=1
+cargo build --release
+```
 
-### Intro groups
-
-A job snapshots the **folder** its server's intro group resolved to, inside its `Preset` variant's
-`Option<String>` — and that path means nothing on another machine. What travels is the group's
-*name*, recovered by reverse lookup against `intros.toml` so it reflects the job's own snapshot
-rather than settings that may have changed since. The node rebuilds the preset with its own synced
-folder for that group, and declines the lease if the group materialised no files — an empty intro
-folder would otherwise produce a release with no intro, which is the same class of silent failure as
-a substituted font.
+The prebuilt fork release is laid out exactly as those variables expect (`include/x264.h`,
+`lib/libx264.a`). Verify its SHA-256 before use, and check `#define X264_PANDORA_PLAN_ONLY 1` is
+present in the header — plan-only mode, which the VerySlow parallel planner needs, exists only in
+the fork. The Docker image builds the same fork from pinned source instead; see `Dockerfile`.
 
 ## What can be leased
 
@@ -312,7 +291,7 @@ it re-registers on its next poll unless its token is revoked with `/rmtoken`, an
 holds is reclaimed when its lease expires.
 
 `GET /api/v1/workers` (PNwitch token only) gains a `nodes` array — name, thread count, `max_jobs`,
-presets, drain state, seconds since last contact, the jobs it holds, and its `encoder_digest`.
+presets, drain state, seconds since last contact, the jobs it holds, and its `encoder_identity`.
 Queue entries gain `link_node` and `link_attempts`. See [API.md](API.md#worker-snapshot).
 
 Link activity prints as `[link] <node> | <message>` on the coordinator and `[link] <message>` on a

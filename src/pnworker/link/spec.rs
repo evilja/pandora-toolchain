@@ -10,18 +10,22 @@ use crate::pnworker::messages::{MessagePayload, intern_message_id};
 // and server ids travel as strings because they are Discord snowflakes and nanosecond timestamps,
 // and a JSON number cannot carry either without loss.
 
-// What a node reports about itself when it comes up. `encoder_digest` is the SHA-256 of its own
-// pnmpeg binary, which links x264 statically — so equal digests mean the same encoder, without
-// asking x264 for a version number it does not export. The coordinator refuses a mismatch by
-// default: an episode is encoded entirely on one machine so a mismatch cannot corrupt a file, but
-// two builds make different rate decisions at the same CRF, and a cluster that quietly ships two
-// quality tiers is not worth debugging later.
+// What a node reports about itself when it comes up. `encoder_identity` names the libx264 it
+// encodes with — build number, point version, and whether it is the Pandora fork — because that,
+// and nothing else about the binary, is what decides an encode. Two nodes with different Rust
+// compilers, libcs or host distributions produce identical output as long as this matches.
+//
+// The coordinator refuses a mismatch by default: an episode is encoded entirely on one machine so
+// a mismatch cannot corrupt a file, but two x264 builds make different rate decisions at the same
+// CRF, and a cluster that quietly ships two quality tiers is not worth debugging later. It is
+// `#[serde(default)]` so a node from before this field existed deserialises with an empty identity
+// and is refused with a reason, rather than failing to parse at all.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NodeRegister {
     pub node: String,
     pub pandora_version: String,
-    pub pnmpeg_build: String,
-    pub encoder_digest: String,
+    #[serde(default)]
+    pub encoder_identity: String,
     pub ffmpeg_version: String,
     pub threads: u32,
     pub max_jobs: u32,

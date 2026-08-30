@@ -38,6 +38,12 @@ typedef struct {
     int64_t pts;
 } pnx264_plan_entry;
 
+/* Identifies the libx264 this was compiled against: its build number, point version, and whether
+ * it is the Pandora fork. Two encoders that agree on this string make the same rate decisions at
+ * the same CRF, which is the only sense in which two machines need to "match" — the surrounding
+ * binary can differ freely (a different rustc, a different libc) without changing an encode. */
+const char *pnx264_identity( void );
+
 /* Returns NULL on failure; err (if non-NULL) receives a static description. */
 pnx264_enc *pnx264_open(const pnx264_config *cfg, const char **err);
 

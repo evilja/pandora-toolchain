@@ -14,7 +14,7 @@ use serde::Deserialize;
 use super::core::{ApiAuth, require_link};
 use crate::pnworker::link::assets;
 use crate::pnworker::link::board;
-use crate::pnworker::link::client::encoder_digest;
+use crate::pnworker::link::client::encoder_identity;
 use crate::pnworker::link::spec::{LeaseRenew, LeaseResult, NodeRegister};
 
 // The coordinator's half of the link. A node has no inbound surface, so every exchange starts here
@@ -44,7 +44,7 @@ pub(super) async fn register(
     if body.node != node {
         return name_mismatch(&node, &body.node);
     }
-    let registered = board::register(body, &encoder_digest());
+    let registered = board::register(body, &encoder_identity());
     if !registered.accepted {
         println!(
             "[link] {} | registration refused: {}",

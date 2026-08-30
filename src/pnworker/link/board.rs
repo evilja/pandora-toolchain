@@ -34,9 +34,7 @@ pub struct NodeState {
     #[serde(default)]
     pub pandora_version: String,
     #[serde(default)]
-    pub pnmpeg_build: String,
-    #[serde(default)]
-    pub encoder_digest: String,
+    pub encoder_identity: String,
     #[serde(default)]
     pub ffmpeg_version: String,
     #[serde(default)]
@@ -59,11 +57,6 @@ fn one() -> u32 {
     1
 }
 
-// Digests are only ever shown to a human deciding whether two machines match; a prefix is enough
-// to tell "the same" from "not the same" and keeps a log line readable.
-fn short(digest: &str) -> String {
-    digest.chars().take(12).collect()
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LeasePhase {
@@ -221,27 +214,34 @@ fn restrict(path: &std::path::Path) {
 #[cfg(not(unix))]
 fn restrict(_path: &std::path::Path) {}
 
-// `coordinator_digest` is this build's own pnmpeg hash. pnmpeg links x264 statically, so two
-// identical pnmpeg binaries are two identical encoders — a stronger guarantee than comparing
-// version strings, and one that costs a single hash at startup. It is deliberately strict: a
-// cluster of mixed architectures has genuinely different builds and must say so with
-// `link_allow_build_mismatch` rather than have the check quietly weakened for everybody.
-pub fn register(request: NodeRegister, coordinator_digest: &str) -> NodeRegistered {
+// `coordinator_identity` is the libx264 this build encodes with. Comparing that rather than a hash
+// of the whole toolchain is what lets a node built on another distribution, or with another Rust
+// compiler, join a cluster it is genuinely encoder-equivalent to — while still refusing one whose
+// encoder would make different decisions.
+//
+// A node that reports no identity at all is refused too. Treating an absent value as "no opinion"
+// would have made the check optional for anyone who simply omitted it, which is not a property
+// worth having.
+pub fn register(request: NodeRegister, coordinator_identity: &str) -> NodeRegistered {
     let settings = settings();
     let mut state = board().lock().unwrap();
     ensure_loaded(&mut state);
-    if !settings.allow_build_mismatch
-        && !coordinator_digest.is_empty()
-        && !request.encoder_digest.is_empty()
-        && request.encoder_digest != coordinator_digest
-    {
+    let refusal = if settings.allow_build_mismatch {
+        None
+    } else if request.encoder_identity.is_empty() {
+        Some("this node reported no encoder identity (set link_allow_build_mismatch to permit)".to_string())
+    } else if request.encoder_identity != coordinator_identity {
+        Some(format!(
+            "encoder mismatch: node has {}, coordinator has {} (set link_allow_build_mismatch to permit)",
+            request.encoder_identity, coordinator_identity,
+        ))
+    } else {
+        None
+    };
+    if let Some(reason) = refusal {
         return NodeRegistered {
             accepted: false,
-            reason: Some(format!(
-                "encoder build mismatch: node pnmpeg is {}, coordinator pnmpeg is {} (set link_allow_build_mismatch to permit)",
-                short(&request.encoder_digest),
-                short(coordinator_digest),
-            )),
+            reason: Some(reason),
             renew_secs: DEFAULT_RENEW_SECS,
             lease_timeout_secs: settings.lease_timeout_secs,
             assets_revision: crate::pnworker::link::assets::manifest().revision,
@@ -256,8 +256,7 @@ pub fn register(request: NodeRegister, coordinator_digest: &str) -> NodeRegister
     let node = NodeState {
         name: request.node.clone(),
         pandora_version: request.pandora_version,
-        pnmpeg_build: request.pnmpeg_build,
-        encoder_digest: request.encoder_digest,
+        encoder_identity: request.encoder_identity,
         ffmpeg_version: request.ffmpeg_version,
         threads: request.threads,
         max_jobs: request.max_jobs.max(1),
@@ -548,7 +547,7 @@ pub fn nodes_view() -> Value {
                 "last_seen_secs": seconds_since_seen(&node),
                 "jobs": jobs.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
                 "pandora_version": node.pandora_version,
-                "encoder_digest": node.encoder_digest,
+                "encoder_identity": node.encoder_identity,
             }))
             .collect::<Vec<_>>()
     )
@@ -585,6 +584,47 @@ mod tests {
 
     // The board is one process-wide structure, exactly as it is in production, so each test uses
     // node names of its own rather than racing its neighbours for the same roster entry.
+
+    // Treating an absent identity as "no opinion" would make the whole check optional for anyone
+    // who simply omitted the field, which is not a property worth having.
+    #[test]
+    fn a_node_reporting_no_encoder_identity_is_refused() {
+        let request = NodeRegister {
+            node: "identity-none".to_string(),
+            pandora_version: "test".to_string(),
+            encoder_identity: String::new(),
+            ffmpeg_version: String::new(),
+            threads: 1,
+            max_jobs: 1,
+            presets: Vec::new(),
+        };
+        let answer = register(request, "x264-165-0.165.x-pandora");
+        assert!(!answer.accepted);
+        assert!(
+            answer.reason.unwrap_or_default().contains("no encoder identity"),
+            "the refusal should say what was missing",
+        );
+    }
+
+    // A node whose x264 would make different rate decisions is refused, and the message has to
+    // name both sides or nobody can act on it.
+    #[test]
+    fn a_different_encoder_is_refused_and_both_sides_are_named() {
+        let request = NodeRegister {
+            node: "identity-other".to_string(),
+            pandora_version: "test".to_string(),
+            encoder_identity: "x264-164-0.164.3108-stock".to_string(),
+            ffmpeg_version: String::new(),
+            threads: 1,
+            max_jobs: 1,
+            presets: Vec::new(),
+        };
+        let answer = register(request, "x264-165-0.165.x-pandora");
+        assert!(!answer.accepted);
+        let reason = answer.reason.unwrap_or_default();
+        assert!(reason.contains("x264-164-0.164.3108-stock"), "{reason}");
+        assert!(reason.contains("x264-165-0.165.x-pandora"), "{reason}");
+    }
 
     // A lease is targeted before the node polls, so a second node polling must not be able to take
     // work meant for the first. Two machines on one job is the failure this whole lease phase

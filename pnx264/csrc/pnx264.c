@@ -3,6 +3,23 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* X264_BUILD is a number and X264_POINTVER a string literal, so the identity is assembled by the
+ * preprocessor and costs nothing at runtime. The fork marker is what separates an encoder that can
+ * plan from one that merely shares a version number with it. */
+#define PNX264_STR2(x) #x
+#define PNX264_STR(x) PNX264_STR2(x)
+
+#ifdef X264_PANDORA_PLAN_ONLY
+#define PNX264_FORK "pandora"
+#else
+#define PNX264_FORK "stock"
+#endif
+
+const char *pnx264_identity( void )
+{
+    return "x264-" PNX264_STR(X264_BUILD) "-" X264_POINTVER "-" PNX264_FORK;
+}
+
 struct pnx264_enc {
     x264_t *h;
     x264_picture_t pic_in;

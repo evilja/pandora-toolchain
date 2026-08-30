@@ -3,12 +3,11 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::Sender;
 
 use crate::lib::env::core::get_pandora_env;
 use crate::lib::env::standard::{
-    LINK_COORDINATOR_URL, LINK_MAX_JOBS, LINK_NODE_NAME, LINK_NODE_TOKEN, PANDORA_MODE, PNMPEG,
+    LINK_COORDINATOR_URL, LINK_MAX_JOBS, LINK_NODE_NAME, LINK_NODE_TOKEN, PANDORA_MODE,
 };
 use crate::lib::p2p::nyaaise::TorrentType;
 use crate::pnworker::core::{HalfJob, Job, JobClass, JobType, Stage};
@@ -97,22 +96,13 @@ pub fn load_config() -> Result<LinkConfig, String> {
     })
 }
 
-// pnmpeg links x264 statically, so hashing the binary answers "is this the same encoder" without
-// asking x264 for a version it does not export. Computed once: it is a few tens of megabytes.
-pub fn encoder_digest() -> String {
-    static DIGEST: OnceLock<String> = OnceLock::new();
-    DIGEST
-        .get_or_init(|| {
-            let env = get_pandora_env();
-            let Some(path) = env.get(PNMPEG).map(|value| value.trim().to_string()) else {
-                return String::new();
-            };
-            let Ok(bytes) = std::fs::read(&path) else {
-                return String::new();
-            };
-            format!("{:x}", Sha256::digest(&bytes))
-        })
-        .clone()
+// Which libx264 this build encodes with. It is the whole of what has to match between two
+// machines: a node with a different Rust compiler or libc produces identical frames, while one
+// with a different x264 makes different rate decisions at the same CRF. Hashing the pnmpeg binary
+// instead — the obvious thing, and what this used to do — refuses builds that are genuinely
+// equivalent, which pushes an operator into disabling the check altogether.
+pub fn encoder_identity() -> String {
+    pnx264::identity()
 }
 
 fn ffmpeg_version() -> String {
@@ -562,8 +552,7 @@ async fn register(
     let body = NodeRegister {
         node: config.node.clone(),
         pandora_version: env!("CARGO_PKG_VERSION").to_string(),
-        pnmpeg_build: encoder_digest(),
-        encoder_digest: encoder_digest(),
+        encoder_identity: encoder_identity(),
         ffmpeg_version: ffmpeg_version(),
         threads: std::thread::available_parallelism()
             .map(|value| value.get() as u32)
