@@ -88,7 +88,7 @@ pub(super) async fn lease(
 pub(super) async fn renew(
     Extension(auth): Extension<ApiAuth>,
     Path(job_id): Path<u64>,
-    Json(body): Json<LeaseRenew>,
+    Json(mut body): Json<LeaseRenew>,
 ) -> Response {
     let node = match require_link(&auth) {
         Ok(node) => node,
@@ -97,7 +97,14 @@ pub(super) async fn renew(
     if body.node != node {
         return name_mismatch(&node, &body.node);
     }
-    Json(board::renew(job_id, body)).into_response()
+    let logs = std::mem::take(&mut body.logs);
+    let control = board::renew(job_id, body);
+    // Only a node that still holds the lease may write into this job's log directory, and a node
+    // being told to abandon has already had its job given away.
+    if !control.abandon {
+        crate::pnworker::link::logs::apply(job_id, &logs);
+    }
+    Json(control).into_response()
 }
 
 pub(super) async fn result(

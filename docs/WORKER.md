@@ -203,6 +203,11 @@ whose `link_node` is set, so nothing else can touch it.
   candidate. `LINK_MAX_ATTEMPTS` (2) stops a poisoned job touring the cluster.
 - **A leased job is never a duplicate source.** Its input was downloaded on the node, so this
   machine's copy of its work directory is empty.
+- **Logs come to the coordinator.** A node ships each of a job's tool logs forward as it grows, on
+  every renew, and the coordinator appends them into its own `DB/work/<job>/log` — so `/catlogs`
+  and the API log routes answer for a remote job through `lib::joblog` unchanged, and `cleanup_job`
+  archives them like any other. A terminal job flushes what is left before its result ends the
+  lease.
 - **Upload policy travels with the job.** A node holds no `meta.pandora` for the originating guild,
   so `drive_only` is resolved here and passed to its upload worker as an override. An HLS-only job
   is encoded remotely but published here: the node stops at `Encoded`, hands the MP4 back, and the

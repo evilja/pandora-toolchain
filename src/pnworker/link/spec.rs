@@ -106,6 +106,24 @@ pub struct LeaseRenew {
     pub worker: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reports: Vec<LinkReport>,
+    // Whatever this job's logs have gained since the last renew. They land in the coordinator's own
+    // log directory for the job, so `/catlogs` and the log routes answer for a remote job exactly
+    // as they do for a local one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub logs: Vec<LinkLogChunk>,
+}
+
+// A slice of one of a job's tool logs, shipped as it grows. `offset` is where it belongs in the
+// file, which is what makes a re-sent chunk harmless after a renew the node never saw succeed.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LinkLogChunk {
+    pub name: String,
+    pub offset: u64,
+    pub text: String,
+    // The log was replaced — a retry of the same job writing a fresh one. Start it over rather
+    // than splicing new bytes onto the previous attempt's.
+    #[serde(default)]
+    pub reset: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -15,8 +15,8 @@ use crate::pnworker::core::{HalfJob, Job, JobClass, JobType, Stage};
 use crate::pnworker::frontend::Frontend;
 use crate::pnworker::link::assets::{self, AssetKind, AssetManifest};
 use crate::pnworker::link::spec::{
-    LeaseControl, LeaseRenew, LeaseResult, LinkJobSpec, LinkOutcome, LinkPayload, LinkReport,
-    NodeRegister, NodeRegistered, job_type_from_name, source_from_wire, stage_name,
+    LeaseControl, LeaseRenew, LeaseResult, LinkJobSpec, LinkLogChunk, LinkOutcome, LinkPayload,
+    LinkReport, NodeRegister, NodeRegistered, job_type_from_name, source_from_wire, stage_name,
 };
 use crate::pnworker::messages::MessagePayload;
 use crate::pnworker::server_effects::preset_from_name;
@@ -416,12 +416,19 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
     let mut active: Vec<ActiveLease> = Vec::new();
     let mut draining = false;
     let mut wanted_revision = String::new();
+    // How much of each of a job's logs has been shipped. Advanced only once the renew carrying a
+    // chunk succeeded, so a failed request costs a repeat rather than a hole in the transcript.
+    let mut log_offsets: HashMap<u64, HashMap<String, u64>> = HashMap::new();
     loop {
         let mut finished: Vec<u64> = Vec::new();
         for lease in active.clone() {
             let job_id = lease.job_id;
             let Drained { reports, worker, stage, terminal } = take_reports(job_id);
             if let Some(stage) = terminal {
+                // The lease ends with this result, and with it the only channel these logs have.
+                // Whatever the tools wrote in their last seconds is exactly the part worth reading.
+                let offsets = log_offsets.entry(job_id).or_default();
+                flush_logs(&client, &config, job_id, offsets).await;
                 let outcome = match stage {
                     Stage::Uploaded => LinkOutcome::Uploaded,
                     Stage::Cancelled => LinkOutcome::Cancelled,
@@ -443,6 +450,7 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
                 }
                 println!("[link] job {job_id} finished as {:?}", outcome);
                 forget(job_id);
+                log_offsets.remove(&job_id);
                 finished.push(job_id);
                 continue;
             }
@@ -474,14 +482,18 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
                         }
                         println!("[link] job {job_id} output returned");
                         forget(job_id);
+                        log_offsets.remove(&job_id);
                         finished.push(job_id);
                     }
                     Err(e) => eprintln!("[link] job {job_id} output could not be returned: {e}"),
                 }
                 continue;
             }
-            match send_renew(&client, &config, job_id, reports, worker).await {
+            let offsets = log_offsets.entry(job_id).or_default();
+            let (chunks, advanced) = crate::pnworker::link::logs::collect(job_id, offsets).await;
+            match send_renew(&client, &config, job_id, reports, worker, chunks).await {
                 Ok(control) => {
+                    *offsets = advanced;
                     draining = control.drain;
                     if !control.assets_revision.is_empty() {
                         wanted_revision = control.assets_revision.clone();
@@ -490,6 +502,7 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
                         eprintln!("[link] job {job_id} was reclaimed by the coordinator; dropping it");
                         cancel_locally(&tx, job_id).await;
                         forget(job_id);
+                        log_offsets.remove(&job_id);
                         finished.push(job_id);
                     } else if control.cancel {
                         cancel_locally(&tx, job_id).await;
@@ -608,11 +621,13 @@ async fn send_renew(
     job_id: u64,
     reports: Vec<LinkReport>,
     worker: String,
+    logs: Vec<LinkLogChunk>,
 ) -> Result<LeaseControl, String> {
     let body = LeaseRenew {
         node: config.node.clone(),
         worker,
         reports,
+        logs,
     };
     let response = client
         .post(format!(
@@ -629,6 +644,30 @@ async fn send_renew(
         return Err(format!("coordinator answered {}", response.status()));
     }
     response.json::<LeaseControl>().await.map_err(|e| e.to_string())
+}
+
+// Ships everything a job's logs still hold, in as many renews as it takes. Bounded, because a log
+// growing faster than it can be sent must not hold the lease open forever — the cap is far above
+// what an encoder transcript reaches.
+async fn flush_logs(
+    client: &reqwest::Client,
+    config: &LinkConfig,
+    job_id: u64,
+    offsets: &mut HashMap<String, u64>,
+) {
+    for _ in 0..32 {
+        let (chunks, advanced) = crate::pnworker::link::logs::collect(job_id, offsets).await;
+        if chunks.is_empty() {
+            return;
+        }
+        match send_renew(client, config, job_id, Vec::new(), String::new(), chunks).await {
+            Ok(_) => *offsets = advanced,
+            Err(e) => {
+                eprintln!("[link] job {job_id} final logs could not be shipped: {e}");
+                return;
+            }
+        }
+    }
 }
 
 async fn send_result(

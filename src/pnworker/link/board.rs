@@ -614,6 +614,7 @@ mod tests {
                 node: "reclaim-a".to_string(),
                 worker: "enc-main".to_string(),
                 reports: Vec::new(),
+                logs: Vec::new(),
             },
         );
         assert!(control.abandon);
@@ -631,6 +632,7 @@ mod tests {
                 node: "stranger-b".to_string(),
                 worker: String::new(),
                 reports: Vec::new(),
+                logs: Vec::new(),
             },
         );
         assert!(control.abandon);

@@ -8,4 +8,5 @@ pub mod assets;
 pub mod board;
 pub mod client;
 pub mod coordinator;
+pub mod logs;
 pub mod spec;

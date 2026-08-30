@@ -125,6 +125,11 @@ a climbing `hearts[Encode].last_beat_secs` and `reboot_count` is the layer being
 
 The HTTP counterpart of Discord's `/catlogs` (see [DISCORD.md](DISCORD.md)), for reading a job's tool logs when it is stuck or failed. All three routes require a **PNwitch-labelled token** — logs carry filesystem paths, torrent names, and upload URLs, so they sit at the same tier as the Discord command — and all are `GET`, so they are never rate-limited.
 
+A job that ran on a Pandora Mini node keeps its logs here too: the node ships each log forward as it
+grows and the coordinator appends into that job's own `DB/work/<job_id>/log`, so these routes and
+`/catlogs` answer for a remote job with no new endpoint and no new token tier. See
+[LINK.md](LINK.md#log-shipping).
+
 Both frontends share `lib::joblog`: `find_job_logs` looks in `DB/work/<job_id>/log` first (`"location": "active"`) and falls back to `DB/saved_data/<job_id>/log` (`"archived"`) for a job whose lifecycle already moved it, takes plain files only (no subdirectories), and sorts them by name. A job with neither directory — or with an empty one — is a `404 no logs for this job` on every route.
 
 ### `publish.log`

@@ -249,6 +249,36 @@ The worker label a leased job wears is `lnk-<node>`, which is what `/workers` an
 render — that is where an operator finds out which machine has their episode. `worker_waiting`
 does not list it, so a leased job correctly counts as active.
 
+## Log shipping
+
+Shipping incrementally rather than bundling at the end is the point: a log that only arrives when a
+job ends is no use for the case job logs exist for, which is a job that is stuck and has not ended
+at all. A node sends whatever each of its logs has gained since the last renew, and the coordinator
+appends it into that job's own log directory.
+
+- **Offsets, not appends.** Each chunk carries the position it belongs at. A chunk the node re-sent
+  after a renew it never saw succeed lands entirely behind what is already written and is skipped,
+  so a repeat is harmless rather than a duplicated block in the middle of a transcript.
+- **Offsets advance on success only**, so a failed renew costs a repeat rather than a hole.
+- **A gap is recorded, not hidden.** If bytes genuinely never arrived, the transcript says so
+  where they should have been — two disjoint halves spliced together read as one continuous log and
+  are a lie about what the tool printed.
+- **A shorter file is a new one.** A retry of the same job writes a fresh log from zero; that
+  arrives as a reset and replaces the previous attempt's rather than splicing onto it.
+- **A terminal job flushes first.** Before the result is sent — and with it the lease, and with the
+  lease the only channel these logs have — the node ships everything remaining. What the tools wrote
+  in their last seconds is exactly the part worth reading.
+- **Bounds.** 256 KiB per file per renew, which is far more than a throttled encoder log uses; a
+  file that outruns it catches up over the renews that follow. On the coordinator, 64 MiB per file,
+  after which it stops growing and says so once. The name is validated as a plain file name, since
+  it arrives off the wire and becomes a path component.
+
+Logs are shipped as text with lossy UTF-8 conversion: ffmpeg occasionally emits a byte that is not
+valid UTF-8, and a replacement character in a transcript beats refusing to ship the transcript.
+
+Because the logs land in the coordinator's own directory, `cleanup_job` carries them into
+`DB/saved_data/<job>/log` when the job archives, exactly as it does for a local job.
+
 ## Failure handling
 
 A remote job is cheap to lose: its inputs are a link and a few KB of subtitle, so **requeue, not
