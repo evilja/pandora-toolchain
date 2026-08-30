@@ -351,12 +351,14 @@ async fn try_link_offload(db: &JobDb, job: &mut Job) -> LinkOffload {
     let Some(node) = crate::pnworker::link::coordinator::choose_node(job) else {
         return LinkOffload::Local;
     };
-    // An HLS-only release is served for twelve hours from the machine that made it, and a node has
-    // no public hostname to serve it from. Until the finished release is shipped back here for
-    // publication, those jobs stay where their playback URL can live.
-    if crate::pnworker::server_config::server_hls_enabled(job.server_id).await {
-        return LinkOffload::Local;
-    }
+    // An HLS-only release is served for twelve hours from the machine that published it, and a
+    // node has no public hostname to serve it from. Such a job is still encoded remotely; the node
+    // holds its finished MP4 and hands it back, and this machine does the publishing, so every
+    // playback URL stays on the one hostname that is already public.
+    let return_output = crate::pnworker::server_config::server_hls_enabled(job.server_id).await;
+    // A node has no `meta.pandora` for the originating guild, so the upload policy travels with
+    // the job rather than being looked up on the far side.
+    let drive_only = crate::pnworker::server_config::server_drive_only(job.server_id).await;
     let label = crate::pnworker::link::coordinator::worker_label(&node);
     // The same preparation a local job gets, and for the same reason: this is where a subtitle is
     // normalised to ASS and where an unusable one is refused with its own message, so a node can
@@ -370,14 +372,21 @@ async fn try_link_offload(db: &JobDb, job: &mut Job) -> LinkOffload {
         job,
         unix_now().as_secs() + settings.lease_timeout_secs,
         crate::pnworker::link::board::DEFAULT_RENEW_SECS,
-        false,
+        return_output,
+        drive_only,
     );
     crate::pnworker::link::board::offer(&node, spec);
     job.link_node = Some(node.clone());
+    job.link_return_output = return_output;
     job.worker = label;
     job.ready = Stage::Queued;
     db.update_worker(job.job_id, &job.worker).await.ok();
-    println!("[link] job {} offered to {}", job.job_id, node);
+    println!(
+        "[link] job {} offered to {}{}",
+        job.job_id,
+        node,
+        if return_output { " (output returns here for HLS publication)" } else { "" }
+    );
     LinkOffload::Offered
 }
 
@@ -1661,6 +1670,12 @@ async fn do_link_things(db: &JobDb, queue: &mut Vec<Job>, shrine: &mut TypedShri
                         );
                         requeue_link_job(db, queue, shrine, job_id, false).await;
                     }
+                    // The node encoded and handed its output back. This is not a terminal state:
+                    // the job resumes here at `Encoded` and takes the ordinary local upload path,
+                    // which is what puts an HLS release on the one hostname that is public.
+                    LinkOutcome::Returned => {
+                        resume_returned_job(db, queue, job_id, &node).await;
+                    }
                     _ => {
                         // Uploaded, Failed and Cancelled all arrive as reports carrying their own
                         // terminal stage, which `apply_link_reports` has already settled. Anything
@@ -1788,6 +1803,43 @@ async fn settle_link_terminal(
     db.update_stage(job_id, stage).await.ok();
     render(&mut queue[pos], payload).await;
     finish_link_job(db, queue, job_id).await;
+}
+
+// A node has streamed its finished encode into this job's work directory. Clearing `link_node`
+// hands the job back to the local pipeline, which picks it up at `Encoded` and dispatches the
+// upload exactly as it would for something encoded here.
+async fn resume_returned_job(db: &JobDb, queue: &mut Vec<Job>, job_id: u64, node: &str) {
+    crate::pnworker::link::board::release(job_id);
+    let Some(pos) = link_job_position(queue, job_id, node) else {
+        return;
+    };
+    let output = queue[pos].directory.join("work").join("output.mp4");
+    let delivered = tokio::fs::metadata(&output)
+        .await
+        .map(|meta| meta.is_file() && meta.len() > 0)
+        .unwrap_or(false);
+    if !delivered {
+        // The node said it sent the output and there is nothing there. Requeueing would re-run the
+        // whole encode on a machine that has just proved it cannot deliver, so this ends here.
+        eprintln!("[link] {node} | job {job_id} reported a returned output that is not on disk");
+        queue[pos].ready = Stage::Failed;
+        db.update_stage(job_id, Stage::Failed).await.ok();
+        let payload = MessagePayload::Progress(
+            crate::pnworker::messages::ENCODE_FAIL,
+            vec![format!("node {node} returned no output")],
+        );
+        render(&mut queue[pos], payload).await;
+        finish_link_job(db, queue, job_id).await;
+        return;
+    }
+    let job = &mut queue[pos];
+    job.link_node = None;
+    job.link_return_output = false;
+    job.ready = Stage::Encoded;
+    job.worker = "upl-pending".to_string();
+    db.update_stage(job_id, Stage::Encoded).await.ok();
+    db.update_worker(job_id, &job.worker).await.ok();
+    println!("[link] {node} | job {job_id} output received; publishing here");
 }
 
 async fn finish_link_job(db: &JobDb, queue: &mut Vec<Job>, job_id: u64) {
@@ -2670,6 +2722,7 @@ async fn do_job_progression_things(
                         None,
                         None,
                         false,
+                        job.link_drive_only,
                     )),
                     job,
                     db,
@@ -2824,6 +2877,24 @@ async fn do_job_progression_things(
                 }
                 continue;
             }
+            // A node encoding for an HLS-only server stops here: the output is the coordinator's
+            // to publish, not this machine's to upload. The job waits until the link client has
+            // handed the file over, and only then is its work directory allowed to go.
+            if job.link_return_output {
+                if crate::pnworker::link::client::output_returned(job.job_id) {
+                    db.update_stage(job.job_id, Stage::Uploaded).await.ok();
+                    db.archive_job(job.job_id).await.ok();
+                    cleanup_job(
+                        &job.directory,
+                        &PathBuf::from("DB")
+                            .join("saved_data")
+                            .join(job.job_id.to_string()),
+                    )
+                    .await;
+                    dead.push(job.job_id);
+                }
+                continue;
+            }
             job.worker = "upl-pending".to_string();
             db.update_worker(job.job_id, &job.worker).await.ok();
             if !dispatch_or_kill(
@@ -2850,6 +2921,7 @@ async fn do_job_progression_things(
                     job.gdrive_folder_local.clone(),
                     job.smartcode_drive_name.clone(),
                     drive_deletable_job_type(job.job_type),
+                    job.link_drive_only,
                 )),
                 job,
                 db,
@@ -3399,6 +3471,15 @@ pub struct Job {
     pub link_attempts: u32,
     // A node named on submit. The job waits for that node instead of running locally.
     pub link_pin: Option<String>,
+    // Set on a leased job whose output belongs to the coordinator rather than to the node that
+    // produced it: an HLS-only release is served for twelve hours from the machine that publishes
+    // it, and a node has no public hostname to serve it from. The node encodes, holds at
+    // `Encoded`, hands the file back, and the coordinator resumes the job from there.
+    pub link_return_output: bool,
+    // The originating server's Drive-only upload policy, resolved by the coordinator. A node holds
+    // no `meta.pandora` for that guild, so without this it would publish to streaming hosts the
+    // server had deliberately switched off. `None` on every local job, which reads the file.
+    pub link_drive_only: Option<bool>,
 }
 
 impl PartialEq for Job {
@@ -3498,6 +3579,8 @@ impl Job {
             link_node: None,
             link_attempts: 0,
             link_pin: None,
+            link_return_output: false,
+            link_drive_only: None,
         }
     }
 
@@ -3591,6 +3674,8 @@ impl Job {
             link_node: None,
             link_attempts: 0,
             link_pin: None,
+            link_return_output: false,
+            link_drive_only: None,
         }
     }
 }

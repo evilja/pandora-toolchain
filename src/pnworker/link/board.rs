@@ -499,31 +499,54 @@ pub fn node_for_job(job_id: u64) -> Option<String> {
     state.leases.get(&job_id).map(|lease| lease.node.clone())
 }
 
+// The registered nodes and the jobs each currently holds, name-ordered. Shared by `/lsnode` and the
+// worker snapshot so the two can never disagree about who is in the cluster.
+pub fn roster() -> Vec<(NodeState, Vec<u64>)> {
+    let mut state = board().lock().unwrap();
+    ensure_loaded(&mut state);
+    let mut busy: HashMap<String, Vec<u64>> = HashMap::new();
+    for (job_id, lease) in &state.leases {
+        busy.entry(lease.node.clone()).or_default().push(*job_id);
+    }
+    for jobs in busy.values_mut() {
+        jobs.sort();
+    }
+    let mut nodes = state
+        .nodes
+        .values()
+        .map(|node| {
+            let jobs = busy.get(&node.name).cloned().unwrap_or_default();
+            (node.clone(), jobs)
+        })
+        .collect::<Vec<_>>();
+    nodes.sort_by(|a, b| a.0.name.cmp(&b.0.name));
+    nodes
+}
+
+// Whether a node has been heard from recently enough to be offered work. The same staleness bound
+// `pick_node` applies, so what `/lsnode` calls alive is what the scheduler calls available.
+pub fn is_alive(node: &NodeState, timeout_secs: u64) -> bool {
+    now().saturating_sub(node.last_seen) < timeout_secs
+}
+
+pub fn seconds_since_seen(node: &NodeState) -> u64 {
+    now().saturating_sub(node.last_seen)
+}
+
 // Rendered into the worker snapshot, which is what `/workers` and `GET /api/v1/workers` read. The
 // cluster is nowhere in the jobs table either, for the same reason the queue is not.
 pub fn nodes_view() -> Value {
-    let now = now();
-    let mut state = board().lock().unwrap();
-    ensure_loaded(&mut state);
-    let mut busy: HashMap<String, Vec<String>> = HashMap::new();
-    for (job_id, lease) in &state.leases {
-        busy.entry(lease.node.clone())
-            .or_default()
-            .push(job_id.to_string());
-    }
-    let mut nodes = state.nodes.values().collect::<Vec<_>>();
-    nodes.sort_by(|a, b| a.name.cmp(&b.name));
     json!(
-        nodes
+        roster()
             .into_iter()
-            .map(|node| json!({
+            .map(|(node, jobs)| json!({
                 "node": node.name,
                 "threads": node.threads,
                 "max_jobs": node.max_jobs,
                 "presets": node.presets,
                 "drain": node.drain,
-                "last_seen_secs": now.saturating_sub(node.last_seen),
-                "jobs": busy.get(&node.name).cloned().unwrap_or_default(),
+                "last_seen_secs": seconds_since_seen(&node),
+                "jobs": jobs.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
                 "pandora_version": node.pandora_version,
                 "encoder_digest": node.encoder_digest,
             }))
@@ -552,6 +575,7 @@ mod tests {
             gdrive_folder_global: None,
             gdrive_folder_local: None,
             return_output: false,
+            drive_only: false,
             intro_group: None,
             assets_revision: String::new(),
             expires_at: 0,

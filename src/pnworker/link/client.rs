@@ -41,6 +41,12 @@ const ASSET_TIMEOUT_SECS: u64 = 300;
 // font that is still not found.
 pub type FontRefresh = fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
 
+#[derive(Clone, Copy)]
+struct ActiveLease {
+    job_id: u64,
+    return_output: bool,
+}
+
 pub struct LinkConfig {
     pub coordinator: String,
     pub token: String,
@@ -128,6 +134,7 @@ fn ffmpeg_version() -> String {
 struct Pending {
     reports: Vec<LinkReport>,
     worker: String,
+    stage: Option<Stage>,
     terminal: Option<Stage>,
 }
 
@@ -157,9 +164,11 @@ pub fn report(job_id: u64, payload: &MessagePayload, stage: Stage, worker: &str)
     let entry = map.entry(job_id).or_insert_with(|| Pending {
         reports: Vec::new(),
         worker: String::new(),
+        stage: None,
         terminal: None,
     });
     entry.worker = worker.to_string();
+    entry.stage = Some(stage);
     if matches!(
         stage,
         Stage::Uploaded | Stage::Failed | Stage::Declined | Stage::Cancelled
@@ -185,18 +194,45 @@ pub fn report(job_id: u64, payload: &MessagePayload, stage: Stage, worker: &str)
     });
 }
 
-fn take_reports(job_id: u64) -> (Vec<LinkReport>, String, Option<Stage>) {
+struct Drained {
+    reports: Vec<LinkReport>,
+    worker: String,
+    stage: Option<Stage>,
+    terminal: Option<Stage>,
+}
+
+fn take_reports(job_id: u64) -> Drained {
     let Ok(mut map) = pending().lock() else {
-        return (Vec::new(), String::new(), None);
+        return Drained { reports: Vec::new(), worker: String::new(), stage: None, terminal: None };
     };
     let Some(entry) = map.get_mut(&job_id) else {
-        return (Vec::new(), String::new(), None);
+        return Drained { reports: Vec::new(), worker: String::new(), stage: None, terminal: None };
     };
-    (
-        std::mem::take(&mut entry.reports),
-        entry.worker.clone(),
-        entry.terminal,
-    )
+    Drained {
+        reports: std::mem::take(&mut entry.reports),
+        worker: entry.worker.clone(),
+        stage: entry.stage,
+        terminal: entry.terminal,
+    }
+}
+
+// Jobs whose output has been handed back to the coordinator. The node's worker loop holds such a
+// job at `Encoded` — its output is not this machine's to publish — and finishes it once this says
+// the file is gone. It is the same shape of back-channel as `leased`, and for the same reason:
+// the loop owns the queue and this task owns the link.
+fn returned() -> &'static Mutex<std::collections::HashSet<u64>> {
+    static RETURNED: OnceLock<Mutex<std::collections::HashSet<u64>>> = OnceLock::new();
+    RETURNED.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+pub fn output_returned(job_id: u64) -> bool {
+    returned().lock().is_ok_and(|set| set.contains(&job_id))
+}
+
+fn mark_returned(job_id: u64) {
+    if let Ok(mut set) = returned().lock() {
+        set.insert(job_id);
+    }
 }
 
 fn forget(job_id: u64) {
@@ -206,6 +242,54 @@ fn forget(job_id: u64) {
     if let Ok(mut set) = leased().lock() {
         set.remove(&job_id);
     }
+    if let Ok(mut set) = returned().lock() {
+        set.remove(&job_id);
+    }
+}
+
+// Streams a finished encode back to the coordinator. This is the one large body the link carries,
+// and only for HLS-only servers, where the alternative is a playback URL on a machine with no
+// public hostname.
+async fn put_output(
+    client: &reqwest::Client,
+    config: &LinkConfig,
+    job_id: u64,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    let file = tokio::fs::File::open(path)
+        .await
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let length = file
+        .metadata()
+        .await
+        .map(|meta| meta.len())
+        .map_err(|e| e.to_string())?;
+    if length == 0 {
+        return Err(format!("{} is empty", path.display()));
+    }
+    let body = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::new(file));
+    let response = client
+        .put(format!(
+            "{}/api/v1/link/lease/{job_id}/output",
+            config.coordinator
+        ))
+        .bearer_auth(&config.token)
+        .header(reqwest::header::CONTENT_LENGTH, length)
+        .header("x-pandora-node", &config.node)
+        // Deliberately no timeout: this is a multi-gigabyte upload over whatever link the node has.
+        .timeout(Duration::from_secs(u32::MAX as u64))
+        .body(body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "coordinator answered {}: {}",
+            response.status(),
+            response.text().await.unwrap_or_default()
+        ));
+    }
+    Ok(())
 }
 
 async fn fetch_manifest(
@@ -329,13 +413,14 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
         tokio::time::sleep(Duration::from_secs(REGISTER_RETRY_SECS)).await;
     }
 
-    let mut active: Vec<u64> = Vec::new();
+    let mut active: Vec<ActiveLease> = Vec::new();
     let mut draining = false;
     let mut wanted_revision = String::new();
     loop {
         let mut finished: Vec<u64> = Vec::new();
-        for job_id in active.clone() {
-            let (reports, worker, terminal) = take_reports(job_id);
+        for lease in active.clone() {
+            let job_id = lease.job_id;
+            let Drained { reports, worker, stage, terminal } = take_reports(job_id);
             if let Some(stage) = terminal {
                 let outcome = match stage {
                     Stage::Uploaded => LinkOutcome::Uploaded,
@@ -361,6 +446,40 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
                 finished.push(job_id);
                 continue;
             }
+            // An HLS-only job stops here: the encode is done and the output is the coordinator's
+            // to publish. Send it, release the local job, then report — in that order, because a
+            // report that never lands only costs a requeue, while a work directory wiped before
+            // the file was sent costs the encode.
+            if lease.return_output && stage == Some(Stage::Encoded) && !output_returned(job_id) {
+                let path = std::env::current_dir()
+                    .unwrap_or_else(|_| PathBuf::from("."))
+                    .join("DB")
+                    .join("work")
+                    .join(job_id.to_string())
+                    .join("work")
+                    .join("output.mp4");
+                println!("[link] job {job_id} encoded; returning its output to the coordinator");
+                match put_output(&client, &config, job_id, &path).await {
+                    Ok(()) => {
+                        mark_returned(job_id);
+                        let result = LeaseResult {
+                            node: config.node.clone(),
+                            outcome: LinkOutcome::Returned,
+                            reason: None,
+                            reports,
+                            warnings: Vec::new(),
+                        };
+                        if let Err(e) = send_result(&client, &config, job_id, &result).await {
+                            eprintln!("[link] job {job_id} return could not be reported: {e}");
+                        }
+                        println!("[link] job {job_id} output returned");
+                        forget(job_id);
+                        finished.push(job_id);
+                    }
+                    Err(e) => eprintln!("[link] job {job_id} output could not be returned: {e}"),
+                }
+                continue;
+            }
             match send_renew(&client, &config, job_id, reports, worker).await {
                 Ok(control) => {
                     draining = control.drain;
@@ -379,7 +498,7 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
                 Err(e) => eprintln!("[link] job {job_id} renew failed: {e}"),
             }
         }
-        active.retain(|job_id| !finished.contains(job_id));
+        active.retain(|lease| !finished.contains(&lease.job_id));
 
         // A font added on the coordinator reaches a working node here, between jobs, rather than
         // waiting for it to restart. Syncing before the poll is what keeps the refusal below rare.
@@ -392,10 +511,12 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
 
         if !draining && (active.len() as u32) < config.max_jobs {
             match poll_lease(&client, &config).await {
-                Ok(Some(spec)) => match accept(&tx, &client, &config, refresh_fonts, spec).await {
+                Ok(Some(spec)) => {
+                    let return_output = spec.return_output;
+                    match accept(&tx, &client, &config, refresh_fonts, spec).await {
                     Ok(job_id) => {
                         println!("[link] job {job_id} leased");
-                        active.push(job_id);
+                        active.push(ActiveLease { job_id, return_output });
                     }
                     Err((job_id, reason)) => {
                         eprintln!("[link] leased job {job_id} was declined: {reason}");
@@ -408,7 +529,8 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
                         };
                         send_result(&client, &config, job_id, &result).await.ok();
                     }
-                },
+                    }
+                }
                 Ok(None) => {}
                 Err(e) => {
                     eprintln!("[link] lease poll failed: {e}");
@@ -635,6 +757,11 @@ async fn accept(
     job.probe_job_id = spec.probe_job_id.as_deref().and_then(|id| id.parse::<u64>().ok());
     job.gdrive_folder_global = spec.gdrive_folder_global.clone();
     job.gdrive_folder_local = spec.gdrive_folder_local.clone();
+    job.link_return_output = spec.return_output;
+    // The originating guild, so Drive uploads land under its Lumiere profile — and its upload
+    // policy, which travels with the job because this machine holds no `meta.pandora` for it.
+    job.server_id = spec.server_id.as_deref().and_then(|id| id.parse::<u64>().ok());
+    job.link_drive_only = Some(spec.drive_only);
 
     if let Ok(mut set) = leased().lock() {
         set.insert(job_id);

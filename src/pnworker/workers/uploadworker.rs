@@ -25,8 +25,11 @@ use tokio::time::{Instant, sleep, sleep_until};
 // when something is wrong.
 const HOST_WAIT_HEARTBEAT: Duration = Duration::from_secs(60);
 
-// The final flag retains the per-file Drive deletion capability for upload-producing encode jobs.
-// Backup jobs leave it false even though they also use the single-Drive payload shape.
+// The `bool` before last retains the per-file Drive deletion capability for upload-producing encode
+// jobs; backup jobs leave it false even though they also use the single-Drive payload shape. The
+// trailing `Option<bool>` is a resolved Drive-only policy that overrides the server's own file —
+// it is how a linked node, which holds no `meta.pandora` for the originating guild, still honours
+// that guild's upload policy. `None` everywhere else, which reads the server config as before.
 pub type UploadData = (
     PathBuf,
     String,
@@ -38,6 +41,7 @@ pub type UploadData = (
     Option<String>,
     Option<SmartcodeDriveName>,
     bool,
+    Option<bool>,
 );
 pub type UploadAllData = (PathBuf, u64, Option<u64>);
 
@@ -95,7 +99,7 @@ enum LumiereUploadEvent {
 
 async fn run_lumiere_upload_job(msg: WorkerMsg, tx: Sender<CommData>, worker_name: String) {
     let assign_job_id = match &msg {
-        WorkerMsg::Upload((_, _, _, job_id, _, _, _, _, _, _)) => Some(*job_id),
+        WorkerMsg::Upload((_, _, _, job_id, _, _, _, _, _, _, _)) => Some(*job_id),
         WorkerMsg::UploadAll((_, job_id, _)) => Some(*job_id),
         _ => None,
     };
@@ -136,6 +140,7 @@ async fn run_lumiere_upload_job(msg: WorkerMsg, tx: Sender<CommData>, worker_nam
             gdrive_folder_local,
             smartcode_drive_name,
             retain_drive_deletion,
+            drive_only_override,
         )) => {
             run_lumiere_single_upload(
                 client,
@@ -148,6 +153,7 @@ async fn run_lumiere_upload_job(msg: WorkerMsg, tx: Sender<CommData>, worker_nam
                 gdrive_folder_local,
                 smartcode_drive_name,
                 retain_drive_deletion,
+                drive_only_override,
                 tx,
             )
             .await;
@@ -171,6 +177,7 @@ async fn run_lumiere_single_upload(
     gdrive_folder_local: Option<String>,
     smartcode_drive_name: Option<SmartcodeDriveName>,
     retain_drive_deletion: bool,
+    drive_only_override: Option<bool>,
     tx: Sender<CommData>,
 ) {
     if job_cancelled(&directory) {
@@ -187,7 +194,11 @@ async fn run_lumiere_single_upload(
     let cancel_file = Some(directory.join("CANCEL"));
     let is_smartcode = gdrive_folder_local.is_some();
     let hls_enabled = release && server_hls_enabled(server_id).await;
-    let drive_only = release && server_drive_only(server_id).await;
+    let drive_only = release
+        && match drive_only_override {
+            Some(policy) => policy,
+            None => server_drive_only(server_id).await,
+        };
     if hls_enabled {
         println!("[lumiere] job {job_id}: server policy restricts release output to Lumiere HLS");
     } else if drive_only {

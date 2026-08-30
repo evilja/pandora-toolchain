@@ -92,6 +92,9 @@ All under `/api/v1/link/`, all requiring a link token.
 - `POST /link/lease/:id/result` — the terminal report. `409` when the lease is already gone or
   belongs to another node, which tells the node to stop retrying without looking like a transport
   fault.
+- `PUT /link/lease/:id/output` — a finished encode coming back for local publication. Streamed
+  straight to disk and accepted only from the node that holds the lease. See
+  [HLS and returned output](#hls-and-returned-output).
 - `GET /link/assets/manifest` — the font and intro corpus, with its revision. See [Assets](#assets).
 - `GET /link/assets/:hash` — one asset, addressed by content hash.
 
@@ -165,13 +168,47 @@ The rule is "does the job carry its own source", since a node fetches its own in
   parents and children (a parent is one torrent download feeding many children, and a child is
   hard-linked out of it, so neither carries a source of its own); keeps, `Keycode`, `Preview` and
   `Studio` (their inputs are files on the coordinator); and any job past `LINK_MAX_ATTEMPTS`.
-- **Held back for now**: a job on an HLS-only server. Its release is served for twelve hours from
-  the machine that made it and a node has no public hostname, so until the finished release is
-  shipped back for publication those stay local.
 
 A leased Pancode carries its originating `probe_job_id` alongside the source link. The node has no
 probe job and will fail to adopt its saved `.torrent`; the link is what the download falls back to,
 and the file index selects the episode.
+
+## Upload policy and returned output
+
+A node holds no `meta.pandora` for the guild a job came from, so the server's upload policy travels
+with the job rather than being looked up on the far side. Without that a node would publish to
+streaming hosts a server had deliberately switched off.
+
+- **`drive_only`** is resolved by the coordinator and carried in the spec. The node's upload worker
+  takes it as an override; every local job passes `None` and reads the server file exactly as
+  before.
+- **`server_id`** is carried too, so Drive uploads land under the originating guild's Lumiere
+  profile rather than the global one.
+
+### HLS and returned output
+
+An HLS release is served for twelve hours from `/lumiere/v1/hls/<capability>` on the machine that
+published it, and a node has no public hostname. Such jobs are still **encoded** remotely; only the
+publishing stays here.
+
+The coordinator sets `return_output` on the spec. The node encodes to an ordinary MP4 — it never
+holds the server's HLS setting, so it produces no HLS layout of its own — and then **stops at
+`Encoded`** rather than uploading: the output is not its to publish. Its link client `PUT`s the file
+to `/link/lease/:id/output`, the node's worker loop releases the work directory once the file is
+gone, and the client reports `returned`.
+
+`returned` is not a terminal outcome. The coordinator clears `link_node`, leaves the job at
+`Encoded`, and the ordinary local pipeline dispatches the upload — so the HLS publication, its
+capability and its playback URL are all produced here, on the hostname that is already public.
+
+The order on the node is deliberate: send the file, release the job, then report. A report that
+never lands costs only a requeue; a work directory wiped before the file was sent costs the encode.
+If the coordinator is told an output was returned and finds nothing on disk, the job **fails** rather
+than requeueing — the machine that just failed to deliver is not worth a second whole encode.
+
+This is the only large body the link carries. It is streamed to disk on arrival rather than
+buffered, written beside its target and renamed, and accepted only from the node that holds the
+lease.
 
 ## Scheduling
 
@@ -236,6 +273,14 @@ recovery**, is the response to every node failure.
 
 ## Observability
 
+`/lsnode` (rank 4) lists the roster: every node, its thread count, how many jobs it may hold, how
+long ago it was heard from, and what it is running — and warns when `link_enabled` is off or
+`link_only_node` is pinning offload. `/drainnode name:<node> [drain:<bool>]` stops offering work to
+a node (it finishes what it holds) or puts it back in rotation; the flag is persisted, since
+draining before a deploy does not mean until the next one. `/rmnode name:<node>` forgets a node —
+it re-registers on its next poll unless its token is revoked with `/rmtoken`, and any job it still
+holds is reclaimed when its lease expires.
+
 `GET /api/v1/workers` (PNwitch token only) gains a `nodes` array — name, thread count, `max_jobs`,
 presets, drain state, seconds since last contact, the jobs it holds, and its `encoder_digest`.
 Queue entries gain `link_node` and `link_attempts`. See [API.md](API.md#worker-snapshot).
@@ -248,10 +293,7 @@ node, matching the `[lumiere]` convention.
 - **Log proxying.** A node's tool logs stay on the node; `/catlogs` and `GET /jobs/:id/logs` answer
   only from the coordinator's own copy. Nodes are to push a bounded tail on renew and a bundle with
   the result.
-- **HLS return path.** HLS-only jobs are kept local rather than encoded remotely and shipped back.
 - **Batch split.** Batch children carry no source of their own. Assigning each an index of the same
   torrent via `pnp2p --selects` keeps cluster-wide download at ≈1× the torrent, but needs the
   parent's own selection narrowed and `BatchRequest::settle_download` taught that an episode can
   complete without a local `TORRENT_FILE_DONE`.
-- **Roster commands.** `/lsnode`, `/drainnode` and `/rmnode` are not wired up; `board::set_drain`
-  and `board::remove_node` exist behind them.

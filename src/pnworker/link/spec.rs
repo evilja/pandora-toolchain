@@ -72,9 +72,14 @@ pub struct LinkJobSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gdrive_folder_local: Option<String>,
     // Set for an HLS-only server: the node encodes and uploads nothing, because the 12-hour
-    // playback capability has to be served from the one hostname that is already public.
+    // playback capability has to be served from the one hostname that is already public. It holds
+    // the finished MP4 at `Encoded`, hands it back, and the coordinator resumes from there.
     #[serde(default)]
     pub return_output: bool,
+    // The originating server's Drive-only upload policy. A node holds no `meta.pandora` for that
+    // guild, so without this it would publish to streaming hosts the server had switched off.
+    #[serde(default)]
+    pub drive_only: bool,
     // The intro group this job's server selected. The node materialises the group under its own
     // synced intro root and rebuilds the preset's concat folder from it — the coordinator's own
     // folder path means nothing on another machine.
@@ -146,6 +151,9 @@ pub struct LeaseResult {
 #[serde(rename_all = "lowercase")]
 pub enum LinkOutcome {
     Uploaded,
+    // The node encoded and handed its output back instead of publishing it. Not a terminal state
+    // on the coordinator: the job resumes there at `Encoded` and is uploaded locally.
+    Returned,
     Failed,
     Cancelled,
     // The node cannot run this job at all — a preset it does not have, an asset it cannot resolve.
@@ -346,6 +354,25 @@ mod tests {
 
     // A node running a newer build can name a message this one has no translation for. Rendering
     // the wrong text for a real job is worse than rendering none, so it has to come back empty.
+    // The outcome is the only thing distinguishing "the node published this" from "the node handed
+    // it back for us to publish", and it crosses as a bare string.
+    #[test]
+    fn outcomes_cross_the_wire_as_their_own_names() {
+        for (outcome, name) in [
+            (LinkOutcome::Uploaded, "\"uploaded\""),
+            (LinkOutcome::Returned, "\"returned\""),
+            (LinkOutcome::Failed, "\"failed\""),
+            (LinkOutcome::Cancelled, "\"cancelled\""),
+            (LinkOutcome::Declined, "\"declined\""),
+        ] {
+            let encoded = serde_json::to_string(&outcome).expect("outcome did not serialise");
+            assert_eq!(encoded, name);
+            let back: LinkOutcome =
+                serde_json::from_str(&encoded).expect("outcome did not round trip");
+            assert_eq!(back, outcome);
+        }
+    }
+
     #[test]
     fn an_unknown_message_id_does_not_intern() {
         let wire = LinkPayload { id: "NOT_A_REAL_MESSAGE".to_string(), args: None };

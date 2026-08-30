@@ -203,6 +203,10 @@ whose `link_node` is set, so nothing else can touch it.
   candidate. `LINK_MAX_ATTEMPTS` (2) stops a poisoned job touring the cluster.
 - **A leased job is never a duplicate source.** Its input was downloaded on the node, so this
   machine's copy of its work directory is empty.
+- **Upload policy travels with the job.** A node holds no `meta.pandora` for the originating guild,
+  so `drive_only` is resolved here and passed to its upload worker as an override. An HLS-only job
+  is encoded remotely but published here: the node stops at `Encoded`, hands the MP4 back, and the
+  coordinator resumes the job from there so the playback capability lives on the public hostname.
 
 Full protocol, token tier, offload rules and failure handling in [LINK.md](LINK.md).
 

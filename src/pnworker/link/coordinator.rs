@@ -60,7 +60,13 @@ pub fn choose_node(job: &Job) -> Option<String> {
 // Everything the node needs, resolved. Nothing here is an id for the node to look up: the server's
 // preset, watermark and Drive folders were snapshotted onto the job when it was created, and this
 // is that same snapshot travelling one hop further.
-pub fn build_spec(job: &Job, expires_at: u64, renew_secs: u64, return_output: bool) -> LinkJobSpec {
+pub fn build_spec(
+    job: &Job,
+    expires_at: u64,
+    renew_secs: u64,
+    return_output: bool,
+    drive_only: bool,
+) -> LinkJobSpec {
     let (source_kind, source) = source_to_wire(&job.torrent);
     // The concat folder lives inside the preset variant, and `preset_name` cannot carry it: it is a
     // path on this machine and means nothing on another. What travels is the group's name, which
@@ -83,6 +89,7 @@ pub fn build_spec(job: &Job, expires_at: u64, renew_secs: u64, return_output: bo
         gdrive_folder_global: job.gdrive_folder_global.clone(),
         gdrive_folder_local: job.gdrive_folder_local.clone(),
         return_output,
+        drive_only,
         intro_group,
         assets_revision: crate::pnworker::link::assets::manifest().revision,
         expires_at,
@@ -212,8 +219,23 @@ mod tests {
     // A node refuses a job whose corpus it cannot prove it holds, so the spec has to name one.
     #[test]
     fn the_spec_names_the_asset_revision_it_was_built_against() {
-        let spec = build_spec(&job(JobType::Encode), 100, 10, false);
+        let spec = build_spec(&job(JobType::Encode), 100, 10, false, false);
         assert!(!spec.assets_revision.is_empty());
+    }
+
+    // A node holds no `meta.pandora` for the originating guild, so both upload policies have to
+    // travel with the job. Dropping either publishes to hosts the server switched off, or puts a
+    // playback URL on a machine with no public hostname.
+    #[test]
+    fn the_spec_carries_the_servers_upload_policy() {
+        let source = job(JobType::Encode);
+        let plain = build_spec(&source, 100, 10, false, false);
+        assert!(!plain.return_output);
+        assert!(!plain.drive_only);
+
+        let restricted = build_spec(&source, 100, 10, true, true);
+        assert!(restricted.return_output);
+        assert!(restricted.drive_only);
     }
 
     #[test]
@@ -225,7 +247,7 @@ mod tests {
         source.probe_job_id = Some(555);
         source.gdrive_folder_local = Some("folder".to_string());
 
-        let spec = build_spec(&source, 100, 10, false);
+        let spec = build_spec(&source, 100, 10, false, false);
         assert_eq!(spec.job_id, source.job_id.to_string());
         assert_eq!(spec.job_type, "Pancode");
         assert_eq!(spec.source_kind, "magnet");

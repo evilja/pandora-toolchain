@@ -322,6 +322,8 @@ mod tests {
             link_node: None,
             link_attempts: 0,
             link_pin: None,
+            link_return_output: false,
+            link_drive_only: None,
         }
     }
 

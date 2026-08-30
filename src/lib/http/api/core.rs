@@ -188,6 +188,12 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/link/lease", get(super::link::lease))
         .route("/link/lease/:id/renew", post(super::link::renew))
         .route("/link/lease/:id/result", post(super::link::result))
+        .route(
+            "/link/lease/:id/output",
+            // A finished episode, not a JSON payload: the 8 MiB request cap that protects every
+            // other route would reject it outright. The body is streamed straight to disk.
+            axum::routing::put(super::link::output).layer(DefaultBodyLimit::disable()),
+        )
         .route("/link/assets/manifest", get(super::link::assets_manifest))
         .route("/link/assets/:hash", get(super::link::asset))
         .route("/gitsync", post(gitsync))

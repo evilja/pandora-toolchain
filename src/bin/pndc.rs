@@ -374,6 +374,120 @@ async fn handle_lsworker(ctx: &Context, command: &serenity::all::CommandInteract
         .ok();
 }
 
+async fn handle_lsnode(ctx: &Context, command: &serenity::all::CommandInteraction) {
+    use pandora_toolchain::pnworker::link::board;
+
+    let settings = board::settings();
+    let roster = board::roster();
+    let mut lines = Vec::new();
+    if !settings.enabled {
+        lines.push("⚠️ `link_enabled` is off — nothing is offloaded.".to_string());
+    }
+    if let Some(only) = settings.only_node.as_deref() {
+        lines.push(format!("⚠️ Offload is limited to `{}`.", only));
+    }
+    if roster.is_empty() {
+        lines.push("No nodes have registered.".to_string());
+    }
+    for (node, jobs) in roster {
+        let alive = board::is_alive(&node, settings.lease_timeout_secs);
+        let marker = if node.drain {
+            "🚫"
+        } else if alive {
+            "✅"
+        } else {
+            "❌"
+        };
+        let held = if jobs.is_empty() {
+            "idle".to_string()
+        } else {
+            jobs.iter()
+                .map(|id| format!("`{}`", id))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        lines.push(format!(
+            "{} `{}` — {} thread(s), max `{}`, seen `{}s` ago, {}{}",
+            marker,
+            node.name,
+            node.threads,
+            node.max_jobs,
+            board::seconds_since_seen(&node),
+            held,
+            if node.drain { " • draining" } else { "" },
+        ));
+    }
+    command
+        .create_response(
+            ctx,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .embed(info_embed(command, COMMAND_LIST).description(lines.join("\n")))
+                    .ephemeral(true),
+            ),
+        )
+        .await
+        .ok();
+}
+
+async fn handle_drainnode(ctx: &Context, command: &serenity::all::CommandInteraction) {
+    use pandora_toolchain::pnworker::link::board;
+
+    let Some(name) = option_trimmed(command, "name") else {
+        command_error(ctx, command, "Error: `name` is required.").await;
+        return;
+    };
+    // Absent means "start draining"; the flag is there to undo it without a second command.
+    let drain = option_bool(command, "drain").unwrap_or(true);
+    if !board::set_drain(&name, drain) {
+        command_error(ctx, command, format!("No node `{}` has registered.", name)).await;
+        return;
+    }
+    let description = if drain {
+        format!("`{}` is draining: it finishes what it holds and is offered nothing further.", name)
+    } else {
+        format!("`{}` is taking work again.", name)
+    };
+    command
+        .create_response(
+            ctx,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .embed(success_embed(command, COMMAND_UPDATED).description(description))
+                    .ephemeral(true),
+            ),
+        )
+        .await
+        .ok();
+}
+
+async fn handle_rmnode(ctx: &Context, command: &serenity::all::CommandInteraction) {
+    use pandora_toolchain::pnworker::link::board;
+
+    let Some(name) = option_trimmed(command, "name") else {
+        command_error(ctx, command, "Error: `name` is required.").await;
+        return;
+    };
+    if !board::remove_node(&name) {
+        command_error(ctx, command, format!("No node `{}` has registered.", name)).await;
+        return;
+    }
+    command
+        .create_response(
+            ctx,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .embed(success_embed(command, COMMAND_UPDATED).description(format!(
+                        "Removed `{}` from the roster. It re-registers on its next poll unless its token is revoked with `/rmtoken`; any job it still holds is reclaimed when its lease expires.",
+                        name
+                    )))
+                    .ephemeral(true),
+            ),
+        )
+        .await
+        .ok();
+}
+
 async fn handle_touchworker(ctx: &Context, command: &serenity::all::CommandInteraction) {
     let Some(kind) = worker_slot_kind_from_command(ctx, command).await else {
         return;
@@ -513,6 +627,9 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("touchpool", 4),
     ("lspool", 4),
     ("rmpool", 4),
+    ("lsnode", 4),
+    ("drainnode", 4),
+    ("rmnode", 4),
     ("touchworker", 4),
     ("lsworker", 4),
     ("rmworker", 4),
@@ -741,6 +858,27 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Remove a keep keyword pool entry.",
             usage: "/rmpool keyword:<keyword>",
             details: "Removes one keyword from the configurable keep keyword pool. Rank 4 only.",
+        },
+        HelpCommand {
+            section: "workers",
+            name: "lsnode",
+            summary: "List registered Pandora Mini nodes.",
+            usage: "/lsnode",
+            details: "Shows every linked node, its thread count, how many jobs it may hold, how long ago it was last heard from, and what it is running. Also warns when link_enabled is off or offload is pinned to one node. Rank 4 only.",
+        },
+        HelpCommand {
+            section: "workers",
+            name: "drainnode",
+            summary: "Stop offering work to a Pandora Mini node.",
+            usage: "/drainnode name:<node> [drain:<true|false>]",
+            details: "A draining node finishes what it holds and is offered nothing further; drain:false puts it back in rotation. The flag survives a restart, since draining before a deploy does not mean until the next one. Rank 4 only.",
+        },
+        HelpCommand {
+            section: "workers",
+            name: "rmnode",
+            summary: "Remove a Pandora Mini node from the roster.",
+            usage: "/rmnode name:<node>",
+            details: "Forgets a node. It re-registers on its next poll unless its token is revoked with /rmtoken, and any job it still holds is reclaimed when its lease expires. Rank 4 only.",
         },
         HelpCommand {
             section: "workers",
@@ -2065,6 +2203,15 @@ impl EventHandler for Handler {
                 "rmpool" => {
                     handle_rmpool(&ctx, &command).await;
                 }
+                "lsnode" => {
+                    handle_lsnode(&ctx, &command).await;
+                }
+                "drainnode" => {
+                    handle_drainnode(&ctx, &command).await;
+                }
+                "rmnode" => {
+                    handle_rmnode(&ctx, &command).await;
+                }
                 "lsworker" => {
                     handle_lsworker(&ctx, &command).await;
                 }
@@ -2945,6 +3092,24 @@ impl EventHandler for Handler {
                 .description("Remove a keep keyword pool entry")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "keyword", "Keyword to remove")
+                        .required(true)
+                ),
+            CreateCommand::new("lsnode")
+                .description("List registered Pandora Mini nodes"),
+            CreateCommand::new("drainnode")
+                .description("Stop offering work to a Pandora Mini node, or resume it")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "name", "Node name")
+                        .required(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Boolean, "drain", "True to drain (default), false to resume")
+                        .required(false)
+                ),
+            CreateCommand::new("rmnode")
+                .description("Remove a Pandora Mini node from the roster")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "name", "Node name")
                         .required(true)
                 ),
             CreateCommand::new("lsworker")

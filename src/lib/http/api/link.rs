@@ -2,10 +2,13 @@ use std::time::Duration;
 
 use axum::{
     Json,
+    body::Body,
     extract::{Extension, Path, Query},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use futures_lite::StreamExt;
+use tokio::io::AsyncWriteExt;
 use serde::Deserialize;
 
 use super::core::{ApiAuth, require_link};
@@ -150,6 +153,75 @@ pub(super) async fn asset(
         bytes,
     )
         .into_response()
+}
+
+// A finished encode coming back from a node, for an HLS-only server whose playback URL has to live
+// on this machine. It is the one large body the link carries, so it is streamed to disk rather than
+// buffered: the alternative is holding an episode in memory.
+pub(super) async fn output(
+    Extension(auth): Extension<ApiAuth>,
+    Path(job_id): Path<u64>,
+    body: Body,
+) -> Response {
+    let node = match require_link(&auth) {
+        Ok(node) => node,
+        Err(response) => return response,
+    };
+    // A node may only deliver against a lease it actually holds. Without this, any link token
+    // could write into any job's work directory.
+    if board::node_for_job(job_id).as_deref() != Some(node.as_str()) {
+        return (StatusCode::CONFLICT, "no such lease for this node").into_response();
+    }
+    let directory = std::env::current_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        .join("DB")
+        .join("work")
+        .join(job_id.to_string())
+        .join("work");
+    if let Err(e) = tokio::fs::create_dir_all(&directory).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+    // Written beside and renamed, so a transfer that dies halfway can never be mistaken for a
+    // finished encode by the upload worker that is about to look for exactly this name.
+    let target = directory.join("output.mp4");
+    let temporary = directory.join("output.mp4.link-part");
+    let file = match tokio::fs::File::create(&temporary).await {
+        Ok(file) => file,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let mut writer = tokio::io::BufWriter::new(file);
+    let mut stream = body.into_data_stream();
+    let mut written = 0u64;
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(e) => {
+                tokio::fs::remove_file(&temporary).await.ok();
+                return (StatusCode::BAD_REQUEST, format!("upload stream failed: {e}"))
+                    .into_response();
+            }
+        };
+        if let Err(e) = writer.write_all(&chunk).await {
+            tokio::fs::remove_file(&temporary).await.ok();
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+        written += chunk.len() as u64;
+    }
+    if let Err(e) = writer.flush().await {
+        tokio::fs::remove_file(&temporary).await.ok();
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+    drop(writer);
+    if written == 0 {
+        tokio::fs::remove_file(&temporary).await.ok();
+        return (StatusCode::BAD_REQUEST, "empty output").into_response();
+    }
+    if let Err(e) = tokio::fs::rename(&temporary, &target).await {
+        tokio::fs::remove_file(&temporary).await.ok();
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+    println!("[link] {node} | job {job_id} output received ({written} bytes)");
+    StatusCode::ACCEPTED.into_response()
 }
 
 // The token names the node; the body has to agree. Without this a node holding a valid token could
