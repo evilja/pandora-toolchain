@@ -498,20 +498,10 @@ impl TorrentClient {
                     break;
                 }
                 if tracker_round >= self.config.tracker_rounds {
-                    let detail = if candidate_errors.is_empty() {
-                        "all discovered peers were exhausted".to_string()
-                    } else {
-                        candidate_errors
-                            .iter()
-                            .rev()
-                            .take(5)
-                            .cloned()
-                            .collect::<Vec<_>>()
-                            .join("; ")
-                    };
                     return Err(TorrentError::peer(format!(
-                        "download stopped after writing {written_pieces}/{} pieces: {detail}",
-                        scheduler.required_count()
+                        "download stopped after writing {written_pieces}/{} pieces: {}",
+                        scheduler.required_count(),
+                        describe_candidate_errors(&candidate_errors),
                     )));
                 }
                 if tracker_round > 0 {
@@ -554,7 +544,14 @@ impl TorrentClient {
                     return Err(if tried.is_empty() {
                         TorrentError::NoPeers
                     } else {
-                        TorrentError::peer("trackers returned no new usable peers")
+                        // The peers were there; every connection to them failed. Saying only that
+                        // the trackers returned nothing usable blames the wrong side and discards
+                        // the one thing a post-mortem needs, which is why each attempt failed.
+                        TorrentError::peer(format!(
+                            "every one of the {} peer(s) the trackers returned failed: {}",
+                            tried.len(),
+                            describe_candidate_errors(&candidate_errors),
+                        ))
                     });
                 }
             }
@@ -864,6 +861,21 @@ fn selection_set(selection: FileSelection) -> Option<HashSet<u64>> {
     }
 }
 
+// The last few peer failures, newest first. Bounded because a torrent with hundreds of dead peers
+// would otherwise put its entire address book into one log line.
+fn describe_candidate_errors(errors: &[String]) -> String {
+    if errors.is_empty() {
+        return "no peer reported why it failed".to_string();
+    }
+    errors
+        .iter()
+        .rev()
+        .take(5)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 fn usable_peer(address: &SocketAddr) -> bool {
     if address.port() == 0 || address.ip().is_unspecified() || address.ip().is_multicast() {
         return false;
@@ -915,6 +927,26 @@ fn env_u16(key: &str, default: u16) -> Result<u16> {
 
 #[cfg(test)]
 mod tests {
+    // The failure that reaches an operator has to say why. This path used to report only that the
+    // trackers had returned nothing usable, which blames the trackers for peers that answered and
+    // then refused every connection — and dropped the reasons on the floor.
+    #[test]
+    fn a_peer_failure_summary_names_the_most_recent_reasons() {
+        let errors = (1..=8).map(|n| format!("peer {n} refused")).collect::<Vec<_>>();
+        let summary = describe_candidate_errors(&errors);
+        assert!(summary.contains("peer 8 refused"), "{summary}");
+        assert!(summary.contains("peer 4 refused"), "{summary}");
+        // Bounded, so one torrent's dead address book cannot become one log line.
+        assert!(!summary.contains("peer 3 refused"), "{summary}");
+        assert_eq!(summary.split("; ").count(), 5);
+    }
+
+    // Silence is the one answer that helps nobody; an empty list still has to say something.
+    #[test]
+    fn a_peer_failure_summary_is_never_empty() {
+        assert!(!describe_candidate_errors(&[]).is_empty());
+    }
+
     use std::collections::BTreeMap;
     use std::time::{SystemTime, UNIX_EPOCH};
 
