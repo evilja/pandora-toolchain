@@ -14,5 +14,6 @@
 /tmp0
 /DB
 /acix.txt
+/web/reference/
 # Internal-only working documents. See CLAUDE.md / AGENTS.md before writing here.
 /lumiere-internal/
