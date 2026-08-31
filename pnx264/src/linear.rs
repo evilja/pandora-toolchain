@@ -1,4 +1,3 @@
-use crate::Config;
 use crate::prefix;
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
@@ -23,8 +22,18 @@ pub struct LinearAotConfig {
     pub lease_file: Option<PathBuf>,
     pub job_id: u64,
     pub compatibility: String,
-    pub encoder: Config,
+    // The `-vf` chain to run, with `SUBTITLE_TOKEN` where the subtitle path belongs. Substituted
+    // here rather than by the caller because this process resolves the path itself: it runs from a
+    // different working directory than the encode that will adopt its output.
+    pub filter: String,
+    // Everything ffmpeg is told about encoding video, already rendered. This is deliberately opaque
+    // — the preset that produced it is the only thing that knows which encoder it names, so a
+    // libx264, NVENC or AMF preset all arrive here as the same kind of value.
+    pub video_args: Vec<String>,
 }
+
+// The placeholder Pandora's preset filters carry for the burned-in subtitle file.
+pub const SUBTITLE_TOKEN: &str = "INPUTFILEASS";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinearAotState {
@@ -207,7 +216,9 @@ pub fn run_linear_aot(config: LinearAotConfig) -> Result<LinearAotState, String>
     wait_for_turn(&config, &mut lease)?;
 
     let subtitle = std::fs::canonicalize(&config.subtitle).unwrap_or_else(|_| config.subtitle.clone());
-    let filter = format!("ass={},format=yuv420p", filter_quote(&subtitle.to_string_lossy()));
+    let filter = config
+        .filter
+        .replace(SUBTITLE_TOKEN, &filter_quote(&subtitle.to_string_lossy()));
     let parent = config.output.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     let temporary = parent.join(format!(".linear-aot.{}.part", std::process::id()));
@@ -216,25 +227,10 @@ pub fn run_linear_aot(config: LinearAotConfig) -> Result<LinearAotState, String>
 
     let mut command = Command::new(&config.ffmpeg);
     command
-        .args(["-v", "error", "-i", "pipe:0", "-map", "0:v:0", "-an", "-sn", "-vf", &filter,
-            "-c:v", "libx264", "-crf", &config.encoder.crf.to_string()]);
-    if let Some(value) = config.encoder.preset.as_ref() {
-        command.args(["-preset", value]);
-    }
-    if let Some(value) = config.encoder.tune.as_ref() {
-        command.args(["-tune", value]);
-    }
-    if let Some(value) = config.encoder.profile.as_ref() {
-        command.args(["-profile:v", value]);
-    }
-    if let Some(value) = config.encoder.level.as_ref() {
-        command.args(["-level:v", value]);
-    }
-    if let Some(value) = config.encoder.x264_params.as_ref() {
-        command.args(["-x264-params", value]);
-    }
+        .args(["-v", "error", "-i", "pipe:0", "-map", "0:v:0", "-an", "-sn", "-vf", &filter])
+        .args(&config.video_args);
     command
-        .args(["-pix_fmt", "yuv420p", "-movflags", "+faststart", "-progress", "pipe:1", "-nostats",
+        .args(["-movflags", "+faststart", "-progress", "pipe:1", "-nostats",
             "-f", "mp4", "-y"])
         .arg(&temporary)
         .stdin(Stdio::piped())

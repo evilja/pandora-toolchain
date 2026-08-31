@@ -280,6 +280,12 @@ pub struct PresetAudio {
 pub struct PresetFile {
     #[serde(default)]
     pub hardware: PresetHardware,
+    // Whether to start this encode while the source is still downloading. Left out, it is derived
+    // the way it always was: the CPU presets that do not scale. Declared, it wins — the mechanism
+    // is one ffmpeg process reading a growing file, so it has nothing to do with which encoder the
+    // preset names, and a GPU node is exactly where the overlap is cheapest to have.
+    #[serde(default)]
+    pub aot: Option<bool>,
     // Whether to split the episode across parallel encoders. Left out, it is derived from how slow
     // the x264 preset is, which is the rule the built-in tables have always followed. Declared, it
     // wins — a preset tuned by hand can be slow enough to be worth chunking at an x264 preset no
@@ -303,7 +309,9 @@ pub struct ResolvedPreset {
     pub name: String,
     pub hardware: PresetHardware,
     pub params: Vec<FfmpegParams>,
-    // The preset's own answer on chunking, or None to derive it. A built-in never declares one.
+    // The preset's own answers on encoding ahead and on chunking, or None to derive them. A
+    // built-in never declares either.
+    pub aot: Option<bool>,
     pub chunked: Option<bool>,
     // True when this came off disk, so a log can say which of the two an encode used. An operator
     // who edits a preset and sees no change needs to know the file was never read.
@@ -371,26 +379,103 @@ impl ResolvedPreset {
         self.x264_settings().codec == "libx264"
     }
 
-    // Whether this preset's encode can be started before the download finishes.
+    // The `-vf` chain this preset applies, still carrying its `INPUTFILEASS` placeholder. Both
+    // halves of an ahead-of-time encode take the filter from here, so a preset that scales or
+    // denoises does it once and does it the same way whichever half ran.
+    pub fn video_filter(&self) -> Option<String> {
+        self.params.iter().find_map(|param| match param {
+            FfmpegParams::BasicFilter(value) => Some(value.to_string()),
+            _ => None,
+        })
+    }
+
+    // Everything this preset tells ffmpeg about encoding video, rendered as arguments: the codec,
+    // its rate control, and any passthrough the file added. The audio options, the maps, the muxer
+    // flags and the filter are all left out — the ahead-of-time encode writes a video-only file and
+    // supplies those itself.
     //
-    // Two things rule it out. A preset that is not libx264 cannot be driven by `pnx264` at all. A
-    // preset that scales must run its filter exactly once, in the encode that writes the output —
-    // scaling in the speculative prefix and again in the foreground would resample twice.
-    pub fn supports_aot(&self) -> bool {
+    // This is what makes the mechanism codec-agnostic. It used to reassemble a fixed list of x264
+    // options from a struct, which is why it could only ever encode with libx264; handing over
+    // whatever the preset itself says means NVENC, AMF and anything else ffmpeg can spawn work
+    // without this code knowing their names.
+    pub fn video_encoder_args(&self) -> Vec<String> {
+        use crate::lib::mpeg::core::Decode;
+        let mut args = Vec::new();
+        for param in &self.params {
+            let keep = matches!(
+                param,
+                FfmpegParams::Cv(_)
+                    | FfmpegParams::X264Params(_)
+                    | FfmpegParams::Profile(_)
+                    | FfmpegParams::Level(_)
+                    | FfmpegParams::Crf(_)
+                    | FfmpegParams::Preset(_)
+                    | FfmpegParams::Tune(_)
+                    | FfmpegParams::Qp(_)
+                    | FfmpegParams::QpI(_)
+                    | FfmpegParams::QpP(_)
+                    | FfmpegParams::Rc(_)
+                    | FfmpegParams::R(_)
+                    | FfmpegParams::Quality(_)
+                    | FfmpegParams::Bufsize(_)
+                    | FfmpegParams::Maxrate(_)
+                    | FfmpegParams::Keyframe(_)
+                    | FfmpegParams::Passthrough(_)
+            );
+            if keep {
+                args.extend(param.decode());
+            }
+        }
+        args
+    }
+
+    // The string the speculative encode records and the foreground encode compares against before
+    // adopting anything. It is the filter and the encoder arguments themselves rather than a
+    // summary of them, because every field left out of it is a way for the two halves of one output
+    // file to be encoded differently with nothing downstream able to tell.
+    pub fn aot_compatibility(&self) -> String {
+        let mut parts = vec![self.video_filter().unwrap_or_default()];
+        parts.extend(self.video_encoder_args());
+        parts.join("\u{1f}")
+    }
+
+    // Whether this preset's encode starts while the source is still downloading.
+    //
+    // Nothing about the mechanism is codec-specific: it is one ffmpeg process reading a growing
+    // file, running this preset's own filter and encoder arguments, and producing the whole video
+    // track that the foreground run then muxes audio into. So this is a preference, and a file may
+    // declare it.
+    //
+    // The default is the set that has always done it — the CPU presets that do not scale. A GPU
+    // preset stays off unless it asks, because its foreground encode is minutes rather than hours
+    // and the overlap it buys back is worth less than an encoder the whole cluster shares; a
+    // scaling preset stays off because the two are usually run as a second output beside a
+    // source-resolution one, and speculating on both doubles the load to save the smaller of them.
+    pub fn wants_linear_aot(&self) -> bool {
+        self.aot.unwrap_or_else(|| self.aot_by_default())
+    }
+
+    fn aot_by_default(&self) -> bool {
         self.encodes_with_x264() && self.scale_height().is_none()
     }
 
-    // Whether an AOT-capable preset chunks the episode across parallel encoders or keeps one
+    // Whether the episode can be split across parallel encoders at all. Unlike encoding ahead, this
+    // one is not a preference: the chunk scheduler drives libx264 through `pnx264` directly, and it
+    // applies its own filter chain, so a preset that is not x264 or that scales cannot be chunked
+    // however it is configured.
+    pub fn can_chunk(&self) -> bool {
+        self.encodes_with_x264() && self.scale_height().is_none()
+    }
+
+    // Whether a chunkable preset splits the episode across parallel encoders or keeps one
     // continuous linear encoder alive. Chunking only pays for the slow presets; for the rest a
     // single instance keeps its real rate-control state, which is worth more than the parallelism.
     //
     // A file may say so outright, because the derived answer can only recognise the x264 presets it
     // was written knowing about: a preset built on `slower` with a heavy `-x264-params` can be
-    // slower than a bare `veryslow` and still be read as fast. What a declaration cannot do is
-    // enable chunking for an encode that cannot be started ahead of the download at all — that is a
-    // property of the codec and the filter chain, not a preference.
+    // slower than a bare `veryslow` and still be read as fast.
     pub fn wants_chunked_encode(&self) -> bool {
-        self.supports_aot() && self.chunked.unwrap_or_else(|| self.chunks_by_default())
+        self.can_chunk() && self.chunked.unwrap_or_else(|| self.chunks_by_default())
     }
 
     fn chunks_by_default(&self) -> bool {
@@ -475,6 +560,7 @@ pub fn resolve(name: &str) -> Option<ResolvedPreset> {
         name: name.to_string(),
         hardware,
         params: params.to_vec(),
+        aot: None,
         chunked: None,
         from_file: false,
     })
@@ -485,18 +571,19 @@ fn resolved_from_file(name: &str, file: &PresetFile) -> ResolvedPreset {
         name: name.to_string(),
         hardware: file.hardware,
         params: params_from_file(file),
+        aot: file.aot,
         chunked: file.chunked,
         from_file: true,
     };
     // A preset that asks for chunking it cannot have is a mistake worth naming. It runs — as one
     // linear encode, which is correct output — but silence would leave an operator waiting for a
     // speedup that was never going to arrive, and looking at the encoder rather than at the file.
-    if file.chunked == Some(true) && !preset.supports_aot() {
+    if file.chunked == Some(true) && !preset.can_chunk() {
         eprintln!(
             "[Pandora] preset {} asks for chunked encoding but {}; it will encode linearly",
             name,
             if preset.encodes_with_x264() {
-                "its filter chain scales, which must happen exactly once"
+                "the chunk scheduler applies its own filter chain and cannot scale"
             } else {
                 "chunked encoding is libx264 only"
             }
@@ -627,11 +714,133 @@ mod tests {
             let from_file = resolved_from_file(name, &file);
             let from_builtin = resolve(name).unwrap();
             assert_eq!(
-                (from_file.supports_aot(), from_file.wants_chunked_encode()),
-                (from_builtin.supports_aot(), from_builtin.wants_chunked_encode()),
+                (from_file.wants_linear_aot(), from_file.wants_chunked_encode()),
+                (from_builtin.wants_linear_aot(), from_builtin.wants_chunked_encode()),
                 "{name} encodes on a different schedule than its built-in"
             );
         }
+    }
+
+    // `presets/` also carries files that mirror no built-in — an NVENC stand-in for the AMF `gpu`
+    // preset, for one. Nothing else looks at those, so without this a typo in one would only be
+    // found by the operator who copied it across and got the built-in back with a line on stderr.
+    #[test]
+    fn every_reference_file_parses() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("presets");
+        let mut seen = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                continue;
+            }
+            let contents = std::fs::read_to_string(&path).unwrap();
+            let file: PresetFile = toml::from_str(&contents)
+                .unwrap_or_else(|e| panic!("{}: {}", path.display(), e));
+            // A preset that renders no encoder is a file that parsed and still cannot encode.
+            let name = path.file_stem().unwrap().to_string_lossy().to_string();
+            let resolved = resolved_from_file(&name, &file);
+            assert!(
+                resolved.video_encoder_args().iter().any(|arg| arg == "-c:v"),
+                "{} names no video codec",
+                path.display()
+            );
+            seen += 1;
+        }
+        assert!(seen >= BUILTIN_PRESET_NAMES.len(), "only found {seen} reference presets");
+    }
+
+    // Encoding ahead of the download is one ffmpeg process running the preset's own filter and
+    // encoder arguments, so nothing about it is specific to libx264 — a GPU preset can do it, and
+    // the only reason the built-ins do not is that it is not worth the shared encoder by default.
+    #[test]
+    fn a_preset_file_may_declare_whether_it_encodes_ahead() {
+        let declare = |toml: &str| {
+            resolved_from_file("test", &toml::from_str::<PresetFile>(toml).expect(toml))
+        };
+
+        // The hardware encoders, off unless asked and on when they ask.
+        for codec in ["h264_nvenc", "hevc_nvenc", "h264_amf", "h264_qsv"] {
+            let bare = declare(&format!("[video]\ncodec = \"{codec}\"\n"));
+            assert!(!bare.wants_linear_aot(), "{codec} encoded ahead uninvited");
+            let asked = declare(&format!("aot = true\n[video]\ncodec = \"{codec}\"\n"));
+            assert!(asked.wants_linear_aot(), "{codec} was refused an AOT it asked for");
+            // Chunking is the one that really is libx264-only, and stays refused.
+            assert!(!declare(&format!("chunked = true\n[video]\ncodec = \"{codec}\"\n"))
+                .wants_chunked_encode());
+        }
+
+        // A scaling preset may encode ahead now that the speculative run applies the preset's own
+        // filter rather than a hardcoded one; it is still off by default.
+        let scaling = "filter = \"scale=-2:'min(720,ih)',ass=INPUTFILEASS\"\n";
+        assert!(!declare(&format!("[video]\n{scaling}")).wants_linear_aot());
+        assert!(declare(&format!("aot = true\n[video]\n{scaling}")).wants_linear_aot());
+
+        // And the CPU default is unchanged in both directions.
+        assert!(declare("[video]\ncodec = \"libx264\"\ncrf = 17\n").wants_linear_aot());
+        assert!(!declare("aot = false\n[video]\ncodec = \"libx264\"\ncrf = 17\n").wants_linear_aot());
+    }
+
+    // What the speculative encode is handed, and what it records so the foreground can tell whether
+    // adopting its output is safe. Everything the encode's picture depends on has to be in that
+    // string: a field left out is two halves of one file encoded differently, with nothing
+    // downstream able to notice.
+    #[test]
+    fn the_arguments_an_aot_encode_runs_with_come_from_the_preset() {
+        let standard = resolve("standard").unwrap();
+        assert_eq!(
+            standard.video_encoder_args(),
+            vec![
+                "-c:v", "libx264",
+                "-x264-params", CPU_SANE_X264_PARAMS,
+                "-profile:v", "high",
+                "-level:v", "4.1",
+                "-crf", "17",
+                "-preset", "fast",
+            ]
+        );
+        // No audio, no maps, no muxer flags, no filter: the AOT run writes a video-only file and
+        // supplies those itself.
+        for excluded in ["-c:a", "-b:a", "-map", "-vf", "-movflags", "-i"] {
+            assert!(!standard.video_encoder_args().contains(&excluded.to_string()), "{excluded}");
+        }
+
+        // A hardware preset renders its own rate control rather than being forced through -crf.
+        let gpu = resolve("gpu").unwrap();
+        assert_eq!(
+            gpu.video_encoder_args(),
+            vec![
+                "-c:v", "h264_amf",
+                "-profile:v", "high",
+                "-level:v", "4.1",
+                "-qp_i", "15",
+                "-qp_p", "15",
+                "-rc", "cqp",
+                "-r", "23.976",
+            ]
+        );
+        assert!(!gpu.video_encoder_args().contains(&"-crf".to_string()));
+
+        // The filter travels with them, still carrying its placeholder for the subtitle path.
+        assert!(standard.video_filter().unwrap().contains("INPUTFILEASS"));
+        assert_eq!(resolve("720p").unwrap().video_filter().as_deref(), Some(CPU_720P_FILTER));
+
+        // Two presets that differ anywhere the picture can see must not look compatible. Codec is
+        // the one that used to be missing: the old string was x264 fields only, so an NVENC prefix
+        // and an x264 foreground encode compared equal.
+        let same_but_nvenc = resolved_from_file(
+            "standard",
+            &toml::from_str("[video]\ncodec = \"h264_nvenc\"\ncrf = 17\npreset = \"fast\"\n").unwrap(),
+        );
+        assert_ne!(standard.aot_compatibility(), same_but_nvenc.aot_compatibility());
+        assert_ne!(
+            resolve("720p").unwrap().aot_compatibility(),
+            resolve("standard").unwrap().aot_compatibility(),
+            "a scaling preset must not adopt an unscaled prefix"
+        );
+        assert_eq!(
+            standard.aot_compatibility(),
+            resolve("standard").unwrap().aot_compatibility()
+        );
     }
 
     // Chunking is derived from how slow the x264 preset is, and the derivation can only recognise
@@ -648,12 +857,12 @@ mod tests {
         let slower = declare(
             "chunked = true\n[video]\npreset = \"slower\"\nx264_params = \"me=tesa:subme=11\"\n",
         );
-        assert!(slower.supports_aot());
+        assert!(slower.wants_linear_aot());
         assert!(slower.wants_chunked_encode(), "a declared chunk was ignored");
 
         // And the other way: veryslow's own settings with chunking turned off keeps one encoder.
         let linear = declare("chunked = false\n[video]\npreset = \"veryslow\"\ncrf = 18\n");
-        assert!(linear.supports_aot());
+        assert!(linear.wants_linear_aot());
         assert!(!linear.wants_chunked_encode(), "a declared linear encode chunked anyway");
 
         // Undeclared still derives, so every preset written before the field behaves as it did.
@@ -709,23 +918,23 @@ mod tests {
     fn aot_eligibility_matches_what_each_preset_can_actually_do() {
         for name in ["standard", "pseudolossless", "dummy"] {
             let preset = resolve(name).unwrap();
-            assert!(preset.supports_aot(), "{name} should encode ahead");
+            assert!(preset.wants_linear_aot(), "{name} should encode ahead");
             assert!(!preset.wants_chunked_encode(), "{name} should stay linear");
         }
 
         // Slow enough that chunking wins back more than the coordination costs.
         let veryslow = resolve("veryslow").unwrap();
-        assert!(veryslow.supports_aot());
+        assert!(veryslow.wants_linear_aot());
         assert!(veryslow.wants_chunked_encode());
 
         // Not libx264, so pnx264 cannot drive it at all.
-        assert!(!resolve("gpu").unwrap().supports_aot());
+        assert!(!resolve("gpu").unwrap().wants_linear_aot());
 
         // Scaling presets must run their filter exactly once, in the encode that writes the
         // output — encoding ahead would resample the prefix a second time.
         for name in ["720p", "480p"] {
             let preset = resolve(name).unwrap();
-            assert!(!preset.supports_aot(), "{name} must not encode ahead");
+            assert!(!preset.wants_linear_aot(), "{name} must not encode ahead");
         }
     }
 

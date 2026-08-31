@@ -220,7 +220,7 @@ fn scale_height(preset: Option<&ResolvedPreset>) -> Option<u32> {
 // branch so a test can hold them to the same answers the boolean flags used to give — the whole of
 // this regression was four readings of the flags drifting apart from the preset actually in use.
 fn adopts_linear_prefix(preset: Option<&ResolvedPreset>) -> bool {
-    preset.is_some_and(|preset| preset.supports_aot() && !preset.wants_chunked_encode())
+    preset.is_some_and(|preset| preset.wants_linear_aot() && !preset.wants_chunked_encode())
 }
 
 fn encodes_in_chunks(preset: Option<&ResolvedPreset>) -> bool {
@@ -242,17 +242,7 @@ fn planner_encoder_config(preset: Option<&ResolvedPreset>) -> pnx264::Config {
     }
 }
 
-fn encoder_compatibility(encoder: &pnx264::Config) -> String {
-    format!(
-        "{}|{}|{}|{}|{}|{}",
-        encoder.preset.as_deref().unwrap_or(""),
-        encoder.crf,
-        encoder.tune.as_deref().unwrap_or(""),
-        encoder.profile.as_deref().unwrap_or(""),
-        encoder.level.as_deref().unwrap_or(""),
-        encoder.x264_params.as_deref().unwrap_or(""),
-    )
-}
+
 
 fn media_bitrate_kbps(bytes: u64, media_micros: u64) -> u64 {
     if bytes == 0 || media_micros == 0 {
@@ -403,7 +393,7 @@ fn mux_linear_aot_hls(
 
 fn finish_linear_aot(
     args: &Args,
-    encoder: &pnx264::Config,
+    preset: &ResolvedPreset,
     audio_index: &str,
     proto: &Protocol,
     neg: &str,
@@ -430,11 +420,15 @@ fn finish_linear_aot(
         "linear AOT handoff found: complete={} pid={} job={} frames={} bytes={} {}",
         initial.complete, initial.pid, initial.job_id, initial.frames, initial.bytes, memory_line()
     ));
-    let wanted = encoder_compatibility(encoder);
+    let wanted = preset.aot_compatibility();
     if initial.compatibility != wanted {
+        // The compatibility string is separated by a control character so that an argument
+        // containing a space cannot forge a boundary in it. That makes it unreadable in a log, and
+        // this line is the one place a person reads it, so it is spaced out again here.
+        let readable = |value: &str| value.replace('\u{1f}', " ");
         log.line(&format!(
             "linear AOT is incompatible (speculated {:?}, this encode wants {:?}); using established linear encode",
-            initial.compatibility, wanted
+            readable(&initial.compatibility), readable(&wanted)
         ));
         std::fs::remove_file(&state_path).ok();
         std::fs::remove_file(&aot_video).ok();
@@ -890,11 +884,12 @@ async fn main() {
             eprintln!("pnmpeg: --ass is required with --linear-prefix");
             std::process::exit(2);
         };
-        let mut encoder = x264_config.clone();
-        encoder.threads = 0;
-        encoder.plan_only = false;
+        let Some(preset) = active_preset.as_ref() else {
+            eprintln!("pnmpeg: --linear-prefix needs a preset to encode with");
+            std::process::exit(2);
+        };
         let output = PathBuf::from(&args.output);
-        let compatibility = encoder_compatibility(&encoder);
+        let compatibility = preset.aot_compatibility();
         let state_path = output
             .parent()
             .unwrap_or_else(|| Path::new("."))
@@ -949,7 +944,10 @@ async fn main() {
             lease_file: args.aot_lockfile.as_deref().map(PathBuf::from),
             job_id,
             compatibility,
-            encoder,
+            filter: preset
+                .video_filter()
+                .unwrap_or_else(|| format!("ass={},format=yuv420p", pnx264::linear::SUBTITLE_TOKEN)),
+            video_args: preset.video_encoder_args(),
         });
         watchdog_stop.store(true, std::sync::atomic::Ordering::Relaxed);
         watchdog.join().ok();
@@ -1300,7 +1298,8 @@ async fn main() {
     log.line(&format!("audio_index={}", audio_index));
 
     if adopts_linear_prefix(active_preset.as_ref()) {
-        match finish_linear_aot(&args, &x264_config, &audio_index, &proto, &neg, &mut log) {
+        let preset = active_preset.as_ref().expect("adopts_linear_prefix implies a preset");
+        match finish_linear_aot(&args, preset, &audio_index, &proto, &neg, &mut log) {
             Ok(true) => {
                 println!("{}", pn_emit!(
                     protocol = proto,

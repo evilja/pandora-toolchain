@@ -14,32 +14,49 @@ binary, so an untouched deployment encodes exactly as it always has. A file repl
 of the same name entirely — there is no merging, which is what keeps an edited preset readable as
 the whole truth about that encode.
 
-Two behaviours follow from a preset's own settings:
-
-- **Encoding ahead of the download** happens when the codec is `libx264` and the filter chain has
-  no `scale=`. This one is not declarable: a preset that scales must run its filter exactly once,
-  in the encode that writes the output, or the picture is resampled twice.
-- **Chunking across parallel encoders** defaults to on when the x264 `preset` is `veryslow` or
-  `placebo`. Faster presets keep one continuous encoder so its rate-control state survives to the
-  handoff.
-
-Chunking can be declared outright, because that default only recognises the x264 preset names it
-was written knowing about — a preset built on `slower` with a heavy `-x264-params` can be slower
-than a bare `veryslow` and still be read as fast:
+Two behaviours have defaults that follow from a preset's own settings, and both can be declared:
 
 ```toml
-chunked = true    # or false to keep one encoder at an otherwise veryslow-class preset
+aot = true        # encode while the source is still downloading
+chunked = true    # split the episode across parallel encoders
 ```
 
-It is a choice between the two schedules an encode is already eligible for, not a way past
-eligibility: a preset that is not `libx264`, or that scales, cannot chunk however it is declared.
-One that asks anyway says so on stderr and encodes linearly.
+- **`aot` — encoding ahead of the download.** One ffmpeg process reads the still-growing source and
+  runs this preset's own filter and encoder arguments, producing the whole video track; the
+  foreground run muxes audio into it. Nothing about that is specific to a codec, so **libx264,
+  NVENC, AMF, QSV and VAAPI presets can all do it.** It defaults to on for the CPU presets that do
+  not scale. A hardware preset defaults to off — the GPU is shared by the whole node and its
+  foreground encode is minutes rather than hours — and a scaling preset defaults to off because
+  those are usually run beside a source-resolution encode, where speculating on both doubles the
+  load to save the cheaper one. Turn it on with `aot = true` when neither applies.
+- **`chunked` — chunking across parallel encoders.** Defaults to on when the x264 `preset` is
+  `veryslow` or `placebo`; faster presets keep one continuous encoder so its rate-control state
+  survives to the handoff. Declare it when the default reads your preset wrong — it only recognises
+  the x264 preset names it was written knowing about, and a preset built on `slower` with a heavy
+  `-x264-params` can be slower than a bare `veryslow` and still be read as fast.
 
-The ahead-of-time encoder reads its CRF, x264 preset and params back out of the same file, so
-editing one of these changes both halves of an encode together.
+Unlike `aot`, `chunked` cannot be declared onto an encode that is not eligible for it: the chunk
+scheduler drives libx264 directly and applies a filter chain of its own, so a preset that is not
+`libx264` or that scales encodes linearly however it is declared, and says so on stderr rather than
+leaving you waiting for a speedup that was never coming.
+
+The ahead-of-time encoder takes its filter and its encoder arguments from the same file, verbatim,
+and records them alongside its output; the foreground encode compares its own against that record
+and declines to adopt anything encoded differently. So editing a preset changes both halves of an
+encode together, and a preset edited *between* the two halves costs a re-encode rather than
+producing one file with two sets of settings in it.
 
 `hardware` is what the Pandora Mini scheduler routes on: a `gpu` preset is only ever offered to a
 node whose token is marked `gpu`. See [../docs/LINK.md](../docs/LINK.md).
 
+`gpu-nvenc.toml` is the one file here that mirrors no built-in. There is no `nvenc` preset name a
+job can ask for, so it is copied across *as* `gpu.toml` to make the `gpu` preset encode with NVENC
+on an NVIDIA machine:
+
+```sh
+cp presets/gpu-nvenc.toml DB/config/global/presets/gpu.toml
+```
+
 A unit test renders every file here against the built-in it mirrors and fails if the two disagree,
-so these stay honest as the built-ins change.
+so these stay honest as the built-ins change; every file is also parsed and checked to name an
+encoder, including the ones that mirror nothing.

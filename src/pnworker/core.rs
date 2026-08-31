@@ -1102,13 +1102,7 @@ async fn queue_download_job(
             file_indices,
             preserve_all,
             if !preserve_all && matches!(job.job_type, JobType::Encode | JobType::Pancode) {
-                match &job.preset {
-                    Preset::VerySlow(_) => Some(DownloadAot::VerySlow),
-                    Preset::Standard(_) => Some(DownloadAot::Standard),
-                    Preset::PseudoLossless(_) => Some(DownloadAot::PseudoLossless),
-                    Preset::Dummy(_) => Some(DownloadAot::Dummy),
-                    Preset::Gpu(_) | Preset::Hd720(_) | Preset::Sd480(_) | Preset::Copy => None,
-                }
+                download_aot_for(&job.preset)
             } else {
                 None
             },
@@ -3153,6 +3147,41 @@ pub enum Preset {
     Copy,
 }
 
+impl Preset {
+    // The canonical preset name — the same one `preset_from_name` accepts, the file name under
+    // `DB/config/global/presets/`, and what `pnmpeg --preset` is given. `Copy` has none: it is a
+    // stream copy, not an encode, and there is no preset to look up for it.
+    pub fn name(&self) -> Option<&'static str> {
+        Some(match self {
+            Preset::PseudoLossless(_) => "pseudolossless",
+            Preset::Dummy(_) => "dummy",
+            Preset::Standard(_) => "standard",
+            Preset::VerySlow(_) => "veryslow",
+            Preset::Gpu(_) => "gpu",
+            Preset::Hd720(_) => "720p",
+            Preset::Sd480(_) => "480p",
+            Preset::Copy => return None,
+        })
+    }
+}
+
+// What, if anything, the download worker should start encoding before the download finishes.
+//
+// This asks the resolved preset rather than matching on the variant, which is what lets a preset
+// file decide it. The variant list this replaced was a third copy of the same table — pnmpeg had
+// two of its own — and the copies could only ever agree about the built-ins: a preset file that
+// turned encoding-ahead on got a coordinator that never started it, and one that turned it off got
+// a speculative encode nothing would adopt.
+pub fn download_aot_for(preset: &Preset) -> Option<DownloadAot> {
+    let resolved = crate::lib::mpeg::preset::resolve(preset.name()?)?;
+    if resolved.wants_chunked_encode() {
+        return Some(DownloadAot { preset: resolved.name, chunked: true });
+    }
+    resolved
+        .wants_linear_aot()
+        .then(|| DownloadAot { preset: resolved.name, chunked: false })
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum KeepKind {
     Encode,
@@ -3787,6 +3816,41 @@ HashMap::from([
 mod tests {
     use super::*;
     use crate::lib::p2p::nyaaise::TorrentType;
+
+    // The download worker's speculation used to be chosen by matching on the `Preset` variant,
+    // which meant a preset file could not reach it: an operator who turned encoding-ahead on for
+    // their GPU preset got a coordinator that never started one. Every answer here comes from the
+    // resolved preset instead, so it stays in step with what pnmpeg will actually do.
+    #[test]
+    fn the_download_worker_speculates_on_what_the_preset_asks_for() {
+        let linear = |preset: Preset| {
+            download_aot_for(&preset).map(|aot| (aot.preset, aot.chunked))
+        };
+        for (preset, name) in [
+            (Preset::Standard(None), "standard"),
+            (Preset::PseudoLossless(None), "pseudolossless"),
+            (Preset::Dummy(None), "dummy"),
+        ] {
+            assert_eq!(linear(preset), Some((name.to_string(), false)), "{name}");
+        }
+        // VerySlow plans chunk boundaries instead of keeping one encoder alive.
+        assert_eq!(
+            linear(Preset::VerySlow(None)),
+            Some(("veryslow".to_string(), true))
+        );
+        // Off by default, and a stream copy has no preset to speculate with at all.
+        for preset in [Preset::Gpu(None), Preset::Hd720(None), Preset::Sd480(None), Preset::Copy] {
+            assert_eq!(linear(preset.clone()), None, "{:?}", preset);
+        }
+        // Whatever it decides, it names a preset pnmpeg can look up — including its file.
+        for preset in [Preset::Standard(None), Preset::VerySlow(None), Preset::Gpu(None)] {
+            let name = preset.name().unwrap();
+            assert!(
+                crate::lib::mpeg::preset::resolve(name).is_some(),
+                "{name} does not resolve"
+            );
+        }
+    }
 
     #[test]
     fn drive_deletion_is_limited_to_the_job_author_or_a_witch() {

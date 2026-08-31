@@ -1,0 +1,32 @@
+# NVIDIA NVENC in place of the AMF built-in. This is the one reference file that does not mirror a
+# built-in: there is no `nvenc` preset name a job can ask for, so copy it across *as* `gpu.toml` on
+# a machine with an NVIDIA card and the `gpu` preset encodes with NVENC there.
+#
+#   cp presets/gpu-nvenc.toml DB/config/global/presets/gpu.toml
+#
+# `aot = true` is what the AMF built-in leaves off: encoding ahead of the download is off by default
+# for hardware encoders, since a GPU is shared by the whole node and its foreground encode is
+# minutes rather than hours. On a card with dedicated encoder silicon that the rest of the job never
+# touches, overlapping the encode with the download is free, so it is turned on here.
+hardware = "gpu"
+aot = true
+
+[video]
+codec = "h264_nvenc"
+filter = "ass=INPUTFILEASS,format=yuv420p"
+profile = "high"
+level = "4.1"
+# NVENC's constant-quantiser mode. `-rc constqp` with `-qp` is the equivalent of AMF's `cqp` with
+# `-qp_i`/`-qp_p`; NVENC will not read `-crf` at all, and silently ignoring it is how a preset ends
+# up encoding at the driver's default bitrate.
+rc = "constqp"
+qp = "18"
+# p1 is fastest and p7 slowest; p5 is roughly where NVENC stops trading quality for speed a release
+# would notice. `-tune hq` asks for the quality-oriented rate control rather than low latency.
+preset = "p5"
+tune = "hq"
+framerate = "23.976"
+
+[audio]
+codec = "aac"
+bitrate = "192k"

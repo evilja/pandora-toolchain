@@ -27,12 +27,15 @@ use tokio::time::{Duration, Instant, sleep};
 // The index list is empty for a whole-torrent download, one entry for `/encode pan`, and one entry
 // per episode for a batch — a batch runs as a single pnp2p process because the info-hash lock
 // admits exactly one downloader per torrent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DownloadAot {
-    VerySlow,
-    Standard,
-    PseudoLossless,
-    Dummy,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DownloadAot {
+    // The canonical preset name, passed straight to `pnmpeg --preset`. Naming the preset rather
+    // than a variant is what carries an operator's preset file into the speculative encode: the
+    // flags this replaced could only ever spell the built-ins.
+    pub preset: String,
+    // Whether this preset plans chunk boundaries for a parallel encode rather than keeping one
+    // linear encoder alive to the handoff.
+    pub chunked: bool,
 }
 
 pub type DownloadData = (PathBuf, TorrentType, u64, Vec<u64>, bool, Option<DownloadAot>);
@@ -194,18 +197,13 @@ async fn start_download_planner(
     let foreground_busy = worker_root.join(".foreground-encode");
     let aot_lease = worker_root.join(".aot-owner");
     let mut command = tokio::process::Command::new(pnmpeg_path);
-    let linear = mode != DownloadAot::VerySlow;
+    let linear = !mode.chunked;
     let prefix_state = directory.join("work").join("download.prefix");
     if linear {
-        let preset = match mode {
-            DownloadAot::Standard => "--x264",
-            DownloadAot::PseudoLossless => "--pseudolossless",
-            DownloadAot::Dummy => "--dummy",
-            DownloadAot::VerySlow => unreachable!(),
-        };
         command.args([
             "--linear-prefix",
-            preset,
+            "--preset",
+            &mode.preset,
             "--aot-job-id",
             &job_id.to_string(),
             "--output",
@@ -214,7 +212,8 @@ async fn start_download_planner(
     } else {
         command.args([
             "--plan-prefix",
-            "--veryslow",
+            "--preset",
+            &mode.preset,
             "--output",
             &directory.join("work").join("parallel.plan").display().to_string(),
         ]);
