@@ -77,9 +77,10 @@ way the preset was named. Exactly one preset may be given per run. The concat ta
 presets and stay compiled in: they are how an intro is stitched on, not a quality choice.
 
 The preset selected here also decides whether the run adopts a speculative ahead-of-time prefix and
-whether it chunks across parallel encoders — both derived from the preset's own codec, filter and
-x264 preset rather than from the flag it was reached by, so the two spellings behave identically.
-See [WORKER.md](WORKER.md#parallel-veryslow-encoding).
+whether it chunks across parallel encoders — derived from the preset's own codec, filter and x264
+preset rather than from the flag it was reached by, so the two spellings behave identically. A
+preset file may set `chunked` to decide the second of those itself. See
+[WORKER.md](WORKER.md#parallel-veryslow-encoding).
 
 The file format and its `hardware` tag are described in [WORKER.md](WORKER.md) and
 [LINK.md](LINK.md#purpose); reference copies of every built-in live in `presets/`.

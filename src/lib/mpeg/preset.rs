@@ -280,6 +280,12 @@ pub struct PresetAudio {
 pub struct PresetFile {
     #[serde(default)]
     pub hardware: PresetHardware,
+    // Whether to split the episode across parallel encoders. Left out, it is derived from how slow
+    // the x264 preset is, which is the rule the built-in tables have always followed. Declared, it
+    // wins — a preset tuned by hand can be slow enough to be worth chunking at an x264 preset no
+    // list would have named, and the operator who wrote the settings is the one who knows.
+    #[serde(default)]
+    pub chunked: Option<bool>,
     #[serde(default)]
     pub video: PresetVideo,
     #[serde(default)]
@@ -297,6 +303,8 @@ pub struct ResolvedPreset {
     pub name: String,
     pub hardware: PresetHardware,
     pub params: Vec<FfmpegParams>,
+    // The preset's own answer on chunking, or None to derive it. A built-in never declares one.
+    pub chunked: Option<bool>,
     // True when this came off disk, so a log can say which of the two an encode used. An operator
     // who edits a preset and sees no change needs to know the file was never read.
     pub from_file: bool,
@@ -375,12 +383,20 @@ impl ResolvedPreset {
     // Whether an AOT-capable preset chunks the episode across parallel encoders or keeps one
     // continuous linear encoder alive. Chunking only pays for the slow presets; for the rest a
     // single instance keeps its real rate-control state, which is worth more than the parallelism.
+    //
+    // A file may say so outright, because the derived answer can only recognise the x264 presets it
+    // was written knowing about: a preset built on `slower` with a heavy `-x264-params` can be
+    // slower than a bare `veryslow` and still be read as fast. What a declaration cannot do is
+    // enable chunking for an encode that cannot be started ahead of the download at all — that is a
+    // property of the codec and the filter chain, not a preference.
     pub fn wants_chunked_encode(&self) -> bool {
-        self.supports_aot()
-            && self
-                .x264_settings()
-                .preset
-                .is_some_and(|preset| CHUNKED_X264_PRESETS.contains(&preset.as_str()))
+        self.supports_aot() && self.chunked.unwrap_or_else(|| self.chunks_by_default())
+    }
+
+    fn chunks_by_default(&self) -> bool {
+        self.x264_settings()
+            .preset
+            .is_some_and(|preset| CHUNKED_X264_PRESETS.contains(&preset.as_str()))
     }
 }
 
@@ -452,20 +468,41 @@ fn read_preset_file(name: &str) -> Option<PresetFile> {
 // encoding at some default.
 pub fn resolve(name: &str) -> Option<ResolvedPreset> {
     if let Some(file) = read_preset_file(name) {
-        return Some(ResolvedPreset {
-            name: name.to_string(),
-            hardware: file.hardware,
-            params: params_from_file(&file),
-            from_file: true,
-        });
+        return Some(resolved_from_file(name, &file));
     }
     let (params, hardware) = builtin(name)?;
     Some(ResolvedPreset {
         name: name.to_string(),
         hardware,
         params: params.to_vec(),
+        chunked: None,
         from_file: false,
     })
+}
+
+fn resolved_from_file(name: &str, file: &PresetFile) -> ResolvedPreset {
+    let preset = ResolvedPreset {
+        name: name.to_string(),
+        hardware: file.hardware,
+        params: params_from_file(file),
+        chunked: file.chunked,
+        from_file: true,
+    };
+    // A preset that asks for chunking it cannot have is a mistake worth naming. It runs — as one
+    // linear encode, which is correct output — but silence would leave an operator waiting for a
+    // speedup that was never going to arrive, and looking at the encoder rather than at the file.
+    if file.chunked == Some(true) && !preset.supports_aot() {
+        eprintln!(
+            "[Pandora] preset {} asks for chunked encoding but {}; it will encode linearly",
+            name,
+            if preset.encodes_with_x264() {
+                "its filter chain scales, which must happen exactly once"
+            } else {
+                "chunked encoding is libx264 only"
+            }
+        );
+    }
+    preset
 }
 
 // The fixed skeleton every preset shares. The order is the built-in tables' order and is not
@@ -576,14 +613,62 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{}: {}", path.display(), e));
             let file: PresetFile = toml::from_str(&contents)
                 .unwrap_or_else(|e| panic!("{}: {}", path.display(), e));
-            let (builtin, hardware) = builtin(name).unwrap();
+            let (builtin_params, hardware) = builtin(name).unwrap();
             assert_eq!(file.hardware, hardware, "{name} disagrees on hardware");
             assert_eq!(
                 rendered(&params_from_file(&file)),
-                rendered(builtin),
+                rendered(builtin_params),
                 "{name} does not render its built-in table"
             );
+            // Rendering the same arguments is not the whole of encoding the same way: how the run
+            // is scheduled is decided separately, and a reference file that dropped into a
+            // different strategy would take a different amount of time to produce an identical
+            // file, which is exactly the kind of change nobody goes looking for.
+            let from_file = resolved_from_file(name, &file);
+            let from_builtin = resolve(name).unwrap();
+            assert_eq!(
+                (from_file.supports_aot(), from_file.wants_chunked_encode()),
+                (from_builtin.supports_aot(), from_builtin.wants_chunked_encode()),
+                "{name} encodes on a different schedule than its built-in"
+            );
         }
+    }
+
+    // Chunking is derived from how slow the x264 preset is, and the derivation can only recognise
+    // the presets it was written knowing about. A file gets the last word — but only over the
+    // choice between two schedules that are both available to it.
+    #[test]
+    fn a_preset_file_may_declare_whether_it_chunks() {
+        let declare = |toml: &str| {
+            resolved_from_file("test", &toml::from_str::<PresetFile>(toml).expect(toml))
+        };
+
+        // Hand-tuned and slower than its x264 preset name suggests: the derivation says linear,
+        // the file says otherwise and is obeyed.
+        let slower = declare(
+            "chunked = true\n[video]\npreset = \"slower\"\nx264_params = \"me=tesa:subme=11\"\n",
+        );
+        assert!(slower.supports_aot());
+        assert!(slower.wants_chunked_encode(), "a declared chunk was ignored");
+
+        // And the other way: veryslow's own settings with chunking turned off keeps one encoder.
+        let linear = declare("chunked = false\n[video]\npreset = \"veryslow\"\ncrf = 18\n");
+        assert!(linear.supports_aot());
+        assert!(!linear.wants_chunked_encode(), "a declared linear encode chunked anyway");
+
+        // Undeclared still derives, so every preset written before the field behaves as it did.
+        let derived = declare("[video]\npreset = \"veryslow\"\ncrf = 18\n");
+        assert!(derived.wants_chunked_encode());
+        assert!(!declare("[video]\npreset = \"fast\"\ncrf = 17\n").wants_chunked_encode());
+
+        // Declaring it cannot conjure a schedule the encode is not eligible for at all: chunking
+        // runs through libx264, and a scaling filter has to be applied exactly once.
+        let gpu = declare("chunked = true\n[video]\ncodec = \"h264_nvenc\"\n");
+        assert!(!gpu.wants_chunked_encode(), "a non-x264 preset was chunked");
+        let scaled = declare(
+            "chunked = true\n[video]\npreset = \"veryslow\"\nfilter = \"scale=-2:'min(720,ih)',ass=INPUTFILEASS\"\n",
+        );
+        assert!(!scaled.wants_chunked_encode(), "a scaling preset was chunked");
     }
 
     // The ahead-of-time encoder drives libx264 directly and has to be handed exactly what the
