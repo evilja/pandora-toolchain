@@ -72,6 +72,14 @@ pub fn head_commit(repo_path: &str) -> Option<SyncedCommit> {
     Some(read_head(&repo)?.1)
 }
 
+// The full object id, which is what travels between machines. `SyncedCommit::id` is abbreviated
+// for a Discord line and honours the repo's own abbreviation length, so two machines can render
+// the same commit at different widths — no use at all for deciding whether they agree.
+pub fn head_oid(repo_path: &str) -> Option<String> {
+    let repo = Repository::open(repo_path).ok()?;
+    Some(read_head(&repo)?.0.to_string())
+}
+
 fn read_head(repo: &Repository) -> Option<(Oid, SyncedCommit)> {
     let commit = repo.head().ok()?.peel_to_commit().ok()?;
     Some((commit.id(), describe(repo, &commit)))
@@ -120,7 +128,6 @@ fn commits_between(repo: &Repository, from: Oid, to: Oid) -> (Vec<SyncedCommit>,
 
 pub fn git_pull(repo_path: &str) -> Result<SyncReport, git2::Error> {
     let repo = Repository::open(repo_path)?;
-    let config = repo.config().ok();
     let head = repo.head()?;
     let refname = head.name()
         .ok_or_else(|| git2::Error::from_str("invalid HEAD"))?
@@ -132,15 +139,7 @@ pub fn git_pull(repo_path: &str) -> Result<SyncReport, git2::Error> {
     let previous = head.target();
     drop(head);
 
-    let mut remote = repo.find_remote("origin")?;
-    let mut fetch_opts = FetchOptions::new();
-    fetch_opts.download_tags(AutotagOption::All);
-    let mut callbacks = RemoteCallbacks::new();
-    callbacks.credentials(move |url, username_from_url, allowed| {
-        gitsync_credentials(config.as_ref(), url, username_from_url, allowed)
-    });
-    fetch_opts.remote_callbacks(callbacks);
-    remote.fetch(&[&branch], Some(&mut fetch_opts), None)?;
+    fetch_origin(&repo, &branch)?;
 
     let fetch_head = repo.find_reference("FETCH_HEAD")?;
     let fetch_commit = repo.reference_to_annotated_commit(&fetch_head)?;
@@ -156,6 +155,64 @@ pub fn git_pull(repo_path: &str) -> Result<SyncReport, git2::Error> {
     } else {
         eprintln!("Merge required — fast-forward only supported here.");
     }
+
+    let (current, head) =
+        read_head(&repo).ok_or_else(|| git2::Error::from_str("HEAD does not point at a commit"))?;
+    let (new_commits, scan_truncated) = match previous {
+        Some(previous) if previous != current => commits_between(&repo, previous, current),
+        _ => (Vec::new(), false),
+    };
+    Ok(SyncReport {
+        head,
+        new_commits,
+        scan_truncated,
+    })
+}
+
+fn fetch_origin(repo: &Repository, branch: &str) -> Result<(), git2::Error> {
+    let config = repo.config().ok();
+    let mut remote = repo.find_remote("origin")?;
+    let mut fetch_opts = FetchOptions::new();
+    fetch_opts.download_tags(AutotagOption::All);
+    let mut callbacks = RemoteCallbacks::new();
+    callbacks.credentials(move |url, username_from_url, allowed| {
+        gitsync_credentials(config.as_ref(), url, username_from_url, allowed)
+    });
+    fetch_opts.remote_callbacks(callbacks);
+    remote.fetch(&[branch], Some(&mut fetch_opts), None)
+}
+
+// `/gitforce`'s half of the pull: put this checkout *on* a commit rather than fast-forwarding
+// towards one. It exists because a fast-forward has cases it cannot serve — a local commit nobody
+// wants, a force-pushed branch, a working tree an operator edited on the box — and in a cluster
+// those leave one machine permanently behind with no way back that does not involve ssh.
+//
+// It discards local work by design, which is why nothing calls it automatically: `/gitsync` never
+// resets, and a node only resets when the coordinator's advertised release says to.
+pub fn git_reset(repo_path: &str, commit: &str) -> Result<SyncReport, git2::Error> {
+    let repo = Repository::open(repo_path)?;
+    let head = repo.head()?;
+    let branch = head
+        .shorthand()
+        .ok_or_else(|| git2::Error::from_str("invalid branch"))?
+        .to_owned();
+    let previous = head.target();
+    drop(head);
+
+    fetch_origin(&repo, &branch)?;
+
+    // An empty target means "wherever the branch now points", which is what a force-push case
+    // wants; a named one is checked against what was actually fetched rather than trusted, so a
+    // commit this remote does not have fails here instead of leaving a detached checkout.
+    let target = if commit.trim().is_empty() {
+        let fetch_head = repo.find_reference("FETCH_HEAD")?;
+        repo.reference_to_annotated_commit(&fetch_head)?.id()
+    } else {
+        Oid::from_str(commit.trim())
+            .map_err(|_| git2::Error::from_str("target is not a commit id"))?
+    };
+    let object = repo.find_object(target, None)?;
+    repo.reset(&object, git2::ResetType::Hard, None)?;
 
     let (current, head) =
         read_head(&repo).ok_or_else(|| git2::Error::from_str("HEAD does not point at a commit"))?;

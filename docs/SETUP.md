@@ -69,5 +69,16 @@ setting.
 **Node** — `link_coordinator_url`, `link_node_name`, `link_node_token` (all required),
 `link_max_jobs`. Choosing the node role also writes `pandora_mode|pntools|mini`.
 
+## Migrations on a new install
+
+A new install records every [migration](LINK.md#migrations) as already run, without running any. It
+is by definition in the current on-disk format — setup is what just wrote it — so there is nothing
+for a migration to convert.
+
+The signal is the absence of `env.pandora` when `ensure_configured()` starts, which is the one
+unambiguous mark of a machine that has never run Pandora. A deployment that predates the ledger has
+no such guarantee, reaches its first `/gitsync` with no ledger at all, and runs every migration from
+zero — which is the case the ledger exists for.
+
 Everything beyond this stays where it already lives: per-server settings in `/configure` and
 `/edit`, provider credentials in [PROJECT.md](PROJECT.md), the node's own story in [LINK.md](LINK.md).

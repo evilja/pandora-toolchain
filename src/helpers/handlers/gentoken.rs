@@ -1,4 +1,5 @@
 use super::*;
+use pandora_toolchain::pnworker::link::spec::NodePurpose;
 use tokio::io::AsyncWriteExt;
 
 const TOKENS_PATH: &str = pandora_toolchain::lib::env::standard::API_TOKENS_PATH;
@@ -10,6 +11,16 @@ pub async fn handle_gentoken(
     let label = option_trimmed(command, "label");
     let local = option_bool(command, "local").unwrap_or(false);
     let link_node = option_trimmed(command, "link");
+    let purpose = option_trimmed(command, "purpose");
+    if purpose.is_some() && link_node.is_none() {
+        command_error(
+            ctx,
+            command,
+            "Error: `purpose` describes a Pandora Mini node, so it needs `link`.",
+        )
+        .await;
+        return;
+    }
     if local && link_node.is_some() {
         command_error(
             ctx,
@@ -76,9 +87,18 @@ pub async fn handle_gentoken(
             .unwrap_or(0);
         blob.push_str(&format!("; {} (added {})\n", l, ts));
     }
+    // The purpose is a field on the token line rather than a note in the label: it decides which
+    // presets ever reach the node, and a scheduling rule read out of free text is a rule one typo
+    // away from sending a GPU encode to a machine that has no GPU.
+    let node_purpose = purpose
+        .as_deref()
+        .map(NodePurpose::parse)
+        .unwrap_or_default();
     match (local_server_id, link_node.as_deref()) {
         (Some(id), _) => blob.push_str(&format!("{}|local|{}", token, id)),
-        (None, Some(node)) => blob.push_str(&format!("{}|link|{}", token, node)),
+        (None, Some(node)) => {
+            blob.push_str(&format!("{}|link|{}|{}", token, node, node_purpose.label()))
+        }
         (None, None) => blob.push_str(&token),
     }
     blob.push('\n');
@@ -101,7 +121,7 @@ pub async fn handle_gentoken(
     let labelled = label.map(|l| format!(" for `{}`", l)).unwrap_or_default();
     let scope = match (local_server_id, link_node.as_deref()) {
         (Some(id), _) => format!(" It's bound to this server (`{}`): it prefers this server's Lumiere Drive profile when configured, and unlocks the git console (`/init`, `/attach`, `/source`) at `/git`.", id),
-        (None, Some(node)) => format!(" It's a Pandora Mini node token for `{}`: it opens the link routes and nothing else — it cannot submit jobs, read logs, or reach git. Set it as `link_node_token` on that node, with `link_node_name|pntools|{}`.", node, node),
+        (None, Some(node)) => format!(" It's a Pandora Mini node token for `{}`, marked `{}`: it opens the link routes and nothing else — it cannot submit jobs, read logs, or reach git, and it is only ever offered presets its mark allows. Set it as `link_node_token` on that node, with `link_node_name|pntools|{}`.", node, node_purpose.label(), node),
         (None, None) => String::new(),
     };
     let embed = success_embed(command, COMMAND_UPDATED)

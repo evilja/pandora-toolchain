@@ -7,7 +7,8 @@ use tokio::sync::mpsc::Sender;
 
 use crate::lib::env::core::get_pandora_env;
 use crate::lib::env::standard::{
-    LINK_COORDINATOR_URL, LINK_MAX_JOBS, LINK_NODE_NAME, LINK_NODE_TOKEN, PANDORA_MODE,
+    LINK_AUTO_UPDATE, LINK_COORDINATOR_URL, LINK_MAX_JOBS, LINK_NODE_NAME, LINK_NODE_TOKEN,
+    PANDORA_MODE,
 };
 use crate::lib::p2p::nyaaise::TorrentType;
 use crate::pnworker::core::{HalfJob, Job, JobClass, JobType, Stage};
@@ -15,7 +16,8 @@ use crate::pnworker::frontend::Frontend;
 use crate::pnworker::link::assets::{self, AssetKind, AssetManifest};
 use crate::pnworker::link::spec::{
     LeaseControl, LeaseRenew, LeaseResult, LinkJobSpec, LinkLogChunk, LinkOutcome, LinkPayload,
-    LinkReport, NodeRegister, NodeRegistered, job_type_from_name, source_from_wire, stage_name,
+    LinkReport, NodeRegister, NodeRegistered, ReleaseInfo, job_type_from_name, source_from_wire,
+    stage_name,
 };
 use crate::pnworker::messages::MessagePayload;
 use crate::pnworker::server_effects::preset_from_name;
@@ -30,6 +32,12 @@ use crate::pnworker::server_effects::preset_from_name;
 const LEASE_POLL_TIMEOUT_SECS: u64 = 45;
 const REQUEST_TIMEOUT_SECS: u64 = 30;
 const REGISTER_RETRY_SECS: u64 = 15;
+// How long a node that could not reach the coordinator's commit waits before trying again. It is
+// long on purpose: the failure is a repository problem — a diverged branch, a credential that
+// stopped working — and none of those resolve in seconds. Retrying tightly would turn one broken
+// node into a machine that spends its life pulling, and if the pull ever did move HEAD it would
+// restart, which across a cluster is worse than staying behind.
+const UPDATE_RETRY_SECS: u64 = 600;
 // A single font or intro variant, which is a much larger body than any control message.
 const ASSET_TIMEOUT_SECS: u64 = 300;
 
@@ -51,6 +59,10 @@ pub struct LinkConfig {
     pub token: String,
     pub node: String,
     pub max_jobs: u32,
+    // Off for a node whose checkout somebody else manages — a development box, or one pinned to a
+    // revision on purpose. It stops the pull and the restart, not the comparison: the node still
+    // reports its build, so `/lsnode` shows it sitting behind rather than hiding it.
+    pub auto_update: bool,
 }
 
 pub fn is_mini() -> bool {
@@ -88,11 +100,19 @@ pub fn load_config() -> Result<LinkConfig, String> {
         .and_then(|value| value.trim().parse::<u32>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(1);
+    let auto_update = env
+        .get(LINK_AUTO_UPDATE)
+        .map(|value| {
+            let value = value.trim();
+            !(value.eq_ignore_ascii_case("false") || value == "0" || value.eq_ignore_ascii_case("off"))
+        })
+        .unwrap_or(true);
     Ok(LinkConfig {
         coordinator,
         token,
         node,
         max_jobs,
+        auto_update,
     })
 }
 
@@ -388,11 +408,18 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
         match register(&client, &config).await {
             Ok(registered) if registered.accepted => {
                 renew_secs = registered.renew_secs.max(1);
-                println!("[link] node {} registered", config.node);
                 // Remembered so a sync that fails here is retried between polls. Without it a node
                 // whose first sync failed would sit unsynced until a job happened to arrive, and
                 // then decline it — correct, but it would never recover on its own.
                 registered_revision = registered.assets_revision.clone();
+                // What the cluster believes this machine is for. It comes off the node's token, so
+                // a box with a GPU that prints `cpu` here is a token that needs re-minting — and
+                // that is only discoverable if the node says which one it was given.
+                println!(
+                    "[link] node {} registered as a {} node",
+                    config.node,
+                    registered.purpose.label()
+                );
                 // Sync before the first poll rather than after, so the common case is a node that
                 // is already current by the time it is offered anything.
                 if let Err(e) = reconcile_assets(&client, &config, refresh_fonts).await {
@@ -413,6 +440,13 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
 
     let mut active: Vec<ActiveLease> = Vec::new();
     let mut draining = false;
+    // Set when the coordinator is on a revision this node is not. It behaves exactly like a drain
+    // — finish what is held, take nothing new — because an update ends in a restart, and a restart
+    // during an encode throws away the whole encode.
+    let mut updating = false;
+    // When the next release check may run. Only ever set by a failed update, so an ordinary node
+    // checks on every pass and a broken one is not pulling in a loop.
+    let mut update_after: Option<tokio::time::Instant> = None;
     let mut wanted_revision = registered_revision;
     // How much of each of a job's logs has been shipped. Advanced only once the renew carrying a
     // chunk succeeded, so a failed request costs a repeat rather than a hole in the transcript.
@@ -512,6 +546,51 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
         }
         active.retain(|lease| !finished.contains(&lease.job_id));
 
+        // Keeping level with the coordinator. A node that is behind stops taking work, finishes
+        // what it holds, and then pulls and restarts — because a mismatched node is not merely out
+        // of date, it is a node whose encoder settings, wire format or preset table may no longer
+        // be the ones the cluster is agreeing on.
+        if config.auto_update
+            && update_after.is_none_or(|at| tokio::time::Instant::now() >= at)
+        {
+            match fetch_release(&client, &config).await {
+                Ok(release) => {
+                    if is_level_with(&release) {
+                        // Level, but possibly without ever having recorded it — a node cloned at
+                        // the right commit has nothing to pull and would otherwise report build 0
+                        // forever, which reads on `/lsnode` exactly like a node that is stuck.
+                        if crate::lib::release::read().build != release.build {
+                            crate::lib::release::adopt(release.build, &release.commit);
+                        }
+                        updating = false;
+                    } else {
+                        if !updating {
+                            println!(
+                                "[link] coordinator is on build {} ({}); draining to update",
+                                release.build,
+                                crate::lib::release::short_commit(&release.commit, 12)
+                            );
+                        }
+                        updating = true;
+                        if active.is_empty() {
+                            if let Err(reason) = perform_update(&release).await {
+                                eprintln!("[link] update to build {} failed: {reason}", release.build);
+                                // Take work again in the meantime. A node that cannot update is
+                                // still a node that can encode, and refusing everything until an
+                                // operator notices costs more than running one build behind.
+                                update_after = Some(
+                                    tokio::time::Instant::now()
+                                        + Duration::from_secs(UPDATE_RETRY_SECS),
+                                );
+                                updating = false;
+                            }
+                        }
+                    }
+                }
+                Err(e) => eprintln!("[link] release check failed: {e}"),
+            }
+        }
+
         // A font added on the coordinator reaches a working node here, between jobs, rather than
         // waiting for it to restart. Syncing before the poll is what keeps the refusal below rare.
         if !wanted_revision.is_empty() && assets::local_revision().as_deref() != Some(&wanted_revision)
@@ -521,7 +600,7 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
             }
         }
 
-        if !draining && (active.len() as u32) < config.max_jobs {
+        if !draining && !updating && (active.len() as u32) < config.max_jobs {
             match poll_lease(&client, &config).await {
                 Ok(Some(spec)) => {
                     let return_output = spec.return_output;
@@ -558,9 +637,12 @@ async fn register(
     client: &reqwest::Client,
     config: &LinkConfig,
 ) -> Result<NodeRegistered, String> {
+    let ledger = crate::lib::migration::read_ledger();
     let body = NodeRegister {
         node: config.node.clone(),
         pandora_version: env!("CARGO_PKG_VERSION").to_string(),
+        build: crate::lib::release::read().build,
+        migration_error: ledger.failure.map(|failure| failure.line()),
         encoder_identity: encoder_identity(),
         ffmpeg_version: ffmpeg_version(),
         threads: std::thread::available_parallelism()
@@ -585,6 +667,87 @@ async fn register(
         ));
     }
     response.json::<NodeRegistered>().await.map_err(|e| e.to_string())
+}
+
+async fn fetch_release(
+    client: &reqwest::Client,
+    config: &LinkConfig,
+) -> Result<ReleaseInfo, String> {
+    let response = client
+        .get(format!("{}/api/v1/link/release", config.coordinator))
+        .bearer_auth(&config.token)
+        .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("coordinator answered {}", response.status()));
+    }
+    response.json::<ReleaseInfo>().await.map_err(|e| e.to_string())
+}
+
+// Whether this node is running what the coordinator is running. The build number is the cheap
+// comparison and the commit is the one that matters: two machines can hold the same number having
+// landed on different commits, if one of them recorded a build it never actually reached.
+fn is_level_with(release: &ReleaseInfo) -> bool {
+    if release.commit.is_empty() {
+        // The coordinator does not know where it is — an unreadable checkout, or a deployment that
+        // has never synced. There is nothing to move towards, so nothing is out of date.
+        return true;
+    }
+    if release.reset {
+        // A forced release is not satisfied by holding the right commit: the point of `/gitforce`
+        // is to reset a checkout that may be dirty or diverged in ways HEAD does not show. It is
+        // satisfied by having recorded that build, which only happens after the reset ran.
+        return crate::lib::release::read().build == release.build;
+    }
+    crate::pnworker::pull::head_oid(&crate::lib::release::repo_path()).as_deref() == Some(release.commit.as_str())
+}
+
+// Bring this node onto the coordinator's revision, then hand over to the build that comes out of
+// it. Returns only when the update did *not* happen — the successful path never returns.
+//
+// The order is pull, migrate, record, restart. Recording before the restart rather than after it
+// is what stops the next poll asking for the same update again; running migrations before it is
+// what lets them prepare state for a binary that does not exist yet, which is the only moment they
+// can run at all.
+async fn perform_update(release: &ReleaseInfo) -> Result<(), String> {
+    let repo = crate::lib::release::repo_path();
+    let outcome = if release.reset {
+        println!("[link] resetting onto {} (forced)", &release.commit);
+        crate::pnworker::pull::git_reset(&repo, &release.commit)
+    } else {
+        println!("[link] pulling {}", &release.commit);
+        crate::pnworker::pull::git_pull(&repo)
+    };
+    if let Err(error) = outcome {
+        return Err(format!("git failed: {error}"));
+    }
+    let landed = crate::pnworker::pull::head_oid(&repo).unwrap_or_default();
+    if landed != release.commit {
+        // The pull ran and this checkout is still not where the coordinator is. Restarting now
+        // would rebuild the same source, record nothing, and come back to this exact branch — a
+        // node that restarts forever is a worse failure than a node that stays behind and says so.
+        return Err(format!(
+            "the checkout is at {} and not at {}; nothing was restarted",
+            if landed.is_empty() {
+                "an unreadable HEAD".to_string()
+            } else {
+                crate::lib::release::short_commit(&landed, 12)
+            },
+            crate::lib::release::short_commit(&release.commit, 12),
+        ));
+    }
+    let run = crate::lib::migration::run_pending(std::path::Path::new(&repo)).await;
+    if let Some(summary) = run.summary() {
+        println!("[link] {summary}");
+    }
+    // Recorded even when a migration failed. The source is at the coordinator's commit, which is
+    // what the build number means; the failure travels separately, on the next register, so an
+    // operator sees it on `/lsnode` instead of the node quietly retrying the pull forever.
+    crate::lib::release::adopt(release.build, &release.commit);
+    println!("[link] updated to build {}; restarting", release.build);
+    crate::lib::release::restart_into_new_build().await
 }
 
 async fn poll_lease(

@@ -206,6 +206,14 @@ pub enum Outcome {
 }
 
 pub async fn ensure_configured() -> Outcome {
+    // No `env.pandora` at all is the one unambiguous signal that this machine has never run
+    // Pandora, and it is what separates a new install from a deployment that predates the ledger.
+    // A new install is already in the current on-disk format — there is nothing for a migration to
+    // convert — so it records them as done rather than running them. An older deployment reaches
+    // its first sync with no ledger and runs every one, which is the whole point.
+    if !std::path::Path::new(ENV_PATH).exists() {
+        crate::lib::migration::seed(std::path::Path::new(&crate::lib::release::repo_path()));
+    }
     let env = get_pandora_env();
     let role = detect_role(&env);
     let forced = wants_setup();
@@ -493,6 +501,10 @@ async fn verify_link(url: &str, token: &str, node: &str) -> Result<String, Strin
     let body = crate::pnworker::link::spec::NodeRegister {
         node: node.to_string(),
         pandora_version: env!("CARGO_PKG_VERSION").to_string(),
+        build: crate::lib::release::read().build,
+        migration_error: crate::lib::migration::read_ledger()
+            .failure
+            .map(|failure| failure.line()),
         encoder_identity: crate::pnworker::link::client::encoder_identity(),
         ffmpeg_version: String::new(),
         threads: 1,

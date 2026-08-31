@@ -11,8 +11,8 @@ use crate::lib::env::standard::{
     LINK_ONLY_NODE,
 };
 use crate::pnworker::link::spec::{
-    LeaseControl, LeaseRenew, LeaseResult, LinkJobSpec, LinkOutcome, LinkReport, NodeRegister,
-    NodeRegistered,
+    LeaseControl, LeaseRenew, LeaseResult, LinkJobSpec, LinkOutcome, LinkReport, NodePurpose,
+    NodeRegister, NodeRegistered, ReleaseInfo,
 };
 
 // The coordinator's view of its cluster. It sits between two tasks that cannot call each other:
@@ -43,6 +43,18 @@ pub struct NodeState {
     pub max_jobs: u32,
     #[serde(default)]
     pub presets: Vec<String>,
+    // What this node is for, taken from its token at every register rather than persisted. A
+    // purpose is a property of the token, and re-minting one has to take effect on the next
+    // register — a value carried across a restart would outlive the token that justified it.
+    #[serde(skip, default)]
+    pub purpose: NodePurpose,
+    // The build the node last recorded itself level with, and a migration it could not run. Both
+    // are reports, not state the coordinator acts on: they exist so `/lsnode` can show a node that
+    // has quietly stopped keeping up instead of only one that has stopped answering.
+    #[serde(default)]
+    pub build: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub migration_error: Option<String>,
     #[serde(default)]
     pub registered_at: u64,
     #[serde(default)]
@@ -222,8 +234,15 @@ fn restrict(_path: &std::path::Path) {}
 // A node that reports no identity at all is refused too. Treating an absent value as "no opinion"
 // would have made the check optional for anyone who simply omitted it, which is not a property
 // worth having.
-pub fn register(request: NodeRegister, coordinator_identity: &str) -> NodeRegistered {
+pub fn register(
+    request: NodeRegister,
+    coordinator_identity: &str,
+    purpose: NodePurpose,
+) -> NodeRegistered {
     let settings = settings();
+    // Resolved before the lock: it opens the git repository and reads two files, and the board is
+    // one mutex shared with every other node's request.
+    let release = local_release();
     let mut state = board().lock().unwrap();
     ensure_loaded(&mut state);
     let refusal = if settings.allow_build_mismatch {
@@ -245,6 +264,10 @@ pub fn register(request: NodeRegister, coordinator_identity: &str) -> NodeRegist
             renew_secs: DEFAULT_RENEW_SECS,
             lease_timeout_secs: settings.lease_timeout_secs,
             assets_revision: crate::pnworker::link::assets::manifest().revision,
+            purpose,
+            // A refused node is still told where the cluster is. Its refusal may well be that it
+            // is running the wrong build, and the answer to that is on this line.
+            release,
         };
     }
     let existing = state.nodes.get(&request.node);
@@ -261,6 +284,9 @@ pub fn register(request: NodeRegister, coordinator_identity: &str) -> NodeRegist
         threads: request.threads,
         max_jobs: request.max_jobs.max(1),
         presets: request.presets,
+        purpose,
+        build: request.build,
+        migration_error: request.migration_error,
         registered_at,
         last_seen: now(),
         drain,
@@ -273,7 +299,48 @@ pub fn register(request: NodeRegister, coordinator_identity: &str) -> NodeRegist
         renew_secs: DEFAULT_RENEW_SECS,
         lease_timeout_secs: settings.lease_timeout_secs,
         assets_revision: crate::pnworker::link::assets::manifest().revision,
+        purpose,
+        release,
     }
+}
+
+// What this machine is running, as a node is told it. The commit is read from the checkout rather
+// than from the build record so that a coordinator whose repository moved underneath it — someone
+// pulling by hand on the box — advertises where it actually is, not where it last thought it was.
+pub fn local_release() -> ReleaseInfo {
+    let record = crate::lib::release::read();
+    let commit = crate::pnworker::pull::head_oid(&crate::lib::release::repo_path())
+        .unwrap_or(record.commit);
+    ReleaseInfo {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        build: record.build,
+        commit,
+        reset: forced_reset(),
+    }
+}
+
+// `/gitforce` leaves this behind so the reset it performed here is performed on every node too.
+// It is a file rather than a flag in memory because the command ends in `exit(0)`: the coordinator
+// that has to advertise the reset is the process *after* the one that decided on it.
+const FORCE_MARKER: &str = "DB/config/global/environment/gitforce.pandora";
+
+pub fn mark_forced_reset(build: u64) {
+    if let Some(parent) = std::path::Path::new(FORCE_MARKER).parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    if let Err(error) = std::fs::write(FORCE_MARKER, format!("{build}\n")) {
+        eprintln!("[Pandora] could not record the forced reset: {error}");
+    }
+}
+
+// True while the current build is the one `/gitforce` produced. Tying the marker to a build rather
+// than clearing it on a timer is what stops a reset from applying to every deploy that follows it:
+// the next ordinary gitsync bumps past it and the marker stops matching.
+fn forced_reset() -> bool {
+    let Ok(contents) = std::fs::read_to_string(FORCE_MARKER) else {
+        return false;
+    };
+    contents.trim().parse::<u64>().ok() == Some(crate::lib::release::read().build)
 }
 
 pub fn touch(node: &str) {
@@ -291,6 +358,7 @@ pub fn pick_node(preset: &str, pin: Option<&str>) -> Option<String> {
     if !settings.enabled {
         return None;
     }
+    let hardware = crate::lib::mpeg::preset::hardware_for(preset);
     let mut state = board().lock().unwrap();
     ensure_loaded(&mut state);
     let stale_before = now().saturating_sub(settings.lease_timeout_secs);
@@ -311,6 +379,11 @@ pub fn pick_node(preset: &str, pin: Option<&str>) -> Option<String> {
                 .is_none_or(|only| node.name == only),
         })
         .filter(|node| node.presets.is_empty() || node.presets.iter().any(|value| value == preset))
+        // A GPU preset on a CPU box does not fail cleanly: ffmpeg either refuses the encoder or
+        // silently falls back to a software one, and the second outcome ships a release at a
+        // quality tier nobody chose. The purpose comes off the node's token, so this is the
+        // coordinator's own answer rather than the node's claim about itself.
+        .filter(|node| node.purpose.accepts(hardware))
         .filter(|node| busy.get(node.name.as_str()).copied().unwrap_or(0) < node.max_jobs)
         .collect::<Vec<_>>();
     // Most idle first, then the most threads, so a cluster of unequal machines fills its biggest
@@ -548,6 +621,9 @@ pub fn nodes_view() -> Value {
                 "jobs": jobs.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
                 "pandora_version": node.pandora_version,
                 "encoder_identity": node.encoder_identity,
+                "purpose": node.purpose.label(),
+                "build": node.build,
+                "migration_error": node.migration_error,
             }))
             .collect::<Vec<_>>()
     )
@@ -597,8 +673,10 @@ mod tests {
             threads: 1,
             max_jobs: 1,
             presets: Vec::new(),
+            build: 0,
+            migration_error: None,
         };
-        let answer = register(request, "x264-165-0.165.x-pandora");
+        let answer = register(request, "x264-165-0.165.x-pandora", NodePurpose::Cpu);
         assert!(!answer.accepted);
         assert!(
             answer.reason.unwrap_or_default().contains("no encoder identity"),
@@ -618,8 +696,10 @@ mod tests {
             threads: 1,
             max_jobs: 1,
             presets: Vec::new(),
+            build: 0,
+            migration_error: None,
         };
-        let answer = register(request, "x264-165-0.165.x-pandora");
+        let answer = register(request, "x264-165-0.165.x-pandora", NodePurpose::Cpu);
         assert!(!answer.accepted);
         let reason = answer.reason.unwrap_or_default();
         assert!(reason.contains("x264-164-0.164.3108-stock"), "{reason}");

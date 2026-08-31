@@ -49,6 +49,7 @@ Node side:
 | `link_node_token` | this node's `\|link\|` token |
 | `link_node_name` | stable node identity; must match the token's node name |
 | `link_max_jobs` | concurrent leases, default `1` |
+| `link_auto_update` | keep level with the coordinator's build, default on. See [Staying level](#staying-level) |
 
 Coordinator side:
 
@@ -63,15 +64,26 @@ State:
 
 - `DB/config/global/environment/link_nodes.json` (coordinator, mode `0600`) — the node roster as a
   JSON array of `{ name, pandora_version, encoder_identity, ffmpeg_version, threads,
-  max_jobs, presets, registered_at, last_seen, drain }`. The roster is advisory: a node
-  re-registers within seconds of coming up. It is persisted for the one field a restart must not
-  forget — an operator's drain flag.
+  max_jobs, presets, build, migration_error, registered_at, last_seen, drain }`. The roster is
+  advisory: a node re-registers within seconds of coming up. It is persisted for the one field a
+  restart must not forget — an operator's drain flag. `purpose` is deliberately *not* persisted: it
+  belongs to the token, and a value carried across a restart would outlive the token that justified
+  it.
+- `DB/config/global/environment/build.pandora` (both sides) — the build this machine is level with
+  and the commit it was recorded for. See [Staying level](#staying-level).
+- `DB/config/global/environment/migration.pandora` (both sides) — the highest migration id that has
+  run here, and the one that stopped the last run if any. See [Migrations](#migrations).
 
 ## Tokens
 
-Node tokens live in the same `api.pandora` as every other token, as `<token>|link|<node>`. Mint one
-with `/gentoken link:<node>` (see [DISCORD.md](DISCORD.md)); `local` and `link` are mutually
-exclusive, and a node name may contain neither whitespace nor `|`.
+Node tokens live in the same `api.pandora` as every other token, as `<token>|link|<node>|<purpose>`.
+Mint one with `/gentoken link:<node> purpose:<cpu|gpu|both>` (see [DISCORD.md](DISCORD.md));
+`local` and `link` are mutually exclusive, and a node name may contain neither whitespace nor `|`.
+
+The fourth field is what a node is **for**, and it is the whole of the CPU/GPU distinction — see
+[Purpose](#purpose). It is absent on every token minted before the field existed, and an absent
+field means `cpu`; the `1788177600-link-token-purpose` migration fills it in from each token's
+label, which is where operators used to write it by hand.
 
 A link token opens **only** the `/api/v1/link/*` routes and nothing else — it cannot submit jobs,
 read logs, or reach git. Every link route additionally checks that the node named in the request
@@ -84,7 +96,8 @@ for as long as it works, which is a heartbeat on a fixed cadence rather than use
 All under `/api/v1/link/`, all requiring a link token.
 
 - `POST /link/register` — the node announces itself (name, version, `encoder_identity`, thread
-  count, `max_jobs`). Returns `{ accepted, reason?, renew_secs, lease_timeout_secs }`.
+  count, `max_jobs`, the `build` it is level with, and any `migration_error`). Returns
+  `{ accepted, reason?, renew_secs, lease_timeout_secs, assets_revision, purpose, release }`.
 - `GET /link/lease?node=<name>` — **long poll**, up to 30s. Returns a job spec, or `204` when there
   is nothing waiting. This is the only dispatch mechanism.
 - `POST /link/lease/:id/renew` — heartbeat plus the node's worker output. Returns
@@ -95,6 +108,8 @@ All under `/api/v1/link/`, all requiring a link token.
 - `PUT /link/lease/:id/output` — a finished encode coming back for local publication. Streamed
   straight to disk and accepted only from the node that holds the lease. See
   [HLS and returned output](#hls-and-returned-output).
+- `GET /link/release` — what the coordinator is running: `{ version, build, commit, reset }`. A node
+  polls it once per loop pass. See [Staying level](#staying-level).
 - `GET /link/assets/manifest` — the font and intro corpus, with its revision. See [Assets](#assets).
 - `GET /link/assets/:hash` — one asset, addressed by content hash.
 
@@ -137,6 +152,120 @@ The prebuilt fork release is laid out exactly as those variables expect (`includ
 `lib/libx264.a`). Verify its SHA-256 before use, and check `#define X264_PANDORA_PLAN_ONLY 1` is
 present in the header — plan-only mode, which the VerySlow parallel planner needs, exists only in
 the fork. The Docker image builds the same fork from pinned source instead; see `Dockerfile`.
+
+## Purpose
+
+A node is a **CPU node**, a **GPU node**, or **both**, and that decides which presets it is ever
+offered. Every preset declares the hardware it needs (`hardware = "gpu"` in its file, or the
+built-in table's answer); `pick_node` refuses a node whose purpose does not accept it.
+
+The reason it is a hard filter rather than a preference is what a GPU preset does on a machine
+without one: ffmpeg either refuses the encoder outright — a failed job and a wasted lease — or
+falls back to a software encoder and ships a release at a quality tier nobody chose. The second
+outcome is the dangerous one, because nothing about it looks like a failure.
+
+**The purpose comes from the node's token, never from the node.** A machine reporting its own
+capabilities could put itself in the way of work it cannot run, by misconfiguration as easily as by
+intent; a token is minted by an operator who knows what the box is. Changing a node's purpose means
+minting a new token, not editing a config file on the node.
+
+**A token that names no purpose is `cpu`.** That is an answer rather than a fallback: the machines
+that predate the field are the CPU boxes the cluster was built out of, and reading an unmarked
+token as "anything" would send the first GPU preset to one of them.
+
+`both` exists for a machine that genuinely serves both, and is the only way to say so. A `gpu` node
+is not a fallback for CPU work — it was marked `gpu` to keep general encoding off it.
+
+## Staying level
+
+Every machine in a cluster runs the same source. A node that does not is not merely out of date:
+its encoder settings, its preset table and its half of the wire format are all compiled in, and the
+cluster is agreeing on values it no longer holds.
+
+The coordinator advertises a **build**: a counter in `build.pandora`, bumped by every `/gitsync`
+that moved HEAD, together with the commit it was bumped for. Version alone cannot serve — it
+changes when somebody edits `Cargo.toml`, not when a deploy happens. The number is persisted
+because a gitsync ends in `exit(0)`: it has to survive the restart it causes and be correct by the
+time the API answers again.
+
+A node polls `GET /link/release` once per loop pass and compares. It is a poll rather than a field
+on an existing answer because of which call an idle node makes: `GET /link/lease` long-polls and
+returns `204` with no body, so a node with no work would learn nothing until it took a job — which
+is exactly the moment not to discover it needs to restart. `register` carries the same information
+for the first check, and the poll carries every one after.
+
+On a mismatch the node **drains**: it takes nothing new, finishes what it holds, and only then
+pulls. A restart mid-encode throws away the encode, and the encode is the expensive thing here.
+Then it runs [migrations](#migrations), records the coordinator's build number, and exits into its
+own restart loop, which rebuilds before it comes back.
+
+**A node that pulls and still does not land on the coordinator's commit does not restart.** It logs
+why, waits ten minutes, and goes back to taking work in the meantime. The failures that reach this
+point are repository problems — a diverged branch, a credential that stopped working — and none of
+them resolve in seconds; a node that restarted anyway would rebuild the same source, record
+nothing, and arrive back here, which across a cluster is a restart loop. Running one build behind
+is the cheaper failure, and `/lsnode` shows the build that stopped moving.
+
+`link_auto_update` turns the pull and the restart off for a node whose checkout somebody else
+manages. It does not turn off the comparison: the node still reports its build, so it shows as
+sitting behind rather than not showing at all.
+
+### `/gitforce`
+
+`/gitsync` fast-forwards, and bumps the build only when HEAD actually moved. That is what makes it
+safe to run constantly: a sync that pulled nothing does not drain and restart the whole cluster to
+arrive back where it started.
+
+`/gitforce` is the other lever. It **resets** the coordinator onto origin's tip rather than
+fast-forwarding towards it, bumps the build whether or not anything moved, and sets `reset` on the
+advertised release so every node resets onto the same commit too. It exists for the two cases a
+fast-forward cannot serve — a checkout that has diverged, and a rebuild that has to reach the
+cluster without a new commit — and it is a separate command precisely so that cost is asked for
+rather than paid by accident. **It discards local working-tree changes, here and on every node.**
+
+The forced flag is recorded against the build it belongs to, so the next ordinary `/gitsync` bumps
+past it and the reset stops applying. A node satisfies a forced release by having *recorded* that
+build, not by holding the right commit — the point of a reset is a checkout that may be dirty in
+ways HEAD does not show.
+
+## Migrations
+
+On-disk changes a new revision needs, kept out of the Rust that would otherwise carry them forever.
+A migration is a pair of scripts in `migration/` at the repository root — one `.sh`, one `.ps1`, so
+either platform can deploy it — and both `/gitsync` and a node's self-update run whichever half
+this platform can, **after the pull and before the restart**. That is the only moment they can run:
+the scripts are the newly pulled ones while the binary is still the old one, which is exactly the
+order a migration needs, since it prepares the state the build about to be compiled expects.
+
+Ordering is by an id in a header comment:
+
+```sh
+#!/usr/bin/env sh
+# pandora-migration: 1788177600
+```
+
+The value is a unix time only so that two people writing migrations on the same day cannot pick the
+same number. **Nothing ever compares it against the deployed machine's clock.** It is an identifier
+that goes forward, and the only comparison is against the highest one this machine has already run,
+which lives in `migration.pandora`. A file with no header is not a migration — a README, a helper
+the scripts source — and is skipped rather than guessed at.
+
+Scripts run from the process's working directory, not from the repository: they operate on `DB/`,
+which under Docker is beside the binary and not inside the checkout at all. The repository reaches
+them as `PANDORA_REPO`. The ledger advances per script, so a run that dies halfway keeps what it
+achieved, and a failure leaves the ledger *below* the script that failed — which is what makes the
+next sync retry it.
+
+**A failed migration does not stop the restart.** Refusing to restart would strand the machine on
+an old binary with new source checked out, which is worse than the thing that failed. Instead the
+reason is recorded, and a node reports it to the coordinator on its next register, where `/lsnode`
+shows it under the node it belongs to — otherwise the one machine that failed to migrate would also
+be the one machine nobody hears from about it.
+
+**A new install records every migration as done without running any.** It is already in the current
+format — `pndc --setup` just wrote it — and there is nothing to convert. The signal is the absence
+of `env.pandora` at startup, which is the one unambiguous mark of a machine that has never run
+Pandora; a deployment that predates the ledger has no such guarantee and runs everything from zero.
 
 ## What can be leased
 
@@ -198,8 +327,9 @@ lease.
 ## Scheduling
 
 Offload is automatic and non-blocking. A job is offered to a node when one is registered, alive,
-undrained, under its `max_jobs`, and advertises the job's preset; otherwise the job runs locally
-exactly as before. **A job never waits for a node** — the cluster being full, drained or absent is
+undrained, under its `max_jobs`, marked for the hardware the job's preset needs (see
+[Purpose](#purpose)), and advertising the job's preset; otherwise the job runs locally exactly as
+before. **A job never waits for a node** — the cluster being full, drained or absent is
 never a reason for work to sit still.
 
 Nodes are ranked most-idle first, then by thread count, so a cluster of unequal machines fills its
@@ -288,16 +418,19 @@ recovery**, is the response to every node failure.
 
 ## Observability
 
-`/lsnode` (rank 4) lists the roster: every node, its thread count, how many jobs it may hold, how
-long ago it was heard from, and what it is running — and warns when `link_enabled` is off or
+`/lsnode` (rank 4) lists the roster: every node, what it is for, its thread count, how many jobs it
+may hold, the build it is level with, how long ago it was heard from, and what it is running — plus
+the coordinator's own build to compare against, and a warning line under any node whose last
+migration failed — and warns when `link_enabled` is off or
 `link_only_node` is pinning offload. `/drainnode name:<node> [drain:<bool>]` stops offering work to
 a node (it finishes what it holds) or puts it back in rotation; the flag is persisted, since
 draining before a deploy does not mean until the next one. `/rmnode name:<node>` forgets a node —
 it re-registers on its next poll unless its token is revoked with `/rmtoken`, and any job it still
 holds is reclaimed when its lease expires.
 
-`GET /api/v1/workers` (PNwitch token only) gains a `nodes` array — name, thread count, `max_jobs`,
-presets, drain state, seconds since last contact, the jobs it holds, and its `encoder_identity`.
+`GET /api/v1/workers` (PNwitch token only) gains a `nodes` array — name, purpose, thread count,
+`max_jobs`, presets, drain state, seconds since last contact, the jobs it holds, its
+`encoder_identity`, the `build` it is level with, and any `migration_error`.
 Queue entries gain `link_node` and `link_attempts`. See [API.md](API.md#worker-snapshot).
 
 Link activity prints as `[link] <node> | <message>` on the coordinator and `[link] <message>` on a

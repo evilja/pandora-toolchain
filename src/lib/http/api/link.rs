@@ -11,7 +11,7 @@ use futures_lite::StreamExt;
 use tokio::io::AsyncWriteExt;
 use serde::Deserialize;
 
-use super::core::{ApiAuth, require_link};
+use super::core::{ApiAuth, link_purpose, require_link};
 use crate::pnworker::link::assets;
 use crate::pnworker::link::board;
 use crate::pnworker::link::client::encoder_identity;
@@ -44,7 +44,7 @@ pub(super) async fn register(
     if body.node != node {
         return name_mismatch(&node, &body.node);
     }
-    let registered = board::register(body, &encoder_identity());
+    let registered = board::register(body, &encoder_identity(), link_purpose(&auth));
     if !registered.accepted {
         println!(
             "[link] {} | registration refused: {}",
@@ -52,7 +52,10 @@ pub(super) async fn register(
             registered.reason.clone().unwrap_or_default()
         );
     } else {
-        println!("[link] {node} | registered");
+        println!(
+            "[link] {node} | registered as {}",
+            registered.purpose.label()
+        );
     }
     Json(registered).into_response()
 }
@@ -127,6 +130,19 @@ pub(super) async fn result(
     }
     println!("[link] {node} | job {job_id} reported {outcome:?}");
     StatusCode::ACCEPTED.into_response()
+}
+
+// Where the coordinator is, for a node deciding whether it is behind.
+//
+// It is a poll rather than a field on an existing answer because of which call an idle node makes:
+// `GET /link/lease` long-polls and returns `204` with no body, so a node with no work would learn
+// nothing until it took a job — which is exactly the moment not to discover it needs to restart.
+// Register carries the same information for the first check, and this carries every one after.
+pub(super) async fn release(Extension(auth): Extension<ApiAuth>) -> Response {
+    if let Err(response) = require_link(&auth) {
+        return response;
+    }
+    Json(board::local_release()).into_response()
 }
 
 pub(super) async fn assets_manifest(Extension(auth): Extension<ApiAuth>) -> Response {

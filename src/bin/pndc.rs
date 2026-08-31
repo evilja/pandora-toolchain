@@ -407,16 +407,33 @@ async fn handle_lsnode(ctx: &Context, command: &serenity::all::CommandInteractio
                 .join(", ")
         };
         lines.push(format!(
-            "{} `{}` — {} thread(s), max `{}`, seen `{}s` ago, {}{}",
+            "{} `{}` — {}, {} thread(s), max `{}`, build `{}`, seen `{}s` ago, {}{}",
             marker,
             node.name,
+            node.purpose.label(),
             node.threads,
             node.max_jobs,
+            node.build,
             board::seconds_since_seen(&node),
             held,
             if node.drain { " • draining" } else { "" },
         ));
+        // A node that could not run a migration still takes work and still looks healthy, so the
+        // only place this surfaces at all is here. It is indented under its node rather than
+        // collected at the bottom, because which machine failed is the whole of the information.
+        if let Some(error) = &node.migration_error {
+            lines.push(format!("⚠️ `{}` — migration failed: {}", node.name, error));
+        }
     }
+    // A node one build behind is mid-update and resolves itself; one that stays behind is stuck,
+    // and the coordinator's own build is what an operator compares against to tell them apart.
+    let release = board::local_release();
+    lines.push(format!(
+        "\nCoordinator: build `{}` @{}{}",
+        release.build,
+        pandora_toolchain::lib::release::short_commit(&release.commit, 8),
+        if release.reset { " • forced (nodes reset onto it)" } else { "" },
+    ));
     command
         .create_response(
             ctx,
@@ -615,6 +632,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("!ban", 2),
     ("!some", 2),
     ("gitsync", 3),
+    ("gitforce", 3),
     ("gitquery", 3),
     ("gentoken", 3),
     ("exportdrive", 4),
@@ -980,6 +998,13 @@ fn help_catalog() -> &'static [HelpCommand] {
         },
         HelpCommand {
             section: "workers",
+            name: "gitforce",
+            summary: "Hard-reset onto origin and push the build to every node.",
+            usage: "/gitforce",
+            details: "Like /gitsync, but resets the checkout onto origin's tip instead of fast-forwarding, and bumps the build whether or not anything moved. Every Pandora Mini node then drains, resets onto the same commit, and restarts. Use it when a node has diverged or when a rebuild has to reach the cluster without a new commit; ordinary deploys are /gitsync. Local changes to the working tree are discarded, here and on every node.",
+        },
+        HelpCommand {
+            section: "workers",
             name: "gitquery",
             summary: "Sync git after current encodes finish.",
             usage: "/gitquery",
@@ -1045,8 +1070,8 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "admin",
             name: "gentoken",
             summary: "Generate a new API bearer token.",
-            usage: "/gentoken [label:<note>] [local:<true|false>] [link:<node>]",
-            details: "Mints a random bearer token for the HTTP API and appends it to the token file. With local enabled, jobs submitted with the token prefer this server's Lumiere Drive profile when configured, falling back to the global Lumiere profile. With link set, it becomes a Pandora Mini node token bound to that node name, opening only the link routes. The token is shown once, privately. Upper only.",
+            usage: "/gentoken [label:<note>] [local:<true|false>] [link:<node>] [purpose:<cpu|gpu|both>]",
+            details: "Mints a random bearer token for the HTTP API and appends it to the token file. With local enabled, jobs submitted with the token prefer this server's Lumiere Drive profile when configured, falling back to the global Lumiere profile. With link set, it becomes a Pandora Mini node token bound to that node name, opening only the link routes. purpose marks what that node is for and is what decides which presets it is ever offered — a GPU preset never reaches a cpu node. It defaults to cpu, needs link, and is changed by minting a new token rather than by editing the file. The token is shown once, privately. Upper only.",
         },
         HelpCommand {
             section: "admin",
@@ -2361,6 +2386,19 @@ impl EventHandler for Handler {
                         response_msg,
                     ))).await.ok();
                 }
+                "gitforce" => {
+                    let response_msg = match working_response(&ctx, &command, "Tüm işlemler kapatılıyor.").await {
+                        Some(m) => m,
+                        None => return,
+                    };
+                    self.tx.send(JobClass::HalfJob(HalfJob::new_gitforce(
+                        command.user.id.get(),
+                        command.channel_id.get(),
+                        response_msg.id.get(),
+                        ctx.clone(),
+                        response_msg,
+                    ))).await.ok();
+                }
                 "gitquery" => {
                     let response_msg = match working_response(&ctx, &command, "Git query hazırlanıyor.").await {
                         Some(m) => m,
@@ -2655,6 +2693,8 @@ impl EventHandler for Handler {
                 ),
             CreateCommand::new("gitsync")
                 .description("Sync with the git repo"),
+            CreateCommand::new("gitforce")
+                .description("Reset onto origin, bump the build, and make every node reset too"),
             CreateCommand::new("gitquery")
                 .description("Disable new encodes, then sync git after current encodes finish"),
             CreateCommand::new("backup")
@@ -3010,6 +3050,13 @@ impl EventHandler for Handler {
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "link", "Mint a Pandora Mini node token under this node name")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "purpose", "What the node is for; decides which presets reach it")
+                        .add_string_choice("CPU", "cpu")
+                        .add_string_choice("GPU", "gpu")
+                        .add_string_choice("Both", "both")
                         .required(false)
                 ),
             CreateCommand::new("exportdrive")

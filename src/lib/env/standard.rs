@@ -68,3 +68,16 @@ pub const LINK_ONLY_NODE: &str = "link_only_node";
 pub const LINK_LEASE_TIMEOUT_SECS: &str = "link_lease_timeout_secs";
 pub const LINK_ALLOW_BUILD_MISMATCH: &str = "link_allow_build_mismatch";
 pub const LINK_NODES_PATH: &str = "DB/config/global/environment/link_nodes.json";
+// A node keeps itself on the coordinator's revision by itself. `LINK_AUTO_UPDATE` is the opt-out
+// for a machine whose checkout is managed by hand.
+pub const LINK_AUTO_UPDATE: &str = "link_auto_update";
+
+// The release a machine is running: a counter bumped by every gitsync that moved HEAD, and the
+// commit it was bumped for. Nodes compare their copy against the coordinator's and pull the
+// difference, so this is the one piece of state a restart must not forget.
+pub const BUILD_PATH: &str = "DB/config/global/environment/build.pandora";
+
+// Migrations that ran here already. It lives under `DB/` because it describes this machine rather
+// than the source tree, and the scripts themselves are in the repository so a pull delivers them.
+pub const MIGRATION_LEDGER_PATH: &str = "DB/config/global/environment/migration.pandora";
+pub const MIGRATION_DIR: &str = "migration";

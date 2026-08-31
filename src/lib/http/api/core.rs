@@ -15,6 +15,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{Mutex, mpsc::Sender};
 
 use crate::pnworker::core::{HalfJob, Job, JobClass, JobType, KeepRequest, KeycodeRequest, Preset, SmartcodeDriveName, Stage};
+use crate::pnworker::link::spec::NodePurpose;
 use crate::pnworker::server_effects::preset_from_name;
 use crate::pnworker::acix::confirm_acix;
 use crate::pnworker::batch::batch_job_for_token;
@@ -49,6 +50,10 @@ pub(super) struct ApiAuth {
     // Set by a `<token>|link|<node>` line. Such a token authorises the link routes and nothing
     // else: a node cannot submit jobs, read another job's logs, or touch git.
     pub(super) link_node: Option<String>,
+    // The optional fourth field of that line, `<token>|link|<node>|gpu`. What a node is allowed to
+    // run is decided here rather than by the node, so a machine cannot put itself in the way of
+    // work it has no hardware for.
+    pub(super) link_purpose: NodePurpose,
     // The token as presented. Request-scoped and never logged or serialised; the self-revoke route
     // needs the value itself, since the token file stores tokens and not their hashes.
     token: String,
@@ -194,6 +199,7 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
             // other route would reject it outright. The body is streamed straight to disk.
             axum::routing::put(super::link::output).layer(DefaultBodyLimit::disable()),
         )
+        .route("/link/release", get(super::link::release))
         .route("/link/assets/manifest", get(super::link::assets_manifest))
         .route("/link/assets/:hash", get(super::link::asset))
         .route("/gitsync", post(gitsync))
@@ -456,6 +462,7 @@ fn is_cancel_path(path: &str) -> bool {
 struct TokenEntry {
     local_server_id: Option<u64>,
     link_node: Option<String>,
+    link_purpose: NodePurpose,
     label: Option<String>,
 }
 
@@ -477,16 +484,26 @@ fn parse_token_file(contents: &str) -> std::collections::HashMap<String, TokenEn
         if stored.is_empty() {
             continue;
         }
-        let (local_server_id, link_node) = match (parts.next(), parts.next()) {
-            (Some("local"), Some(server_id)) => (server_id.trim().parse::<u64>().ok(), None),
+        let (local_server_id, link_node, link_purpose) = match (parts.next(), parts.next()) {
+            (Some("local"), Some(server_id)) => {
+                (server_id.trim().parse::<u64>().ok(), None, NodePurpose::default())
+            }
             (Some("link"), Some(node)) => {
                 let node = node.trim();
-                (None, (!node.is_empty()).then(|| node.to_string()))
+                // A fourth field names what the node is for. Absent means CPU, which is what every
+                // token minted before this field existed means too — those are the CPU boxes the
+                // cluster was built out of, and reading them as "anything" would send the first
+                // GPU preset to one of them.
+                let purpose = parts
+                    .next()
+                    .map(NodePurpose::parse)
+                    .unwrap_or_default();
+                (None, (!node.is_empty()).then(|| node.to_string()), purpose)
             }
-            _ => (None, None),
+            _ => (None, None, NodePurpose::default()),
         };
         map.entry(stored.to_string())
-            .or_insert(TokenEntry { local_server_id, link_node, label });
+            .or_insert(TokenEntry { local_server_id, link_node, link_purpose, label });
     }
     map
 }
@@ -513,6 +530,7 @@ fn api_auth_for_token(token: &str) -> Option<ApiAuth> {
     Some(ApiAuth {
         local_server_id: entry.local_server_id,
         link_node: entry.link_node.clone(),
+        link_purpose: entry.link_purpose,
         token: token.to_string(),
         token_hash: format!("{:x}", md5::compute(token.as_bytes())),
         label: entry.label.clone(),
@@ -546,6 +564,12 @@ pub(super) fn require_pnwitch(auth: &ApiAuth) -> Result<(), Response> {
 // The link routes are the only ones a node token opens, and they are bound to the node named on
 // the token line: a node cannot renew or finish a lease held by another. That binding is what makes
 // the roster meaningful, since nothing else about a node is authenticated.
+// What the presenting token says its node is for. Only `register` asks — the purpose decides
+// scheduling, and scheduling happens on the coordinator's side of the roster, never per request.
+pub(super) fn link_purpose(auth: &ApiAuth) -> NodePurpose {
+    auth.link_purpose
+}
+
 pub(super) fn require_link(auth: &ApiAuth) -> Result<String, Response> {
     match auth.link_node.clone() {
         Some(node) => Ok(node),
@@ -1374,6 +1398,29 @@ mod tests {
         let link = entries.get("cccc").expect("link token missing");
         assert_eq!(link.local_server_id, None);
         assert_eq!(link.link_node.as_deref(), Some("mini-osaka"));
+        // No fourth field: every token minted before the field existed belongs to a CPU box.
+        assert_eq!(link.link_purpose, NodePurpose::Cpu);
+    }
+
+    // The fourth field is what keeps a GPU preset off a machine without one. It has to come from
+    // the token rather than from the node, so a node cannot widen what it is offered.
+    #[test]
+    fn a_link_tokens_fourth_field_is_the_nodes_purpose() {
+        let entries = parse_token_file(
+            "aaaa|link|mini-gpu|gpu
+             bbbb|link|mini-cpu|cpu
+             cccc|link|mini-any|both
+             dddd|link|mini-typo|gpus
+",
+        );
+        assert_eq!(entries["aaaa"].link_purpose, NodePurpose::Gpu);
+        assert_eq!(entries["bbbb"].link_purpose, NodePurpose::Cpu);
+        assert_eq!(entries["cccc"].link_purpose, NodePurpose::Both);
+        // A typo must narrow rather than widen: reading it as "anything" would put GPU work on a
+        // box chosen by a misspelling.
+        assert_eq!(entries["dddd"].link_purpose, NodePurpose::Cpu);
+        // The node name is still the node name whatever follows it.
+        assert_eq!(entries["aaaa"].link_node.as_deref(), Some("mini-gpu"));
     }
 
     // A node token must not be mistaken for a server-bound one: `require_local` gates the git

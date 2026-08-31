@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::lib::db::core::{stage_label, stage_to_int};
+use crate::lib::mpeg::preset::PresetHardware;
 use crate::lib::p2p::nyaaise::TorrentType;
 use crate::pnworker::core::{JobType, Preset, Stage};
 use crate::pnworker::messages::{MessagePayload, intern_message_id};
@@ -30,6 +31,17 @@ pub struct NodeRegister {
     pub threads: u32,
     pub max_jobs: u32,
     pub presets: Vec<String>,
+    // The build this node last recorded itself level with. Reported rather than enforced: the
+    // coordinator shows it on `/lsnode` so a node that is failing to update is visible as a number
+    // that stopped moving, which nothing else in the roster would reveal.
+    #[serde(default)]
+    pub build: u64,
+    // A migration this node could not run. It travels on register because that is the first call
+    // after the restart the migration was part of, and it stays set until a later run clears it —
+    // otherwise the one machine that failed to migrate is also the one machine nobody hears from
+    // about it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub migration_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -42,6 +54,79 @@ pub struct NodeRegistered {
     // The corpus the node should hold. It reconciles against this before it polls for work.
     #[serde(default)]
     pub assets_revision: String,
+    // What this node is for, as decided by its token rather than by anything it said. Echoed back
+    // so the node can log what the cluster believes about it — a machine with a GPU that is
+    // registered as `cpu` is a token that needs re-minting, and it should be visible on the node
+    // as well as on the coordinator.
+    #[serde(default)]
+    pub purpose: NodePurpose,
+    // Where the coordinator is. Sent here too, and not only from `/link/release`, so a node that
+    // has just come up is told before it polls for its first job rather than after.
+    #[serde(default)]
+    pub release: ReleaseInfo,
+}
+
+// What the coordinator is running, and what a node compares itself against.
+//
+// `version` and `build` are the comparison; `commit` is the thing to move to. Version alone cannot
+// serve — it changes when someone edits Cargo.toml, not when a deploy happens — and commit alone
+// would work but says nothing about direction, so a report cannot tell "behind" from "diverged".
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseInfo {
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub build: u64,
+    #[serde(default)]
+    pub commit: String,
+    // Set by `/gitforce`. A node resets onto `commit` rather than fast-forwarding towards it,
+    // which is the only way back for a checkout that has diverged from the coordinator's.
+    #[serde(default)]
+    pub reset: bool,
+}
+
+// What a node is for. It comes from the node's own token — `<token>|link|<node>|gpu` — and never
+// from anything the node reports, so a machine cannot promote itself into work it has no hardware
+// for by editing its own config.
+//
+// A token that names no purpose means CPU. That is a real answer rather than a fallback: the
+// machines that predate this field are the CPU boxes the cluster was built out of, and reading an
+// unmarked token as "anything" would send the first GPU preset to one of them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NodePurpose {
+    #[default]
+    Cpu,
+    Gpu,
+    Both,
+}
+
+impl NodePurpose {
+    pub fn label(self) -> &'static str {
+        match self {
+            NodePurpose::Cpu => "cpu",
+            NodePurpose::Gpu => "gpu",
+            NodePurpose::Both => "both",
+        }
+    }
+
+    // Anything unrecognised is CPU, for the same reason an absent field is: the parse runs over a
+    // token file an operator hand-edits, and a typo must not silently widen what a node accepts.
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "gpu" => NodePurpose::Gpu,
+            "both" | "any" => NodePurpose::Both,
+            _ => NodePurpose::Cpu,
+        }
+    }
+
+    pub fn accepts(self, hardware: PresetHardware) -> bool {
+        match self {
+            NodePurpose::Both => true,
+            NodePurpose::Cpu => hardware == PresetHardware::Cpu,
+            NodePurpose::Gpu => hardware == PresetHardware::Gpu,
+        }
+    }
 }
 
 // One job handed to one node. Everything the node needs to run it is in here: there is no second
@@ -292,6 +377,48 @@ impl LinkPayload {
 mod tests {
     use super::*;
 
+    // The scheduler's whole CPU/GPU rule. A `gpu` preset reaching a CPU node does not fail
+    // cleanly — ffmpeg either refuses the encoder or falls back to a software one and ships a
+    // release at a quality tier nobody chose — so the match has to be exact in both directions.
+    #[test]
+    fn a_node_only_accepts_the_hardware_it_is_marked_for() {
+        assert!(NodePurpose::Cpu.accepts(PresetHardware::Cpu));
+        assert!(!NodePurpose::Cpu.accepts(PresetHardware::Gpu));
+        assert!(NodePurpose::Gpu.accepts(PresetHardware::Gpu));
+        // A GPU box is not a fallback for CPU work: it was marked `gpu` to keep general encoding
+        // off it, and `both` is how an operator says otherwise.
+        assert!(!NodePurpose::Gpu.accepts(PresetHardware::Cpu));
+        assert!(NodePurpose::Both.accepts(PresetHardware::Cpu));
+        assert!(NodePurpose::Both.accepts(PresetHardware::Gpu));
+    }
+
+    // Anything unrecognised narrows to CPU rather than widening, because the value is parsed out
+    // of a file an operator hand-edits and a typo must not hand a node work it cannot run.
+    #[test]
+    fn an_unknown_or_absent_purpose_is_cpu() {
+        assert_eq!(NodePurpose::default(), NodePurpose::Cpu);
+        assert_eq!(NodePurpose::parse(""), NodePurpose::Cpu);
+        assert_eq!(NodePurpose::parse("GPU "), NodePurpose::Gpu);
+        assert_eq!(NodePurpose::parse("gpus"), NodePurpose::Cpu);
+        assert_eq!(NodePurpose::parse("any"), NodePurpose::Both);
+    }
+
+    // A node from before the release fields existed still has to deserialise, and a coordinator
+    // that has never synced advertises a build of zero rather than failing to answer at all.
+    #[test]
+    fn a_register_from_an_older_node_still_parses() {
+        let older = r#"{"node":"mini-a","pandora_version":"3.5.0","encoder_identity":"x264-165-0.165.x-pandora","ffmpeg_version":"7","threads":8,"max_jobs":1,"presets":[]}"#;
+        let parsed: NodeRegister = serde_json::from_str(older).unwrap();
+        assert_eq!(parsed.build, 0);
+        assert_eq!(parsed.migration_error, None);
+
+        let answer: NodeRegistered =
+            serde_json::from_str(r#"{"accepted":true,"renew_secs":10,"lease_timeout_secs":90}"#)
+                .unwrap();
+        assert_eq!(answer.purpose, NodePurpose::Cpu);
+        assert_eq!(answer.release, ReleaseInfo::default());
+    }
+
     #[test]
     fn stage_names_round_trip() {
         for stage in [
@@ -344,6 +471,17 @@ mod tests {
             assert!(
                 crate::pnworker::server_effects::preset_from_name(&name, None).is_some(),
                 "preset name {name} is not in the shared name table",
+            );
+            // The same name is what the encode worker puts on `pnmpeg --preset` and what a preset
+            // file is named after, so a spelling that only two of the three agree on would encode
+            // at the wrong settings rather than fail.
+            assert!(
+                crate::lib::mpeg::preset::builtin(&name).is_some(),
+                "preset name {name} resolves to no parameter table",
+            );
+            assert!(
+                crate::lib::mpeg::preset::BUILTIN_PRESET_NAMES.contains(&name.as_str()),
+                "preset name {name} is not one a node can advertise",
             );
         }
     }

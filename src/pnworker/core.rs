@@ -35,7 +35,7 @@ use crate::pnworker::messages::{
 };
 use crate::pnworker::presence::{Presence, presence_from_queue};
 use crate::pnworker::progress::{drive_link_from_payload, persist_side_effects};
-use crate::pnworker::pull::{git_pull, head_commit, SyncReport};
+use crate::pnworker::pull::{git_pull, git_reset, head_commit, head_oid, SyncReport};
 use crate::pnworker::server_effects::load_server_settings;
 use crate::pnworker::drive_cleanup::{
     delete_job_drive_upload, drive_deletable_job_type, persist_job_drive_upload,
@@ -155,7 +155,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
             if encode_jobs_active(&queue) {
                 gitquery = Some(halfjob);
             } else {
-                run_gitsync(halfjob.frontend, &mut shrine).await;
+                run_gitsync(halfjob.frontend, &mut shrine, false).await;
             }
         }
         check_encode_reboot_epoch(&shrine, &mut encode_reboot_epoch, &mut queue);
@@ -1255,7 +1255,10 @@ async fn handle_half_job(
             frontend.set_embed(create_workers_embed(queue).await).await;
         }
         JobType::GitSync => {
-            run_gitsync(halfjob.frontend, shrine).await;
+            run_gitsync(halfjob.frontend, shrine, false).await;
+        }
+        JobType::GitForce => {
+            run_gitsync(halfjob.frontend, shrine, true).await;
         }
         JobType::GitQuery => {
             let mut frontend = halfjob.frontend.clone();
@@ -1269,14 +1272,19 @@ async fn handle_half_job(
                     .await;
                 *gitquery = Some(halfjob);
             } else {
-                run_gitsync(halfjob.frontend, shrine).await;
+                run_gitsync(halfjob.frontend, shrine, false).await;
             }
         }
         _ => {}
     }
 }
 
-async fn run_gitsync(mut frontend: Frontend, shrine: &mut TypedShrine<WorkerMsg>) {
+// `force` is `/gitforce`: reset onto origin's tip rather than fast-forwarding towards it, and bump
+// the build whether or not anything moved. Both halves exist for the same reason — a fast-forward
+// cannot rescue a checkout that has diverged, and a build that only moves with HEAD cannot make a
+// cluster restart onto a rebuild. Neither belongs in `/gitsync`, which is run constantly and must
+// not discard local state or restart every node for nothing.
+async fn run_gitsync(mut frontend: Frontend, shrine: &mut TypedShrine<WorkerMsg>, force: bool) {
     frontend.notify_recompiling();
     shrine.kill().await;
     let repo_path = env::var("PANDORA_GITSYNC_REPO").unwrap_or_else(|_| {
@@ -1287,25 +1295,27 @@ async fn run_gitsync(mut frontend: Frontend, shrine: &mut TypedShrine<WorkerMsg>
             .to_owned()
     });
     println!("{}", repo_path);
-    let mut rebuild_requested = false;
+    // Captured before the checkout moves, so "did this sync actually change anything" is answered
+    // by comparing commits rather than by trusting the pull to have said so.
+    let previous = head_oid(&repo_path);
+    let outcome = if force {
+        // An empty target means origin's branch tip, which is the only thing `/gitforce` can mean
+        // when it is invoked from Discord with nothing to name.
+        git_reset(&repo_path, "")
+    } else {
+        git_pull(&repo_path)
+    };
     // A failed pull still reports HEAD, so the reply always names the revision the bot restarts on.
-    let (status, report) = match git_pull(&repo_path) {
-        Ok(report) => {
-            if let Ok(request_path) = env::var("PANDORA_GITSYNC_REQUEST") {
-                let request_path = PathBuf::from(request_path);
-                if let Some(parent) = request_path.parent() {
-                    let _ = create_dir_all(parent).await;
-                }
-                rebuild_requested = write(request_path, b"rebuild\n").await.is_ok();
-            }
-            (
-                "Kaynak kodlar git ile güncellendi.\nBot yeniden başlatılıyor.",
-                Some(report),
-            )
-        }
+    let (synced, status, report) = match outcome {
+        Ok(report) => (
+            true,
+            "Kaynak kodlar git ile güncellendi.\nBot yeniden başlatılıyor.",
+            Some(report),
+        ),
         Err(e) => {
             println!("{}", e);
             (
+                false,
                 "Git güncellemesi başarısız oldu.\nBot yine de yeniden başlatılıyor.",
                 head_commit(&repo_path).map(SyncReport::at_head),
             )
@@ -1315,15 +1325,53 @@ async fn run_gitsync(mut frontend: Frontend, shrine: &mut TypedShrine<WorkerMsg>
     if let Some(report) = report {
         lines.extend(report.lines());
     }
+    if synced {
+        lines.extend(advance_release(&repo_path, previous.as_deref(), force).await);
+    }
     frontend.set_text(&lines.join("\n")).await;
     preserve_work_logs().await;
     let _ = remove_dir_all(PathBuf::from("DB").join("work")).await;
-    if rebuild_requested {
-        tokio::time::sleep(Duration::from_secs(3600)).await;
-    } else {
-        tokio::time::sleep(Duration::from_secs(1)).await;
+    if synced {
+        crate::lib::release::restart_into_new_build().await;
     }
+    // Nothing was pulled, so there is nothing new to build: exit into the restart loop without
+    // asking a Docker host to rebuild an image whose source did not change.
+    tokio::time::sleep(Duration::from_secs(1)).await;
     std::process::exit(0);
+}
+
+// The build number, and the migrations that go with it.
+//
+// The number moves only when the checkout did, because it is what every node in the cluster resets
+// and restarts on: bumping it for a sync that pulled nothing would drain and restart every machine
+// to arrive back where they started. `/gitforce` is the deliberate exception, and it is a separate
+// command precisely so that cost is asked for rather than paid by accident.
+//
+// Migrations run here — after the pull, before the exit — which is the only moment they can. The
+// scripts are the newly pulled ones and the binary is still the old one, so a migration prepares
+// the state that the build about to be compiled expects to find.
+async fn advance_release(repo_path: &str, previous: Option<&str>, force: bool) -> Vec<String> {
+    let current = head_oid(repo_path).unwrap_or_default();
+    let moved = previous != Some(current.as_str());
+    if !moved && !force {
+        return Vec::new();
+    }
+    let record = crate::lib::release::bump(&current);
+    if force {
+        // Nodes reset rather than fast-forward onto this one. Recorded against the build so the
+        // next ordinary sync stops matching it and the reset does not repeat forever.
+        crate::pnworker::link::board::mark_forced_reset(record.build);
+    }
+    let mut lines = vec![format!(
+        "Build `{}`{}.",
+        record.build,
+        if force { " — nodes will reset onto it" } else { "" }
+    )];
+    let run = crate::lib::migration::run_pending(std::path::Path::new(repo_path)).await;
+    if let Some(summary) = run.summary() {
+        lines.push(summary);
+    }
+    lines
 }
 
 // `/gitsync` clears DB/work so the restart does not inherit half-finished scratch directories, but a
@@ -1504,6 +1552,7 @@ fn job_type_label(job_type: JobType) -> &'static str {
         JobType::StudioPreview => "studio-preview",
         JobType::Batch => "batch",
         JobType::Subs => "subs",
+        JobType::GitForce => "gitforce",
     }
 }
 
@@ -3173,6 +3222,7 @@ pub enum JobType {
     StudioPreview = 015,
     Batch = 016,
     Subs = 017,
+    GitForce = 018,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -3309,6 +3359,28 @@ impl HalfJob {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or(Duration::from_secs(0)),
             job_type: JobType::GitSync,
+            frontend: Frontend::discord(context, msg),
+            any_author: false,
+        }
+    }
+    // `/gitforce`. A separate job type rather than a flag on the gitsync one, because the two
+    // differ in what they are allowed to destroy: this one resets a checkout and restarts a whole
+    // cluster, and nothing should be able to reach it by passing the wrong boolean.
+    pub fn new_gitforce(
+        author: u64,
+        channel_id: u64,
+        job_id: u64,
+        context: Context,
+        msg: Message,
+    ) -> Self {
+        Self {
+            author,
+            channel_id,
+            job_id,
+            requested_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or(Duration::from_secs(0)),
+            job_type: JobType::GitForce,
             frontend: Frontend::discord(context, msg),
             any_author: false,
         }
