@@ -63,6 +63,22 @@ Codec mapping lives in `lib::mpeg::subs`: `ass`/`ssa` → `.ass`, `subrip`/`text
 
 Filenames are `<ordinal>.<language>.<title-slug>[.forced].<ext>`. The ordinal leads because it is the only guaranteed-unique part, and language and title are reduced to an alphanumeric slug — they are metadata inside someone else's file, so they are never allowed to reach the filesystem unfiltered.
 
+## `pnmpeg --preset`
+
+`pnmpeg --preset <name>` selects an encoder preset by name: `standard` (also `x264`), `veryslow`,
+`pseudolossless`, `dummy`, `gpu`, `720p`, `480p`. It reads `DB/config/global/presets/<name>.toml`
+when that file exists and falls back to the compiled-in table otherwise, so a deployment that has
+never written a preset file encodes exactly as it always has. The name becomes a path component and
+arrives from a job spec, so anything that is not a plain word is refused before it is joined.
+
+The older boolean flags — `--x264`, `--veryslow`, `--pseudolossless`, `--dummy`, `--gpu`, `--720p`,
+`--480p` — still work and now go through the same lookup, so a preset file takes effect whichever
+way the preset was named. Exactly one preset may be given per run. The concat tables are not
+presets and stay compiled in: they are how an intro is stitched on, not a quality choice.
+
+The file format and its `hardware` tag are described in [WORKER.md](WORKER.md) and
+[LINK.md](LINK.md#purpose); reference copies of every built-in live in `presets/`.
+
 ## `pnmpeg` intro concat mode
 
 `pnmpeg --concat --input <episode.mp4> --intro-dir <group-folder> --output <video.mp4>` discovers the retained intro variants in the group folder. If one has the same H.264/AAC concat properties as the encoded episode (dimensions, pixel format, sample aspect ratio, frame rate, sample rate, and channel count), both files are joined with video/audio stream copy. Otherwise, only the best source intro is transcoded to those properties as `pnmpeg_compat_<signature>.mp4` in the group folder; that retained variant is then stream-copied and automatically reused by later compatible encodes. Existing `/touchintro` variants remain untouched.

@@ -27,6 +27,7 @@ pub trait Decode {
     fn decode(&self) -> Vec<String>;
 }
 
+#[derive(Clone, Debug)]
 pub enum FfmpegParams {
     Input(Cow<'static, str>),
     Seek(Cow<'static, str>),

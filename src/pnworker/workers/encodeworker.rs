@@ -152,10 +152,14 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             } else {
                 None
             };
+            // The canonical preset names, which are also the file names under
+            // `DB/config/global/presets/`: pnmpeg takes `--preset <name>` and looks a file up
+            // before falling back to its built-in table, so a preset an operator edited applies
+            // here without the worker knowing anything about it.
             let (intro_dir, insert) = match preset {
                 Preset::PseudoLossless(cc) => (cc, "pseudolossless"),
                 Preset::Gpu(cc)            => (cc, "gpu"),
-                Preset::Standard(cc)       => (cc, "x264"),
+                Preset::Standard(cc)       => (cc, "standard"),
                 Preset::VerySlow(cc)       => (cc, "veryslow"),
                 Preset::Dummy(cc)          => (cc, "dummy"),
                 Preset::Hd720(cc)          => (cc, "720p"),
@@ -213,7 +217,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     ("OUTPUT",     PathValue::from(path_to_ffmpeg(directory.join("work").join("output_noconcat.mp4").as_path()))),
                     ("ASS",        PathValue::from(path_to_ffmpeg(effects.subtitle.as_path()))),
                     ("FONTCONFIG", PathValue::from(path_to_ffmpeg(fontconfig_dir.as_path()))),
-                    ("PRESET",     PathValue::from(format!("--{}", insert))),
+                    ("PRESET",     PathValue::from(insert.to_string())),
                     ("NEGKEY",     PathValue::from("pn-encode-main".to_string())),
                     ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),
                     ("LOGFILE",    PathValue::from(directory.join("log").join(format!("PNmpeg_Encode{}.log", job_id)).display().to_string())),

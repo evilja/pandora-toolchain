@@ -192,6 +192,285 @@ pub const CONCAT_LEGACY: [FfmpegParams; 17] =
     FfmpegParams::Output(Cow::Borrowed("OUTFILEV"))
 ];
 
+// ---------------------------------------------------------------------------------------------
+// Presets as files
+//
+// Everything above is the built-in table, and it stays: it is the fallback, the seed for a file an
+// operator wants to edit, and the thing the tests below pin the file format against. What changed
+// is that it is no longer the only source. A preset may also be a TOML file under `PRESETS_DIR`,
+// which is what makes a new quality tier a config change on one machine rather than a release.
+//
+// Two things follow from that being a *file* rather than a compiled table:
+//
+// - It carries `hardware`. A cluster has machines with an encoder ASIC and machines without, and
+//   the scheduler cannot know which preset needs which unless the preset says so. See LINK.md.
+// - The parsing is one function with one output type, so the day presets become scriptable there
+//   is a single place that learns to run a script and every caller keeps working.
+//
+// The field set is deliberately the union of what the built-in presets use rather than everything
+// ffmpeg accepts; `extra_args` is the escape hatch for the rest, and it is appended verbatim.
+
+use crate::lib::env::standard::PRESETS_DIR;
+use serde::{Deserialize, Serialize};
+
+// What a preset needs to run on. This is the whole of the CPU/GPU distinction as far as scheduling
+// is concerned: a node advertises what it is, a preset declares what it needs, and a job only
+// crosses the link when the two agree.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PresetHardware {
+    #[default]
+    Cpu,
+    Gpu,
+}
+
+impl PresetHardware {
+    pub fn label(self) -> &'static str {
+        match self {
+            PresetHardware::Cpu => "cpu",
+            PresetHardware::Gpu => "gpu",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "cpu" => Some(PresetHardware::Cpu),
+            "gpu" => Some(PresetHardware::Gpu),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PresetVideo {
+    pub codec: Option<String>,
+    // The `-vf` chain. `INPUTFILEASS` is substituted by pnmpeg exactly as it is in the built-ins,
+    // so a filter written here keeps the same two placeholders and the same ordering rules — the
+    // scale has to precede `ass` or libass renders subtitles at the wrong size.
+    pub filter: Option<String>,
+    pub profile: Option<String>,
+    pub level: Option<String>,
+    pub x264_params: Option<String>,
+    pub crf: Option<u8>,
+    pub preset: Option<String>,
+    pub qp: Option<String>,
+    pub qp_i: Option<String>,
+    pub qp_p: Option<String>,
+    pub rc: Option<String>,
+    pub framerate: Option<String>,
+    pub tune: Option<String>,
+    pub quality: Option<String>,
+    pub bufsize: Option<String>,
+    pub maxrate: Option<String>,
+    pub keyframe: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PresetAudio {
+    pub codec: Option<String>,
+    pub bitrate: Option<String>,
+    pub rate: Option<String>,
+    pub channels: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PresetFile {
+    #[serde(default)]
+    pub hardware: PresetHardware,
+    #[serde(default)]
+    pub video: PresetVideo,
+    #[serde(default)]
+    pub audio: PresetAudio,
+    // Appended after the audio options and before the muxer flags, which is the only position that
+    // cannot collide with something the fields above already wrote.
+    #[serde(default)]
+    pub extra_args: Vec<String>,
+}
+
+// A preset, however it was defined. `params` is ready to hand to the same substitution pnmpeg runs
+// over the built-in tables, so nothing downstream can tell the two apart.
+#[derive(Clone, Debug)]
+pub struct ResolvedPreset {
+    pub name: String,
+    pub hardware: PresetHardware,
+    pub params: Vec<FfmpegParams>,
+    // True when this came off disk, so a log can say which of the two an encode used. An operator
+    // who edits a preset and sees no change needs to know the file was never read.
+    pub from_file: bool,
+}
+
+// The built-in table, by the same names `server_effects::preset_from_name` accepts. `x264` is here
+// because that is what the encode worker has always passed on pnmpeg's command line.
+pub fn builtin(name: &str) -> Option<(&'static [FfmpegParams], PresetHardware)> {
+    Some(match name.trim().to_ascii_lowercase().as_str() {
+        "standard" | "x264" => (&CPU_SANE_DEFAULTS, PresetHardware::Cpu),
+        "veryslow" | "very_slow" => (&CPU_VERYSLOW, PresetHardware::Cpu),
+        "pseudolossless" | "pseudo_lossless" => (&CPU_PSEUDOLOSSLESS, PresetHardware::Cpu),
+        "dummy" => (&CPU_DUMMY, PresetHardware::Cpu),
+        "gpu" => (&GPU_SANE_DEFAULTS, PresetHardware::Gpu),
+        "720p" => (&CPU_720P, PresetHardware::Cpu),
+        "480p" => (&CPU_480P, PresetHardware::Cpu),
+        _ => return None,
+    })
+}
+
+// Every name the built-in table answers to under its canonical spelling, which is what a node
+// advertises and what `PRESETS_DIR` is scanned against.
+pub const BUILTIN_PRESET_NAMES: [&str; 7] = [
+    "standard",
+    "veryslow",
+    "pseudolossless",
+    "dummy",
+    "gpu",
+    "720p",
+    "480p",
+];
+
+fn preset_path(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(PRESETS_DIR).join(format!("{}.toml", name.trim().to_ascii_lowercase()))
+}
+
+// The hardware a preset needs, answered without building its parameters — which is what the
+// coordinator wants, since it schedules presets it never runs itself.
+pub fn hardware_for(name: &str) -> PresetHardware {
+    if let Some(file) = read_preset_file(name) {
+        return file.hardware;
+    }
+    builtin(name).map(|(_, hardware)| hardware).unwrap_or_default()
+}
+
+fn read_preset_file(name: &str) -> Option<PresetFile> {
+    // A preset name reaches this from a job spec and becomes a path component, so anything that
+    // could leave the directory is refused before it is joined.
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return None;
+    }
+    let path = preset_path(name);
+    let contents = std::fs::read_to_string(&path).ok()?;
+    match toml::from_str::<PresetFile>(&contents) {
+        Ok(file) => Some(file),
+        Err(error) => {
+            // Falling back silently would encode at the built-in settings while an operator
+            // believes their file is in force, and the difference only shows up in the release.
+            eprintln!("[Pandora] preset {} is invalid and was ignored: {}", path.display(), error);
+            None
+        }
+    }
+}
+
+// A preset by name: its file if it has one, the built-in table otherwise, and nothing at all if
+// neither knows the name — which is a caller's error and is reported as one rather than quietly
+// encoding at some default.
+pub fn resolve(name: &str) -> Option<ResolvedPreset> {
+    if let Some(file) = read_preset_file(name) {
+        return Some(ResolvedPreset {
+            name: name.to_string(),
+            hardware: file.hardware,
+            params: params_from_file(&file),
+            from_file: true,
+        });
+    }
+    let (params, hardware) = builtin(name)?;
+    Some(ResolvedPreset {
+        name: name.to_string(),
+        hardware,
+        params: params.to_vec(),
+        from_file: false,
+    })
+}
+
+// The fixed skeleton every preset shares. The order is the built-in tables' order and is not
+// configurable: ffmpeg cares where the input, the maps and the output sit, and a file that could
+// reorder them would let a typo produce an encode that runs and is wrong.
+fn params_from_file(file: &PresetFile) -> Vec<FfmpegParams> {
+    let mut params: Vec<FfmpegParams> = Vec::new();
+    let owned = |value: &Option<String>| value.clone().map(Cow::Owned);
+
+    params.push(FfmpegParams::Input(Cow::Borrowed("INPUTFILEV")));
+    params.push(FfmpegParams::BasicFilter(
+        owned(&file.video.filter)
+            .unwrap_or(Cow::Borrowed("ass=INPUTFILEASS,format=yuv420p")),
+    ));
+    params.push(FfmpegParams::Cv(
+        owned(&file.video.codec).unwrap_or(Cow::Borrowed("libx264")),
+    ));
+    if let Some(value) = owned(&file.video.x264_params) {
+        params.push(FfmpegParams::X264Params(value));
+    }
+    if let Some(value) = owned(&file.video.profile) {
+        params.push(FfmpegParams::Profile(value));
+    }
+    if let Some(value) = owned(&file.video.level) {
+        params.push(FfmpegParams::Level(value));
+    }
+    params.push(FfmpegParams::Map(Cow::Borrowed("0:v:0")));
+    params.push(FfmpegParams::Map(Cow::Borrowed("0:JPN_INDEX")));
+    if let Some(value) = file.video.crf {
+        params.push(FfmpegParams::Crf(value));
+    }
+    if let Some(value) = owned(&file.video.preset) {
+        params.push(FfmpegParams::Preset(value));
+    }
+    if let Some(value) = owned(&file.video.qp) {
+        params.push(FfmpegParams::Qp(value));
+    }
+    if let Some(value) = owned(&file.video.qp_i) {
+        params.push(FfmpegParams::QpI(value));
+    }
+    if let Some(value) = owned(&file.video.qp_p) {
+        params.push(FfmpegParams::QpP(value));
+    }
+    if let Some(value) = owned(&file.video.rc) {
+        params.push(FfmpegParams::Rc(value));
+    }
+    if let Some(value) = owned(&file.video.framerate) {
+        params.push(FfmpegParams::R(value));
+    }
+    if let Some(value) = owned(&file.video.tune) {
+        params.push(FfmpegParams::Tune(value));
+    }
+    if let Some(value) = owned(&file.video.quality) {
+        params.push(FfmpegParams::Quality(value));
+    }
+    if let Some(value) = owned(&file.video.bufsize) {
+        params.push(FfmpegParams::Bufsize(value));
+    }
+    if let Some(value) = owned(&file.video.maxrate) {
+        params.push(FfmpegParams::Maxrate(value));
+    }
+    if let Some(value) = owned(&file.video.keyframe) {
+        params.push(FfmpegParams::Keyframe(value));
+    }
+    params.push(FfmpegParams::Ca(
+        owned(&file.audio.codec).unwrap_or(Cow::Borrowed("aac")),
+    ));
+    if let Some(value) = owned(&file.audio.rate) {
+        params.push(FfmpegParams::Ar(value));
+    }
+    if let Some(value) = owned(&file.audio.channels) {
+        params.push(FfmpegParams::Ac(value));
+    }
+    params.push(FfmpegParams::Ba(
+        owned(&file.audio.bitrate).unwrap_or(Cow::Borrowed("192k")),
+    ));
+    if !file.extra_args.is_empty() {
+        params.push(FfmpegParams::Passthrough(file.extra_args.clone()));
+    }
+    params.push(FfmpegParams::Movflags);
+    params.push(FfmpegParams::NoStats);
+    params.push(FfmpegParams::Progress(Cow::Borrowed("pipe:2")));
+    params.push(FfmpegParams::Overwrite);
+    params.push(FfmpegParams::Output(Cow::Borrowed("OUTFILEV")));
+    params
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,6 +478,51 @@ mod tests {
 
     fn rendered(params: &[FfmpegParams]) -> Vec<Vec<String>> {
         params.iter().map(|param| param.decode()).collect()
+    }
+
+    // The reference files in `presets/` are what an operator copies into
+    // `DB/config/global/presets/` to take a preset out of the binary. If one of them stopped
+    // rendering the encode it claims to mirror, copying it would silently change quality — which
+    // is the one failure a preset file must not be able to cause.
+    #[test]
+    fn every_reference_file_renders_its_builtin_exactly() {
+        for name in BUILTIN_PRESET_NAMES {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("presets")
+                .join(format!("{name}.toml"));
+            let contents = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("{}: {}", path.display(), e));
+            let file: PresetFile = toml::from_str(&contents)
+                .unwrap_or_else(|e| panic!("{}: {}", path.display(), e));
+            let (builtin, hardware) = builtin(name).unwrap();
+            assert_eq!(file.hardware, hardware, "{name} disagrees on hardware");
+            assert_eq!(
+                rendered(&params_from_file(&file)),
+                rendered(builtin),
+                "{name} does not render its built-in table"
+            );
+        }
+    }
+
+    // The name becomes a path component and arrives from a job spec, so a preset that tries to
+    // leave the directory must not be looked up at all.
+    #[test]
+    fn a_preset_name_that_is_not_a_plain_word_reads_no_file() {
+        for name in ["../../env", "a/b", "", "with space", "sneak\0y"] {
+            assert!(read_preset_file(name).is_none(), "{name} was looked up");
+        }
+    }
+
+    // Only `gpu` needs a GPU, and an unknown name answers CPU rather than refusing: the scheduler
+    // asks this about every preset it sees, including ones a newer node named.
+    #[test]
+    fn hardware_defaults_to_cpu_for_everything_but_gpu() {
+        assert_eq!(builtin("gpu").unwrap().1, PresetHardware::Gpu);
+        for name in ["standard", "x264", "veryslow", "720p", "dummy"] {
+            assert_eq!(builtin(name).unwrap().1, PresetHardware::Cpu, "{name}");
+        }
+        assert_eq!(PresetHardware::parse("GPU"), Some(PresetHardware::Gpu));
+        assert_eq!(PresetHardware::parse("neither"), None);
     }
 
     // The downscaling presets are the standard preset plus a frame-height cap: if they ever drift

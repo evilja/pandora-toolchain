@@ -1,0 +1,18 @@
+# The standard preset with the frame height capped at 720. `min(720,ih)` is what keeps a source
+# that is already smaller from being upscaled, and `-2` keeps the width even for yuv420p; the scale
+# runs before `ass` so libass renders the subtitles at the output size rather than having them
+# resampled with the video.
+hardware = "cpu"
+
+[video]
+codec = "libx264"
+filter = "scale=-2:'min(720,ih)':flags=lanczos,ass=INPUTFILEASS,format=yuv420p"
+x264_params = "aq-strength=0.8:aq-mode=3"
+profile = "high"
+level = "4.1"
+crf = 17
+preset = "fast"
+
+[audio]
+codec = "aac"
+bitrate = "192k"

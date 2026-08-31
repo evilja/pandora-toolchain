@@ -1,0 +1,15 @@
+# The default encode: x264 at CRF 17 with mild AQ tuning.
+hardware = "cpu"
+
+[video]
+codec = "libx264"
+filter = "ass=INPUTFILEASS,format=yuv420p"
+x264_params = "aq-strength=0.8:aq-mode=3"
+profile = "high"
+level = "4.1"
+crf = 17
+preset = "fast"
+
+[audio]
+codec = "aac"
+bitrate = "192k"

@@ -1,0 +1,18 @@
+# Fixed-quantiser AMF encode. `hardware = "gpu"` is what keeps this off a CPU-only Pandora Mini
+# node: the preset would run there and produce nothing, or fall back to a software encoder and
+# quietly ship a different quality tier.
+hardware = "gpu"
+
+[video]
+codec = "h264_amf"
+filter = "ass=INPUTFILEASS,format=yuv420p"
+profile = "high"
+level = "4.1"
+qp_i = "15"
+qp_p = "15"
+rc = "cqp"
+framerate = "23.976"
+
+[audio]
+codec = "aac"
+bitrate = "192k"

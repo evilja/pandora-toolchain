@@ -1,0 +1,15 @@
+# Near-transparent: the standard preset with a much heavier motion search and trellis.
+hardware = "cpu"
+
+[video]
+codec = "libx264"
+filter = "ass=INPUTFILEASS,format=yuv420p"
+x264_params = "me=umh:subme=8:merange=24:trellis=2:psy-rd=1:aq-strength=0.85:aq-mode=3"
+profile = "high"
+level = "4.1"
+crf = 17
+preset = "fast"
+
+[audio]
+codec = "aac"
+bitrate = "192k"

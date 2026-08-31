@@ -1,9 +1,8 @@
 use pandora_toolchain::lib::mpeg::{
     core::{
         FFmpeg, FfmpegParams, do_comm_encode_ffmpeg}, preset::{
-        CONCAT, CONCAT_LEGACY, CPU_480P, CPU_720P, CPU_DUMMY, CPU_PSEUDOLOSSLESS,
-        CPU_PSEUDOLOSSLESS_X264_PARAMS, CPU_SANE_DEFAULTS, CPU_SANE_X264_PARAMS, CPU_VERYSLOW,
-        GPU_SANE_DEFAULTS
+        CONCAT, CONCAT_LEGACY, CPU_PSEUDOLOSSLESS_X264_PARAMS, CPU_SANE_X264_PARAMS,
+        resolve as resolve_preset
     }, probe::{
         ConcatMedia, ffprobe_concat_media, ffprobe_estimated_frames, ffprobe_frame,
         ffprobe_framerate, ffprobe_lang,
@@ -59,6 +58,12 @@ struct Args {
     /// The x264 preset downscaled to at most 480 lines
     #[arg(long = "480p")]
     p480: bool,
+
+    /// Encode with the named preset, from `DB/config/global/presets/<name>.toml` if it exists and
+    /// the built-in table otherwise. The equivalent of the flags above, and the only way to reach
+    /// a preset that exists solely as a file.
+    #[arg(long)]
+    preset: Option<String>,
 
     #[arg(long)]
     concat: bool,
@@ -774,6 +779,52 @@ fn emit_extract_failure(proto: &Protocol, neg: &str) {
     );
 }
 
+// The canonical name behind whichever way a preset was asked for. The boolean flags predate
+// `--preset` and stay: they are how the encode worker has always spelled its choice, and how a
+// standalone run is written by hand.
+fn selected_preset(args: &Args) -> Option<String> {
+    if let Some(name) = args.preset.as_deref() {
+        let name = name.trim();
+        if !name.is_empty() {
+            return Some(name.to_ascii_lowercase());
+        }
+    }
+    let name = if args.gpu {
+        "gpu"
+    } else if args.x264 {
+        "standard"
+    } else if args.pseudolossless {
+        "pseudolossless"
+    } else if args.veryslow {
+        "veryslow"
+    } else if args.p720 {
+        "720p"
+    } else if args.p480 {
+        "480p"
+    } else if args.dummy {
+        "dummy"
+    } else {
+        return None;
+    };
+    Some(name.to_string())
+}
+
+// A named preset, from its file if it has one. An unknown name is fatal rather than silently
+// standard: the caller asked for particular settings and encoding at different ones is a release
+// that has to be redone, which costs more than an exit.
+fn load_preset(name: &str, log: &mut ToolLog) -> Vec<FfmpegParams> {
+    let Some(resolved) = resolve_preset(name) else {
+        panic!("Unknown preset `{}`.", name);
+    };
+    log.line(&format!(
+        "preset {} ({}, {})",
+        resolved.name,
+        resolved.hardware.label(),
+        if resolved.from_file { "from file" } else { "built in" },
+    ));
+    resolved.params
+}
+
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -1134,7 +1185,9 @@ async fn main() {
         let mut params = if args.joinconcat {
             Vec::from(CONCAT)
         } else {
-            let mut p = Vec::from(CPU_SANE_DEFAULTS);
+            // The join re-encodes, so it wants the same standard preset an ordinary encode uses —
+            // including an operator's file, or a join would ship at different settings.
+            let mut p = resolve_preset("standard").unwrap().params;
             p.insert(0, FfmpegParams::Safe(Cow::Borrowed("0")));
             p.insert(0, FfmpegParams::Format(Cow::Borrowed("concat")));
             p
@@ -1190,22 +1243,19 @@ async fn main() {
             if args.veryslow { 1 } else { 0 } +
             if args.p720 { 1 } else { 0 } +
             if args.p480 { 1 } else { 0 } +
-            if args.dummy { 1 } else { 0 };
+            if args.dummy { 1 } else { 0 } +
+            if args.preset.is_some() { 1 } else { 0 };
 
+    // Every encoding preset now goes through one lookup, the flags included, so a file dropped in
+    // `DB/config/global/presets/` takes effect whichever way the preset was named. The concat
+    // tables stay compiled in: they are not a quality choice, they are how an intro is stitched on,
+    // and they keep the position in this chain they have always had — ahead of `--dummy` and
+    // therefore ahead of `--preset`, behind every other preset flag.
     if a > 1 {
         panic!("You must use one preset at a time.");
-    } else if args.gpu {
-        params = Vec::from(GPU_SANE_DEFAULTS);
-    } else if args.x264 {
-        params = Vec::from(CPU_SANE_DEFAULTS);
-    } else if args.pseudolossless {
-        params = Vec::from(CPU_PSEUDOLOSSLESS);
-    } else if args.veryslow {
-        params = Vec::from(CPU_VERYSLOW);
-    } else if args.p720 {
-        params = Vec::from(CPU_720P);
-    } else if args.p480 {
-        params = Vec::from(CPU_480P);
+    } else if args.gpu || args.x264 || args.pseudolossless || args.veryslow || args.p720 || args.p480
+    {
+        params = load_preset(&selected_preset(&args).unwrap(), &mut log);
     } else if args.concat {
         if use_legacy {
             params = Vec::from(CONCAT_LEGACY);
@@ -1214,10 +1264,11 @@ async fn main() {
         }
     } else if args.legacyconcat {
         params = Vec::from(CONCAT_LEGACY);
-    } else if args.dummy {
-        params = Vec::from(CPU_DUMMY);
     } else {
-        params = Vec::from(CPU_SANE_DEFAULTS);
+        params = load_preset(
+            &selected_preset(&args).unwrap_or_else(|| "standard".to_string()),
+            &mut log,
+        );
     }
 
     log.line(&format!("{} ffmpeg parameter(s) from the selected preset", params.len()));

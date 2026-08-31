@@ -105,6 +105,7 @@ pub const PNMPEG_ENCODE: &[CliParam] = &[
     CliParam::Path("ASS"),
     CliParam::Literal("--fontconfig"),
     CliParam::Path("FONTCONFIG"),
+    CliParam::Literal("--preset"),
     CliParam::Path("PRESET"),
     CliParam::Literal("--negkey"),
     CliParam::Path("NEGKEY"),

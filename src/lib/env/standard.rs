@@ -50,6 +50,11 @@ pub const API_RATE_WINDOW_SECS: &str = "api_rate_window_secs";
 pub const API_TOKENS_PATH: &str = "DB/config/global/environment/api.pandora";
 pub const FLAVOR_PATH: &str = "DB/config/global/environment/flavor.pandora";
 
+// Encoder presets as editable files. A name with no file here falls back to the built-in table, so
+// an untouched deployment encodes exactly as it did before presets became configurable and an
+// operator opts one preset at a time out of the binary.
+pub const PRESETS_DIR: &str = "DB/config/global/presets";
+
 // Pandora Mini link. `PANDORA_MODE` set to `mini` runs the node side (equivalently `pndc --mini`):
 // the worker runtime and a link client, no Discord. Everything else is coordinator-side, and a
 // coordinator with no registered nodes behaves exactly as it did before the link existed.

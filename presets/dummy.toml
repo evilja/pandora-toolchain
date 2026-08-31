@@ -1,0 +1,14 @@
+# Fast and disposable, for checking a pipeline rather than shipping a release.
+hardware = "cpu"
+
+[video]
+codec = "libx264"
+filter = "ass=INPUTFILEASS,format=yuv420p"
+profile = "high"
+level = "4.1"
+crf = 25
+preset = "veryfast"
+
+[audio]
+codec = "aac"
+bitrate = "192k"

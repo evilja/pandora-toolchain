@@ -1,0 +1,15 @@
+# Quality-first CPU preset: x264 veryslow at CRF 18 with no -x264-params tuning at all, so AQ and
+# motion search stay on libx264's own defaults.
+hardware = "cpu"
+
+[video]
+codec = "libx264"
+filter = "ass=INPUTFILEASS,format=yuv420p"
+profile = "high"
+level = "4.1"
+crf = 18
+preset = "veryslow"
+
+[audio]
+codec = "aac"
+bitrate = "192k"
