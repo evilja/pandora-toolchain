@@ -302,6 +302,88 @@ pub struct ResolvedPreset {
     pub from_file: bool,
 }
 
+// What a preset asks libx264 for, read back out of its rendered parameters.
+//
+// The ahead-of-time encoder is not ffmpeg: it drives libx264 directly through `pnx264`, so it needs
+// the same settings expressed as a struct rather than as command-line arguments. Deriving them from
+// the preset's own parameters is what keeps the two halves of an encode identical — the speculative
+// prefix and the foreground run must agree exactly, or a single output file carries two different
+// quality settings across the handoff, and nothing downstream would ever notice.
+//
+// A second hardcoded copy of the same numbers is the obvious alternative and is what this replaces.
+// It agreed with the built-in tables and could not possibly agree with a preset file.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct X264Settings {
+    pub codec: String,
+    pub crf: Option<u8>,
+    pub preset: Option<String>,
+    pub tune: Option<String>,
+    pub profile: Option<String>,
+    pub level: Option<String>,
+    pub x264_params: Option<String>,
+}
+
+// The x264 presets slow enough that splitting an episode into chunks wins back more time than the
+// coordination costs. Measured for `veryslow`; `placebo` is slower still and cannot lose.
+const CHUNKED_X264_PRESETS: [&str; 2] = ["veryslow", "placebo"];
+
+impl ResolvedPreset {
+    pub fn x264_settings(&self) -> X264Settings {
+        let mut settings = X264Settings::default();
+        for param in &self.params {
+            match param {
+                FfmpegParams::Cv(value) => settings.codec = value.to_string(),
+                FfmpegParams::Crf(value) => settings.crf = Some(*value),
+                FfmpegParams::Preset(value) => settings.preset = Some(value.to_string()),
+                FfmpegParams::Tune(value) => settings.tune = Some(value.to_string()),
+                FfmpegParams::Profile(value) => settings.profile = Some(value.to_string()),
+                FfmpegParams::Level(value) => settings.level = Some(value.to_string()),
+                FfmpegParams::X264Params(value) => settings.x264_params = Some(value.to_string()),
+                _ => {}
+            }
+        }
+        settings
+    }
+
+    // The frame height the preset caps its output at, read out of its own filter chain rather than
+    // configured beside it — a preset that scaled to one height and declared another would name its
+    // release wrong, and the filter is the half that actually decides the pixels.
+    pub fn scale_height(&self) -> Option<u32> {
+        let filter = self.params.iter().find_map(|param| match param {
+            FfmpegParams::BasicFilter(value) => Some(value.to_string()),
+            _ => None,
+        })?;
+        let captures = regex::Regex::new(r"min\((\d+),\s*ih\)")
+            .unwrap()
+            .captures(&filter)?;
+        captures.get(1)?.as_str().parse::<u32>().ok()
+    }
+
+    pub fn encodes_with_x264(&self) -> bool {
+        self.x264_settings().codec == "libx264"
+    }
+
+    // Whether this preset's encode can be started before the download finishes.
+    //
+    // Two things rule it out. A preset that is not libx264 cannot be driven by `pnx264` at all. A
+    // preset that scales must run its filter exactly once, in the encode that writes the output —
+    // scaling in the speculative prefix and again in the foreground would resample twice.
+    pub fn supports_aot(&self) -> bool {
+        self.encodes_with_x264() && self.scale_height().is_none()
+    }
+
+    // Whether an AOT-capable preset chunks the episode across parallel encoders or keeps one
+    // continuous linear encoder alive. Chunking only pays for the slow presets; for the rest a
+    // single instance keeps its real rate-control state, which is worth more than the parallelism.
+    pub fn wants_chunked_encode(&self) -> bool {
+        self.supports_aot()
+            && self
+                .x264_settings()
+                .preset
+                .is_some_and(|preset| CHUNKED_X264_PRESETS.contains(&preset.as_str()))
+    }
+}
+
 // The built-in table, by the same names `server_effects::preset_from_name` accepts. `x264` is here
 // because that is what the encode worker has always passed on pnmpeg's command line.
 pub fn builtin(name: &str) -> Option<(&'static [FfmpegParams], PresetHardware)> {
@@ -502,6 +584,74 @@ mod tests {
                 "{name} does not render its built-in table"
             );
         }
+    }
+
+    // The ahead-of-time encoder drives libx264 directly and has to be handed exactly what the
+    // ffmpeg run would use. If these ever disagree, the speculative prefix and the rest of the
+    // episode are encoded at different settings and land in one output file with nothing
+    // downstream able to tell — which is why this asserts the numbers and not just the shape.
+    #[test]
+    fn x264_settings_come_back_out_of_the_preset_that_produced_them() {
+        let standard = resolve("standard").unwrap().x264_settings();
+        assert_eq!(standard.codec, "libx264");
+        assert_eq!(standard.crf, Some(17));
+        assert_eq!(standard.preset.as_deref(), Some("fast"));
+        assert_eq!(standard.profile.as_deref(), Some("high"));
+        assert_eq!(standard.level.as_deref(), Some("4.1"));
+        assert_eq!(standard.x264_params.as_deref(), Some(CPU_SANE_X264_PARAMS));
+
+        let veryslow = resolve("veryslow").unwrap().x264_settings();
+        assert_eq!(veryslow.crf, Some(18));
+        assert_eq!(veryslow.preset.as_deref(), Some("veryslow"));
+        // VerySlow deliberately carries no -x264-params, so AQ and motion search stay on libx264's
+        // own defaults. A settings reader that invented one would change what it encodes.
+        assert_eq!(veryslow.x264_params, None);
+
+        let dummy = resolve("dummy").unwrap().x264_settings();
+        assert_eq!(dummy.crf, Some(25));
+        assert_eq!(dummy.preset.as_deref(), Some("veryfast"));
+
+        let gpu = resolve("gpu").unwrap().x264_settings();
+        assert_eq!(gpu.codec, "h264_amf");
+        assert_eq!(gpu.crf, None);
+    }
+
+    // Which presets may start encoding before the download finishes, and which of those chunk.
+    // This is the table that used to be a list of boolean flags in pnmpeg; it is pinned here
+    // because getting it wrong costs either a silent latency regression or a double resample, and
+    // neither shows up as a failure.
+    #[test]
+    fn aot_eligibility_matches_what_each_preset_can_actually_do() {
+        for name in ["standard", "pseudolossless", "dummy"] {
+            let preset = resolve(name).unwrap();
+            assert!(preset.supports_aot(), "{name} should encode ahead");
+            assert!(!preset.wants_chunked_encode(), "{name} should stay linear");
+        }
+
+        // Slow enough that chunking wins back more than the coordination costs.
+        let veryslow = resolve("veryslow").unwrap();
+        assert!(veryslow.supports_aot());
+        assert!(veryslow.wants_chunked_encode());
+
+        // Not libx264, so pnx264 cannot drive it at all.
+        assert!(!resolve("gpu").unwrap().supports_aot());
+
+        // Scaling presets must run their filter exactly once, in the encode that writes the
+        // output — encoding ahead would resample the prefix a second time.
+        for name in ["720p", "480p"] {
+            let preset = resolve(name).unwrap();
+            assert!(!preset.supports_aot(), "{name} must not encode ahead");
+        }
+    }
+
+    // The release is named after the height it was actually encoded at, and that height is only
+    // knowable from the filter the preset applied.
+    #[test]
+    fn a_scaling_preset_reports_the_height_its_filter_caps_at() {
+        assert_eq!(resolve("720p").unwrap().scale_height(), Some(720));
+        assert_eq!(resolve("480p").unwrap().scale_height(), Some(480));
+        assert_eq!(resolve("standard").unwrap().scale_height(), None);
+        assert_eq!(resolve("gpu").unwrap().scale_height(), None);
     }
 
     // The name becomes a path component and arrives from a job spec, so a preset that tries to

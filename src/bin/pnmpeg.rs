@@ -1,8 +1,7 @@
 use pandora_toolchain::lib::mpeg::{
     core::{
         FFmpeg, FfmpegParams, do_comm_encode_ffmpeg}, preset::{
-        CONCAT, CONCAT_LEGACY, CPU_PSEUDOLOSSLESS_X264_PARAMS, CPU_SANE_X264_PARAMS,
-        resolve as resolve_preset
+        CONCAT, CONCAT_LEGACY, ResolvedPreset, resolve as resolve_preset
     }, probe::{
         ConcatMedia, ffprobe_concat_media, ffprobe_estimated_frames, ffprobe_frame,
         ffprobe_framerate, ffprobe_lang,
@@ -202,42 +201,42 @@ struct Args {
 fn wrap(a: &str) -> String { return String::from(a) }
 
 // The frame height the selected preset caps its output at, if it caps one at all. It is a cap and
-// not a target: the scale filters never upscale a source that is already smaller than this.
-fn scale_height(args: &Args) -> Option<u32> {
-    if args.p720 {
-        Some(720)
-    } else if args.p480 {
-        Some(480)
-    } else {
-        None
-    }
+// not a target: the scale filters never upscale a source that is already smaller than this. Read
+// out of the preset's own filter chain, so a preset file that scales is named after what it
+// actually produced rather than after the flag it was reached by.
+fn scale_height(preset: Option<&ResolvedPreset>) -> Option<u32> {
+    preset.and_then(ResolvedPreset::scale_height)
 }
 
-fn planner_encoder_config(args: &Args) -> pnx264::Config {
-    let (preset, crf, x264_params) = if args.dummy {
-        ("veryfast", 25.0, None)
-    } else if args.pseudolossless {
-        (
-            "fast",
-            17.0,
-            Some(CPU_PSEUDOLOSSLESS_X264_PARAMS.to_string()),
-        )
-    } else if args.veryslow {
-        ("veryslow", 18.0, None)
-    } else {
-        (
-            "fast",
-            17.0,
-            Some(CPU_SANE_X264_PARAMS.to_string()),
-        )
-    };
+// The settings the ahead-of-time encoder drives libx264 with.
+//
+// These come from the selected preset rather than from a table of their own. The speculative prefix
+// and the foreground encode have to agree exactly — the output file is one half of each — and a
+// second copy of the numbers could only ever agree with the built-ins. A preset file would have
+// left the prefix at the compiled CRF and the rest of the episode at the configured one, in one
+// file, with nothing downstream able to tell.
+// Whether this run may adopt the prefix the download worker encoded speculatively, and whether it
+// splits the episode across parallel encoders instead. Both are named rather than inlined at the
+// branch so a test can hold them to the same answers the boolean flags used to give — the whole of
+// this regression was four readings of the flags drifting apart from the preset actually in use.
+fn adopts_linear_prefix(preset: Option<&ResolvedPreset>) -> bool {
+    preset.is_some_and(|preset| preset.supports_aot() && !preset.wants_chunked_encode())
+}
+
+fn encodes_in_chunks(preset: Option<&ResolvedPreset>) -> bool {
+    preset.is_some_and(ResolvedPreset::wants_chunked_encode)
+}
+
+fn planner_encoder_config(preset: Option<&ResolvedPreset>) -> pnx264::Config {
+    let settings = preset.map(ResolvedPreset::x264_settings).unwrap_or_default();
     pnx264::Config {
-        crf,
+        crf: settings.crf.map(f32::from).unwrap_or(17.0),
         threads: std::env::var("PLAN_THREADS").ok().and_then(|value| value.parse().ok()).unwrap_or(0),
-        preset: Some(preset.to_string()),
-        profile: Some("high".to_string()),
-        level: Some("4.1".to_string()),
-        x264_params,
+        preset: settings.preset.or_else(|| Some("fast".to_string())),
+        tune: settings.tune,
+        profile: settings.profile.or_else(|| Some("high".to_string())),
+        level: settings.level.or_else(|| Some("4.1".to_string())),
+        x264_params: settings.x264_params,
         plan_only: true,
         ..Default::default()
     }
@@ -809,20 +808,37 @@ fn selected_preset(args: &Args) -> Option<String> {
     Some(name.to_string())
 }
 
-// A named preset, from its file if it has one. An unknown name is fatal rather than silently
-// standard: the caller asked for particular settings and encoding at different ones is a release
-// that has to be redone, which costs more than an exit.
-fn load_preset(name: &str, log: &mut ToolLog) -> Vec<FfmpegParams> {
-    let Some(resolved) = resolve_preset(name) else {
-        panic!("Unknown preset `{}`.", name);
-    };
-    log.line(&format!(
-        "preset {} ({}, {})",
-        resolved.name,
-        resolved.hardware.label(),
-        if resolved.from_file { "from file" } else { "built in" },
-    ));
-    resolved.params
+// The preset this run encodes with, or None for a run that encodes nothing of its own — a concat
+// or a legacy concat, which stitch an intro onto a file that has already been encoded.
+//
+// One function, because every decision downstream has to be made about the same preset: the ffmpeg
+// parameters, the settings the ahead-of-time encoder drives libx264 with, whether it may encode
+// ahead at all, and the height the output is named after. When those were four separate readings
+// of the same boolean flags, `--preset standard` and `--x264` selected the same parameters and
+// disagreed about everything else.
+//
+// An unknown name is fatal rather than silently standard: the caller asked for particular settings,
+// and encoding at different ones is a release that has to be made again.
+fn active_preset(args: &Args) -> Option<ResolvedPreset> {
+    let name = if args.gpu
+        || args.x264
+        || args.pseudolossless
+        || args.veryslow
+        || args.p720
+        || args.p480
+    {
+        selected_preset(args)
+    } else if args.concat || args.legacyconcat {
+        // A preset flag still wins over concat, exactly as it did when this was a chain of
+        // `else if`s; without one, a concat is not an encode and has no preset.
+        None
+    } else {
+        Some(selected_preset(args).unwrap_or_else(|| "standard".to_string()))
+    }?;
+    match resolve_preset(&name) {
+        Some(resolved) => Some(resolved),
+        None => panic!("Unknown preset `{}`.", name),
+    }
 }
 
 #[tokio::main]
@@ -836,11 +852,35 @@ async fn main() {
         args.input, args.output, args.ass, args.lang, args.intro_dir, args.candidate.len()
     ));
     log.line(&format!(
-        "mode gpu={} x264={} pseudolossless={} veryslow={} 720p={} 480p={} dummy={} concat={} legacyconcat={} joinconcat={} joinass={} studio={} extractsubs={}",
-        args.gpu, args.x264, args.pseudolossless, args.veryslow, args.p720, args.p480, args.dummy,
+        "mode preset={:?} concat={} legacyconcat={} joinconcat={} joinass={} studio={} extractsubs={}",
+        selected_preset(&args),
         args.concat, args.legacyconcat, args.joinconcat, args.joinass, args.studio, args.extractsubs
     ));
-    let x264_config = planner_encoder_config(&args);
+    // Resolved once, here, because four separate decisions depend on it: the ffmpeg parameters,
+    // the AOT encoder's settings, whether AOT may run at all, and the height the output is named
+    // after. Asking the flags for any of those means a preset reached by `--preset` answers
+    // differently from the same preset reached by its flag.
+    let selected = if args.gpu { 1 } else { 0 }
+        + if args.x264 { 1 } else { 0 }
+        + if args.pseudolossless { 1 } else { 0 }
+        + if args.veryslow { 1 } else { 0 }
+        + if args.p720 { 1 } else { 0 }
+        + if args.p480 { 1 } else { 0 }
+        + if args.dummy { 1 } else { 0 }
+        + if args.preset.is_some() { 1 } else { 0 };
+    if selected > 1 {
+        panic!("You must use one preset at a time.");
+    }
+    let active_preset = active_preset(&args);
+    if let Some(preset) = &active_preset {
+        log.line(&format!(
+            "preset {} ({}, {})",
+            preset.name,
+            preset.hardware.label(),
+            if preset.from_file { "from file" } else { "built in" },
+        ));
+    }
+    let x264_config = planner_encoder_config(active_preset.as_ref());
     if args.linear_prefix {
         let Some(job_id) = args.aot_job_id else {
             eprintln!("pnmpeg: --aot-job-id is required with --linear-prefix");
@@ -1236,40 +1276,14 @@ async fn main() {
         false => None,
     };
 
-    let mut params: Vec<FfmpegParams>;
-    let a = if args.gpu { 1 } else { 0 } +
-            if args.x264 { 1 } else { 0 } +
-            if args.pseudolossless { 1 } else { 0 } +
-            if args.veryslow { 1 } else { 0 } +
-            if args.p720 { 1 } else { 0 } +
-            if args.p480 { 1 } else { 0 } +
-            if args.dummy { 1 } else { 0 } +
-            if args.preset.is_some() { 1 } else { 0 };
-
-    // Every encoding preset now goes through one lookup, the flags included, so a file dropped in
-    // `DB/config/global/presets/` takes effect whichever way the preset was named. The concat
-    // tables stay compiled in: they are not a quality choice, they are how an intro is stitched on,
-    // and they keep the position in this chain they have always had — ahead of `--dummy` and
-    // therefore ahead of `--preset`, behind every other preset flag.
-    if a > 1 {
-        panic!("You must use one preset at a time.");
-    } else if args.gpu || args.x264 || args.pseudolossless || args.veryslow || args.p720 || args.p480
-    {
-        params = load_preset(&selected_preset(&args).unwrap(), &mut log);
-    } else if args.concat {
-        if use_legacy {
-            params = Vec::from(CONCAT_LEGACY);
-        } else {
-            params = Vec::from(CONCAT);
-        }
-    } else if args.legacyconcat {
-        params = Vec::from(CONCAT_LEGACY);
-    } else {
-        params = load_preset(
-            &selected_preset(&args).unwrap_or_else(|| "standard".to_string()),
-            &mut log,
-        );
-    }
+    // The preset was resolved once at startup; this is the same answer, not a second reading of the
+    // flags. The concat tables stay compiled in — they are not a quality choice, they are how an
+    // intro is stitched on — and `active_preset` is None for exactly the runs that need them.
+    let mut params: Vec<FfmpegParams> = match &active_preset {
+        Some(preset) => preset.params.clone(),
+        None if args.concat && !use_legacy => Vec::from(CONCAT),
+        None => Vec::from(CONCAT_LEGACY),
+    };
 
     log.line(&format!("{} ffmpeg parameter(s) from the selected preset", params.len()));
     let audio_index = if !args.concat || args.legacyconcat {
@@ -1285,7 +1299,7 @@ async fn main() {
     };
     log.line(&format!("audio_index={}", audio_index));
 
-    if args.x264 || args.pseudolossless || args.dummy {
+    if adopts_linear_prefix(active_preset.as_ref()) {
         match finish_linear_aot(&args, &x264_config, &audio_index, &proto, &neg, &mut log) {
             Ok(true) => {
                 println!("{}", pn_emit!(
@@ -1323,7 +1337,7 @@ async fn main() {
 
     // The corrected episode-scale benchmark showed a latency win only for VerySlow. Every other
     // CPU preset stays on the established linear ffmpeg path below.
-    if args.veryslow && !args.concat && !args.legacyconcat {
+    if encodes_in_chunks(active_preset.as_ref()) && !args.concat && !args.legacyconcat {
         let Some(ass) = args.ass.as_deref() else {
             eprintln!("pnmpeg: --ass is required for parallel VerySlow encoding");
             std::process::exit(2);
@@ -1486,7 +1500,7 @@ async fn main() {
     // write — the broker would only take it apart into the same chunks. The intro concat arrives
     // here too, and is as much a final mux as the encode: it stream-copies what it joins.
     if let Some(directory) = args.hls.as_deref() {
-        if let Err(error) = retarget_params_to_hls(&mut params, Path::new(directory), &args.input, scale_height(&args), &mut log) {
+        if let Err(error) = retarget_params_to_hls(&mut params, Path::new(directory), &args.input, scale_height(active_preset.as_ref()), &mut log) {
             log.line(&format!("HLS output could not be prepared: {error}"));
             eprintln!("pnmpeg HLS output could not be prepared: {error}");
             println!("{}", pn_emit!(
@@ -1778,7 +1792,100 @@ fn escape_filter_value(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{media_bitrate_kbps, quote_filter_value};
+    use super::{
+        Args, active_preset, adopts_linear_prefix, encodes_in_chunks, media_bitrate_kbps,
+        planner_encoder_config, quote_filter_value, scale_height,
+    };
+    use clap::Parser;
+
+    fn parsed(extra: &[&str]) -> Args {
+        let mut argv = vec!["pnmpeg", "--input", "in.mkv", "--output", "out.mp4"];
+        argv.extend_from_slice(extra);
+        Args::parse_from(argv)
+    }
+
+    // The encode worker spells its choice as `--preset <name>`; a hand-written run and the download
+    // worker's speculative pass still spell it as a flag. Both have to reach the same preset, or
+    // the two halves of one episode are encoded differently.
+    #[test]
+    fn a_flag_and_the_name_it_stands_for_select_the_same_preset() {
+        for (flag, name) in [
+            ("--x264", "standard"),
+            ("--veryslow", "veryslow"),
+            ("--pseudolossless", "pseudolossless"),
+            ("--dummy", "dummy"),
+            ("--gpu", "gpu"),
+            ("--720p", "720p"),
+            ("--480p", "480p"),
+        ] {
+            let by_flag = active_preset(&parsed(&[flag])).expect(flag);
+            let by_name = active_preset(&parsed(&["--preset", name])).expect(name);
+            assert_eq!(by_flag.name, by_name.name, "{flag} and --preset {name} disagree");
+            assert_eq!(
+                planner_encoder_config(Some(&by_flag)).crf,
+                planner_encoder_config(Some(&by_name)).crf,
+                "{flag} and --preset {name} would encode ahead at different CRFs",
+            );
+        }
+    }
+
+    // The regression this guards: the worker moved from `--x264` to `--preset standard`, and every
+    // ahead-of-time decision was still reading the boolean flags. The encode kept working, so
+    // nothing failed — it just silently stopped adopting the prefix the download worker had
+    // already spent CPU producing.
+    #[test]
+    fn the_presets_that_encode_ahead_do_so_under_either_spelling() {
+        for argv in [vec!["--x264"], vec!["--preset", "standard"], vec!["--pseudolossless"], vec![]] {
+            let preset = active_preset(&parsed(&argv));
+            assert!(adopts_linear_prefix(preset.as_ref()), "{argv:?} lost its AOT handoff");
+            assert!(!encodes_in_chunks(preset.as_ref()), "{argv:?} should stay linear");
+        }
+        for argv in [vec!["--veryslow"], vec!["--preset", "veryslow"]] {
+            let preset = active_preset(&parsed(&argv));
+            assert!(encodes_in_chunks(preset.as_ref()), "{argv:?} lost parallel chunking");
+            assert!(!adopts_linear_prefix(preset.as_ref()), "{argv:?} chunks instead of adopting");
+        }
+        // Not libx264, and a filter that must run exactly once in the encode that writes the file.
+        for argv in [vec!["--gpu"], vec!["--preset", "720p"], vec!["--480p"]] {
+            let preset = active_preset(&parsed(&argv));
+            assert!(!adopts_linear_prefix(preset.as_ref()), "{argv:?} must not encode ahead");
+            assert!(!encodes_in_chunks(preset.as_ref()), "{argv:?} must not chunk");
+        }
+        // A concat is not an encode and has nothing to adopt.
+        for argv in [vec!["--concat"], vec!["--legacyconcat"]] {
+            let preset = active_preset(&parsed(&argv));
+            assert!(!adopts_linear_prefix(preset.as_ref()), "{argv:?} is not an encode");
+            assert!(!encodes_in_chunks(preset.as_ref()), "{argv:?} is not an encode");
+        }
+    }
+
+    // A concat stitches an intro onto an already-encoded file. It is not an encode, so it has no
+    // preset and must never try to adopt a speculative prefix.
+    #[test]
+    fn a_concat_selects_no_preset_but_a_bare_run_defaults_to_standard() {
+        assert!(active_preset(&parsed(&["--concat"])).is_none());
+        assert!(active_preset(&parsed(&["--legacyconcat"])).is_none());
+
+        // No flags at all is an encode, and it is the standard preset — the same one the parameter
+        // selection falls back to, so the AOT settings cannot disagree with the ffmpeg run.
+        let bare = active_preset(&parsed(&[])).expect("a bare run still encodes");
+        assert_eq!(bare.name, "standard");
+        assert_eq!(planner_encoder_config(Some(&bare)).crf, 17.0);
+        assert_eq!(
+            planner_encoder_config(Some(&bare)).x264_params.as_deref(),
+            Some("aq-strength=0.8:aq-mode=3"),
+            "the AOT encoder would have dropped the preset's x264 tuning",
+        );
+    }
+
+    // The release is named after the height that was actually encoded, which only the preset's own
+    // filter knows.
+    #[test]
+    fn the_output_height_follows_the_preset_that_scaled_it() {
+        assert_eq!(scale_height(active_preset(&parsed(&["--preset", "720p"])).as_ref()), Some(720));
+        assert_eq!(scale_height(active_preset(&parsed(&["--480p"])).as_ref()), Some(480));
+        assert_eq!(scale_height(active_preset(&parsed(&["--x264"])).as_ref()), None);
+    }
 
     #[test]
     fn quote_filter_value_escapes_filter_specials() {
