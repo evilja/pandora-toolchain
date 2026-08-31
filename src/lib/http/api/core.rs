@@ -128,7 +128,7 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
     let rate_limit = env
         .get(API_RATE_LIMIT)
         .and_then(|s| s.trim().parse::<u32>().ok())
-        .unwrap_or(30);
+        .unwrap_or(1000);
     let rate_window = env
         .get(API_RATE_WINDOW_SECS)
         .and_then(|s| s.trim().parse::<u64>().ok())
