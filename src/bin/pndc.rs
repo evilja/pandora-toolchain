@@ -407,9 +407,15 @@ async fn handle_lsnode(ctx: &Context, command: &serenity::all::CommandInteractio
                 .join(", ")
         };
         lines.push(format!(
-            "{} `{}` — {}, {} thread(s), max `{}`, encoders `{}`, build `{}`, seen `{}s` ago, {}{}",
+            "{} `{}`{} — {}, {} thread(s), max `{}`, encoders `{}`, build `{}`, seen `{}s` ago, {}{}",
             marker,
             node.name,
+            // The group is shown beside the node rather than instead of it: the whole point of
+            // grouping is that the jobs read as one worker while the machines stay separate here.
+            node.group
+                .as_deref()
+                .map(|group| format!(" → `lnk-{}`", group))
+                .unwrap_or_default(),
             node.purpose.label(),
             node.threads,
             node.max_jobs,
@@ -465,6 +471,55 @@ async fn handle_drainnode(ctx: &Context, command: &serenity::all::CommandInterac
         format!("`{}` is draining: it finishes what it holds and is offered nothing further.", name)
     } else {
         format!("`{}` is taking work again.", name)
+    };
+    command
+        .create_response(
+            ctx,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .embed(success_embed(command, COMMAND_UPDATED).description(description))
+                    .ephemeral(true),
+            ),
+        )
+        .await
+        .ok();
+}
+
+// `/teenode` — several machines, one worker name. A farm of interchangeable nodes was previously
+// as many worker names as there were boxes, so a job embed named a machine nobody had heard of and
+// a console's worker column was a list of hostnames. Grouping renames only what the job reports:
+// the roster, the leases, the purposes and the scheduler keep every node separate, which is what
+// makes draining or removing one of them still mean one of them.
+async fn handle_teenode(ctx: &Context, command: &serenity::all::CommandInteraction) {
+    use pandora_toolchain::pnworker::link::board;
+
+    let Some(name) = option_trimmed(command, "name") else {
+        command_error(ctx, command, "Error: `name` is required.").await;
+        return;
+    };
+    let group = option_trimmed(command, "group");
+    let applied = match board::set_group(&name, group.as_deref()) {
+        Ok(applied) => applied,
+        Err(e) => {
+            command_error(ctx, command, format!("Error: {}", e)).await;
+            return;
+        }
+    };
+    let description = match applied {
+        Some(group) => {
+            let members = board::roster()
+                .into_iter()
+                .filter(|(node, _)| node.group.as_deref() == Some(group.as_str()))
+                .map(|(node, _)| format!("`{}`", node.name))
+                .collect::<Vec<_>>();
+            format!(
+                "`{}` now reports its work as `lnk-{}`. The group is {}. They stay separate everywhere else — each holds its own leases and is drained, removed and scheduled on its own name.",
+                name,
+                group,
+                members.join(", ")
+            )
+        }
+        None => format!("`{}` is ungrouped: its work reports as `lnk-{}` again.", name, name),
     };
     command
         .create_response(
@@ -636,6 +691,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("gitforce", 3),
     ("gitquery", 3),
     ("gentoken", 3),
+    ("genwitchtoken", 4),
     ("exportdrive", 4),
     ("keyvault", 4),
     ("lstoken", 3),
@@ -649,6 +705,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("lsnode", 4),
     ("drainnode", 4),
     ("rmnode", 4),
+    ("teenode", 4),
     ("touchworker", 4),
     ("lsworker", 4),
     ("rmworker", 4),
@@ -1073,6 +1130,20 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Generate a new API bearer token.",
             usage: "/gentoken [label:<note>] [local:<true|false>] [link:<node>] [purpose:<cpu|gpu|both>]",
             details: "Mints a random bearer token for the HTTP API and appends it to the token file. With local enabled, jobs submitted with the token prefer this server's Lumiere Drive profile when configured, falling back to the global Lumiere profile. With link set, it becomes a Pandora Mini node token bound to that node name, opening only the link routes. purpose marks what that node is for and is what decides which presets it is ever offered — a GPU preset never reaches a cpu node. It defaults to cpu, needs link, and is changed by minting a new token rather than by editing the file. The token is shown once, privately. Upper only.",
+        },
+        HelpCommand {
+            section: "admin",
+            name: "genwitchtoken",
+            summary: "Generate a privileged API bearer token.",
+            usage: "/genwitchtoken [label:<note>] [local:<true|false>]",
+            details: "Mints a bearer token carrying the privilege field the API reads — the trailing `|witch` on its token line. A privileged token sees every job in the deployment, opens /workers, the job logs, gitsync and the Users page at /users, and can enrol a privileged console account. Privilege used to be inferred from a token labelled `PNwitch`, which a rename silently revoked and a coincidence silently granted; it is a field now, and minting is the only way to set it. With local enabled the token is server-bound as well, so the git and Studio routes accept it. The token is shown once, privately. Witch only."
+        },
+        HelpCommand {
+            section: "admin",
+            name: "teenode",
+            summary: "Show several Pandora Mini nodes under one worker name.",
+            usage: "/teenode name:<node> [group:<name>]",
+            details: "Groups a node under a shared display name: every job leased to a grouped node reports its worker as `lnk-<group>` instead of `lnk-<node>`, so a farm of interchangeable machines reads as one worker in the job embed and on the console. Nothing else merges — the nodes stay separate in the roster, hold their own leases, keep their own purposes and encoders, and are scheduled, drained and removed individually. Omit group, or pass `-`, to ungroup. Witch only."
         },
         HelpCommand {
             section: "admin",
@@ -2196,6 +2267,12 @@ impl EventHandler for Handler {
                 "touchtranslationall" => {
                     handle_addtranslationall(&ctx, &command).await;
                 }
+                "genwitchtoken" => {
+                    handle_genwitchtoken(&ctx, &command).await;
+                }
+                "teenode" => {
+                    handle_teenode(&ctx, &command).await;
+                }
                 "gentoken" => {
                     handle_gentoken(&ctx, &command).await;
                 }
@@ -3040,6 +3117,16 @@ impl EventHandler for Handler {
                     CreateCommandOption::new(CommandOptionType::Attachment, "file", "TOML file")
                         .required(true)
                 ),
+            CreateCommand::new("genwitchtoken")
+                .description("Generate a privileged API bearer token (witch only)")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "label", "Optional note stored beside the token")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Boolean, "local", "Also bind the token to this server for git and Studio")
+                        .required(false)
+                ),
             CreateCommand::new("gentoken")
                 .description("Generate a new API bearer token (upper only)")
                 .add_option(
@@ -3160,6 +3247,16 @@ impl EventHandler for Handler {
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "name", "Node name")
                         .required(true)
+                ),
+            CreateCommand::new("teenode")
+                .description("Show several Pandora Mini nodes under one worker name")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "name", "Node name")
+                        .required(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "group", "Shared worker name; omit or pass - to ungroup")
+                        .required(false)
                 ),
             CreateCommand::new("lsworker")
                 .description("List configured download/preview/upload worker slots"),

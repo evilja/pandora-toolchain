@@ -331,9 +331,14 @@ async fn run_probe_job(
                 return;
             }
             let list = format_probe_rows(&probe_rows).join("\n");
+            let files = probe_rows.iter().map(|row| serde_json::json!({
+                "index": row.idx.parse::<u64>().unwrap_or(0),
+                "name": row.name,
+                "bytes": row.size.parse::<u64>().unwrap_or(0),
+            })).collect::<Vec<_>>();
             tx.send((
                 job_id,
-                MessagePayload::Progress(PROBE_ROW, vec![list]),
+                MessagePayload::Progress(PROBE_ROW, vec![list, serde_json::to_string(&files).unwrap_or_default()]),
                 Some(Stage::Probed),
             ))
             .await

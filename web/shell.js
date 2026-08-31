@@ -6,6 +6,7 @@
 
   var TOKEN_KEY = "pandora_token";
   var THEME_KEY = "pandora_theme";
+  var lastRateRemaining = null;
 
   // ---- icons (1.6px stroke, 24-box; inherit currentColor) -------------------
   var ICONS = {
@@ -46,6 +47,8 @@
 
   // ---- nav -----------------------------------------------------------------
   // Order follows the flow of a release: watch it, find one, make one, then the tools.
+  // Users is drawn hidden and revealed once /whoami says the identity is privileged, so the rail
+  // never advertises a page the API would refuse.
   var NAV = [
     { key: "operations", href: "/", label: "Operations", icon: "operations" },
     { key: "jobs", href: "/jobs", label: "Jobs", icon: "jobs" },
@@ -53,6 +56,7 @@
     { key: "studio", href: "/studio", label: "Studio", icon: "studio" },
     { key: "repositories", href: "/git", label: "Repositories", icon: "repos" },
     { key: "trace", href: "/trace", label: "Trace Lab", icon: "trace" },
+    { key: "users", href: "/users", label: "Users", icon: "users", privileged: true },
     { key: "settings", href: "/settings", label: "Settings", icon: "settings" }
   ];
 
@@ -109,10 +113,12 @@
     if (method === "GET") path += (path.indexOf("?") === -1 ? "?" : "&") + "_=" + Date.now();
     return fetch(path, opts).then(function (resp) {
       var retryAfter = resp.headers.get("Retry-After");
+      var rateRemaining = resp.headers.get("X-RateLimit-Remaining");
+      if (rateRemaining !== null && !isNaN(parseInt(rateRemaining, 10))) lastRateRemaining = parseInt(rateRemaining, 10);
       return resp.text().then(function (text) {
         var data;
         try { data = JSON.parse(text); } catch (e) { data = text; }
-        return { status: resp.status, ok: resp.ok, data: data, retryAfter: retryAfter };
+        return { status: resp.status, ok: resp.ok, data: data, retryAfter: retryAfter, rateRemaining: rateRemaining };
       });
     });
   }
@@ -241,7 +247,8 @@
 
   // ---- connection state ----------------------------------------------------
   var connEl = null;
-  var identity = { kind: "none", label: "No token" };
+  var identity = { kind: "none", label: "Signed out", privileged: false, account: null, reach: null };
+  var identityListeners = [];
 
   function paintConn(state, text) {
     if (!connEl) return;
@@ -249,28 +256,43 @@
     connEl.querySelector(".pn-conntext").textContent = text;
   }
 
+  // Reach is what the whole console is scoped by, so the topbar says it in one word rather than
+  // making somebody open Settings to find out why a queue looks empty.
+  var REACH_TEXT = { everything: "Everything", server: "This server", own: "Your jobs" };
+
   function paintIdentity() {
     var who = document.getElementById("pn-who");
-    if (!who) return;
-    var initials = identity.kind === "none" ? "—" : identity.label.slice(0, 2).toUpperCase();
-    who.querySelector(".pn-avatar").textContent = initials;
-    who.querySelector("b").textContent = identity.label;
+    if (who) {
+      var initials = identity.kind === "none" ? "—" : identity.label.slice(0, 2).toUpperCase();
+      who.querySelector(".pn-avatar").textContent = initials;
+      who.querySelector("b").textContent = identity.label;
+      who.setAttribute("title", identity.reach
+        ? (identity.account ? "Signed in — " : "Token — ") + (REACH_TEXT[identity.reach] || identity.reach)
+        : "Connection settings");
+      // Signed out, the chip is the way in; otherwise it goes on leading to Settings.
+      who.setAttribute("href", identity.kind === "none" || identity.kind === "invalid" ? "/login" : "/settings");
+    }
+    Array.prototype.forEach.call(document.querySelectorAll(".pn-navlink[data-nav]"), function (el) {
+      var entry = NAV.filter(function (n) { return n.key === el.getAttribute("data-nav"); })[0];
+      if (entry && entry.privileged) el.hidden = !identity.privileged;
+    });
+    identityListeners.forEach(function (fn) { try { fn(identity); } catch (e) {} });
   }
 
-  // Probing what the token can reach is the only way to name it — the API has no
-  // "who am I" route. Both probes are GETs, so neither counts against the write limit.
   function refreshIdentity() {
     if (!getToken()) {
-      identity = { kind: "none", label: "No token" };
+      identity = { kind: "none", label: "Signed out", privileged: false, account: null, reach: null };
       paintIdentity();
       return fetch("/health", { cache: "no-store" })
-        .then(function (r) { paintConn(r.ok ? "auth" : "down", r.ok ? "Needs a token" : "API unreachable"); return identity; })
+        .then(function (r) { paintConn(r.ok ? "auth" : "down", r.ok ? "Not signed in" : "API unreachable"); return identity; })
         .catch(function () { paintConn("down", "API unreachable"); return identity; });
     }
-    return api("GET", "/api/v1/jobs?status=ongoing").then(function (res) {
+    return api("GET", "/api/v1/whoami").then(function (res) {
       if (res.status === 401) {
-        identity = { kind: "invalid", label: "Rejected" };
-        paintConn("auth", "Token rejected");
+        // A session that expired and a token that was revoked look the same from here, and the
+        // answer to both is the same: get a new credential.
+        identity = { kind: "invalid", label: "Rejected", privileged: false, account: null, reach: null };
+        paintConn("auth", "Credential rejected");
         paintIdentity();
         return identity;
       }
@@ -279,18 +301,71 @@
         return identity;
       }
       paintConn("ok", "API connected");
-      return api("GET", "/api/v1/workers").then(function (w) {
-        if (w.ok) { identity = { kind: "pnwitch", label: "PNwitch" }; paintIdentity(); return identity; }
-        return api("GET", "/api/v1/git/attachments").then(function (g) {
-          identity = g.ok ? { kind: "local", label: "Local" } : { kind: "plain", label: "Token" };
-          paintIdentity();
-          return identity;
-        });
-      });
+      var data = res.data && typeof res.data === "object" ? res.data : {};
+      var labels = { plain: "Token", local: "Local token", link: "Link", account: "Account" };
+      identity = {
+        kind: data.kind || "plain",
+        label: data.account || data.label || labels[data.kind] || "Token",
+        privileged: data.privileged === true,
+        account: data.account || null,
+        reach: data.reach || null,
+        server_id: data.server_id || null,
+        node: data.node || null,
+        purpose: data.purpose || null
+      };
+      paintIdentity();
+      enrolPrompt();
+      return identity;
     }).catch(function () {
       paintConn("down", "API unreachable");
       return identity;
     });
+  }
+
+  // ---- enrolment prompt ----------------------------------------------------
+  // Everybody who reaches the console with a token is asked, once per browser, to turn it into an
+  // account. A token is a shared secret that identifies a piece of work; an account is a person,
+  // which is what the Users page and "your jobs" both need. Dismissing it is remembered, because a
+  // banner that cannot be closed is a banner people stop reading.
+  var ENROL_KEY = "pandora_enrol_dismissed";
+
+  function enrolPrompt() {
+    if (identity.account) return;
+    if (identity.kind !== "plain" && identity.kind !== "local") return;
+    if (location.pathname === "/login") return;
+    var dismissed = false;
+    try { dismissed = localStorage.getItem(ENROL_KEY) === "1"; } catch (e) {}
+    if (dismissed) return;
+    var content = document.querySelector(".pn-content");
+    if (!content || document.getElementById("pn-enrol")) return;
+    var note = document.createElement("div");
+    note.className = "pn-notice";
+    note.id = "pn-enrol";
+    note.setAttribute("data-tone", "info");
+    note.innerHTML =
+      "<div><strong>You are using an API token.</strong> Create an account so the console knows " +
+      "who you are — it keeps this token's reach, survives the token being rotated, and is how " +
+      "permissions are managed.</div>" +
+      '<div class="pn-noticeacts">' +
+      '<a class="pn-btn pn-sm pn-primary" href="/login">Create an account</a>' +
+      '<button class="pn-btn pn-sm pn-quiet" type="button" id="pn-enrol-no">Not now</button></div>';
+    content.insertBefore(note, content.firstChild);
+    document.getElementById("pn-enrol-no").addEventListener("click", function () {
+      try { localStorage.setItem(ENROL_KEY, "1"); } catch (e) {}
+      note.remove();
+    });
+  }
+
+  // Signing out drops the session on the server as well as in this browser: a session left open is
+  // a credential somebody else's browser could still be holding.
+  function signOut() {
+    var had = getToken();
+    var done = function () {
+      clearToken();
+      try { localStorage.removeItem(ENROL_KEY); } catch (e) {}
+    };
+    if (!had) { done(); return Promise.resolve(); }
+    return api("POST", "/api/v1/account/logout").then(done).catch(done);
   }
 
   // ---- toast ---------------------------------------------------------------
@@ -322,8 +397,9 @@
       '<a class="pn-wordmark" href="/"><span>PANDORA</span></a>' +
       '<nav class="pn-nav">' +
       NAV.map(function (n) {
-        return '<a class="pn-navlink" href="' + n.href + '"' +
-          (n.key === opts.page ? ' aria-current="page"' : "") + ">" +
+        return '<a class="pn-navlink" href="' + n.href + '" data-nav="' + n.key + '"' +
+          (n.key === opts.page ? ' aria-current="page"' : "") +
+          (n.privileged ? " hidden" : "") + ">" +
           icon(n.icon) + "<span>" + esc(n.label) + "</span>" +
           '<span class="pn-navcount" data-count="' + n.key + '"></span></a>';
       }).join("") +
@@ -411,9 +487,12 @@
     toast: toast,
     navCount: navCount,
     rateNote: rateNote,
+    rateRemaining: function () { return lastRateRemaining; },
     messageText: messageText,
     refreshIdentity: refreshIdentity,
     identity: function () { return identity; },
+    onIdentity: function (fn) { identityListeners.push(fn); },
+    signOut: signOut,
     pct: pct,
     formatDuration: formatDuration,
     formatEta: formatEta,

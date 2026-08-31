@@ -173,12 +173,13 @@
     loadReadme();
     PN.refreshIdentity().then(function (id) {
       var note = document.getElementById("localNote");
-      if (note && (id.kind === "local" || id.kind === "pnwitch")) note.style.display = "none";
+      if (note && id.server_id) note.style.display = "none";
     });
   }
 
   function paintStats() {
-    var episodes = attachments.reduce(function (n, a) { return n + (Number(a.episode_count) || 0); }, 0);
+    var healthy = attachments.filter(function (a) { return a.health === "ok"; }).length;
+    var attention = attachments.filter(function (a) { return a.health && a.health !== "ok"; }).length;
     function tile(label, value, ic, tone) {
       return '<article class="pn-card pn-stat"' + (tone ? ' data-tone="' + tone + '"' : "") + '>' +
         '<div class="pn-staticon">' + icon(ic) + "</div><div>" +
@@ -187,8 +188,8 @@
     var dash = '<span style="color:var(--pn-faint)">—</span>';
     document.getElementById("repoStats").innerHTML =
       tile("Attached anime", attachments.length ? String(attachments.length) : dash, "repos") +
-      tile("Episodes tracked", episodes ? String(episodes) : dash, "film") +
-      tile("Channels available", channels.length ? String(channels.length) : dash, "hash");
+      tile("Healthy", healthy ? String(healthy) : dash, "check") +
+      tile("Needs attention", attention ? String(attention) : dash, "alert", attention ? "warn" : "");
   }
 
   function loadAttachments() {
@@ -202,7 +203,20 @@
       paintStats();
       paintTable();
       if (selected) paintDetail();
+      verifyAttachmentHealth();
     }).catch(function () {});
+  }
+
+  function verifyAttachmentHealth() {
+    attachments.forEach(function (attachment) {
+      api("GET", "/api/v1/git/attachments/" + encodeURIComponent(attachment.channel_id) + "/health").then(function (res) {
+        if (!res.ok || !res.data || typeof res.data !== "object") return;
+        attachment.health = res.data.health || attachment.health;
+        if (res.data.last_sync_at != null) attachment.last_sync_at = res.data.last_sync_at;
+        paintStats();
+        paintTable();
+      }).catch(function () {});
+    });
   }
 
   function loadChannels() {
@@ -236,17 +250,17 @@
     }
     var rows = list.map(function (a) {
       var ch = channelName(a.channel_id);
+      var health = a.health === "ok" ? "Healthy" : a.health === "unreachable" ? "Unreachable" : "Stale";
       return "<tr data-clickable data-ch='" + esc(a.channel_id) + "'" +
         (String(a.channel_id) === selected ? ' aria-selected="true"' : "") + ">" +
         "<td><b style='color:var(--pn-ink);font-weight:600'>" + esc(a.name) + "</b></td>" +
         '<td class="pn-mono pn-trunc" title="' + esc(a.repo_url) + '">' + esc(shortRepo(a.repo_url)) + "</td>" +
-        "<td>" + esc(a.kind || "—") + "</td>" +
-        '<td class="pn-mono pn-num">' + esc(a.episode_count) + "</td>" +
-        '<td class="pn-mono pn-num">' + esc(a.season) + "</td>" +
+        "<td>" + PN.chip(a.health === "ok" ? "Uploaded" : a.health === "unreachable" ? "Failed" : "Cancelled") + " " + esc(health) + "</td>" +
+        '<td>' + esc(formatSync(a.last_sync_at)) + "</td>" +
         '<td class="pn-mono">' + esc(ch) + "</td></tr>";
     }).join("");
     host.innerHTML = '<div class="pn-tablewrap"><table class="pn-table"><thead><tr>' +
-      "<th>Anime</th><th>Repository</th><th>Kind</th><th>Episodes</th><th>Season</th><th>Channel</th>" +
+      "<th>Anime</th><th>Repository</th><th>Status</th><th>Last sync</th><th>Channel</th>" +
       "</tr></thead><tbody>" + rows + "</tbody></table></div>";
     host.querySelectorAll("tr[data-ch]").forEach(function (tr) {
       tr.addEventListener("click", function () { select(tr.getAttribute("data-ch")); });
@@ -259,6 +273,12 @@
   }
   function shortRepo(url) {
     return String(url || "").replace(/^https?:\/\//, "").replace(/\.git$/, "");
+  }
+  function formatSync(at) {
+    if (at == null || !Number(at)) return "Never";
+    return new Date(Number(at) * 1000).toLocaleString([], {
+      year: "numeric", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit"
+    });
   }
   function current() {
     return attachments.filter(function (a) { return String(a.channel_id) === selected; })[0] || null;
@@ -305,6 +325,8 @@
                 "<dt>Channel</dt><dd class='pn-mono'>" + esc(channelName(a.channel_id)) + "</dd>" +
                 "<dt>Slug</dt><dd class='pn-mono'>" + esc(a.slug) + "</dd>" +
                 "<dt>Kind</dt><dd>" + esc(a.kind || "—") + "</dd>" +
+                "<dt>Health</dt><dd>" + esc(a.health === "ok" ? "Healthy" : a.health || "Unknown") + "</dd>" +
+                "<dt>Last sync</dt><dd>" + esc(formatSync(a.last_sync_at)) + "</dd>" +
                 "<dt>MAL</dt><dd class='pn-mono'>" + esc(a.mal_id) + "</dd>" +
                 "<dt>Repository</dt><dd class='pn-mono' style='font-size:12px'>" + esc(shortRepo(a.repo_url)) + "</dd>" +
               "</dl>" +
@@ -502,7 +524,7 @@
   function resultHtml(res) {
     var d = res.data;
     var obj = res.ok && d && typeof d === "object";
-    if (res.status === 401) return '<div class="pn-notice" data-tone="warn">No valid token. Add one in <a class="pn-link" href="/settings">Settings</a>.</div>';
+    if (res.status === 401) return '<div class="pn-notice" data-tone="warn">Not signed in. <a class="pn-link" href="/login">Sign in</a> or paste a token in <a class="pn-link" href="/settings">Settings</a>.</div>';
     if (res.status === 403) return '<div class="pn-notice" data-tone="warn">This needs a <b>local</b> token. Mint one with <span class="pn-tag">/gentoken local</span> in the target server.</div>';
     if (res.status === 429) return '<div class="pn-notice" data-tone="warn">' + esc(PN.rateNote(res)) + "</div>";
 

@@ -64,11 +64,11 @@ State:
 
 - `DB/config/global/environment/link_nodes.json` (coordinator, mode `0600`) — the node roster as a
   JSON array of `{ name, pandora_version, encoder_identity, ffmpeg_version, threads,
-  max_jobs, encoders, build, migration_error, registered_at, last_seen, drain }`. The roster is
-  advisory: a node re-registers within seconds of coming up. It is persisted for the one field a
-  restart must not forget — an operator's drain flag. `purpose` is deliberately *not* persisted: it
-  belongs to the token, and a value carried across a restart would outlive the token that justified
-  it.
+  max_jobs, encoders, build, migration_error, registered_at, last_seen, drain, group }`. The roster is
+  advisory: a node re-registers within seconds of coming up. It is persisted for the two fields a
+  restart must not forget — an operator's drain flag and their `/teenode` grouping. `purpose` is
+  deliberately *not* persisted: it belongs to the token, and a value carried across a restart would
+  outlive the token that justified it.
 - `DB/config/global/environment/build.pandora` (both sides) — the build this machine is level with
   and the commit it was recorded for. See [Staying level](#staying-level).
 - `DB/config/global/environment/migration.pandora` (both sides) — the highest migration id that has
@@ -372,6 +372,21 @@ The worker label a leased job wears is `lnk-<node>`, which is what `/workers` an
 render — that is where an operator finds out which machine has their episode. `worker_waiting`
 does not list it, so a leased job correctly counts as active.
 
+### Grouping
+
+`/teenode name:<node> group:<name>` (rank 4) sets a node's shared display name, and `worker_label`
+then builds `lnk-<group>` instead of `lnk-<node>`. A farm of interchangeable machines is one worker
+in the job embed and one row on the console, rather than as many hostnames as there are boxes.
+
+**Only the label merges.** The roster keeps one entry per machine, each node registers, is offered
+work, leases, renews and finishes under its own name, and `/drainnode` or `/rmnode` on a grouped
+node still means that one machine. Nothing about scheduling reads the group. Grouping is one lookup
+in `board::display_name`, which is why `worker_label` is the only place that had to know about it —
+and why `/lsnode` and the worker snapshot show the group *beside* the node rather than instead of
+it: a stall has to remain traceable to the box that is stalling. Passing `-`, or omitting `group`,
+ungroups. The name may contain no whitespace, control character or `|`, and is capped at 32
+characters, because it lands in a job row's `worker` column.
+
 ## Log shipping
 
 Shipping incrementally rather than bundling at the end is the point: a log that only arrives when a
@@ -434,11 +449,13 @@ migration failed — and warns when `link_enabled` is off or
 a node (it finishes what it holds) or puts it back in rotation; the flag is persisted, since
 draining before a deploy does not mean until the next one. `/rmnode name:<node>` forgets a node —
 it re-registers on its next poll unless its token is revoked with `/rmtoken`, and any job it still
-holds is reclaimed when its lease expires.
+holds is reclaimed when its lease expires. `/teenode name:<node> [group:<name>]` groups a node
+under a shared worker name (see [Grouping](#grouping)); `/lsnode` shows it as `→ lnk-<group>` beside
+the node's own name.
 
-`GET /api/v1/workers` (PNwitch token only) gains a `nodes` array — name, purpose, thread count,
-`max_jobs`, measured encoders, drain state, seconds since last contact, the jobs it holds, its
-`encoder_identity`, the `build` it is level with, and any `migration_error`.
+`GET /api/v1/workers` (privileged only) gains a `nodes` array — name, `/teenode` group, purpose,
+thread count, `max_jobs`, measured encoders, drain state, seconds since last contact, the jobs it
+holds, its `encoder_identity`, the `build` it is level with, and any `migration_error`.
 Queue entries gain `link_node` and `link_attempts`. See [API.md](API.md#worker-snapshot).
 
 Link activity prints as `[link] <node> | <message>` on the coordinator and `[link] <message>` on a

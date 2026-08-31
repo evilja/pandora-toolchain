@@ -67,8 +67,14 @@ pub(crate) async fn persist_side_effects(
             db.update_progress(job_id, &v.to_string()).await.ok();
         }
     } else if *id == PROBE_ROW {
-        let files = args.get(0).cloned().unwrap_or_default();
-        let v = serde_json::json!({ "type": "probe", "files": files, "file_options": parse_probe_options(&files) });
+        let file_text = args.get(0).cloned().unwrap_or_default();
+        let files = args.get(1)
+            .and_then(|raw| serde_json::from_str::<Vec<serde_json::Value>>(raw).ok())
+            .unwrap_or_else(|| parse_probe_options(&file_text));
+        let v = serde_json::json!({
+            "type": "probe", "file_text": file_text,
+            "files": &files, "file_options": files,
+        });
         db.update_progress(job_id, &v.to_string()).await.ok();
     } else if *id == UPLOAD_DONE {
         let display_args = upload_display_args(args);
@@ -218,7 +224,11 @@ fn parse_probe_options(files: &str) -> Vec<serde_json::Value> {
             let end = rest.find('`')?;
             let index = &rest[..end];
             let label = line.replace('`', "");
-            Some(serde_json::json!({ "index": index, "label": label }))
+            Some(serde_json::json!({
+                "index": index.parse::<u64>().unwrap_or(0),
+                "name": label,
+                "bytes": 0,
+            }))
         })
         .collect()
 }
@@ -298,6 +308,16 @@ fn backupall_percent(rows: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_probe_rows_are_promoted_to_typed_files() {
+        let files = parse_probe_options("`7` — Episode 07 (734MB)\n`12` — E12");
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0]["index"], 7);
+        assert_eq!(files[0]["name"], "7 — Episode 07 (734MB)");
+        assert_eq!(files[0]["bytes"], 0);
+        assert_eq!(files[1]["index"], 12);
+    }
 
     #[test]
     fn normalize_lulu_link_converts_file_codes_to_embed_urls() {

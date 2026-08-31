@@ -10,7 +10,7 @@ use serde_json::json;
 use crate::lib::db::core::JobStatus;
 use crate::lib::joblog::{JobLogs, find_job_logs, read_job_log, zip_log_files};
 
-use super::core::{ApiAuth, AppState, require_pnwitch};
+use super::core::{ApiAuth, AppState, require_privileged};
 
 // Default slice served for a single log file; encoder logs run to hundreds of
 // MB and a debugging read only ever wants the end of one.
@@ -33,7 +33,7 @@ pub(super) async fn list_logs(
     Extension(auth): Extension<ApiAuth>,
     Path(id): Path<u64>,
 ) -> Response {
-    if let Err(resp) = require_pnwitch(&auth) {
+    if let Err(resp) = require_privileged(&auth) {
         return resp;
     }
     let logs = match lookup(id).await {
@@ -68,7 +68,7 @@ pub(super) async fn read_log(
     Path((id, name)): Path<(u64, String)>,
     Query(q): Query<LogReadQuery>,
 ) -> Response {
-    if let Err(resp) = require_pnwitch(&auth) {
+    if let Err(resp) = require_privileged(&auth) {
         return resp;
     }
     let logs = match lookup(id).await {
@@ -106,7 +106,7 @@ pub(super) async fn download_logs(
     Extension(auth): Extension<ApiAuth>,
     Path(id): Path<u64>,
 ) -> Response {
-    if let Err(resp) = require_pnwitch(&auth) {
+    if let Err(resp) = require_privileged(&auth) {
         return resp;
     }
     let logs = match lookup(id).await {

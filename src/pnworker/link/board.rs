@@ -63,6 +63,13 @@ pub struct NodeState {
     // did not mean "until the next deploy".
     #[serde(default)]
     pub drain: bool,
+    // The shared worker name this node reports under, set by `/teenode`. It is a display name and
+    // nothing else: a group of interchangeable machines reads as one worker in the job embed and on
+    // the console, while the roster, the leases, the purposes and the scheduler all keep addressing
+    // each machine by its own name. Persisted for the same reason `drain` is — an operator who
+    // grouped a farm did not mean "until the next deploy".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 fn one() -> u32 {
@@ -272,6 +279,7 @@ pub fn register(
     }
     let existing = state.nodes.get(&request.node);
     let drain = existing.map(|node| node.drain).unwrap_or(false);
+    let group = existing.and_then(|node| node.group.clone());
     let registered_at = existing
         .map(|node| node.registered_at)
         .filter(|value| *value > 0)
@@ -290,6 +298,7 @@ pub fn register(
         registered_at,
         last_seen: now(),
         drain,
+        group,
     };
     state.nodes.insert(request.node, node);
     save_roster(&state);
@@ -563,6 +572,44 @@ pub fn set_drain(node: &str, drain: bool) -> bool {
     true
 }
 
+// `/teenode`. An empty or `-` group ungroups; anything else is the shared display name. The value
+// is rejected rather than sanitised when it could not be a worker label, because a name with a
+// newline or a `|` in it would be a worker column nothing can read back.
+pub fn set_group(node: &str, group: Option<&str>) -> Result<Option<String>, String> {
+    let group = match group.map(str::trim).filter(|value| !value.is_empty() && *value != "-") {
+        Some(value) => {
+            if value.chars().any(|c| c.is_whitespace() || c == '|' || c.is_control()) {
+                return Err("a group name has no spaces, control characters, or `|`".to_string());
+            }
+            if value.chars().count() > 32 {
+                return Err("a group name is at most 32 characters".to_string());
+            }
+            Some(value.to_string())
+        }
+        None => None,
+    };
+    let mut state = board().lock().unwrap();
+    ensure_loaded(&mut state);
+    let Some(entry) = state.nodes.get_mut(node) else {
+        return Err(format!("No node `{}` has registered.", node));
+    };
+    entry.group = group.clone();
+    save_roster(&state);
+    Ok(group)
+}
+
+// The name a node's work reports under: its group when it has one, itself otherwise. Every worker
+// label goes through here, so grouping is one lookup rather than a rule each call site remembers.
+pub fn display_name(node: &str) -> String {
+    let mut state = board().lock().unwrap();
+    ensure_loaded(&mut state);
+    state
+        .nodes
+        .get(node)
+        .and_then(|entry| entry.group.clone())
+        .unwrap_or_else(|| node.to_string())
+}
+
 pub fn remove_node(node: &str) -> bool {
     let mut state = board().lock().unwrap();
     ensure_loaded(&mut state);
@@ -620,6 +667,10 @@ pub fn nodes_view() -> Value {
             .into_iter()
             .map(|(node, jobs)| json!({
                 "node": node.name,
+                // What its work reports as, when that is not its own name. `/teenode` sets it, and
+                // it is the only field here that is a display choice rather than a fact about the
+                // machine — hence both, so a snapshot can still name the box that is stalling.
+                "group": node.group,
                 "threads": node.threads,
                 "max_jobs": node.max_jobs,
                 "encoders": node.encoders,
@@ -773,6 +824,76 @@ mod tests {
         );
         assert!(control.abandon);
         release(9003);
+    }
+
+    // Grouping renames the work and nothing else. If it merged the roster entries instead, draining
+    // one machine would drain the farm and a stall would name a group rather than the box to go
+    // and look at.
+    #[test]
+    fn a_group_renames_the_work_and_leaves_the_nodes_apart() {
+        let request = |name: &str| NodeRegister {
+            node: name.to_string(),
+            pandora_version: "test".to_string(),
+            encoder_identity: "x264-group-test".to_string(),
+            ffmpeg_version: String::new(),
+            threads: 4,
+            max_jobs: 1,
+            encoders: Vec::new(),
+            build: 0,
+            migration_error: None,
+        };
+        register(request("tee-a"), "x264-group-test", NodePurpose::Cpu);
+        register(request("tee-b"), "x264-group-test", NodePurpose::Cpu);
+
+        assert_eq!(display_name("tee-a"), "tee-a");
+        set_group("tee-a", Some("farm")).unwrap();
+        set_group("tee-b", Some("farm")).unwrap();
+        assert_eq!(display_name("tee-a"), "farm");
+        assert_eq!(display_name("tee-b"), "farm");
+
+        // Still two machines, each addressable on its own name.
+        let names = roster()
+            .into_iter()
+            .filter(|(node, _)| node.group.as_deref() == Some("farm"))
+            .map(|(node, _)| node.name)
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["tee-a", "tee-b"]);
+        assert!(set_drain("tee-a", true));
+        assert!(roster().iter().any(|(node, _)| node.name == "tee-b" && !node.drain));
+
+        // Ungrouping puts the node's own name back.
+        set_group("tee-a", Some("-")).unwrap();
+        assert_eq!(display_name("tee-a"), "tee-a");
+        set_group("tee-b", None).unwrap();
+        assert_eq!(display_name("tee-b"), "tee-b");
+
+        remove_node("tee-a");
+        remove_node("tee-b");
+    }
+
+    // A group name lands in the `worker` column of a job row and in a Discord embed. One with a
+    // `|` or a newline in it would be a label nothing can read back.
+    #[test]
+    fn an_unusable_group_name_is_refused_rather_than_sanitised() {
+        let request = NodeRegister {
+            node: "tee-strict".to_string(),
+            pandora_version: "test".to_string(),
+            encoder_identity: "x264-group-test".to_string(),
+            ffmpeg_version: String::new(),
+            threads: 1,
+            max_jobs: 1,
+            encoders: Vec::new(),
+            build: 0,
+            migration_error: None,
+        };
+        register(request, "x264-group-test", NodePurpose::Cpu);
+        assert!(set_group("tee-strict", Some("two words")).is_err());
+        assert!(set_group("tee-strict", Some("a|b")).is_err());
+        assert!(set_group("tee-strict", Some(&"x".repeat(33))).is_err());
+        assert_eq!(display_name("tee-strict"), "tee-strict");
+        // A node that never registered cannot be grouped either.
+        assert!(set_group("tee-absent", Some("farm")).is_err());
+        remove_node("tee-strict");
     }
 
     #[test]

@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Extension, Path, Query, Request, State},
-    http::{Method, StatusCode, header},
+    http::{HeaderName, HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -22,7 +22,7 @@ use crate::pnworker::batch::batch_job_for_token;
 use crate::lib::http::acix::{AnimeCix, MediaType, MixedUpload};
 use crate::lib::db::core::{JobDb, JobStatus};
 use crate::lib::git::{
-    attach_repo, destruct_repo, detach_channel, init_repo, list_attachments, set_source,
+    attach_repo, attachment_health, destruct_repo, detach_channel, init_repo, list_attachments, set_source,
     smartcode_merge, Credits, RepoOutcome,
 };
 use crate::lib::p2p::nyaaise::nyaaise;
@@ -47,18 +47,96 @@ pub(super) struct AppState {
 #[derive(Clone)]
 pub(super) struct ApiAuth {
     pub(super) local_server_id: Option<u64>,
-    // Set by a `<token>|link|<node>` line. Such a token authorises the link routes and nothing
-    // else: a node cannot submit jobs, read another job's logs, or touch git.
+    // Set by a `<token>|link|<node>` line. Such a token authorises node coordination plus the
+    // identity-free read-only summary/identity/event routes; it cannot touch git or logs.
     pub(super) link_node: Option<String>,
     // The optional fourth field of that line, `<token>|link|<node>|gpu`. What a node is allowed to
     // run is decided here rather than by the node, so a machine cannot put itself in the way of
     // work it has no hardware for.
     pub(super) link_purpose: NodePurpose,
+    // Whether this identity may see and operate on everything. It is a field — the trailing
+    // `|witch` on a token line, or the account's own flag — and never a label somebody typed,
+    // because a privilege inferred from free text is a privilege one rename away from vanishing
+    // and one typo away from being granted.
+    pub(super) privileged: bool,
+    // Set when the request presented an account session rather than a token. The account is the
+    // person; the token, when there is one, is only the secret they used to enrol.
+    pub(super) account: Option<String>,
     // The token as presented. Request-scoped and never logged or serialised; the self-revoke route
-    // needs the value itself, since the token file stores tokens and not their hashes.
+    // needs the value itself, since the token file stores tokens and not their hashes. Empty for a
+    // session, which is signed out rather than revoked.
     token: String,
+    // The session as presented, and empty for a token, for the mirror-image reason: signing out
+    // deletes a session row and must never be reachable with a credential that has no session.
+    session: String,
     token_hash: String,
     label: Option<String>,
+}
+
+// How much of the pipeline an identity may see. Everything else about auth is about what a caller
+// may *do*; this is the one axis about what exists for them at all.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Reach {
+    // A privileged token or account: the whole queue, whoever submitted it.
+    Everything,
+    // A server-bound token or account: that server's work, which is what the people who share a
+    // guild are actually collaborating on.
+    Server(u64),
+    // Everybody else: the jobs this identity submitted itself. A plain token is handed out for a
+    // piece of work, so the work it did is exactly its business.
+    Own,
+}
+
+impl ApiAuth {
+    pub(super) fn reach(&self) -> Reach {
+        if self.privileged {
+            Reach::Everything
+        } else if let Some(server_id) = self.local_server_id {
+            Reach::Server(server_id)
+        } else {
+            Reach::Own
+        }
+    }
+
+    // What a job submitted by this identity is stamped with. An account keeps its jobs across a
+    // token rotation, which is the whole point of enrolling one; a bare token is keyed by a hash
+    // of itself so the ownership table never stores a live credential.
+    pub(super) fn identity_key(&self) -> String {
+        match &self.account {
+            Some(username) => format!("acct:{}", username),
+            None => format!("token:{}", self.token_hash),
+        }
+    }
+
+    // The label of the token this request presented, kept so an enrolling account can record where
+    // it came from. It is a note for the Users page, never an authority.
+    pub(super) fn token_label(&self) -> Option<String> {
+        if self.account.is_some() {
+            None
+        } else {
+            Some(self.label.clone().unwrap_or_else(|| "an unlabelled token".to_string()))
+        }
+    }
+
+    pub(super) fn presented_session(&self) -> Option<String> {
+        if self.session.is_empty() {
+            None
+        } else {
+            Some(self.session.clone())
+        }
+    }
+
+    pub(super) fn kind(&self) -> &'static str {
+        if self.account.is_some() {
+            "account"
+        } else if self.link_node.is_some() {
+            "link"
+        } else if self.local_server_id.is_some() {
+            "local"
+        } else {
+            "plain"
+        }
+    }
 }
 
 pub(super) fn presented_token(auth: &ApiAuth) -> Option<String> {
@@ -89,7 +167,7 @@ impl ApiRateLimiter {
         }
     }
 
-    async fn check(&self, key: &str) -> Result<(), u64> {
+    async fn check(&self, key: &str) -> Result<u32, u64> {
         let now = Instant::now();
         let mut buckets = self.buckets.lock().await;
         buckets.retain(|_, bucket| now.duration_since(bucket.start) < self.window);
@@ -106,7 +184,7 @@ impl ApiRateLimiter {
             return Err(self.window.saturating_sub(elapsed).as_secs().max(1));
         }
         bucket.count += 1;
-        Ok(())
+        Ok(self.max.saturating_sub(bucket.count))
     }
 }
 
@@ -154,7 +232,17 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/jobs/keycode", post(submit_keycode))
         .route("/jobs/:id/cancel", post(cancel_job))
         .route("/workers", get(super::workers::workers))
+        .route("/workers/summary", get(super::workers::summary))
+        .route("/events", get(super::workers::events))
+        .route("/whoami", get(whoami))
         .route("/token/revoke", post(super::token::revoke))
+        .route("/account/register", post(super::account::register))
+        .route("/account/me", get(super::account::me))
+        .route("/account/logout", post(super::account::logout))
+        .route("/account/password", post(super::account::change_password))
+        .route("/accounts", get(super::account::list).post(super::account::create))
+        .route("/accounts/:username/update", post(super::account::update))
+        .route("/accounts/:username/delete", post(super::account::remove))
         .route("/jobs/:id/logs", get(super::logs::list_logs))
         .route("/jobs/:id/logs.zip", get(super::logs::download_logs))
         .route("/jobs/:id/logs/:name", get(super::logs::read_log))
@@ -181,6 +269,7 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/studios/:id/switch", post(super::studio::switch))
         .route("/studios/:id/reown", post(super::studio::reown))
         .route("/git/attachments", get(git_attachments))
+        .route("/git/attachments/:channel_id/health", get(git_attachment_health))
         .route("/git/channels", get(git_channels))
         .route("/git/readmebase", get(git_readmebase).post(git_readmebase_set))
         .route("/git/init", post(git_init))
@@ -220,6 +309,14 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .layer(DefaultBodyLimit::max(API_REQUEST_LIMIT))
         .layer(middleware::from_fn_with_state(state.clone(), auth));
 
+    // Signing in cannot require being signed in, so these two sit outside the bearer middleware and
+    // are merged into the same `/api/v1` prefix rather than nested under one of their own: the
+    // console fetches relative paths, and a second prefix would be a second thing to keep in step.
+    let public = Router::new()
+        .route("/account/login", post(super::account::login))
+        .route("/account/status", get(super::account::status))
+        .layer(DefaultBodyLimit::max(API_REQUEST_LIMIT));
+
     let app = Router::new()
         // The console is one shell with four in-page views, so `/`, `/jobs`, `/encode` and
         // `/settings` are the same document picking its view from the path.
@@ -227,6 +324,8 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/jobs", get(index))
         .route("/encode", get(index))
         .route("/settings", get(index))
+        .route("/login", get(index))
+        .route("/users", get(index))
         .route("/git", get(git_console))
         .route("/studio", get(studio_console))
         .route("/trace", get(super::trace::index))
@@ -246,7 +345,7 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
             "/lumiere/v1/hls/:token/*resource",
             get(crate::lumiere_broker::serve_hls),
         )
-        .nest("/api/v1", protected)
+        .nest("/api/v1", public.merge(protected))
         .with_state(state);
 
     let addr = SocketAddr::new(host, port);
@@ -440,23 +539,36 @@ async fn auth(State(st): State<AppState>, mut req: Request, next: Next) -> Respo
         _ => return (StatusCode::UNAUTHORIZED, "missing bearer token").into_response(),
     };
 
-    let Some(auth) = api_auth_for_token(&token) else {
+    // A token first, then a session. Both arrive as `Authorization: Bearer`, and the token file is
+    // the cheaper of the two lookups.
+    let Some(auth) = api_auth_for_token(&token).or_else(|| api_auth_for_session(&token)) else {
         return (StatusCode::UNAUTHORIZED, "invalid token").into_response();
     };
 
-    if should_rate_limit(req.method(), req.uri().path()) {
-        if let Err(retry_after) = st.rate_limiter.check(&auth.token_hash).await {
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                [(header::RETRY_AFTER, retry_after.to_string())],
-                "rate limit exceeded",
-            )
-                .into_response();
+    let remaining = if should_rate_limit(req.method(), req.uri().path()) {
+        match st.rate_limiter.check(&auth.token_hash).await {
+            Ok(remaining) => Some(remaining),
+            Err(retry_after) => return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [
+                        (header::RETRY_AFTER, retry_after.to_string()),
+                        (HeaderName::from_static("x-ratelimit-remaining"), "0".to_string()),
+                    ],
+                    "rate limit exceeded",
+                ).into_response(),
         }
-    }
+    } else {
+        None
+    };
 
     req.extensions_mut().insert(auth);
-    next.run(req).await
+    let mut response = next.run(req).await;
+    if let Some(remaining) = remaining {
+        if let Ok(value) = HeaderValue::from_str(&remaining.to_string()) {
+            response.headers_mut().insert(HeaderName::from_static("x-ratelimit-remaining"), value);
+        }
+    }
+    response
 }
 
 fn should_rate_limit(method: &Method, path: &str) -> bool {
@@ -490,8 +602,15 @@ struct TokenEntry {
     local_server_id: Option<u64>,
     link_node: Option<String>,
     link_purpose: NodePurpose,
+    privileged: bool,
     label: Option<String>,
 }
+
+// The trailing marker that makes a token privileged: `<token>|witch`, or `<token>|local|<id>|witch`.
+// It is a field rather than the `PNwitch` label the operator-only routes used to look for, because
+// a label is a note somebody writes for themselves — renaming it silently took the privilege away,
+// and typing it by accident silently handed it out.
+const PRIVILEGE_FIELD: &str = "witch";
 
 fn parse_token_file(contents: &str) -> std::collections::HashMap<String, TokenEntry> {
     let mut map = std::collections::HashMap::new();
@@ -505,32 +624,48 @@ fn parse_token_file(contents: &str) -> std::collections::HashMap<String, TokenEn
             pending_label = parse_token_label(line);
             continue;
         }
-        let mut parts = line.split('|');
-        let stored = parts.next().unwrap_or("").trim();
+        let mut fields = line.split('|').map(str::trim).collect::<Vec<_>>();
+        // Stripped before the kind fields are read, so the marker composes with every line shape
+        // instead of needing one spelling per kind. `both` is the only other word that can sit in
+        // the last position and it is not this one.
+        let privileged = fields.len() > 1
+            && fields
+                .last()
+                .is_some_and(|field| field.eq_ignore_ascii_case(PRIVILEGE_FIELD));
+        if privileged {
+            fields.pop();
+        }
+        let stored = fields.first().copied().unwrap_or("");
         let label = pending_label.take();
         if stored.is_empty() {
             continue;
         }
-        let (local_server_id, link_node, link_purpose) = match (parts.next(), parts.next()) {
-            (Some("local"), Some(server_id)) => {
-                (server_id.trim().parse::<u64>().ok(), None, NodePurpose::default())
+        let (local_server_id, link_node, link_purpose) = match (fields.get(1), fields.get(2)) {
+            (Some(&"local"), Some(server_id)) => {
+                (server_id.parse::<u64>().ok(), None, NodePurpose::default())
             }
-            (Some("link"), Some(node)) => {
-                let node = node.trim();
+            (Some(&"link"), Some(node)) => {
                 // A fourth field names what the node is for. Absent means CPU, which is what every
                 // token minted before this field existed means too — those are the CPU boxes the
                 // cluster was built out of, and reading them as "anything" would send the first
                 // GPU preset to one of them.
-                let purpose = parts
-                    .next()
-                    .map(NodePurpose::parse)
+                let purpose = fields
+                    .get(3)
+                    .map(|value| NodePurpose::parse(value))
                     .unwrap_or_default();
                 (None, (!node.is_empty()).then(|| node.to_string()), purpose)
             }
             _ => (None, None, NodePurpose::default()),
         };
-        map.entry(stored.to_string())
-            .or_insert(TokenEntry { local_server_id, link_node, link_purpose, label });
+        map.entry(stored.to_string()).or_insert(TokenEntry {
+            local_server_id,
+            // A node is a machine, not a person: it can never hold the privilege that opens the
+            // Users page, whatever its line says.
+            privileged: privileged && link_node.is_none(),
+            link_node,
+            link_purpose,
+            label,
+        });
     }
     map
 }
@@ -558,9 +693,33 @@ fn api_auth_for_token(token: &str) -> Option<ApiAuth> {
         local_server_id: entry.local_server_id,
         link_node: entry.link_node.clone(),
         link_purpose: entry.link_purpose,
+        privileged: entry.privileged,
+        account: None,
         token: token.to_string(),
+        session: String::new(),
         token_hash: format!("{:x}", md5::compute(token.as_bytes())),
         label: entry.label.clone(),
+    })
+}
+
+// A signed-in account presented as the same bearer credential a token is, so every existing page,
+// script and service worker keeps sending one header and nothing else had to learn a second scheme.
+// Its reach and privilege come off the account record, so taking a privilege away on the Users page
+// reaches the open browser on its next request rather than at its next sign-in.
+pub(super) fn api_auth_for_session(session: &str) -> Option<ApiAuth> {
+    let account = crate::lib::account::session_account(session)?;
+    Some(ApiAuth {
+        local_server_id: account.server_id,
+        link_node: None,
+        link_purpose: NodePurpose::default(),
+        privileged: account.privileged,
+        account: Some(account.username.clone()),
+        // Deliberately empty: a session is ended by signing out, and `/token/revoke` must never be
+        // able to take a line out of `api.pandora` on the strength of one.
+        token: String::new(),
+        session: session.to_string(),
+        token_hash: format!("{:x}", md5::compute(session.as_bytes())),
+        label: Some(account.username),
     })
 }
 
@@ -580,16 +739,23 @@ fn parse_token_label(line: &str) -> Option<String> {
     }
 }
 
-pub(super) fn require_pnwitch(auth: &ApiAuth) -> Result<(), Response> {
-    if auth.label.as_deref() == Some("PNwitch") {
+// The operator-only routes. This used to read the token's `;` label and accept exactly `PNwitch`;
+// it now reads the privilege field, so an operator who renames a label keeps their access and a
+// person who happens to write that word in one does not gain any.
+pub(super) fn require_privileged(auth: &ApiAuth) -> Result<(), Response> {
+    if auth.privileged {
         Ok(())
     } else {
-        Err((StatusCode::FORBIDDEN, "PNwitch token required").into_response())
+        Err((
+            StatusCode::FORBIDDEN,
+            "privileged access required (mint one with `/genwitchtoken`)",
+        )
+            .into_response())
     }
 }
 
-// The link routes are the only ones a node token opens, and they are bound to the node named on
-// the token line: a node cannot renew or finish a lease held by another. That binding is what makes
+// Link coordination routes are bound to the node named on the token line: a node cannot renew or
+// finish a lease held by another. That binding is what makes
 // the roster meaningful, since nothing else about a node is authenticated.
 // What the presenting token says its node is for. Only `register` asks — the purpose decides
 // scheduling, and scheduling happens on the coordinator's side of the roster, never per request.
@@ -612,28 +778,112 @@ fn effective_server_id(auth: &ApiAuth, requested: Option<u64>) -> Option<u64> {
     auth.local_server_id.or(requested)
 }
 
+async fn whoami(Extension(auth): Extension<ApiAuth>) -> Response {
+    let kind = auth.kind();
+    Json(json!({
+        "label": auth.label,
+        "kind": kind,
+        // Privilege is its own answer now rather than a `kind` of its own: a token can be local
+        // *and* privileged, and the console needs both facts to decide what to draw.
+        "privileged": auth.privileged,
+        "reach": match auth.reach() {
+            Reach::Everything => "everything",
+            Reach::Server(_) => "server",
+            Reach::Own => "own",
+        },
+        "account": auth.account,
+        "server_id": auth.local_server_id.map(|id| id.to_string()),
+        "node": auth.link_node,
+        "purpose": (kind == "link").then(|| auth.link_purpose.label()),
+    })).into_response()
+}
+
 #[derive(Deserialize)]
 struct JobsQuery {
     #[serde(default)]
     status: Option<String>,
+    #[serde(default)]
+    limit: Option<i64>,
+    #[serde(default)]
+    since: Option<u64>,
 }
 
-async fn list_jobs(State(st): State<AppState>, Query(q): Query<JobsQuery>) -> Response {
+// Every job list goes through here. Reach is applied after the query rather than inside it because
+// the three kinds of read (`ongoing`, `recent`, active) already have their own SQL, and one filter
+// applied in one place cannot be the one somebody forgets to add to a fourth.
+async fn visible_rows(
+    st: &AppState,
+    auth: &ApiAuth,
+    rows: Vec<crate::lib::db::core::JobRow>,
+) -> Result<Vec<crate::lib::db::core::JobRow>, sqlx::Error> {
+    match auth.reach() {
+        Reach::Everything => Ok(rows),
+        Reach::Server(server_id) => Ok(rows
+            .into_iter()
+            .filter(|row| row.server_id == Some(server_id as i64))
+            .collect()),
+        Reach::Own => {
+            let ids = rows.iter().map(|row| row.job_id as u64).collect::<Vec<_>>();
+            let owners = st.db.job_owners(&ids).await?;
+            let me = auth.identity_key();
+            Ok(rows
+                .into_iter()
+                .filter(|row| owners.get(&row.job_id).map(String::as_str) == Some(me.as_str()))
+                .collect())
+        }
+    }
+}
+
+// Whether one job is in reach. Answered on its own so a job out of reach is a `404` rather than a
+// `403`: telling a caller that a job they cannot see exists is itself a fact about somebody else's
+// work.
+async fn row_is_visible(st: &AppState, auth: &ApiAuth, row: &crate::lib::db::core::JobRow) -> bool {
+    match auth.reach() {
+        Reach::Everything => true,
+        Reach::Server(server_id) => row.server_id == Some(server_id as i64),
+        Reach::Own => {
+            st.db.job_owner(row.job_id as u64).await.ok().flatten().as_deref()
+                == Some(auth.identity_key().as_str())
+        }
+    }
+}
+
+async fn list_jobs(
+    State(st): State<AppState>,
+    Extension(auth): Extension<ApiAuth>,
+    Query(q): Query<JobsQuery>,
+) -> Response {
     let result = match q.status.as_deref() {
         Some("ongoing") => st.db.get_ongoing_jobs().await,
-        Some("recent") => st.db.get_recent_jobs(50).await,
+        Some("recent") => {
+            let limit = q.limit.unwrap_or(50).clamp(1, 500);
+            match q.since {
+                Some(since) => st.db.get_recent_jobs_since(limit, since).await,
+                None => st.db.get_recent_jobs(limit).await,
+            }
+        }
         _ => st.db.get_active_jobs().await,
     };
-    match result {
+    let rows = match result {
+        Ok(rows) => rows,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    match visible_rows(&st, &auth, rows).await {
         Ok(rows) => Json(rows.iter().map(JobStatus::from_row).collect::<Vec<_>>()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 
-async fn get_job(State(st): State<AppState>, Path(id): Path<u64>) -> Response {
+async fn get_job(
+    State(st): State<AppState>,
+    Extension(auth): Extension<ApiAuth>,
+    Path(id): Path<u64>,
+) -> Response {
     match st.db.get_job(id).await {
-        Ok(Some(row)) => Json(JobStatus::from_row(&row)).into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, "no such job").into_response(),
+        Ok(Some(row)) if row_is_visible(&st, &auth, &row).await => {
+            Json(JobStatus::from_row(&row)).into_response()
+        }
+        Ok(_) => (StatusCode::NOT_FOUND, "no such job").into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -720,7 +970,7 @@ async fn submit_encode(State(st): State<AppState>, Extension(auth): Extension<Ap
     } else if req.keyword.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false) {
         return (StatusCode::BAD_REQUEST, "keyword requires keep=true").into_response();
     }
-    submit(&st, job).await
+    submit(&st, &auth, job).await
 }
 
 #[derive(Deserialize)]
@@ -760,7 +1010,7 @@ async fn submit_backup(State(st): State<AppState>, Extension(auth): Extension<Ap
     if req.keep {
         job.keep = Some(KeepRequest::new(req.keyword));
     }
-    submit(&st, job).await
+    submit(&st, &auth, job).await
 }
 
 #[derive(Deserialize)]
@@ -768,7 +1018,11 @@ struct ProbeReq {
     torrent: String,
 }
 
-async fn submit_probe(State(st): State<AppState>, Json(req): Json<ProbeReq>) -> Response {
+async fn submit_probe(
+    State(st): State<AppState>,
+    Extension(auth): Extension<ApiAuth>,
+    Json(req): Json<ProbeReq>,
+) -> Response {
     let job = Job::new_api(
         st.api_author,
         0,
@@ -776,9 +1030,11 @@ async fn submit_probe(State(st): State<AppState>, Json(req): Json<ProbeReq>) -> 
         nyaaise(&req.torrent),
         vec![],
         "EN".to_string(),
-        None,
+        // A probe has no server of its own, but a server-bound token still has to be able to find
+        // the probe it just ran: without this its reach would hide it the moment it was submitted.
+        effective_server_id(&auth, None),
     );
-    submit(&st, job).await
+    submit(&st, &auth, job).await
 }
 
 #[derive(Deserialize)]
@@ -835,7 +1091,7 @@ async fn submit_pancode(State(st): State<AppState>, Extension(auth): Extension<A
         "probe_job_id": probe_id.to_string(),
         "file_index": req.file_index,
     });
-    submit_with_progress(&st, job, Some(progress)).await
+    submit_with_progress(&st, &auth, job, Some(progress)).await
 }
 
 #[derive(Deserialize)]
@@ -873,7 +1129,7 @@ async fn submit_gitcode(State(st): State<AppState>, Extension(auth): Extension<A
     } else if req.keyword.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false) {
         return (StatusCode::BAD_REQUEST, "keyword requires keep=true").into_response();
     }
-    submit(&st, job).await
+    submit(&st, &auth, job).await
 }
 
 #[derive(Deserialize)]
@@ -916,7 +1172,7 @@ async fn submit_keycode(State(st): State<AppState>, Extension(auth): Extension<A
         effective_server_id(&auth, req.server_id),
     );
     job.keycode = Some(KeycodeRequest { keywords });
-    submit(&st, job).await
+    submit(&st, &auth, job).await
 }
 
 fn github_blob_to_raw(url: &str) -> String {
@@ -943,22 +1199,34 @@ async fn fetch_subtitle(url: &str) -> Result<Vec<u8>, String> {
     Ok(bytes.to_vec())
 }
 
-async fn cancel_job(State(st): State<AppState>, Extension(auth): Extension<ApiAuth>, Path(id): Path<u64>) -> Response {
+#[derive(Deserialize)]
+struct CancelReq {
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+async fn cancel_job(
+    State(st): State<AppState>,
+    Extension(auth): Extension<ApiAuth>,
+    Path(id): Path<u64>,
+    body: Option<Json<CancelReq>>,
+) -> Response {
     let row = match st.db.get_job(id).await {
         Ok(Some(row)) => row,
         Ok(None) => return (StatusCode::NOT_FOUND, "no such job").into_response(),
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
-    if let Some(server_id) = auth.local_server_id {
-        if row.server_id != Some(server_id as i64) {
-            return (StatusCode::FORBIDDEN, "cannot cancel a job from another server").into_response();
-        }
-        let cancellable = [JobType::Encode, JobType::Studio, JobType::StudioPreview]
-            .iter()
-            .any(|job_type| row.job_type == *job_type as u16 as i64);
-        if !cancellable {
-            return (StatusCode::FORBIDDEN, "only encode and Studio jobs can be cancelled through this token").into_response();
-        }
+    // Cancelling follows reach rather than a token kind of its own. A job nobody can see is a job
+    // nobody can stop, and the same `404` answers both — a `403` here would confirm that somebody
+    // else's job exists.
+    if !row_is_visible(&st, &auth, &row).await {
+        return (StatusCode::NOT_FOUND, "no such job").into_response();
+    }
+    let cancellable = [JobType::Encode, JobType::Studio, JobType::StudioPreview]
+        .iter()
+        .any(|job_type| row.job_type == *job_type as u16 as i64);
+    if !cancellable {
+        return (StatusCode::FORBIDDEN, "only encode and Studio jobs can be cancelled through the API").into_response();
     }
     if row.archived != 0 || matches!(row.stage, 6 | 7 | 8 | 9) {
         return (StatusCode::CONFLICT, "job is already terminal").into_response();
@@ -967,11 +1235,27 @@ async fn cancel_job(State(st): State<AppState>, Extension(auth): Extension<ApiAu
     if st.tx.send(JobClass::HalfJob(hj)).await.is_err() {
         return (StatusCode::SERVICE_UNAVAILABLE, "worker channel closed").into_response();
     }
-    StatusCode::ACCEPTED.into_response()
+    let supplied = body.and_then(|Json(body)| body.reason)
+        .map(|reason| reason.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|reason| !reason.is_empty())
+        .map(|reason| reason.chars().take(240).collect::<String>());
+    let actor = auth
+        .account
+        .as_deref()
+        .or(auth.label.as_deref())
+        .unwrap_or("an API token");
+    let reason = match supplied {
+        Some(reason) => format!("Cancelled by {}: {}", actor, reason),
+        None => format!("Cancelled by {} through the API", actor),
+    };
+    if let Err(error) = st.db.set_cancel_reason(id, Some(&reason)).await {
+        eprintln!("[api] failed to persist cancellation reason for job {}: {}", id, error);
+    }
+    (StatusCode::ACCEPTED, Json(json!({ "status": "accepted", "reason": reason }))).into_response()
 }
 
 async fn gitsync(State(st): State<AppState>, Extension(auth): Extension<ApiAuth>) -> Response {
-    if let Err(resp) = require_pnwitch(&auth) {
+    if let Err(resp) = require_privileged(&auth) {
         return resp;
     }
     let hj = HalfJob::new_gitsync_api(st.api_author, 0);
@@ -1038,6 +1322,19 @@ fn repo_outcome_response(out: RepoOutcome) -> Response {
 async fn git_attachments(Extension(auth): Extension<ApiAuth>) -> Response {
     let server_id = match require_local(&auth) { Ok(id) => id, Err(r) => return r };
     Json(list_attachments(server_id).await).into_response()
+}
+
+async fn git_attachment_health(
+    Extension(auth): Extension<ApiAuth>,
+    Path(channel_id): Path<String>,
+) -> Response {
+    let server_id = match require_local(&auth) { Ok(id) => id, Err(r) => return r };
+    let channel_id = match parse_channel_id(&channel_id) { Ok(id) => id, Err(r) => return r };
+    let (health, last_sync_at, error) = attachment_health(server_id, channel_id).await;
+    Json(json!({
+        "channel_id": channel_id.to_string(), "health": health,
+        "last_sync_at": last_sync_at, "error": error,
+    })).into_response()
 }
 
 async fn git_channels(Extension(auth): Extension<ApiAuth>) -> Response {
@@ -1229,6 +1526,7 @@ async fn git_smartcode(State(st): State<AppState>, Extension(auth): Extension<Ap
     if let Err(e) = st.db.insert_job(&job).await {
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
+    record_owner(&st, &auth, job_id).await;
     if st.tx.send(JobClass::Job(job)).await.is_err() {
         let _ = st.db.update_stage(job_id, Stage::Failed).await;
         let _ = st.db.archive_job(job_id).await;
@@ -1246,17 +1544,32 @@ async fn git_smartcode(State(st): State<AppState>, Extension(auth): Extension<Ap
     }))).into_response()
 }
 
-pub(super) async fn submit(st: &AppState, job: Job) -> Response {
-    submit_with_progress(st, job, None).await
+pub(super) async fn submit(st: &AppState, auth: &ApiAuth, job: Job) -> Response {
+    submit_with_progress(st, auth, job, None).await
 }
 
-async fn submit_with_progress(st: &AppState, job: Job, progress: Option<serde_json::Value>) -> Response {
+// Every HTTP submit passes through here, which is why the submitter is stamped here: a plain token
+// or account sees `Reach::Own`, and a job that was never stamped is a job its own submitter cannot
+// find afterwards.
+pub(super) async fn record_owner(st: &AppState, auth: &ApiAuth, job_id: u64) {
+    if let Err(error) = st.db.set_job_owner(job_id, &auth.identity_key()).await {
+        eprintln!("[api] failed to record the submitter of job {}: {}", job_id, error);
+    }
+}
+
+async fn submit_with_progress(
+    st: &AppState,
+    auth: &ApiAuth,
+    job: Job,
+    progress: Option<serde_json::Value>,
+) -> Response {
     let job_id = job.job_id;
     let directory = job.directory.clone();
     if let Err(e) = st.db.insert_job(&job).await {
         tokio::fs::remove_dir_all(&directory).await.ok();
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
+    record_owner(st, auth, job_id).await;
     if let Some(v) = progress {
         if let Err(e) = st.db.update_progress(job_id, &v.to_string()).await {
             return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
@@ -1344,7 +1657,7 @@ struct AcixPublishReq {
 }
 
 async fn acix_publish(Extension(auth): Extension<ApiAuth>, Json(req): Json<AcixPublishReq>) -> Response {
-    if let Err(resp) = require_pnwitch(&auth) {
+    if let Err(resp) = require_privileged(&auth) {
         return resp;
     }
     let client = match AnimeCix::from_env() {
@@ -1466,6 +1779,83 @@ mod tests {
     fn a_link_token_is_not_a_local_token() {
         let entries = parse_token_file("dddd|link|mini-a\n");
         assert_eq!(entries["dddd"].local_server_id, None);
+    }
+
+    // Privilege is a field now, not the `PNwitch` label the operator-only routes used to match on.
+    // A label is a note somebody writes for themselves; renaming it silently took the access away,
+    // and typing it by accident silently handed it out.
+    #[test]
+    fn privilege_is_the_trailing_field_and_not_the_label() {
+        let entries = parse_token_file(
+            "; PNwitch (added 1)\n\
+             aaaa\n\
+             ; desk (added 2)\n\
+             bbbb|witch\n\
+             ; console (added 3)\n\
+             cccc|local|1234|witch\n\
+             ; console (added 4)\n\
+             dddd|local|1234\n",
+        );
+        // The old label confers nothing on its own any more.
+        assert!(!entries["aaaa"].privileged);
+        assert_eq!(entries["aaaa"].label.as_deref(), Some("PNwitch"));
+        // The marker composes with every line shape, and leaves the kind fields intact.
+        assert!(entries["bbbb"].privileged);
+        assert_eq!(entries["bbbb"].local_server_id, None);
+        assert!(entries["cccc"].privileged);
+        assert_eq!(entries["cccc"].local_server_id, Some(1234));
+        assert!(!entries["dddd"].privileged);
+    }
+
+    // `both` is the only other word that can occupy the last position of a line, and reading it as
+    // the privilege marker would hand every dual-purpose node the operator routes.
+    #[test]
+    fn a_node_never_holds_the_privilege_whatever_its_line_says() {
+        let entries = parse_token_file(
+            "aaaa|link|mini-any|both\n\
+             bbbb|link|mini-odd|cpu|witch\n",
+        );
+        assert!(!entries["aaaa"].privileged);
+        assert_eq!(entries["aaaa"].link_purpose, NodePurpose::Both);
+        // Even spelled out, a machine is not a person.
+        assert!(!entries["bbbb"].privileged);
+        assert_eq!(entries["bbbb"].link_node.as_deref(), Some("mini-odd"));
+    }
+
+    fn token_auth(local_server_id: Option<u64>, privileged: bool) -> ApiAuth {
+        ApiAuth {
+            local_server_id,
+            link_node: None,
+            link_purpose: NodePurpose::default(),
+            privileged,
+            account: None,
+            token: "aaaa".to_string(),
+            session: String::new(),
+            token_hash: "hash".to_string(),
+            label: None,
+        }
+    }
+
+    // The three reaches, in the order they take precedence. A privileged local token sees
+    // everything rather than one server, because privilege is the wider answer.
+    #[test]
+    fn reach_is_privilege_then_server_then_self() {
+        assert_eq!(token_auth(None, false).reach(), Reach::Own);
+        assert_eq!(token_auth(Some(7), false).reach(), Reach::Server(7));
+        assert_eq!(token_auth(Some(7), true).reach(), Reach::Everything);
+        assert_eq!(token_auth(None, true).reach(), Reach::Everything);
+    }
+
+    // The ownership table must never store a live credential, and an account must keep its jobs
+    // when the token it enrolled from is rotated or revoked.
+    #[test]
+    fn an_identity_key_names_the_account_and_never_the_token_itself() {
+        let mut auth = token_auth(None, false);
+        assert_eq!(auth.identity_key(), "token:hash");
+        assert!(!auth.identity_key().contains("aaaa"));
+        auth.account = Some("aya".to_string());
+        assert_eq!(auth.identity_key(), "acct:aya");
+        assert_eq!(auth.kind(), "account");
     }
 
     // A node renews every lease every ten seconds for as long as it works. Under the default

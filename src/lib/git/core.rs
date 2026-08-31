@@ -55,6 +55,8 @@ pub struct Attachment {
     pub episode_count: u32,
     pub season: u16,
     pub repo_url: String,
+    pub last_sync_at: Option<u64>,
+    pub health: String,
 }
 
 pub async fn list_attachments(server_id: u64) -> Vec<Attachment> {
@@ -73,6 +75,15 @@ pub async fn list_attachments(server_id: u64) -> Vec<Attachment> {
         if meta.mal_id.is_none() || meta.kind.is_none() {
             continue;
         }
+        let repo_url = meta.repo_url.unwrap_or_default();
+        let last_sync_at = repo_sync_at(server_id, channel_id).await;
+        let health = if parse_repo_url(&repo_url).is_err() {
+            "unreachable"
+        } else if last_sync_at.map(|at| unix_secs().saturating_sub(at) > 7 * 24 * 60 * 60).unwrap_or(true) {
+            "stale"
+        } else {
+            "ok"
+        };
         out.push(Attachment {
             channel_id: channel_id.to_string(),
             mal_id: meta.mal_id.unwrap_or(0),
@@ -81,7 +92,9 @@ pub async fn list_attachments(server_id: u64) -> Vec<Attachment> {
             kind: meta.kind.unwrap_or_default(),
             episode_count: meta.episode_count.unwrap_or(0),
             season: meta.season,
-            repo_url: meta.repo_url.unwrap_or_default(),
+            repo_url,
+            last_sync_at,
+            health: health.to_string(),
         });
     }
     out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -209,6 +222,7 @@ async fn attach_or_init(
     };
     write_channel_meta(server_id, channel_id, &new_meta).await
         .map_err(|e| format!("Failed to save channel meta: {}", e))?;
+    mark_repo_sync(server_id, channel_id).await;
 
     Ok(RepoOutcome {
         label,
@@ -253,6 +267,7 @@ pub async fn set_source(
     fg.upsert_file(&owner_repo, &source_path, &source_b64, "Set source link").await
         .map_err(|e| format!("Failed to write {}: {}", source_path, e))?;
     remove_gitkeep_for_path(&fg, &owner_repo, &source_path).await;
+    mark_repo_sync(server_id, channel_id).await;
 
     Ok(SourceOutcome { path: source_path, content: source_content })
 }
@@ -273,6 +288,7 @@ pub async fn detach_channel(server_id: u64, channel_id: u64) -> Result<DetachOut
     };
     let path = meta_path(server_id, channel_id);
     tokio::fs::remove_file(&path).await.map_err(|e| format!("failed to remove channel meta: {}", e))?;
+    let _ = tokio::fs::remove_file(repo_sync_path(server_id, channel_id)).await;
     if let Some(parent) = path.parent() {
         let _ = tokio::fs::remove_dir(parent).await;
     }
@@ -300,6 +316,7 @@ pub async fn destruct_repo(server_id: u64, channel_id: u64) -> Result<DestructOu
     fg.delete_repo(&owner_repo).await.map_err(|e| format!("delete_repo failed: {}", e))?;
 
     let _ = tokio::fs::remove_file(meta_path(server_id, channel_id)).await;
+    let _ = tokio::fs::remove_file(repo_sync_path(server_id, channel_id)).await;
     Ok(DestructOutcome { name, owner_repo })
 }
 
@@ -383,6 +400,7 @@ pub async fn smartcode_merge(
     let _ = tokio::fs::remove_dir_all(&work_dir).await;
 
     let (merged_bytes, release_path, source_path, warnings) = result?;
+    mark_repo_sync(server_id, channel_id).await;
     Ok(SmartMergeResult {
         link,
         merged_bytes,
@@ -589,6 +607,55 @@ fn meta_path(server_id: u64, channel_id: u64) -> std::path::PathBuf {
         .join(server_id.to_string())
         .join(channel_id.to_string())
         .join("meta.toml")
+}
+
+fn repo_sync_path(server_id: u64, channel_id: u64) -> PathBuf {
+    meta_path(server_id, channel_id).with_file_name("repo-sync")
+}
+
+async fn mark_repo_sync(server_id: u64, channel_id: u64) {
+    let path = repo_sync_path(server_id, channel_id);
+    let _ = tokio::fs::write(path, unix_secs().to_string()).await;
+}
+
+pub async fn record_attachment_sync(server_id: u64, channel_id: u64) {
+    mark_repo_sync(server_id, channel_id).await;
+}
+
+async fn repo_sync_at(server_id: u64, channel_id: u64) -> Option<u64> {
+    tokio::fs::read_to_string(repo_sync_path(server_id, channel_id)).await
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+}
+
+pub async fn attachment_health(
+    server_id: u64,
+    channel_id: u64,
+) -> (String, Option<u64>, Option<String>) {
+    let last_sync_at = repo_sync_at(server_id, channel_id).await;
+    let result: Result<(), String> = async {
+        let meta = read_channel_meta(server_id, channel_id);
+        let repo_url = meta.repo_url.filter(|url| !url.trim().is_empty())
+            .ok_or_else(|| "this channel has no repository configured".to_string())?;
+        let (owner, repo) = parse_repo_url(&repo_url)
+            .map_err(|error| format!("bad repo URL in meta: {}", error))?;
+        let (forgejo_base, api_key) = forgejo_config(server_id).await?;
+        let forgejo = Forgejo::new(forgejo_base, api_key)
+            .map_err(|error| format!("Forgejo init failed: {}", error))?;
+        forgejo.list_contents(&format!("{}/{}", owner, repo), "").await?;
+        Ok(())
+    }.await;
+    match result {
+        Ok(()) => ("ok".to_string(), last_sync_at, None),
+        Err(error) => ("unreachable".to_string(), last_sync_at, Some(error)),
+    }
+}
+
+fn unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 fn read_channel_meta(server_id: u64, channel_id: u64) -> ChannelMeta {

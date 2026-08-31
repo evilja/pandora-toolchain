@@ -7,20 +7,30 @@ two shared assets and supplies only its own content:
   component (rail, topbar, cards, tables, forms, buttons, progress, stepper, chips, toast).
 - **`shell.js`** (`GET /console.js`) — draws the rail and topbar from one `NAV` table and exposes
   `PN.*`: `shell()`, `api()`, `bar()`, `stepper()`, `chip()`, `icon()`, `toast()`, `navCount()`,
-  `getToken()`/`setToken()`/`clearToken()`, `setTheme()`, `refreshIdentity()`.
+  `getToken()`/`setToken()`/`clearToken()`, `setTheme()`, `refreshIdentity()`, `onIdentity()`,
+  `signOut()`. It also owns the two things that depend on who you are: the rail hides `NAV` entries
+  marked `privileged` (currently **Users**) until `/whoami` says otherwise, and it draws the
+  once-per-browser prompt inviting anyone using a bare token to create an account.
 
 **Change shared chrome in those two files, not in four HTML documents.** A page ships
 `.pn-app > .pn-main > .pn-content` and calls `PN.shell({ page, title, actions })` once.
 
 The pages:
 
-- **`index.html`** — the console, serving four views off `location.pathname`:
-  - `/` **Operations** — stat tiles, the live pipeline, worker capacity, recently finished.
-  - `/jobs` **Jobs** — filter tabs, search, and a detail panel that polls the selected job and
+- **`index.html`** — the console, serving six views off `location.pathname`. What the job views
+  list is already scoped by the caller's reach (below), so none of them filters anything itself:
+  - `/` **Operations** — stat tiles, the live pipeline, aggregate worker capacity, and recent events.
+  - `/jobs` **Jobs** — filter tabs, search, requested/duration columns, and a detail panel that polls the selected job and
     carries **Cancel job**.
   - `/encode` **Encode** — tabs for Encode / Git Encode / Backup / Pancode / Keycode, with a
     submission summary and preset guidance beside them.
-  - `/settings` **Settings** — the bearer token, its probed reach, theme, and job polling.
+  - `/login` **Sign in** — the username/password form, plus a **Create your account** card shown
+    only when this browser holds a token that has no account yet. It names the reach the new
+    account will inherit before creating it.
+  - `/users` **Users** — privileged only: the account table (reach, server binding, a privilege
+    switch, last seen), inline edits, a two-step delete, and a New account card.
+  - `/settings` **Settings** — the Account card (who you are, change password, sign out), the bearer
+    credential, its `/whoami` identity and reach, theme, and job polling.
 - **`git.html`** (`/git`) — **Repositories**: the attached-anime table, a details card with Source
   and Smartcode tabs plus Detach/Destruct, New repository / Attach existing forms, and the README
   template editor. Needs a **local** token (see below).
@@ -50,11 +60,24 @@ job detail (Queue / Download / Encode / Upload, each Completed / In progress / P
 stepper the console prints the line an encoder actually watches —
 `41% · frame 18422/34071 · 41.2 fps · 4210 kbit/s · ETA 13m`.
 
-Auth is the same bearer token as the API (mint one with `/gentoken`, stored in
-`DB/config/global/environment/api.pandora`). It is entered once in **Settings**, saved to
-`localStorage` under `pandora_token`, and shared by every console — including the Trace Lab and
-Studio. Settings also probes what the token can reach and offers **Forget saved token** (this
-browser) next to **Revoke on the server** (`POST /api/v1/token/revoke`).
+Auth is one `Authorization: Bearer` header carrying either an **API token** (mint one with
+`/gentoken`, or `/genwitchtoken` for a privileged one; stored in
+`DB/config/global/environment/api.pandora`) or an **account session** from signing in at `/login`.
+Both live in `localStorage` under `pandora_token` and are shared by every console — including the
+Trace Lab and Studio — so nothing but this file had to learn that accounts exist. Settings reads the
+identity from `GET /api/v1/whoami` and offers **Forget saved token** (this browser) next to
+**Revoke on the server** (`POST /api/v1/token/revoke`, refused for a session, which is ended by
+signing out instead).
+
+**Reach** is what the console is scoped by, and it comes from `/whoami`: a privileged token or
+account sees every job, a local token or a server-bound account sees that server's, and everything
+else sees only what it submitted itself. It is shown as a chip in Settings and in the topbar's
+identity tooltip, because an empty Jobs page otherwise looks like a bug.
+
+Accounts replace nothing: a token that worked before still works, and enrolling from one leaves it
+untouched. The account inherits exactly that token's reach and privilege, which is why the console
+can offer enrolment to anyone holding a token — nothing in that flow can widen anything. Privilege
+is then a switch on the Users page rather than a token to hunt down.
 
 Theme is `pandora_theme` in `localStorage`: `dark`, `light`, or `system` (the default). It is
 chosen in Settings, follows `prefers-color-scheme` while set to system, and repaints other open
@@ -70,7 +93,7 @@ the topbar's page action is dropped in favour of the rail. Keyboard focus is vis
 All of them are **baked into the `pndc` binary** (`include_str!`) and served by the API server.
 When `api_port` is set in `env.pandora`, the bot listens on that port and answers:
 
-- `GET /`, `/jobs`, `/encode`, `/settings` → the console (`index.html`)
+- `GET /`, `/jobs`, `/encode`, `/login`, `/users`, `/settings` → the console (`index.html`)
 - `GET /git`         → Repositories (`git.html`)
 - `GET /studio`      → the Studio Cutroom (`studio.html`)
 - `GET /trace`       → the Kagami Trace Lab (`../kagami-trace/web/index.html`)
@@ -97,7 +120,7 @@ Repositories never asks for a raw channel id:
 
 - **Source**/**Smartcode**/**Detach**/**Destruct** act on the row selected in the **attached anime**
   table (`GET /api/v1/git/attachments`, from `DB/config/<server>/*/meta.toml`), which also resolves
-  each attachment's channel to its `#name`.
+  each attachment's channel to its `#name` and shows its last successful sync plus lazy-checked health.
 - **New repository**/**Attach existing** pick from a dropdown of the server's **Discord channels**
   (`GET /api/v1/git/channels`, from `DB/config/<server>/channels.json`, which the bot publishes
   and keeps in sync via channel/thread events).
@@ -134,10 +157,14 @@ the Defender Firewall). Ports above 1024 don't need admin to *listen*, but firew
 
 ## Security note
 
-With `0.0.0.0`, the console and `/health` are public. Every **job** operation (list, get,
-submit, cancel) still requires a valid bearer token, so the exposed surface is the static UI and
-a liveness check. Mint tokens with `/gentoken` (upper-only) and revoke by deleting their line
-from `api.pandora`.
+With `0.0.0.0`, the console pages and `/health` are public, as are the two routes signing in
+needs — `GET /api/v1/account/status` (a boolean saying whether any account exists) and
+`POST /api/v1/account/login`. Every **job** operation (list, get, submit, cancel) still requires a
+valid credential, so the exposed surface is the static UI, a liveness check, and a sign-in form
+whose refusal is the same sentence for a wrong password and an unknown username. Mint tokens with
+`/gentoken` (upper-only) or `/genwitchtoken` (witch-only) and revoke by deleting their line from
+`api.pandora`; accounts are managed on the Users page. Passwords are stored as PBKDF2-HMAC-SHA256
+records in `accounts.json` (mode `0600`), never as plaintext.
 
 ## Deploying with Docker + Cloudflare Tunnel
 
@@ -220,3 +247,6 @@ optional — the bot works standalone without it.
 - Several things the reference designs show have no data behind them — job timestamps, a "who am
   I" route, worker capacity for non-operator tokens, an events feed, repository health. They were
   left out rather than faked.
+- A job submitted from Discord has no HTTP submitter, so it is invisible at `own` reach. Server and
+  privileged reach still show it. That is the intended reading of "your jobs": the ones you
+  submitted through the API.

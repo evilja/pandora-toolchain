@@ -48,6 +48,11 @@ pub const API_PUBLIC_URL: &str = "api_public_url";
 pub const API_RATE_LIMIT: &str = "api_rate_limit";
 pub const API_RATE_WINDOW_SECS: &str = "api_rate_window_secs";
 pub const API_TOKENS_PATH: &str = "DB/config/global/environment/api.pandora";
+// Console accounts and their open sessions. A token is a secret somebody pastes; an account is a
+// person, and the two are kept in separate files because they have different lifetimes — revoking
+// the token an account was enrolled from must not take the account with it.
+pub const ACCOUNTS_PATH: &str = "DB/config/global/environment/accounts.json";
+pub const SESSIONS_PATH: &str = "DB/config/global/environment/sessions.json";
 pub const FLAVOR_PATH: &str = "DB/config/global/environment/flavor.pandora";
 
 // Encoder presets as editable files. A name with no file here falls back to the built-in table, so

@@ -1,4 +1,5 @@
 pub mod core;
+mod account;
 mod logs;
 mod studio;
 mod token;

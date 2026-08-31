@@ -68,6 +68,22 @@
   .set-reveal { display: flex; gap: 8px; }
   .set-choices { display: flex; gap: 22px; flex-wrap: wrap; }
 
+  /* Sign in / enrol. One narrow column, centred, because it is the only page somebody can be on
+     before the console means anything to them. */
+  .auth-wrap { max-width: 430px; margin: 6vh auto 0; }
+  .auth-wrap .pn-card + .pn-card { margin-top: 16px; }
+  .auth-field { margin-bottom: 14px; }
+  .auth-field label { display: block; font-size: 13px; color: var(--pn-dim); margin-bottom: 6px; }
+  .auth-field input { width: 100%; }
+  .auth-wrap .pn-btn { width: 100%; justify-content: center; }
+  .auth-alt { margin-top: 16px; font-size: 13px; color: var(--pn-dim); text-align: center; }
+
+  .usr-cols { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 16px; align-items: start; }
+  .usr-cols > * { min-width: 0; }
+  .usr-you { font-size: 12px; color: var(--pn-faint); }
+  .usr-acts { display: flex; gap: 8px; flex-wrap: wrap; }
+  @media (max-width: 1180px) { .usr-cols { grid-template-columns: minmax(0, 1fr); } }
+
   .res-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
   .res-links a { display: block; font-family: var(--pn-mono); font-size: 12.5px; padding: 6px 0; color: var(--pn-k1-hi); overflow-wrap: anywhere; }
 
@@ -96,18 +112,22 @@
 
   var esc = PN.esc, api = PN.api, icon = PN.icon;
 
-  // Four URLs, four views, one document. A full page load per view keeps the address bar
+  // Six URLs, six views, one document. A full page load per view keeps the address bar
   // honest and means no client-side router.
   var ROUTES = {
     "/": "operations",
     "/jobs": "jobs",
     "/encode": "encode",
+    "/login": "login",
+    "/users": "users",
     "/settings": "settings"
   };
   var TITLES = {
     operations: "Operations",
     jobs: "Jobs",
     encode: "New Encode",
+    login: "Sign in",
+    users: "Users",
     settings: "Settings"
   };
   var view = ROUTES[location.pathname] || "operations";
@@ -198,6 +218,10 @@
     if (d.job_type) rows += "<dt>Type</dt><dd>" + esc(d.job_type) + "</dd>";
     if (d.preset) rows += "<dt>Preset</dt><dd>" + esc(d.preset) + "</dd>";
     if (d.worker) rows += '<dt>Worker</dt><dd class="pn-mono">' + esc(d.worker) + "</dd>";
+    if (d.requested_at != null) rows += "<dt>Requested</dt><dd>" + esc(formatRequested(d.requested_at)) + "</dd>";
+    if (d.started_at != null) rows += "<dt>Started</dt><dd>" + esc(formatRequested(d.started_at)) + "</dd>";
+    if (d.ended_at != null) rows += "<dt>Duration</dt><dd class='pn-mono'>" + esc(formatJobDuration(d)) + "</dd>";
+    if (d.cancel_reason) rows += "<dt>Cancellation</dt><dd>" + esc(d.cancel_reason) + "</dd>";
     if (d.progress && d.progress.type === "keep" && d.progress.keyword) {
       rows += '<dt>Keyword</dt><dd class="pn-mono">' + esc(d.progress.keyword) + "</dd>";
     }
@@ -206,6 +230,20 @@
   }
 
   function isJobStatus(d) { return d && typeof d === "object" && typeof d.stage === "string" && d.job_id !== undefined; }
+
+  function formatRequested(at) {
+    if (at == null || !Number(at)) return "—";
+    return new Date(Number(at) * 1000).toLocaleString([], {
+      year: "numeric", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit"
+    });
+  }
+
+  function formatJobDuration(job) {
+    var start = Number(job.started_at || job.requested_at || 0);
+    if (!start) return "—";
+    var end = Number(job.ended_at || Math.floor(Date.now() / 1000));
+    return PN.formatDuration(Math.max(0, end - start));
+  }
 
   // One job, fully rendered. Used by the encode result panel and the Jobs detail drawer.
   function jobBody(d) {
@@ -224,14 +262,15 @@
       : "";
     var read = readout(d.progress, d.stage);
     var links = terminalBad ? "" : (d.progress && d.progress.type === "upload" ? uploadHosts(d.progress) : linkRows(d.links));
-    var probe = d.progress && d.progress.type === "probe" && d.progress.files
-      ? '<div class="pn-eyebrow" style="margin:18px 0 6px">Files</div><pre class="pn-pre">' + esc(d.progress.files) + "</pre>" : "";
+    var probe = d.progress && d.progress.type === "probe" && (d.progress.file_text || d.progress.files)
+      ? '<div class="pn-eyebrow" style="margin:18px 0 6px">Files</div><pre class="pn-pre">' +
+        esc(d.progress.file_text || (d.progress.files || []).map(function (f) { return f.index + " — " + f.name; }).join("\n")) + "</pre>" : "";
     return head + banner + pipeline + (read ? '<div class="pn-readout">' + esc(read) + "</div>" : "") +
       probe + links + warnRows(d.links && d.links.warnings) + detailRows(d);
   }
 
   function failureBody(res) {
-    if (res.status === 401) return '<div class="pn-notice" data-tone="warn">No valid token. Add one in <a class="pn-link" href="/settings">Settings</a>.</div>';
+    if (res.status === 401) return '<div class="pn-notice" data-tone="warn">Not signed in. <a class="pn-link" href="/login">Sign in</a> or paste a token in <a class="pn-link" href="/settings">Settings</a>.</div>';
     if (res.status === 403) return '<div class="pn-notice" data-tone="warn">' + esc(PN.messageText(res.data, false)) + "</div>";
     if (res.status === 429) return '<div class="pn-notice" data-tone="warn">' + esc(PN.rateNote(res)) + "</div>";
     if (res.status === 404) return '<div class="pn-notice">Job not found — it may have been archived.</div>';
@@ -254,9 +293,9 @@
           '<div class="pn-card"><div class="pn-cardhead"><h2>Worker capacity</h2>' +
             '<span class="pn-spacer"></span><span class="pn-eyebrow" id="opsWorkerCount"></span></div>' +
             '<div id="opsWorkers"><div class="pn-empty"><span class="pn-spin"></span></div></div></div>' +
-          '<div class="pn-card"><div class="pn-cardhead"><h2>Recently finished</h2></div>' +
+          '<div class="pn-card"><div class="pn-cardhead"><h2>Recent events</h2></div>' +
             '<div id="opsEvents"><div class="pn-empty"><span class="pn-spin"></span></div></div>' +
-            '<div class="pn-cardfoot"><a class="pn-link" href="/jobs">View all jobs</a></div></div>' +
+            '</div>' +
         "</div>" +
       "</section>";
     document.getElementById("opsRefresh").addEventListener("click", loadOperations);
@@ -278,14 +317,15 @@
       running = String(ongoing.length - q);
       queued = String(q);
     }
-    if (workers && workers.nodes) {
-      var alive = (workers.hearts || []).filter(function (h) { return h.alive; }).length;
-      var nodes = workers.nodes.filter(function (n) { return n.last_seen_secs < 60; }).length;
-      workerCell = String(alive + nodes) + "<small> / " + ((workers.hearts || []).length + workers.nodes.length) + "</small>";
+    if (workers) {
+      workerCell = String((workers.workers_online || 0) + (workers.nodes_online || 0)) +
+        "<small> / " + ((workers.workers_total || 0) + (workers.nodes_total || 0)) + "</small>";
     }
     if (recent && recent.length) {
-      var done = recent.filter(function (j) { return j.stage === "Uploaded"; }).length;
-      var ended = recent.filter(function (j) { return PN.TERMINAL.indexOf(j.stage) !== -1; }).length;
+      var since = Math.floor(Date.now() / 1000) - 86400;
+      var windowed = recent.filter(function (j) { return j.ended_at != null && Number(j.ended_at) >= since; });
+      var done = windowed.filter(function (j) { return j.stage === "Uploaded"; }).length;
+      var ended = windowed.filter(function (j) { return PN.TERMINAL.indexOf(j.stage) !== -1; }).length;
       if (ended) rate = (Math.round((done / ended) * 1000) / 10).toFixed(1) + "<small>%</small>";
     }
     return tile("Active workers", workerCell, "users") +
@@ -295,10 +335,12 @@
   }
 
   function loadOperations() {
+    var dayAgo = Math.floor(Date.now() / 1000) - 86400;
     Promise.all([
       api("GET", "/api/v1/jobs?status=ongoing"),
-      api("GET", "/api/v1/jobs?status=recent"),
-      api("GET", "/api/v1/workers")
+      api("GET", "/api/v1/jobs?status=recent&since=" + dayAgo + "&limit=500"),
+      api("GET", "/api/v1/workers/summary"),
+      api("GET", "/api/v1/events?limit=6")
     ]).then(function (r) {
       var ongoing = r[0].ok && Array.isArray(r[0].data) ? r[0].data : null;
       var recent = r[1].ok && Array.isArray(r[1].data) ? r[1].data : null;
@@ -306,13 +348,13 @@
 
       document.getElementById("opsStats").innerHTML = statTiles(ongoing, recent, workers);
       PN.navCount("jobs", ongoing ? ongoing.length || "" : "");
-      renderPipeline(r[0], ongoing, workers);
+      renderPipeline(r[0], ongoing);
       renderCapacity(r[2], workers);
-      renderFinished(r[1], recent);
+      renderEvents(r[3], r[3].ok && Array.isArray(r[3].data) ? r[3].data : null);
     }).catch(function () {});
   }
 
-  function renderPipeline(res, ongoing, workers) {
+  function renderPipeline(res, ongoing) {
     var host = document.getElementById("opsPipeline");
     if (!ongoing) { host.innerHTML = failureShell(res, "Nothing to show yet."); return; }
     if (!ongoing.length) {
@@ -320,14 +362,8 @@
         "<p>No job is downloading, encoding, or uploading right now.</p></div>";
       return;
     }
-    // Elapsed lives only in the worker snapshot, so it fills in for PNwitch tokens and
-    // stays blank otherwise rather than being invented.
-    var elapsed = {};
-    if (workers && Array.isArray(workers.queue)) {
-      workers.queue.forEach(function (q) { if (q.secs_since_request != null) elapsed[String(q.job_id)] = q.secs_since_request; });
-    }
     var rows = ongoing.map(function (j) {
-      var secs = elapsed[String(j.job_id)];
+      var secs = j.requested_at == null ? null : Math.max(0, Math.floor(Date.now() / 1000) - Number(j.requested_at));
       return '<tr data-clickable data-job="' + esc(j.job_id) + '">' +
         '<td><span class="pn-jobid">#' + esc(j.job_id) + "</span>" +
           '<div class="ops-worker">' + esc(j.worker || "unassigned") + "</div></td>" +
@@ -346,7 +382,7 @@
   }
 
   function failureShell(res, blankText) {
-    if (res.status === 401) return '<div class="pn-empty"><strong>No token</strong><p>Add a bearer token in <a class="pn-link" href="/settings">Settings</a> to see live work.</p></div>';
+    if (res.status === 401) return '<div class="pn-empty"><strong>Not signed in</strong><p><a class="pn-link" href="/login">Sign in</a>, or paste a bearer token in <a class="pn-link" href="/settings">Settings</a>, to see live work.</p></div>';
     if (res.status === 403) return '<div class="pn-empty"><strong>This token cannot read that</strong><p>' + esc(PN.messageText(res.data, false)) + "</p></div>";
     return '<div class="pn-empty"><strong>' + esc(blankText) + "</strong><p>" + esc(PN.messageText(res.data, res.ok)) + "</p></div>";
   }
@@ -356,29 +392,22 @@
     var countEl = document.getElementById("opsWorkerCount");
     if (!workers) {
       countEl.textContent = "";
-      host.innerHTML = res.status === 403
-        ? '<div class="pn-empty"><strong>Needs a PNwitch token</strong><p>Worker liveness is operator-only. Mint one with <span class="pn-tag">/gentoken label:PNwitch</span>.</p></div>'
-        : failureShell(res, "Worker snapshot unavailable");
+      host.innerHTML = failureShell(res, "Worker snapshot unavailable");
       return;
     }
-    var hearts = workers.hearts || [];
-    var nodes = workers.nodes || [];
-    var online = hearts.filter(function (h) { return h.alive; }).length + nodes.filter(function (n) { return n.last_seen_secs < 60; }).length;
+    var online = (workers.workers_online || 0) + (workers.nodes_online || 0);
     countEl.textContent = online + " online";
 
-    var rows = hearts.map(function (h) {
-      return capRow(h.worker, h.alive ? 1 : 0, 1, h.alive ? "beating " + h.last_beat_secs + "s ago" : "no heartbeat",
-        h.reboot_count ? h.reboot_count + " reboots" : "steady");
+    var rows = capRow("Local workers", workers.workers_online || 0, workers.workers_total || 0,
+      (workers.workers_online || 0) + " online", ((workers.workers_total || 0) - (workers.workers_online || 0)) + " offline");
+    rows += (workers.capacity || []).map(function (c) {
+      return capRow(String(c.purpose || "node").toUpperCase() + " nodes", c.online || 0, c.total || 0,
+        (c.online || 0) + " reachable", ((c.total || 0) - (c.online || 0)) + " silent");
     }).join("");
-    if (nodes.length) {
-      var live = nodes.filter(function (n) { return n.last_seen_secs < 60; }).length;
-      rows += capRow("Linked nodes", live, nodes.length, live + " reachable", (nodes.length - live) + " silent");
-    }
     if (workers.queue_len != null) {
       rows += '<div class="cap-row"><div class="cap-top"><b>Queue depth</b>' +
         '<span class="pn-mono">' + esc(workers.queue_len) + "</span></div>" +
-        '<div class="cap-facts" style="margin-top:2px"><span><b>' + esc(workers.encode_reboot_count || 0) + "</b> encoder reboots</span>" +
-        "<span>git query " + (workers.gitquery_pending ? "pending" : "idle") + "</span></div></div>";
+        '<div class="cap-facts" style="margin-top:2px"><span>Waiting work visible to every API token</span></div></div>';
     }
     host.innerHTML = rows || '<div class="pn-empty"><strong>No workers reported</strong><p>The worker loop has not published a snapshot.</p></div>';
   }
@@ -393,23 +422,20 @@
       "<span>" + esc(factA) + "</span><span>" + esc(factB) + "</span></div></div>";
   }
 
-  // No events route exists, so this is the honest equivalent: jobs that recently ended.
-  function renderFinished(res, recent) {
+  function renderEvents(res, events) {
     var host = document.getElementById("opsEvents");
-    if (!recent) { host.innerHTML = failureShell(res, "Nothing to show yet."); return; }
-    var ended = recent.filter(function (j) { return PN.TERMINAL.indexOf(j.stage) !== -1; }).slice(0, 6);
-    if (!ended.length) {
-      host.innerHTML = '<div class="pn-empty"><strong>No finished jobs yet</strong><p>Completed and failed jobs land here.</p></div>';
+    if (!events) { host.innerHTML = failureShell(res, "Nothing to show yet."); return; }
+    if (!events.length) {
+      host.innerHTML = '<div class="pn-empty"><strong>No recent events</strong><p>Job and worker transitions land here.</p></div>';
       return;
     }
-    host.innerHTML = ended.map(function (j) {
-      var ok = j.stage === "Uploaded";
-      var tone = ok ? "ok" : j.stage === "Cancelled" ? "warn" : "bad";
-      var verb = ok ? "finished" : j.stage.toLowerCase();
-      return '<a class="ev" data-tone="' + tone + '" href="/jobs?job=' + esc(j.job_id) + '" style="text-decoration:none">' +
-        icon(ok ? "check" : j.stage === "Cancelled" ? "info" : "alert") +
-        '<span class="ev-text"><b>Job #' + esc(j.job_id) + "</b> " + esc(j.job_type + " " + verb) + "</span>" +
-        '<span class="ev-meta">' + esc(j.preset || "") + "</span></a>";
+    host.innerHTML = events.map(function (event) {
+      var tone = event.severity === "error" ? "bad" : event.severity === "warn" ? "warn" : "ok";
+      var href = event.job_id ? ' href="/jobs?job=' + encodeURIComponent(event.job_id) + '"' : "";
+      return '<a class="ev" data-tone="' + tone + '"' + href + ' style="text-decoration:none">' +
+        icon(tone === "ok" ? "check" : tone === "warn" ? "info" : "alert") +
+        '<span class="ev-text">' + (event.job_id ? '<b>Job #' + esc(event.job_id) + "</b> " : "") + esc(event.text || event.kind) + "</span>" +
+        '<span class="ev-meta">' + esc(formatRequested(event.at)) + "</span></a>";
     }).join("");
   }
 
@@ -511,12 +537,14 @@
           (keep ? '<div class="ops-worker">keep: ' + esc(keep) + "</div>" : "") + "</td>" +
         "<td>" + esc(j.job_type) + "</td>" +
         '<td class="pn-mono pn-trunc jobs-src" title="' + esc(j.link) + '">' + esc(j.link || "—") + "</td>" +
+        '<td>' + esc(formatRequested(j.requested_at)) + "</td>" +
+        '<td class="pn-mono pn-num">' + esc(formatJobDuration(j)) + "</td>" +
         "<td>" + esc(j.stage) + "</td>" +
         '<td class="pn-mono">' + esc(j.worker || "—") + "</td>" +
         "<td>" + PN.chip(j.stage) + PN.bar(j.stage, j.progress, true) + "</td></tr>";
     }).join("");
     host.innerHTML = '<div class="pn-tablewrap"><table class="pn-table"><thead><tr>' +
-      "<th>Job</th><th>Type</th><th>Source</th><th>Stage</th><th>Worker</th><th>Status</th>" +
+      "<th>Job</th><th>Type</th><th>Source</th><th>Requested ↓</th><th>Duration</th><th>Stage</th><th>Worker</th><th>Status</th>" +
       "</tr></thead><tbody>" + rows + "</tbody></table></div>";
     host.querySelectorAll("tr[data-job]").forEach(function (tr) {
       tr.addEventListener("click", function () { selectJob(tr.getAttribute("data-job")); });
@@ -573,9 +601,11 @@
 
   // Cancel needs a local token and only accepts non-terminal jobs on the token's own server.
   function cancelJob(id, btn) {
+    var supplied = window.prompt("Why is this job being cancelled? (optional)", "");
+    if (supplied === null) return;
     btn.disabled = true;
     btn.textContent = "Cancelling…";
-    api("POST", "/api/v1/jobs/" + encodeURIComponent(id) + "/cancel").then(function (res) {
+    api("POST", "/api/v1/jobs/" + encodeURIComponent(id) + "/cancel", { reason: supplied || null }).then(function (res) {
       if (res.status === 202) { PN.toast("Cancelling job #" + id + "."); return; }
       PN.toast(PN.messageText(res.data, false), "bad");
       btn.disabled = false;
@@ -847,7 +877,7 @@
     if (!host) return;
     Promise.all([
       api("GET", "/api/v1/jobs?status=ongoing"),
-      api("GET", "/api/v1/workers")
+      api("GET", "/api/v1/workers/summary")
     ]).then(function (r) {
       var ongoing = r[0].ok && Array.isArray(r[0].data) ? r[0].data : null;
       var workers = r[1].ok && r[1].data && typeof r[1].data === "object" ? r[1].data : null;
@@ -856,17 +886,20 @@
       rows += readyRow("Token", id.label, id.kind === "none" || id.kind === "invalid" ? "bad" : "ok",
         id.kind === "none" || id.kind === "invalid" ? "alert" : "check");
       if (workers) {
-        var alive = (workers.hearts || []).filter(function (h) { return h.alive; }).length +
-          (workers.nodes || []).filter(function (n) { return n.last_seen_secs < 60; }).length;
+        var alive = (workers.workers_online || 0) + (workers.nodes_online || 0);
         rows += readyRow("Workers", alive + " online", alive ? "ok" : "bad", "users");
       } else {
-        rows += readyRow("Workers", r[1].status === 403 ? "PNwitch only" : "unknown", "", "users");
+        rows += readyRow("Workers", "unknown", "", "users");
       }
       if (ongoing) {
         var q = ongoing.filter(function (j) { return j.stage === "Queued"; }).length;
         rows += readyRow("Queue", q + " waiting", q > 4 ? "warn" : "", "clock");
       } else {
         rows += readyRow("Queue", "unknown", "", "clock");
+      }
+      if (PN.rateRemaining() != null) {
+        var remaining = PN.rateRemaining();
+        rows += readyRow("Write limit", remaining + " remaining", remaining < 5 ? "warn" : "ok", "shield");
       }
       host.innerHTML = rows;
     }).catch(function () {});
@@ -986,7 +1019,7 @@
         var d = res.data;
         if (d.stage === "Probed") {
           probeReady = true;
-          probeFiles = (d.progress && (d.progress.file_options || d.progress.files)) || "";
+          probeFiles = (d.progress && (d.progress.files || d.progress.file_options)) || [];
           paintProbeFiles();
           clearInterval(probeTimer); probeTimer = null;
           paintRun();
@@ -1093,21 +1126,24 @@
     var theme = PN.getThemePref();
     viewEl.innerHTML =
       '<div class="set-cols">' +
-          '<section class="pn-card" id="connection"><div class="pn-cardhead"><h2>API connection</h2></div>' +
+          '<section class="pn-card" id="account"><div class="pn-cardhead"><h2>Account</h2></div>' +
+            '<div class="pn-cardbody" id="setAccount"><div class="pn-empty"><span class="pn-spin"></span></div></div></section>' +
+          '<section class="pn-card" id="connection" style="margin-top:16px"><div class="pn-cardhead"><h2>API connection</h2></div>' +
             '<div class="pn-cardbody">' +
               '<div class="set-row"><span>Endpoint</span><span class="pn-mono" style="font-size:13px">' +
                 esc(location.origin) + ' <span class="pn-tag">same origin</span></span></div>' +
-              '<div class="set-row"><span>Bearer token</span><div class="set-reveal">' +
+              '<div class="set-row"><span>Bearer credential</span><div class="set-reveal">' +
                 '<input class="pn-input pn-mono" id="setToken" type="password" placeholder="Paste a token from /gentoken" autocomplete="off" spellcheck="false">' +
-                '<button class="pn-btn pn-icon" id="setReveal" type="button" aria-label="Show token">' + icon("eye") + "</button></div></div>" +
-              '<div class="set-row"><span>Token reach</span><div id="setReach"><span class="pn-spin"></span></div></div>' +
+                '<button class="pn-btn pn-icon" id="setReveal" type="button" aria-label="Show credential">' + icon("eye") + "</button></div></div>" +
+              '<div class="set-row"><span>Reach</span><div id="setReach"><span class="pn-spin"></span></div></div>' +
               '<div style="display:flex;gap:10px;margin-top:18px;flex-wrap:wrap">' +
                 '<button class="pn-btn pn-primary" id="setSave" type="button">Save connection</button>' +
                 '<button class="pn-btn" id="setForget" type="button">Forget saved token</button>' +
                 '<button class="pn-btn pn-danger" id="setRevoke" type="button">' + icon("trash") + "Revoke on the server</button>" +
               "</div>" +
-              '<p class="pn-hint">Forget removes the token from this browser only. Revoke deletes its line from ' +
-              '<span class="pn-tag">api.pandora</span>, so it stops working everywhere.</p>' +
+              '<p class="pn-hint">This field holds whichever credential this browser is using: an API token, or the ' +
+              'session an account signs in with. Forget removes it from this browser only. Revoke deletes a token’s line from ' +
+              '<span class="pn-tag">api.pandora</span>, so it stops working everywhere; a session is ended by signing out instead.</p>' +
             "</div></section>" +
           '<section class="pn-card" id="appearance" style="margin-top:16px"><div class="pn-cardhead"><h2>Appearance</h2></div>' +
             '<div class="pn-cardbody"><div class="set-row"><span>Theme</span><div class="set-choices">' +
@@ -1159,31 +1195,101 @@
       var p = pollSetting(); p.secs = parseInt(this.value, 10) || 2; savePoll(p);
     });
     paintReach();
+    paintAccount();
   }
 
-  // What this token can actually reach, probed rather than claimed.
+  // The Account card is the whole of what a person can do about their own identity: see who they
+  // are, change their password, sign out, or — holding only a token — become somebody.
+  function paintAccount() {
+    var host = document.getElementById("setAccount");
+    if (!host) return;
+    PN.refreshIdentity().then(function (id) {
+      if (id.account) {
+        host.innerHTML =
+          '<div class="set-row"><span>Signed in as</span><b>' + esc(id.account) + "</b></div>" +
+          '<div class="set-row"><span>Permissions</span><div>' +
+            '<span class="pn-chip" data-tone="' + (id.privileged ? "done" : "queued") + '">' +
+            esc(id.privileged ? "Privileged — manages other accounts" : "Standard") + "</span></div></div>" +
+          '<div class="set-row"><span>Change password</span><div class="set-reveal">' +
+            '<input class="pn-input" id="pwCurrent" type="password" autocomplete="current-password" placeholder="Current">' +
+            '<input class="pn-input" id="pwNew" type="password" autocomplete="new-password" placeholder="New"></div></div>' +
+          '<div style="display:flex;gap:10px;margin-top:18px;flex-wrap:wrap">' +
+            '<button class="pn-btn pn-primary" id="pwGo" type="button">Change password</button>' +
+            '<button class="pn-btn" id="setSignOut" type="button">Sign out</button></div>' +
+          '<p class="pn-hint">Changing your password signs out every other browser you are signed in on.</p>';
+        document.getElementById("pwGo").addEventListener("click", changePassword);
+        document.getElementById("setSignOut").addEventListener("click", function () {
+          PN.signOut().then(function () {
+            PN.toast("Signed out.");
+            location.href = "/login";
+          });
+        });
+        return;
+      }
+      if (id.kind === "plain" || id.kind === "local") {
+        host.innerHTML =
+          '<p class="pn-hint" style="margin:0 0 14px">You are using an API token. An account keeps this token’s reach, ' +
+          'survives the token being rotated, and is how permissions are managed.</p>' +
+          '<a class="pn-btn pn-primary" href="/login">Create an account</a>';
+        return;
+      }
+      if (id.kind === "link") {
+        host.innerHTML = '<p class="pn-hint" style="margin:0">This is a Pandora Mini node token — a machine’s credential. It cannot hold an account.</p>';
+        return;
+      }
+      host.innerHTML =
+        '<p class="pn-hint" style="margin:0 0 14px">Not signed in.</p>' +
+        '<a class="pn-btn pn-primary" href="/login">Sign in</a>';
+    });
+  }
+
+  function changePassword() {
+    var current = document.getElementById("pwCurrent").value;
+    var next = document.getElementById("pwNew").value;
+    if (!current || !next) { PN.toast("Both fields are required.", "bad"); return; }
+    var btn = document.getElementById("pwGo");
+    btn.disabled = true;
+    api("POST", "/api/v1/account/password", { current: current, password: next }).then(function (res) {
+      btn.disabled = false;
+      if (!res.ok) { PN.toast(PN.messageText(res.data, false), "bad"); return; }
+      // The change signed this browser out too, so there is nothing to keep and nowhere to stay.
+      PN.clearToken();
+      PN.toast("Password changed. Sign in again.");
+      location.href = "/login";
+    }).catch(function () { btn.disabled = false; });
+  }
+
   function paintReach() {
     var host = document.getElementById("setReach");
     if (!host) return;
     if (!PN.getToken()) {
-      host.innerHTML = '<span class="pn-chip" data-tone="bad">No token saved</span>';
+      host.innerHTML = '<span class="pn-chip" data-tone="bad">Nothing saved</span>';
       PN.refreshIdentity();
       return;
     }
     host.innerHTML = '<span class="pn-spin"></span>';
-    Promise.all([
-      api("GET", "/api/v1/jobs?status=ongoing"),
-      api("GET", "/api/v1/workers"),
-      api("GET", "/api/v1/git/attachments")
-    ]).then(function (r) {
-      if (r[0].status === 401) {
+    api("GET", "/api/v1/whoami").then(function (res) {
+      if (res.status === 401) {
         host.innerHTML = '<span class="pn-chip" data-tone="bad">Rejected by the API</span>';
         PN.refreshIdentity();
         return;
       }
-      var chips = ['<span class="pn-chip" data-tone="done">Jobs</span>'];
-      if (r[2].ok) chips.push('<span class="pn-chip" data-tone="done">Local — git &amp; Studio</span>');
-      if (r[1].ok) chips.push('<span class="pn-chip" data-tone="done">PNwitch — workers &amp; logs</span>');
+      if (!res.ok || !res.data || typeof res.data !== "object") {
+        host.innerHTML = '<span class="pn-chip" data-tone="bad">API error</span>';
+        return;
+      }
+      var id = res.data;
+      // Reach first, because it is what decides whether the Jobs page looks empty; then the
+      // capabilities that are not implied by it.
+      var reach = {
+        everything: ["done", "Every job in the deployment"],
+        server: ["done", "This server’s jobs"],
+        own: ["queued", "Only the jobs you submit"]
+      }[id.reach] || ["queued", "Jobs"];
+      var chips = ['<span class="pn-chip" data-tone="' + reach[0] + '">' + esc(reach[1]) + "</span>"];
+      if (id.server_id) chips.push('<span class="pn-chip" data-tone="done">Git &amp; Studio</span>');
+      if (id.privileged) chips.push('<span class="pn-chip" data-tone="done">Privileged — workers, logs &amp; users</span>');
+      if (id.kind === "link") chips = ['<span class="pn-chip" data-tone="done">Link — ' + esc(id.node || "node") + " (" + esc(id.purpose || "cpu") + ")</span>"];
       host.innerHTML = '<div style="display:flex;gap:8px;flex-wrap:wrap">' + chips.join("") + "</div>";
       PN.refreshIdentity();
     }).catch(function () {
@@ -1223,11 +1329,295 @@
     });
   }
 
+  // ── sign in / enrol ────────────────────────────────────────────────────────
+
+  // One page, two forms, because a person arrives here in one of two states and the console can
+  // tell which: with a token that has no account yet (enrol), or with nothing (sign in). Both
+  // end the same way — a session in the same `pandora_token` slot every page already reads, so
+  // Studio, Repositories and the Trace Lab need to know nothing about accounts at all.
+  function renderLogin() {
+    var next = new URLSearchParams(location.search).get("next") || "/";
+    viewEl.innerHTML =
+      '<div class="auth-wrap">' +
+        '<section class="pn-card" id="signin"><div class="pn-cardhead"><h2>Sign in</h2></div>' +
+          '<div class="pn-cardbody">' +
+            '<div class="auth-field"><label for="inUser">Username</label>' +
+              '<input class="pn-input" id="inUser" type="text" autocomplete="username" spellcheck="false"></div>' +
+            '<div class="auth-field"><label for="inPass">Password</label>' +
+              '<input class="pn-input" id="inPass" type="password" autocomplete="current-password"></div>' +
+            '<button class="pn-btn pn-primary" id="inGo" type="button">Sign in</button>' +
+            '<div class="auth-alt" id="inAlt"></div>' +
+          "</div></section>" +
+        '<section class="pn-card" id="enrol" hidden><div class="pn-cardhead"><h2>Create your account</h2></div>' +
+          '<div class="pn-cardbody">' +
+            '<p class="pn-hint" style="margin:0 0 14px" id="enrolReach"></p>' +
+            '<div class="auth-field"><label for="upUser">Username</label>' +
+              '<input class="pn-input" id="upUser" type="text" autocomplete="username" spellcheck="false" placeholder="3–32 characters, a–z 0–9 . _ -"></div>' +
+            '<div class="auth-field"><label for="upPass">Password</label>' +
+              '<input class="pn-input" id="upPass" type="password" autocomplete="new-password" placeholder="at least 10 characters"></div>' +
+            '<div class="auth-field"><label for="upPass2">Repeat password</label>' +
+              '<input class="pn-input" id="upPass2" type="password" autocomplete="new-password"></div>' +
+            '<button class="pn-btn pn-primary" id="upGo" type="button">Create account</button>' +
+          "</div></section>" +
+      "</div>";
+
+    document.getElementById("inGo").addEventListener("click", function () { signIn(next); });
+    document.getElementById("upGo").addEventListener("click", function () { enrol(next); });
+    ["inPass", "inUser"].forEach(function (id) {
+      document.getElementById(id).addEventListener("keydown", function (e) {
+        if (e.key === "Enter") signIn(next);
+      });
+    });
+    document.getElementById("upPass2").addEventListener("keydown", function (e) {
+      if (e.key === "Enter") enrol(next);
+    });
+
+    // What this browser is holding decides which half is offered. A token identity means enrolment
+    // is possible and worth pushing; nothing at all means the only way in is a token from
+    // /gentoken, which Settings is where you paste.
+    api("GET", "/api/v1/account/status").then(function (res) {
+      var has = res.ok && res.data && res.data.has_accounts;
+      var alt = document.getElementById("inAlt");
+      if (alt) {
+        alt.innerHTML = has
+          ? 'Have an API token instead? <a class="pn-link" href="/settings">Paste it in Settings</a>.'
+          : 'No accounts exist yet. Paste a token in <a class="pn-link" href="/settings">Settings</a>, then create the first account here.';
+      }
+    }).catch(function () {});
+
+    PN.refreshIdentity().then(function (id) {
+      var enrolCard = document.getElementById("enrol");
+      if (!enrolCard) return;
+      if (id.account) {
+        enrolCard.hidden = true;
+        document.getElementById("inAlt").innerHTML =
+          "You are already signed in as <b>" + esc(id.account) + "</b>. " +
+          '<a class="pn-link" href="/">Go to Operations</a>.';
+        return;
+      }
+      if (id.kind !== "plain" && id.kind !== "local") return;
+      enrolCard.hidden = false;
+      var reach = { everything: "everything in the deployment", server: "this token's server", own: "the jobs you submit" };
+      document.getElementById("enrolReach").innerHTML =
+        "Your account will inherit this token's reach — <b>" +
+        esc(reach[id.reach] || id.reach || "the jobs you submit") + "</b>" +
+        (id.privileged ? " — and its privilege, so it can manage other people's." : ".");
+    });
+  }
+
+  function signIn(next) {
+    var user = document.getElementById("inUser").value.trim();
+    var pass = document.getElementById("inPass").value;
+    if (!user || !pass) { PN.toast("Username and password are required.", "bad"); return; }
+    var btn = document.getElementById("inGo");
+    btn.disabled = true;
+    api("POST", "/api/v1/account/login", { username: user, password: pass }).then(function (res) {
+      btn.disabled = false;
+      if (!res.ok || !res.data || !res.data.session) {
+        PN.toast(PN.messageText(res.data, false), "bad");
+        return;
+      }
+      PN.setToken(res.data.session);
+      try { localStorage.removeItem("pandora_enrol_dismissed"); } catch (e) {}
+      location.href = next;
+    }).catch(function () { btn.disabled = false; PN.toast("Could not reach the API.", "bad"); });
+  }
+
+  function enrol(next) {
+    var user = document.getElementById("upUser").value.trim();
+    var pass = document.getElementById("upPass").value;
+    if (pass !== document.getElementById("upPass2").value) {
+      PN.toast("The two passwords do not match.", "bad");
+      return;
+    }
+    var btn = document.getElementById("upGo");
+    btn.disabled = true;
+    api("POST", "/api/v1/account/register", { username: user, password: pass }).then(function (res) {
+      btn.disabled = false;
+      if (!res.ok || !res.data || !res.data.session) {
+        PN.toast(PN.messageText(res.data, false), "bad");
+        return;
+      }
+      // The session replaces the token in this browser. The token itself is untouched and keeps
+      // working for whatever script was already using it.
+      PN.setToken(res.data.session);
+      try { localStorage.removeItem("pandora_enrol_dismissed"); } catch (e) {}
+      location.href = next;
+    }).catch(function () { btn.disabled = false; PN.toast("Could not reach the API.", "bad"); });
+  }
+
+  // ── users ──────────────────────────────────────────────────────────────────
+
+  var usersCache = [];
+  var usersYou = null;
+
+  function renderUsers() {
+    viewEl.innerHTML =
+      '<div class="usr-cols">' +
+        '<section class="pn-card"><div class="pn-cardhead"><h2>Accounts</h2>' +
+          '<span class="pn-spacer"></span><span class="pn-eyebrow" id="usrCount"></span>' +
+          '<button class="pn-btn pn-sm pn-quiet" id="usrRefresh" type="button">' + icon("refresh") + "Refresh</button></div>" +
+          '<div id="usrTable"><div class="pn-empty"><span class="pn-spin"></span></div></div></section>' +
+        '<aside class="pn-card"><div class="pn-cardhead"><h2>New account</h2></div>' +
+          '<div class="pn-cardbody">' +
+            '<div class="auth-field"><label for="nwUser">Username</label>' +
+              '<input class="pn-input" id="nwUser" type="text" spellcheck="false" autocomplete="off"></div>' +
+            '<div class="auth-field"><label for="nwPass">Password</label>' +
+              '<input class="pn-input" id="nwPass" type="password" autocomplete="new-password" placeholder="at least 10 characters"></div>' +
+            '<div class="auth-field"><label for="nwServer">Server id (optional)</label>' +
+              '<input class="pn-input pn-mono" id="nwServer" type="text" inputmode="numeric" spellcheck="false" placeholder="Discord guild id"></div>' +
+            '<div class="set-row" style="border:0;padding:4px 0 14px"><span>Privileged</span>' +
+              '<label class="pn-switch"><input type="checkbox" id="nwPriv"><span class="pn-track"></span></label></div>' +
+            '<button class="pn-btn pn-primary" id="nwGo" type="button" style="width:100%;justify-content:center">Create account</button>' +
+            '<p class="pn-hint">Reach follows the fields: privileged sees every job, a server id scopes the account to that guild, and neither means the account sees only what it submits itself.</p>' +
+          "</div></aside>" +
+      "</div>";
+    document.getElementById("usrRefresh").addEventListener("click", loadUsers);
+    document.getElementById("nwGo").addEventListener("click", createUser);
+    loadUsers();
+  }
+
+  function loadUsers() {
+    api("GET", "/api/v1/accounts").then(function (res) {
+      var host = document.getElementById("usrTable");
+      if (!host) return;
+      if (res.status === 401 || res.status === 403) {
+        host.innerHTML = '<div class="pn-empty"><strong>Not your page</strong><p>The Users page needs a privileged account or a token from <span class="pn-tag">/genwitchtoken</span>.</p></div>';
+        return;
+      }
+      if (!res.ok || !res.data || !Array.isArray(res.data.accounts)) {
+        host.innerHTML = '<div class="pn-empty"><strong>Could not load accounts</strong><p>' + esc(PN.messageText(res.data, false)) + "</p></div>";
+        return;
+      }
+      usersCache = res.data.accounts;
+      usersYou = res.data.you || null;
+      paintUsers();
+    }).catch(function () {});
+  }
+
+  var REACH_LABEL = { everything: "Everything", server: "One server", own: "Own jobs" };
+
+  function paintUsers() {
+    var host = document.getElementById("usrTable");
+    var count = document.getElementById("usrCount");
+    if (count) count.textContent = usersCache.length + (usersCache.length === 1 ? " account" : " accounts");
+    if (!usersCache.length) {
+      host.innerHTML = '<div class="pn-empty"><strong>No accounts yet</strong><p>Anyone holding an API token can create one from the sign-in page; you can also add one here.</p></div>';
+      return;
+    }
+    var rows = usersCache.map(function (a) {
+      var tone = a.disabled ? "idle" : (a.privileged ? "done" : "queued");
+      return "<tr data-user=\"" + esc(a.username) + "\">" +
+        "<td><b>" + esc(a.username) + "</b>" +
+          (a.username === usersYou ? '<div class="usr-you">that’s you</div>' : "") +
+          (a.enrolled_from ? '<div class="usr-you">from ' + esc(a.enrolled_from) + "</div>" : "") + "</td>" +
+        '<td><span class="pn-chip" data-tone="' + tone + '">' +
+          esc(a.disabled ? "Disabled" : REACH_LABEL[a.reach] || a.reach) + "</span></td>" +
+        '<td class="pn-mono">' + esc(a.server_id || "—") + "</td>" +
+        "<td>" +
+          '<label class="pn-switch" title="Privileged"><input type="checkbox" data-priv' +
+            (a.privileged ? " checked" : "") + '><span class="pn-track"></span></label></td>' +
+        '<td class="pn-mono">' + esc(a.last_login ? new Date(a.last_login * 1000).toLocaleDateString() : "never") + "</td>" +
+        '<td><div class="usr-acts">' +
+          '<button class="pn-btn pn-sm pn-quiet" data-act="edit" type="button">Edit</button>' +
+          '<button class="pn-btn pn-sm pn-danger" data-act="delete" type="button">' + icon("trash") + "</button>" +
+        "</div></td></tr>";
+    }).join("");
+    host.innerHTML =
+      '<div class="pn-tablewrap"><table class="pn-table"><thead><tr>' +
+        "<th>Account</th><th>Reach</th><th>Server</th><th>Privileged</th><th>Last seen</th><th></th>" +
+      "</tr></thead><tbody>" + rows + "</tbody></table></div>";
+
+    host.querySelectorAll("tr[data-user]").forEach(function (tr) {
+      var username = tr.getAttribute("data-user");
+      tr.querySelector("input[data-priv]").addEventListener("change", function () {
+        var box = this;
+        updateUser(username, { privileged: box.checked }, function (ok) {
+          if (!ok) box.checked = !box.checked;
+        });
+      });
+      tr.querySelector('[data-act="edit"]').addEventListener("click", function () { editUser(username); });
+      tr.querySelector('[data-act="delete"]').addEventListener("click", function () { deleteUser(username, this); });
+    });
+  }
+
+  // Editing is a prompt rather than a modal on purpose: three fields, rarely touched, and a dialog
+  // of its own would be the only one on the console.
+  function editUser(username) {
+    var account = usersCache.filter(function (a) { return a.username === username; })[0];
+    if (!account) return;
+    var server = prompt("Server id for " + username + " — blank unbinds it:", account.server_id || "");
+    if (server === null) return;
+    var change = { server_id: server.trim() === "" ? null : server.trim() };
+    var pass = prompt("New password for " + username + " — leave blank to keep the current one:", "");
+    if (pass === null) return;
+    if (pass.trim() !== "") change.password = pass;
+    updateUser(username, change);
+  }
+
+  function updateUser(username, change, done) {
+    api("POST", "/api/v1/accounts/" + encodeURIComponent(username) + "/update", change).then(function (res) {
+      if (!res.ok) {
+        PN.toast(PN.messageText(res.data, false), "bad");
+        if (done) done(false);
+        return;
+      }
+      PN.toast("Updated " + username + ".");
+      if (done) done(true);
+      loadUsers();
+      // Demoting yourself changes what this very page may do, so the rail is re-read rather than
+      // left showing a Users link the API would now refuse.
+      if (username === usersYou) PN.refreshIdentity();
+    }).catch(function () { if (done) done(false); });
+  }
+
+  function deleteUser(username, btn) {
+    if (btn.getAttribute("data-armed") !== "1") {
+      btn.setAttribute("data-armed", "1");
+      btn.textContent = "Delete?";
+      setTimeout(function () {
+        if (btn.getAttribute("data-armed") !== "1") return;
+        btn.removeAttribute("data-armed");
+        btn.innerHTML = icon("trash");
+      }, 5000);
+      return;
+    }
+    btn.removeAttribute("data-armed");
+    api("POST", "/api/v1/accounts/" + encodeURIComponent(username) + "/delete").then(function (res) {
+      if (!res.ok) { PN.toast(PN.messageText(res.data, false), "bad"); loadUsers(); return; }
+      PN.toast(username + " deleted. Their sessions ended with them.");
+      loadUsers();
+    }).catch(function () {});
+  }
+
+  function createUser() {
+    var body = {
+      username: document.getElementById("nwUser").value.trim(),
+      password: document.getElementById("nwPass").value,
+      privileged: document.getElementById("nwPriv").checked,
+      server_id: document.getElementById("nwServer").value.trim() || null
+    };
+    var btn = document.getElementById("nwGo");
+    btn.disabled = true;
+    api("POST", "/api/v1/accounts", body).then(function (res) {
+      btn.disabled = false;
+      if (!res.ok) { PN.toast(PN.messageText(res.data, false), "bad"); return; }
+      PN.toast("Created " + body.username + ".");
+      document.getElementById("nwUser").value = "";
+      document.getElementById("nwPass").value = "";
+      document.getElementById("nwServer").value = "";
+      document.getElementById("nwPriv").checked = false;
+      loadUsers();
+    }).catch(function () { btn.disabled = false; });
+  }
+
   // ── boot ───────────────────────────────────────────────────────────────────
 
   if (view === "operations") renderOperations();
   else if (view === "jobs") renderJobsView();
   else if (view === "encode") renderEncodeView();
+  else if (view === "login") renderLogin();
+  else if (view === "users") renderUsers();
   else renderSettings();
 })();
 </script>

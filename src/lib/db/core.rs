@@ -10,6 +10,7 @@ macro_rules! job_query {
     ($tail:literal) => {
         concat!(
             "SELECT job_id, author, channel_id, response_id, requested_at, ",
+            "started_at, ended_at, cancel_reason, ",
             "job_type, preset_type, candidates, link, directory, stage, archived, ",
             "progress, uploaded_links, acix_pending, server_id, ",
             "COALESCE(worker, 'que-main') AS worker FROM jobs ",
@@ -47,6 +48,9 @@ impl JobDb {
                 channel_id   INTEGER NOT NULL,
                 response_id  INTEGER NOT NULL DEFAULT 0,
                 requested_at INTEGER NOT NULL,
+                started_at   INTEGER,
+                ended_at     INTEGER,
+                cancel_reason TEXT,
                 job_type     INTEGER NOT NULL,
                 preset_type  INTEGER NOT NULL,
                 candidates   TEXT,
@@ -66,10 +70,28 @@ impl JobDb {
         .execute(&self.pool)
         .await?;
 
+        // Who submitted a job over HTTP, in a table of its own rather than a column on `jobs`.
+        // The API knows the submitter the moment it hands the job to the queue, but the row is
+        // written later by the worker — and for a forwarded or re-queued job, written again — so a
+        // column would be a race with an `ON CONFLICT` clause that resets it. `author` cannot serve
+        // either: every API job carries the one configured `api_author_id`.
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS job_owners (
+                job_id   INTEGER PRIMARY KEY,
+                identity TEXT NOT NULL,
+                owned_at INTEGER NOT NULL DEFAULT 0
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         for idx in [
             "CREATE INDEX IF NOT EXISTS idx_jobs_author   ON jobs(author);",
             "CREATE INDEX IF NOT EXISTS idx_jobs_channel  ON jobs(channel_id);",
             "CREATE INDEX IF NOT EXISTS idx_jobs_stage    ON jobs(stage);",
+            "CREATE INDEX IF NOT EXISTS idx_job_owners_identity ON job_owners(identity);",
         ] {
             sqlx::query(idx).execute(&self.pool).await?;
         }
@@ -102,6 +124,15 @@ impl JobDb {
         ).await?;
         self.add_column_if_missing(
             "ALTER TABLE jobs ADD COLUMN worker TEXT DEFAULT 'que-main'"
+        ).await?;
+        self.add_column_if_missing(
+            "ALTER TABLE jobs ADD COLUMN started_at INTEGER"
+        ).await?;
+        self.add_column_if_missing(
+            "ALTER TABLE jobs ADD COLUMN ended_at INTEGER"
+        ).await?;
+        self.add_column_if_missing(
+            "ALTER TABLE jobs ADD COLUMN cancel_reason TEXT"
         ).await?;
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_jobs_server ON jobs(server_id);")
             .execute(&self.pool)
@@ -203,6 +234,9 @@ impl JobDb {
                 stage = excluded.stage,
                 server_id = excluded.server_id,
                 worker = excluded.worker,
+                started_at = NULL,
+                ended_at = NULL,
+                cancel_reason = NULL,
                 archived = 0
             "#,
         )
@@ -244,8 +278,39 @@ impl JobDb {
     }
 
     pub async fn update_stage(&self, job_id: u64, stage: Stage) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE jobs SET stage = ? WHERE job_id = ?")
-            .bind(stage_to_int(stage))
+        let stage_value = stage_to_int(stage);
+        let now = unix_secs();
+        let terminal = is_terminal_stage(stage);
+        let result = sqlx::query(
+            r#"
+            UPDATE jobs SET
+                stage = ?,
+                started_at = CASE
+                    WHEN started_at IS NULL AND ? NOT IN (0) THEN ?
+                    ELSE started_at
+                END,
+                ended_at = CASE WHEN ? THEN COALESCE(ended_at, ?) ELSE ended_at END
+            WHERE job_id = ? AND stage != ?
+            "#,
+        )
+            .bind(stage_value)
+            .bind(stage_value)
+            .bind(now as i64)
+            .bind(terminal)
+            .bind(now as i64)
+            .bind(job_id as i64)
+            .bind(stage_value)
+            .execute(&self.pool)
+            .await?;
+        if result.rows_affected() > 0 && (terminal || stage == Stage::Probed) {
+            crate::pnworker::snapshot::record_job_event(job_id, stage);
+        }
+        Ok(())
+    }
+
+    pub async fn set_cancel_reason(&self, job_id: u64, reason: Option<&str>) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE jobs SET cancel_reason = ? WHERE job_id = ?")
+            .bind(reason)
             .bind(job_id as i64)
             .execute(&self.pool)
             .await?;
@@ -289,8 +354,9 @@ impl JobDb {
 
     pub async fn fail_stale_active(&self) -> Result<u64, sqlx::Error> {
         let res = sqlx::query(
-            "UPDATE jobs SET stage = 7 WHERE archived = 0 AND stage NOT IN (6, 7, 8, 9)"
+            "UPDATE jobs SET stage = 7, ended_at = COALESCE(ended_at, ?) WHERE archived = 0 AND stage NOT IN (6, 7, 8, 9)"
         )
+        .bind(unix_secs() as i64)
         .execute(&self.pool)
         .await?;
         Ok(res.rows_affected())
@@ -324,6 +390,14 @@ impl JobDb {
             .await
     }
 
+    pub async fn get_recent_jobs_since(&self, limit: i64, since: u64) -> Result<Vec<JobRow>, sqlx::Error> {
+        sqlx::query_as::<_, JobRow>(job_query!("WHERE requested_at >= ? ORDER BY requested_at DESC LIMIT ?"))
+            .bind(since as i64)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+    }
+
     // One query for a batch's children instead of one per episode. The batch output page polls every
     // five seconds and a two-cour batch is fifty sequential round-trips through a five-connection
     // pool, so the whole page waited on latency it never needed to pay. Chunked because SQLite binds
@@ -343,6 +417,54 @@ impl JobDb {
         Ok(rows)
     }
 
+    // Stamped when the API accepts a submit, before the worker has written the row. The identity is
+    // `acct:<username>` for a signed-in account and `token:<md5>` for a bare token, so the table
+    // never stores a live credential and an account keeps its jobs across a token rotation.
+    pub async fn set_job_owner(&self, job_id: u64, identity: &str) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO job_owners (job_id, identity, owned_at) VALUES (?, ?, ?)
+             ON CONFLICT(job_id) DO UPDATE SET identity = excluded.identity, owned_at = excluded.owned_at",
+        )
+        .bind(job_id as i64)
+        .bind(identity)
+        .bind(unix_secs() as i64)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn job_owner(&self, job_id: u64) -> Result<Option<String>, sqlx::Error> {
+        let row = sqlx::query("SELECT identity FROM job_owners WHERE job_id = ?")
+            .bind(job_id as i64)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(|row| row.try_get::<String, _>("identity")).transpose()
+    }
+
+    // The owners of one page of jobs. Chunked for the same reason `get_jobs_by_ids` is: SQLite
+    // binds every id as its own parameter and older builds cap a statement at 999 of them.
+    pub async fn job_owners(
+        &self,
+        job_ids: &[u64],
+    ) -> Result<std::collections::HashMap<i64, String>, sqlx::Error> {
+        let mut owners = std::collections::HashMap::with_capacity(job_ids.len());
+        for chunk in job_ids.chunks(500) {
+            let placeholders = ["?"].repeat(chunk.len()).join(",");
+            let sql = format!(
+                "SELECT job_id, identity FROM job_owners WHERE job_id IN ({})",
+                placeholders
+            );
+            let mut query = sqlx::query(&sql);
+            for job_id in chunk {
+                query = query.bind(*job_id as i64);
+            }
+            for row in query.fetch_all(&self.pool).await? {
+                owners.insert(row.try_get::<i64, _>("job_id")?, row.try_get::<String, _>("identity")?);
+            }
+        }
+        Ok(owners)
+    }
+
     pub async fn get_jobs_by_author(&self, author: u64) -> Result<Vec<JobRow>, sqlx::Error> {
         sqlx::query_as::<_, JobRow>(job_query!("WHERE author = ? ORDER BY requested_at DESC"))
             .bind(author as i64)
@@ -358,6 +480,9 @@ pub struct JobRow {
     pub channel_id:   i64,
     pub response_id:  i64,
     pub requested_at: i64,
+    pub started_at:   Option<i64>,
+    pub ended_at:     Option<i64>,
+    pub cancel_reason: Option<String>,
     pub job_type:     i64,
     pub preset_type:  i64,
     pub candidates:   Option<String>,
@@ -394,6 +519,10 @@ pub struct JobStatus {
     pub author:     i64,
     pub channel_id: i64,
     pub server_id:  Option<i64>,
+    pub requested_at: u64,
+    pub started_at: Option<u64>,
+    pub ended_at: Option<u64>,
+    pub cancel_reason: Option<String>,
     pub job_type:   String,
     pub preset:     String,
     pub stage:      String,
@@ -412,6 +541,10 @@ impl JobStatus {
             author:     row.author,
             channel_id: row.channel_id,
             server_id:  row.server_id,
+            requested_at: row.requested_at.max(0) as u64,
+            started_at: row.started_at.map(|value| value.max(0) as u64),
+            ended_at: row.ended_at.map(|value| value.max(0) as u64),
+            cancel_reason: row.cancel_reason.clone(),
             job_type:   job_type_label(row.job_type).to_string(),
             preset:     preset_label(row.preset_type).to_string(),
             stage:      stage_label(row.stage).to_string(),
@@ -499,4 +632,15 @@ pub fn stage_to_int(stage: Stage) -> i64 {
         Stage::Probing     => 20,
         Stage::Probed      => 21,
     }
+}
+
+fn is_terminal_stage(stage: Stage) -> bool {
+    matches!(stage, Stage::Uploaded | Stage::Failed | Stage::Declined | Stage::Cancelled)
+}
+
+fn unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }

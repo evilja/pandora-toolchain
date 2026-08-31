@@ -45,6 +45,7 @@ pub async fn handle_source(ctx: &Context, command: &serenity::all::CommandIntera
     match fg.upsert_file(&owner_repo, &source_path, &source_b64, "Set source link").await {
         Ok(()) => {
             remove_gitkeep_for_path(&fg, &owner_repo, &source_path).await;
+            pandora_toolchain::lib::git::record_attachment_sync(server_id, command.channel_id.get()).await;
             let source_display = if link.starts_with("magnet:") {
                 command_message(command, VALUE_MAGNET_HIDDEN)
             } else {

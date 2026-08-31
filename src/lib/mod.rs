@@ -1,3 +1,4 @@
+pub mod account;
 pub mod bin;
 pub mod db;
 pub mod download_prefix;

@@ -435,6 +435,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .pn-notice[data-tone="warn"] { border-color: var(--pn-warn); background: var(--pn-warn-soft); }
 .pn-notice[data-tone="ok"] { border-color: var(--pn-ok); background: var(--pn-ok-soft); }
 .pn-notice code, .pn-notice .pn-mono { font-family: var(--pn-mono); font-size: 12.5px; }
+/* A notice that asks for something rather than only stating it: text left, buttons right, stacking
+   under 640px so the actions never squeeze the sentence into one word per line. */
+.pn-notice:has(.pn-noticeacts) { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+.pn-noticeacts { display: flex; gap: 8px; margin-left: auto; flex: 0 0 auto; }
+@media (max-width: 640px) { .pn-noticeacts { margin-left: 0; } }
 
 .pn-kv { display: grid; grid-template-columns: minmax(90px, auto) 1fr; gap: 11px 18px; font-size: 14px; }
 .pn-kv dt { color: var(--pn-dim); }

@@ -114,9 +114,12 @@ pub fn intro_candidates(preset: &Preset) -> Option<String> {
 }
 
 // The worker label a leased job wears. `/workers` and the job embed both render `Job.worker`
-// verbatim, so this is where an operator finds out which machine has their episode.
+// verbatim, so this is where an operator finds out which machine has their episode — or, when the
+// machine belongs to a `/teenode` group, which group. Only the label merges: the roster, the lease,
+// and every scheduling decision still address the node by its own name, and the snapshot's node
+// view carries both, so a stall is still traceable to one box.
 pub fn worker_label(node: &str) -> String {
-    format!("lnk-{node}")
+    format!("lnk-{}", crate::pnworker::link::board::display_name(node))
 }
 
 pub fn is_link_worker(worker: &str) -> bool {

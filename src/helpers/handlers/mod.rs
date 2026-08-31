@@ -70,7 +70,7 @@ pub use self::gitcode::handle_gitcode;
 pub use self::configure::handle_configure;
 pub use self::edit::{handle_edit, handle_edit_autocomplete};
 pub use self::addapi::handle_addapi;
-pub use self::gentoken::handle_gentoken;
+pub use self::gentoken::{handle_gentoken, handle_genwitchtoken};
 pub use self::exportdrive::handle_exportdrive;
 pub use self::keyvault::handle_keyvault;
 pub use self::acixconfirm::handle_acixconfirm;
@@ -472,6 +472,8 @@ async fn smartcode_merge_upload(
         warnings.len(), merged_bytes.len(), release_path,
         if link_opt.is_some() { "argument" } else { "SOURCE.md" });
 
+    pandora_toolchain::lib::git::record_attachment_sync(server_id, command.channel_id.get()).await;
+
     let _ = tokio::fs::remove_dir_all(&work_dir).await;
 
     Some(SmartMergeResult {
@@ -696,6 +698,7 @@ async fn run_attach_or_init(
         let _ = response_msg.edit(ctx, EditMessage::new().content(format!("Failed to save channel meta: {}", e))).await;
         return;
     }
+    pandora_toolchain::lib::git::record_attachment_sync(server_id, channel_id).await;
 
     let created_list = if created.is_empty() {
         command_message(command, VALUE_NONE)

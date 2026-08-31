@@ -745,7 +745,7 @@ async fn queue_render(
     job.display_link = Some(studio_job_display(&meta, preview_request));
     job.preset = job_preset;
     job.studio = Some(StudioJobRequest { manifest });
-    submit(&state, job).await
+    submit(&state, &auth, job).await
 }
 
 #[cfg(test)]

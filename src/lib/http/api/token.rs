@@ -16,7 +16,13 @@ use super::core::{ApiAuth, presented_token};
 // authority needed to throw it away.
 pub(super) async fn revoke(Extension(auth): Extension<ApiAuth>) -> Response {
     let Some(token) = presented_token(&auth) else {
-        return (StatusCode::UNAUTHORIZED, "no token to revoke").into_response();
+        // A session is a person's sign-in, not a line in `api.pandora`. Ending it is
+        // `POST /account/logout`; saying so is more useful than a bare 401.
+        return (
+            StatusCode::BAD_REQUEST,
+            "this request is authorised by an account session, not a token — sign out instead",
+        )
+            .into_response();
     };
     let contents = match tokio::fs::read_to_string(API_TOKENS_PATH).await {
         Ok(contents) => contents,
