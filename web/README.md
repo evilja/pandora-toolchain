@@ -1,39 +1,81 @@
 # Pandora web console
 
-Four self-contained pages (no build step, no dependencies) drive the pndc HTTP API:
+One application shell over the `pndc` HTTP API — no build step, no dependencies. Every page links
+two shared assets and supplies only its own content:
 
-- **`index.html`** — the encode console: submit encode/backup/probe/pancode/gitcode jobs,
-  list/inspect jobs, and cancel them.
-- **`git.html`** — the git console: repository operations (`/init`, `/attach`, `/source`,
-  `/smartcode`, `/detach`, `/destruct`). These require a **local** token (see below).
-- **`studio.html`** — a purpose-built nonlinear editor with media pool, program monitor,
-  inspector, draggable audio clips, and multitrack timeline. It intentionally has its own
-  professional editor design rather than inheriting the console theme. `studio-sw.js` bridges
-  authenticated byte-range video requests; Web Audio performs preview mixing in the browser.
-- **`batch.html`** — the read-only output page for a `/encode batch` job: every episode's
-  stage, pairing, and upload links as near-plaintext, fetched with `no-store` so Cloudflare
-  cannot serve a stale view of a running batch.
-- **`../kagami-trace/web/index.html`** — the Kagami raster-to-vector lab served at `/trace`, with bearer-protected tracing and zipped libkagami ASS export.
+- **`shell.css`** (`GET /console.css`) — the design system: `--pn-*` tokens, and every shared
+  component (rail, topbar, cards, tables, forms, buttons, progress, stepper, chips, toast).
+- **`shell.js`** (`GET /console.js`) — draws the rail and topbar from one `NAV` table and exposes
+  `PN.*`: `shell()`, `api()`, `bar()`, `stepper()`, `chip()`, `icon()`, `toast()`, `navCount()`,
+  `getToken()`/`setToken()`/`clearToken()`, `setTheme()`, `refreshIdentity()`.
+
+**Change shared chrome in those two files, not in four HTML documents.** A page ships
+`.pn-app > .pn-main > .pn-content` and calls `PN.shell({ page, title, actions })` once.
+
+The pages:
+
+- **`index.html`** — the console, serving four views off `location.pathname`:
+  - `/` **Operations** — stat tiles, the live pipeline, worker capacity, recently finished.
+  - `/jobs` **Jobs** — filter tabs, search, and a detail panel that polls the selected job and
+    carries **Cancel job**.
+  - `/encode` **Encode** — tabs for Encode / Git Encode / Backup / Pancode / Keycode, with a
+    submission summary and preset guidance beside them.
+  - `/settings` **Settings** — the bearer token, its probed reach, theme, and job polling.
+- **`git.html`** (`/git`) — **Repositories**: the attached-anime table, a details card with Source
+  and Smartcode tabs plus Detach/Destruct, New repository / Attach existing forms, and the README
+  template editor. Needs a **local** token (see below).
+- **`studio.html`** (`/studio`) — the Studio Cutroom: media pool, program monitor, inspector,
+  draggable audio clips, multitrack timeline. It keeps its dense editor chrome but takes every
+  colour from the shell tokens. `studio-sw.js` bridges authenticated byte-range video requests;
+  Web Audio performs preview mixing in the browser.
+- **`batch.html`** (`/batch/<token>`) — the read-only output page for an `/encode batch` job: every
+  episode's stage, pairing, and upload links as near-plaintext, fetched with `no-store` so
+  Cloudflare cannot serve a stale view of a running batch. It is deliberately not part of the shell
+  — it is a public capability link, not a console.
+- **`../kagami-trace/web/index.html`** (`/trace`) — the Kagami Trace Lab. It injects the shell only
+  when served at `/trace`, so standalone `pntrace` requests neither asset and the sub-crate stays
+  extraction-ready.
+
+## Design
+
+The palette is taken from the reference designs: a flat near-black ground (`#05101d` content,
+`#091524` rail, `#0e1927` cards), one blue accent (`#2562c3` buttons, `#3c81eb` links, progress and
+icons), and green / amber / red reserved for status. Small radii (6px; 8px for cards), no panel
+shadows, and the only serif anywhere is the `PANDORA` wordmark — page titles and stat values are
+the body sans, bold.
+
+Progress is drawn two ways, both from a job's `stage` + `progress`: `PN.bar()` for a table row
+(one blue track; green only once the job *finished*, red when it failed) and `PN.stepper()` for the
+job detail (Queue / Download / Encode / Upload, each Completed / In progress / Pending). Under the
+stepper the console prints the line an encoder actually watches —
+`41% · frame 18422/34071 · 41.2 fps · 4210 kbit/s · ETA 13m`.
 
 Auth is the same bearer token as the API (mint one with `/gentoken`, stored in
-`DB/config/global/environment/api.pandora`), entered in the page token control and saved in the browser
-(shared across the consoles through `pandora_token`). The two pages cross-link in the titlebar.
+`DB/config/global/environment/api.pandora`). It is entered once in **Settings**, saved to
+`localStorage` under `pandora_token`, and shared by every console — including the Trace Lab and
+Studio. Settings also probes what the token can reach and offers **Forget saved token** (this
+browser) next to **Revoke on the server** (`POST /api/v1/token/revoke`).
 
-The theme is **Pandora (Re:Zero)** — silver-white / cobalt-blue / navy with violet accents — and
-the titlebar **☾/☀ button** toggles light/dark (saved under `pandora_theme`, shared by both
-pages; defaults to your OS `prefers-color-scheme`). All colors are CSS variables: edit the
-`:root` (light) and `:root[data-theme="dark"]` (dark) blocks in `index.html`'s `<style>` to
-retheme. `git.html` reuses `index.html`'s `<head>` verbatim, so re-sync its head after CSS edits.
+Theme is `pandora_theme` in `localStorage`: `dark`, `light`, or `system` (the default). It is
+chosen in Settings, follows `prefers-color-scheme` while set to system, and repaints other open
+tabs through the `storage` event. Retheme by editing the `:root` blocks in `shell.css` — that is
+the only place colours are defined.
+
+Below 1080px the rail becomes a horizontal icon bar and the two-column layouts stack; below 700px
+the topbar's page action is dropped in favour of the rail. Keyboard focus is visible throughout and
+`prefers-reduced-motion` collapses every transition.
 
 ## The bot serves these pages itself
 
-Both pages are **baked into the `pndc` binary** (`include_str!`) and served by the API server.
+All of them are **baked into the `pndc` binary** (`include_str!`) and served by the API server.
 When `api_port` is set in `env.pandora`, the bot listens on that port and answers:
 
-- `GET /`            → the encode console (`index.html`)
-- `GET /git`         → the git console (`git.html`)
+- `GET /`, `/jobs`, `/encode`, `/settings` → the console (`index.html`)
+- `GET /git`         → Repositories (`git.html`)
 - `GET /studio`      → the Studio Cutroom (`studio.html`)
-- `GET /trace`       → the Kagami Trace lab (`../kagami-trace/web/index.html`)
+- `GET /trace`       → the Kagami Trace Lab (`../kagami-trace/web/index.html`)
+- `GET /console.css` → the shared design system (`shell.css`)
+- `GET /console.js`  → the shared shell (`shell.js`)
 - `GET /batch/<token>` → a batch encode's output page (`batch.html`), authorized by the token in the URL rather than a bearer token, since the link is posted to Discord
 - `GET /studio-sw.js` → Studio authenticated-stream service worker
 - `GET/POST /api/v1/...` → the bearer-protected API (same origin, so no CORS)
@@ -51,20 +93,21 @@ JS's safe-integer range).
 
 The Studio editor also requires a local token. Source video is streamed from the current Studio with HTTP byte ranges; audio assets are decoded and mixed locally for insert, override, and duck previews. Audio clips can be dragged along the timeline with frame snapping and a live frame/timecode readout; the inspector also accepts an exact start frame using the Studio source FPS. Adding, moving, trimming, removing, or changing an audio clip updates the browser mix without stopping video playback. Audio uploads are limited to 50 MiB per file, accept any format ffmpeg can decode, show a circular byte-progress notification, and remain visible while the server processes the uploaded media. A clip the browser itself cannot decode (WMA, APE, DTS and similar) stays silent in the local preview and says so — the server render still mixes it. Clip level runs from 0% to 500%. Scrubbing, moving clips, and changing mix controls never queue preview encodes. The **Deliver** action is the only editor action that queues a server render.
 
-The git console never asks for a raw channel id:
+Repositories never asks for a raw channel id:
 
-- **Source**/**Smartcode**/**Detach**/**Destruct** pick from a dropdown of the server's
-  **attached animes** (`GET /api/v1/git/attachments`, from `DB/config/<server>/*/meta.toml`).
-- **Init**/**Attach** pick from a dropdown of the server's **Discord channels**
+- **Source**/**Smartcode**/**Detach**/**Destruct** act on the row selected in the **attached anime**
+  table (`GET /api/v1/git/attachments`, from `DB/config/<server>/*/meta.toml`), which also resolves
+  each attachment's channel to its `#name`.
+- **New repository**/**Attach existing** pick from a dropdown of the server's **Discord channels**
   (`GET /api/v1/git/channels`, from `DB/config/<server>/channels.json`, which the bot publishes
   and keeps in sync via channel/thread events).
 
 **Smartcode** also takes an episode and an optional source link (blank reads the episode's
 `SOURCE.md`); it derives preset/concat from the server's `/edit` settings, merges, uploads the
-release, and queues an encode job (track it on the encode console). Encode forms do not ask for
-preset or concat. **Destruct** deletes the Forgejo repo, so it requires a confirm checkbox.
+release, and queues an encode job, linking straight to it in Jobs. Its form does not ask for preset
+or concat. **Destruct** deletes the Forgejo repo, so it asks you to type the anime's name back first.
 
-Both dropdowns are refreshable and remember the last pick in the browser.
+The channel dropdown is refreshable and remembers the last pick in the browser.
 
 When a Discord channel/thread (incl. forum channels and posts) is **deleted**, the bot
 auto-detaches it — it removes that channel's `meta.toml` (the repo is left untouched), so deleted
@@ -168,8 +211,12 @@ optional — the bot works standalone without it.
 
 ## Notes
 
-- `job_id` is a numeric **string** (it exceeds JS's safe-integer range); the Get Job / Cancel
-  dropdowns pull live ids from the API so you don't have to copy them by hand.
-- **Get Job** has an optional "auto-refresh every 2s" toggle that polls until the job reaches a
-  terminal stage (Uploaded / Failed / Declined / Cancelled).
-- Encode reads the `.ass` file in the browser and base64-encodes it before sending.
+- `job_id` is a numeric **string** (it exceeds JS's safe-integer range); you never type one — Jobs
+  rows, Operations rows and `?job=<id>` deep links carry it.
+- The Jobs detail panel polls the selected job every 2s and stops once it reaches a terminal stage
+  (Uploaded / Failed / Declined / Cancelled). Operations and the job tables refresh every 5s.
+- Encode reads the `.ass` file in the browser (drag-and-drop works) and base64-encodes it before
+  sending. Submitting locks the Encode page to that job until it ends.
+- Several things the reference designs show have no data behind them — job timestamps, a "who am
+  I" route, worker capacity for non-operator tokens, an events feed, repository health. They were
+  left out rather than faked.

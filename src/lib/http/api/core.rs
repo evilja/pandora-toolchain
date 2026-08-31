@@ -221,11 +221,17 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .layer(middleware::from_fn_with_state(state.clone(), auth));
 
     let app = Router::new()
-        .route("/", get(desktop))
+        // The console is one shell with four in-page views, so `/`, `/jobs`, `/encode` and
+        // `/settings` are the same document picking its view from the path.
+        .route("/", get(index))
+        .route("/jobs", get(index))
         .route("/encode", get(index))
+        .route("/settings", get(index))
         .route("/git", get(git_console))
         .route("/studio", get(studio_console))
         .route("/trace", get(super::trace::index))
+        .route("/console.css", get(console_css))
+        .route("/console.js", get(console_js))
         .route("/studio-sw.js", get(studio_service_worker))
         .route("/favicon", get(favicon))
         .route("/favicon.ico", get(favicon))
@@ -254,10 +260,31 @@ const INDEX_HTML: &str = include_str!("../../../../web/index.html");
 const GIT_HTML: &str = include_str!("../../../../web/git.html");
 const STUDIO_HTML: &str = include_str!("../../../../web/studio.html");
 const STUDIO_SERVICE_WORKER: &str = include_str!("../../../../web/studio-sw.js");
-const DESKTOP_HTML: &str = include_str!("../../../../web/desktop.html");
+// The design system and the shell that draws the rail and topbar. Every console page links
+// these, so a change here reaches all of them at once instead of being copied four times.
+const SHELL_CSS: &str = include_str!("../../../../web/shell.css");
+const SHELL_JS: &str = include_str!("../../../../web/shell.js");
 
-async fn desktop() -> axum::response::Html<&'static str> {
-    axum::response::Html(DESKTOP_HTML)
+async fn console_css() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "text/css; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        SHELL_CSS,
+    )
+        .into_response()
+}
+
+async fn console_js() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        SHELL_JS,
+    )
+        .into_response()
 }
 
 async fn index() -> axum::response::Html<&'static str> {

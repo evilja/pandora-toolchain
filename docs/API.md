@@ -150,7 +150,7 @@ Because publishing happens long after the encode finished, the job's logs have u
 
 ## Progress & links
 
-The worker chokepoint in `pnworker/core.rs` (`persist_side_effects`) writes structured JSON to the DB as side effects of the normal `CommData` stream — `ENCODE_PROG`/`ENCODE_CONCAT_PROG` → `progress` (`{type:"encode", frame, total, fps, kbps, percent}`), `PROBE_ROW` → `progress` (`{type:"probe", files, file_options}`, holding the whole episode-sorted list — Discord pages that same string, the web renders all of it), and `UPLOAD_DONE`/`UPLOAD_BACKUP_PROG`/`BACKUPALL_PROG` at stage Uploaded → `uploaded_links` (host→url map). Completed local keeps replace progress with `{type:"keep", keyword, parent_keyword, kind, expires_at, ready:true}`; the web job view displays those details and the recent-jobs table includes the output keyword. Download progress is `{type:"download", percent, done, total}`; the **cache/duplicate** behaviour is also surfaced — a job waiting on an in-flight duplicate input persists `{type:"download", waiting:"cache"}` (written from `use_cache_or_wait` at dispatch and from the `TORRENT_DUPLICATE_WAIT` branch in `core.rs`), and a cache hit / resolved duplicate copy persists `{type:"download", percent:100, cached:true}`. For uploads, `progress.hosts` is the positional per-host array `[drive, byse, lulustream, voe, hls]` (`upload_payload`) — HLS reuses the retired index-4 host slot, so private Drive metadata stays at positions 5+ for compatibility with finished jobs. Each scheduled external slot holds an in-flight progress string (e.g. `"Byse 11/1032 MB"`) until that host finishes, when it becomes the host's URL. When the server enables `/edit hls:true`, all first four slots remain empty and `hls` contains the 12-hour Lumiere Files master capability URL, making it the job's sole advertised link. Without HLS-only mode, `hls` is blank; the three external streaming-host slots are empty when the server's `drive_only` policy is enabled. `GET /api/v1/jobs/:id` surfaces both `progress` and `uploaded_links`; the web renders a karaoke-gradient bar for encode **and** upload jobs (the upload segment fills with the live `percent`, not a static full bar), an indeterminate "waiting on a cached input" bar for the cache-wait state (and the same indeterminate bar for a `{type:"forward"}` job, captioned "shared with job #N"), the probe file list, and the upload links **inline as each host completes** (parsed straight from `progress.hosts`, so they appear during the upload). Upload links render like Discord: plain clickable URL lines with no host prefix/left label; when the current upload payload contains only final URLs, the web hides the `100%` text. The web shows no separate "Links" section for upload jobs — only `uploaded_links` of non-upload jobs (e.g. backup_all `episodes`) get the `linksBlock`.
+The worker chokepoint in `pnworker/core.rs` (`persist_side_effects`) writes structured JSON to the DB as side effects of the normal `CommData` stream — `ENCODE_PROG`/`ENCODE_CONCAT_PROG` → `progress` (`{type:"encode", frame, total, fps, kbps, percent}`), `PROBE_ROW` → `progress` (`{type:"probe", files, file_options}`, holding the whole episode-sorted list — Discord pages that same string, the web renders all of it), and `UPLOAD_DONE`/`UPLOAD_BACKUP_PROG`/`BACKUPALL_PROG` at stage Uploaded → `uploaded_links` (host→url map). Completed local keeps replace progress with `{type:"keep", keyword, parent_keyword, kind, expires_at, ready:true}`; the web job view displays those details and the recent-jobs table includes the output keyword. Download progress is `{type:"download", percent, done, total}`; the **cache/duplicate** behaviour is also surfaced — a job waiting on an in-flight duplicate input persists `{type:"download", waiting:"cache"}` (written from `use_cache_or_wait` at dispatch and from the `TORRENT_DUPLICATE_WAIT` branch in `core.rs`), and a cache hit / resolved duplicate copy persists `{type:"download", percent:100, cached:true}`. For uploads, `progress.hosts` is the positional per-host array `[drive, byse, lulustream, voe, hls]` (`upload_payload`) — HLS reuses the retired index-4 host slot, so private Drive metadata stays at positions 5+ for compatibility with finished jobs. Each scheduled external slot holds an in-flight progress string (e.g. `"Byse 11/1032 MB"`) until that host finishes, when it becomes the host's URL. When the server enables `/edit hls:true`, all first four slots remain empty and `hls` contains the 12-hour Lumiere Files master capability URL, making it the job's sole advertised link. Without HLS-only mode, `hls` is blank; the three external streaming-host slots are empty when the server's `drive_only` policy is enabled. `GET /api/v1/jobs/:id` surfaces both `progress` and `uploaded_links`; the web renders a blue progress bar for encode **and** upload jobs (the upload segment fills with the live `percent`, not a static full bar), a "waiting on a cached input" readout for the cache-wait state (and a "shared with job #N" readout for a `{type:"forward"}` job), the probe file list, and the upload links **inline as each host completes** (parsed straight from `progress.hosts`, so they appear during the upload). Upload links render like Discord: plain clickable URL lines with no host prefix/left label; when the current upload payload contains only final URLs, the web hides the `100%` text. The web shows no separate "Links" section for upload jobs — only `uploaded_links` of non-upload jobs (e.g. backup_all `episodes`) get the `linksBlock`.
 
 ## Job construction
 
@@ -160,12 +160,13 @@ API jobs are built with `Job::new_api(...)` → `Frontend::Web`, so they run thr
 
 All dependency-free, `include_str!`/`include_bytes!`-baked into `pndc`, same origin as `/api/v1` so no CORS; editing any requires rebuilding `pndc`):
 
-- `GET /` → desktop shell (`web/desktop.html`)
+- `GET /`, `/jobs`, `/encode`, `/settings` → the console (`web/index.html`), which picks its view from `location.pathname`
+- `GET /git` → Repositories (`web/git.html`)
+- `GET /studio` → Studio Cutroom, the browser-native nonlinear editor (`web/studio.html`)
+- `GET /trace` → Kagami Trace Lab (`kagami-trace/web/index.html`)
 - `GET /batch/:token` → batch output page (`web/batch.html`), capability-authorized
-- `GET /encode` → encode console (`web/index.html`)
-- `GET /git` → git console (`web/git.html`)
-- `GET /studio` → browser-native nonlinear Studio editor (`web/studio.html`)
-- `GET /trace` → Kagami raster-to-vector lab (`kagami-trace/web/index.html`)
+- `GET /console.css` → the shared design system (`web/shell.css`)
+- `GET /console.js` → the shared shell: rail, topbar, theme, token, API wrapper, pipeline rendering (`web/shell.js`)
 - `GET /studio-sw.js` → the Studio editor's authenticated media-stream bridge
 - `GET /favicon` (+ `/favicon.ico`) → site icon
 
@@ -177,39 +178,102 @@ The consoles fetch relative `/api/v1` paths. Details in `web/README.md`.
 
 The page is deliberately static HTML that fetches its data separately with `cache: 'no-store'`, and the data route sets `Cache-Control: no-store`: Cloudflare will happily cache an HTML document for a job that is still running. `/output` returns the parent's stage and counters plus one entry per episode — label, paired subtitle name, child `job_id`, and the child's live `stage`, `worker`, `progress`, and `uploaded_links` joined from the jobs table — so a finished episode keeps showing its links after the batch itself is archived. The page renders that as near-plaintext, colours the stage, and polls every 5s until every episode is terminal.
 
-## Desktop shell
+## Console shell
 
-`web/desktop.html` (`GET /`): a small window manager over the consoles. A bottom **taskbar** has Encode/Git/Studio/Trace/**Jobs** launchers, a clock, an **API-token toggle button** (a popover whose password input writes the shared `localStorage` `pandora_token`), and the **☾/☀ theme toggle**. Each app opens as a draggable/**resizable** window whose body is an `<iframe>` to its `?embed=1` page; windows have **traffic-light controls** (red = close, yellow = maximize, green = minimize), z-stacking on focus, and their open state + geometry persist in `localStorage` (`pandora_desktop_v1`). On mobile (≤760px) the WM is replaced by a launcher card linking to the standalone consoles. The desktop keeps its **own** copy of the `:root` theme vars for its chrome (a third place to retheme, alongside the two consoles).
+Every page is the same frame: a fixed 224px rail (wordmark, the seven destinations, a health
+line) and a topbar (page title, per-page actions, an API-connection light, and a token chip
+linking to Settings). `web/shell.css` (`GET /console.css`) holds the design tokens and every
+shared component; `web/shell.js` (`GET /console.js`) draws the rail and topbar from one `NAV`
+table and exposes `PN.*` — `api`, `bar`, `stepper`, `chip`, `icon`, `toast`, `getToken`/`setToken`,
+`setTheme`, `refreshIdentity`. A page ships `.pn-app > .pn-main > .pn-content` and calls
+`PN.shell({ page, title, actions })` once. **Changing shared chrome means editing those two
+files, not four HTML documents** — that is the point of serving them rather than inlining them.
 
-## Embed & job-only modes
+`kagami-trace/web/index.html` injects both only when `pandoraMode` is true (it is served at
+`/trace`), so standalone `pntrace` requests neither and the sub-crate stays extraction-ready.
 
-Consoles, including the Trace lab, support:
+## Pipeline rendering
 
-- `?embed=1` adds `html.embed`, which drops the outer titlebar/border/shadow, fills the iframe (the command grid flex-grows so the footer pins to the bottom), and hides the footer token field — the desktop taskbar owns the token, and the consoles **live-sync** it via the `storage` event.
-- `?job=<id>` adds `html.jobonly` and renders only that job's live pipeline (no command UI), used by desktop job windows.
-- `?jobs=1` (also `html.jobonly`) renders only the live recent-jobs table, used by the desktop **Jobs** window; its rows/⤢ pop individual job windows.
+Two devices, both derived from `stage` + `progress`, both in `shell.js`:
 
-## Job windows / auto-pop
+- `PN.bar(stage, progress, withPercent)` — one blue track, filled by `overallPercent()` (completed
+  phases plus the live one). This is what every table row shows. Tone goes green when the job
+  finished, red when it failed, grey when it was cancelled; **progress itself is never green**.
+- `PN.stepper(stage, progress)` — the vertical Queue / Download / Encode / Upload list on a job's
+  detail panel, each row Completed / In progress / Pending / Failed. A probe job gets a two-step
+  Queue / Probe list instead.
 
-Submitting a job (encode/gitcode/backup/pancode) **auto-pops** it into its own window instead of rendering inline in the console output (which just shows a short "popped out" note). When embedded, the console `postMessage`s `{type:"pandora:openJob", jobId}` to the desktop, which opens a desktop job window (iframe `/encode?embed=1&job=<id>`); standalone it pops a local floating `.jobwin`; mobile falls back to inline watching. The Jobs table rows and a ⤢ "pop out" button pop windows too. The console's **Jobs** command, when embedded, posts `{type:"pandora:openJobs"}` so the desktop opens a single **Jobs** window (`/encode?embed=1&jobs=1`) instead of rendering the table inline; standalone it renders inline as before.
+`PN.chip(stage)` is the status dot — Active, Queued, Completed, Failed, Cancelled — and
+`PN.chip(stage, true)` prints the raw stage name with the same colour. Under the stepper the
+console's own `readout()` prints what an encoder actually watches:
+`41% · frame 18422/34071 · 41.2 fps · 4210 kbit/s · ETA 13m`.
 
-## Encode console
+`PN.routeText()` renders the Encode form's expected route as `Download → Encode → Upload`.
 
-`web/index.html` (`GET /encode`): left command list (`Encode`/`Git Encode`/`Backup`/`Pancode`/`Jobs`/`Cancel`), right options, footer with token + Run, karaoke-style pipeline view of a job's stages. Encode and Git Encode carry a `Preset` dropdown that defaults to `Server default` (an empty value, which sends no `preset` at all) and is the only interface offering the `720p` and `480p` presets.
+## Deep links
 
-## Git console
+- `GET /jobs?job=<id>` opens the Jobs page with that job selected in the detail panel. Operations
+  rows and the "Recently finished" entries link here; so does a queued Smartcode from Repositories.
 
-`web/git.html` (`GET /git`): the git endpoints (`Init`/`Attach`/`Source`/`Smartcode`/`Detach`/`Destruct`/`Credits/Readme`); Smartcode derives preset/concat from the server's `/edit` settings; **local token required** (renders the `403` specially for a plain token). Source/Smartcode/Detach/Destruct pick the channel from a live attached-anime dropdown (`GET /git/attachments`); Init/Attach from a live Discord channel dropdown (`GET /git/channels`) — both refreshable, last pick remembered in `localStorage`, no raw ids typed. **Credits/Readme** edits the server's README template (`base.md`) inline: it auto-loads on select (no Run needed), shows the formatting guide when none is set, and **Run saves** via `POST /git/readmebase`.
+The old `?embed=1`, `?job=`, `?jobs=1` modes and the draggable job windows were removed with the
+desktop shell.
+
+## Console views
+
+`web/index.html` serves four views off `location.pathname`:
+
+- **Operations** (`/`) — four stat tiles, a Live pipeline table of ongoing jobs, a Worker capacity
+  panel from `GET /workers`, and Recently finished from `?status=recent`. Elapsed comes from the
+  worker snapshot's `secs_since_request`, so it is blank without a PNwitch token; `GET /workers`
+  is operator-only, so the capacity panel renders a "needs a PNwitch token" state otherwise.
+- **Jobs** (`/jobs`) — All/Active/Queued/Completed/Failed tabs over `?status=recent`, a client-side
+  search on job id and source, and a sticky detail panel that polls the selected job every 2s and
+  carries **Cancel job** (which needs a local token and a non-terminal job on that token's server).
+- **Encode** (`/encode`) — tabs for `Encode` / `Git Encode` / `Backup` / `Pancode` / `Keycode`, with
+  a Submission summary beside them (token reach, workers online, queue depth, and the expected route
+  as `Download → Encode → Upload`)
+  and preset guidance that changes with the selected preset. Encode and Git Encode carry a `Preset`
+  dropdown defaulting to `Server default` (an empty value, which sends no `preset` at all) and are
+  the only interface offering the `720p` and `480p` presets. Pancode keeps its two-step probe →
+  pick a file → encode flow. Submitting locks the page to that job until it ends.
+- **Settings** (`/settings`) — the bearer token (saved to `localStorage` `pandora_token`, shared by
+  every console), its probed reach, **Forget saved token** (this browser) vs **Revoke on the server**
+  (`POST /token/revoke`, two-step confirm), theme, and the job-poll preference.
+
+## Repositories
+
+`web/git.html` (`GET /git`): the git endpoints (`Init`/`Attach`/`Source`/`Smartcode`/`Detach`/`Destruct`/`Credits/Readme`); Smartcode derives preset/concat from the server's `/edit` settings; **local token required** (renders the `403` specially for a plain token). The page is selection-driven: an **Attached anime** table (`GET /git/attachments`, searchable) picks
+the repo, and a details card below it carries Source and Smartcode as tabs plus **Detach** and
+**Destruct** in its header. Destruct asks you to type the anime's name back before it deletes the
+Forgejo repo. **New repository** (init) and **Attach existing** open a form from the topbar and pick
+their channel from a live Discord channel dropdown (`GET /git/channels`, last pick remembered in
+`localStorage`) — no raw ids are ever typed. A **README template** card at the bottom auto-loads
+`base.md`, shows the formatting guide when none is set, and saves via `POST /git/readmebase`.
 
 ## Theme
 
-Pandora (Re:Zero) palette — `:root` light + `:root[data-theme="dark"]` dark, `pandora_theme` in `localStorage`, applied by an inline `<head>` script before first paint. The two consoles share an **identical `<head>`** (CSS + scripts) — `git.html` is regenerated from `index.html`'s head, so retheme `index.html` then re-sync (only the `<title>` should differ); `desktop.html` has its own head. The titlebar toggle shows ☀ in light mode and ☾ in dark. The standalone consoles listen for `pandora_theme` storage events, and the desktop pushes theme changes into already-open same-origin iframe windows so the inner consoles repaint immediately. Traffic-light colors are theme variables: light mode is the swapped/opposite ordering of dark mode (`r` bright / `y` medium / `g` muted in light; `r` muted / `y` medium / `g` bright in dark).
+The palette is taken from the reference designs: a flat near-black ground (`#05101d` content,
+`#091524` rail, `#0e1927` cards), one blue accent (`#2562c3` buttons, `#3c81eb` links, progress
+and icons), and green / amber / red reserved for status only. Radii are small (6px, 8px for
+cards), there are no drop shadows on panels, and the only serif on any page is the `PANDORA`
+wordmark — page titles and stat values are the body sans, bold.
+
+All of it lives in `web/shell.css` as `--pn-*` tokens: `:root` is light,
+`:root[data-theme="dark"]` is dark, and **that file is the only place to retheme**. Studio and the
+Trace Lab map their own local variables onto `--pn-*` rather than carrying palettes of their own.
+
+`pandora_theme` in `localStorage` holds `dark` / `light` / `system` (default `system`); `shell.js`
+resolves it to a `data-theme` attribute on load, follows `prefers-color-scheme` while set to
+system, and repaints on the `storage` event so a change in Settings reaches other open tabs. The
+choice is made in Settings — there is no titlebar toggle any more.
 
 ## Favicon
 
 `GET /favicon` serves a bundled circular icon (`web/favicon.png`, `include_bytes!`), overridable at runtime by `DB/config/global/favicon.{png,ico,svg,jpg,jpeg,webp,gif}` (first match wins, content-type by extension).
 
-Both consoles are responsive (mobile breakpoint at 760px, full-bleed window + 16px inputs to avoid iOS zoom).
+Every page is responsive: below 1080px the rail becomes a horizontal icon bar and the two-column
+layouts stack; below 700px the topbar's page action is dropped in favour of the rail. Keyboard focus
+is visible throughout and `prefers-reduced-motion` collapses every transition.
 
 ## Deployment
 

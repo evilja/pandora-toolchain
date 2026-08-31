@@ -3,965 +3,431 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>pandora — git console</title>
+<title>Repositories — Pandora</title>
 <link rel="icon" href="/favicon">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/console.css">
+<script src="/console.js"></script>
 <style>
-  /* theme: Pandora (Re:Zero) — silver-white hair, cobalt eyes, navy ribbon, violet flowers */
-  :root {
-    --bg: #eaeff7;
-    --bg-2: #fafcff;
-    --panel: rgba(255,255,255,0.95);
-    --panel-2: #f0f4fb;
-    --raise: #e5ecf7;
-    --line: #d2dcec;
-    --line-2: #b1c2de;
-    --ink: #1e2c4d;
-    --ink-2: #3f5681;
-    --dim: #6b7c9e;
-    --faint: #9aa9c6;
-    --k1: #2f6fd0;
-    --k2: #a9cef4;
-    --cool: #5a83c6;
-    --done: #7c6cc8;
-    --bad: #d2687f;
-    --body-bg:
-      radial-gradient(720px 520px at 18% 0%, rgba(255,255,255,0.95), transparent 64%),
-      radial-gradient(820px 640px at 85% -10%, rgba(169,206,244,0.45), transparent 60%),
-      radial-gradient(860px 680px at -8% 110%, rgba(124,108,200,0.16), transparent 56%),
-      linear-gradient(180deg, var(--bg-2), var(--bg));
-    --scan: rgba(47,111,208,0.035);
-    --scan-blend: multiply;
-    --shadow: rgba(40,60,110,0.42);
-    --inset: rgba(255,255,255,0.9);
-    --bar-bg: linear-gradient(180deg, rgba(255,255,255,0.92), rgba(234,240,250,0.88));
-    --rail-bg: linear-gradient(180deg, rgba(230,238,250,0.78), rgba(255,255,255,0.46));
-    --out-bg: linear-gradient(180deg, rgba(230,238,250,0.82), rgba(255,255,255,0.56));
-    --focus: rgba(90,131,198,0.20);
-    --tint-bg: rgba(47,111,208,0.08);
-    --tint-line: rgba(47,111,208,0.32);
-    --ok-bg: rgba(124,108,200,0.10);
-    --ok-line: rgba(124,108,200,0.40);
-    --bad-bg: rgba(210,104,127,0.10);
-    --bad-line: rgba(210,104,127,0.40);
-    --on-accent: #ffffff;
-    --accent-shadow: rgba(47,111,208,0.55);
-    --traffic-r: var(--k1);
-    --traffic-y: var(--cool);
-    --traffic-g: var(--line-2);
-    --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%236b7c9e' stroke-width='1.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
-    --karaoke: linear-gradient(90deg, #dcecff, #a9cef4, #2f6fd0, #c4dcff, #ffffff, #a9cef4, #dcecff);
-    --radius: 16px;
-    --radius-sm: 9px;
-    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-    --disp: "Bricolage Grotesque", "Hanken Grotesk", system-ui, sans-serif;
-    --body: "Hanken Grotesk", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  }
-  :root[data-theme="dark"] {
-    --bg: #0f1626;
-    --bg-2: #131c30;
-    --panel: rgba(22,30,49,0.96);
-    --panel-2: #1a2440;
-    --raise: #212c4a;
-    --line: #2c3a5c;
-    --line-2: #44557d;
-    --ink: #e9f0fb;
-    --ink-2: #bfceea;
-    --dim: #8a9cbf;
-    --faint: #5f7298;
-    --k1: #6ba6f0;
-    --k2: #bfe0ff;
-    --cool: #7ca2dc;
-    --done: #a99bf0;
-    --bad: #e58aa0;
-    --body-bg:
-      radial-gradient(720px 520px at 18% 0%, rgba(54,72,116,0.45), transparent 64%),
-      radial-gradient(820px 640px at 85% -10%, rgba(47,90,170,0.30), transparent 60%),
-      radial-gradient(860px 680px at -8% 110%, rgba(124,108,200,0.20), transparent 56%),
-      linear-gradient(180deg, var(--bg-2), var(--bg));
-    --scan: rgba(150,185,240,0.06);
-    --scan-blend: screen;
-    --shadow: rgba(0,0,0,0.55);
-    --inset: rgba(255,255,255,0.06);
-    --bar-bg: linear-gradient(180deg, rgba(28,38,62,0.92), rgba(18,26,44,0.9));
-    --rail-bg: linear-gradient(180deg, rgba(26,36,60,0.8), rgba(18,26,44,0.5));
-    --out-bg: linear-gradient(180deg, rgba(24,33,55,0.85), rgba(16,23,40,0.6));
-    --focus: rgba(124,162,220,0.30);
-    --tint-bg: rgba(107,166,240,0.12);
-    --tint-line: rgba(107,166,240,0.40);
-    --ok-bg: rgba(169,155,240,0.14);
-    --ok-line: rgba(169,155,240,0.42);
-    --bad-bg: rgba(229,138,160,0.14);
-    --bad-line: rgba(229,138,160,0.42);
-    --on-accent: #0d1424;
-    --accent-shadow: rgba(0,0,0,0.5);
-    --traffic-r: var(--line-2);
-    --traffic-y: var(--cool);
-    --traffic-g: var(--k1);
-    --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238a9cbf' stroke-width='1.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
-    --karaoke: linear-gradient(90deg, #1f3a66, #6ba6f0, #bfe0ff, #ffffff, #bfe0ff, #6ba6f0, #1f3a66);
-  }
-  * { box-sizing: border-box; }
-  html { -webkit-text-size-adjust: 100%; }
-  html, body { height: 100%; margin: 0; }
-  body {
-    font-family: var(--body);
-    color: var(--ink);
-    background: var(--body-bg);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 24px;
-  }
-  body::before {
-    content: "";
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    z-index: 0;
-    background: repeating-linear-gradient(0deg, var(--scan) 0 1px, transparent 1px 4px);
-    mix-blend-mode: var(--scan-blend);
-  }
+  .repo-search { position: relative; flex: 0 0 auto; }
+  .repo-search svg { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); width: 15px; height: 15px; stroke: var(--pn-faint); fill: none; stroke-width: 1.7; }
+  .repo-search input { padding-left: 33px; width: 230px; }
 
-  .window {
-    position: relative;
-    z-index: 1;
-    width: 94%;
-    max-width: 880px;
-    max-height: 90vh;
-    display: flex;
-    flex-direction: column;
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    box-shadow: 0 34px 80px -28px var(--shadow), 0 2px 0 0 var(--inset) inset;
-    overflow: hidden;
-  }
-
-  .titlebar {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 0 16px;
-    height: 46px;
-    background: var(--bar-bg);
-    border-bottom: 1px solid var(--line);
-    user-select: none;
-  }
-  .dots { display: flex; gap: 8px; }
-  .dot { width: 12px; height: 12px; border-radius: 50%; opacity: 0.95; }
-  .dot.r { background: var(--traffic-r); }
-  .dot.y { background: var(--traffic-y); }
-  .dot.g { background: var(--traffic-g); }
-  .brand { display: flex; align-items: center; gap: 9px; margin-left: 4px; min-width: 0; }
-  .brand b { flex: 0 0 auto; font-family: var(--disp); font-weight: 800; font-size: 16px; letter-spacing: -0.2px; color: var(--ink); }
-  .brand .sub { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11px; color: var(--dim); letter-spacing: 0.4px; }
-  .navlink {
-    margin-left: 14px;
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--k1);
-    text-decoration: none;
-    letter-spacing: 0.3px;
-    white-space: nowrap;
-    padding: 4px 9px;
-    border: 1px solid var(--line);
-    border-radius: 7px;
-    transition: border-color .14s, color .14s;
-  }
-  .navlink:hover { border-color: var(--k1); color: var(--ink); }
-  .navlink:focus-visible { outline: 2px solid var(--cool); outline-offset: 2px; }
-  .theme-toggle {
-    margin-left: auto;
-    font-size: 13px;
-    line-height: 1;
-    color: var(--ink-2);
-    background: transparent;
-    border: 1px solid var(--line);
-    border-radius: 7px;
-    padding: 5px 9px;
-    cursor: pointer;
-    transition: border-color .14s, color .14s;
-  }
-  .theme-toggle:hover { border-color: var(--k1); color: var(--ink); }
-  .theme-toggle:focus-visible { outline: 2px solid var(--cool); outline-offset: 2px; }
-
-  /* window manager (desktop): drag handle + floating job windows */
-  .titlebar { cursor: move; }
-  .jobwin {
-    position: fixed; z-index: 120;
-    width: 380px; max-width: calc(100vw - 32px); max-height: 72vh;
-    display: flex; flex-direction: column;
-    background: var(--panel); border: 1px solid var(--line);
-    border-radius: var(--radius);
-    box-shadow: 0 34px 80px -28px var(--shadow), 0 2px 0 0 var(--inset) inset;
-    overflow: hidden;
-  }
-  .jobwin-bar {
-    display: flex; align-items: center; gap: 9px;
-    padding: 0 12px; height: 40px; cursor: move; user-select: none;
-    background: var(--bar-bg); border-bottom: 1px solid var(--line);
-  }
-  .jobwin-bar .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--k1); flex-shrink: 0; }
-  .jobwin-bar .t { font-family: var(--mono); font-size: 12px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .jobwin-close {
-    margin-left: auto; cursor: pointer; width: 22px; height: 22px; line-height: 1; flex-shrink: 0;
-    font-size: 13px; color: var(--ink-2); background: transparent;
-    border: 1px solid var(--line); border-radius: 6px;
-  }
-  .jobwin-close:hover { border-color: var(--k1); color: var(--ink); }
-  .jobwin-body { padding: 16px; overflow: auto; }
-  .popout {
-    margin-left: auto; cursor: pointer; font-family: var(--mono); font-size: 11px;
-    color: var(--k1); background: transparent; border: 1px solid var(--line);
-    border-radius: 6px; padding: 2px 8px;
-  }
-  .popout:hover { border-color: var(--k1); color: var(--ink); }
-  .jobrow { cursor: pointer; }
-  .jobrow:hover td { background: var(--raise); }
-
-  /* embed mode: rendered inside a desktop-shell iframe — drop the outer chrome */
-  html.embed, html.embed body { height: 100%; }
-  html.embed body { padding: 0; align-items: stretch; background: transparent; }
-  html.embed body::before { display: none; }
-  html.embed .titlebar { display: none; }
-  html.embed .window {
-    width: 100%; max-width: none; height: 100%; max-height: none;
-    border: 0; border-radius: 0; box-shadow: none;
-  }
-  /* fill the iframe: let the command area grow so the footer pins to the bottom (no gap) */
-  html.embed .grid { flex: 1 1 auto; min-height: 0; }
-  html.embed .options { overflow: auto; }
-  /* the API token lives in the desktop taskbar when embedded */
-  html.embed .footer .tok { display: none; }
-  html.embed .footer { justify-content: flex-end; }
-  /* job-only mode: a single job's live view, no command UI (used by desktop job windows) */
-  html.jobonly .grid, html.jobonly .footer { display: none; }
-  html.jobonly .output { flex: 1; height: 100%; max-height: none; overflow: auto; }
-
-  .notice {
-    font-size: 12px; color: var(--ink-2); line-height: 1.45;
-    background: var(--tint-bg);
-    border: 1px solid var(--tint-line);
-    border-radius: var(--radius-sm);
-    padding: 9px 12px; margin: 0 0 16px;
-  }
-  .notice b { color: var(--ink); }
-  .notice .mono { color: var(--k1); }
-
-  .grid { display: flex; min-height: 250px; }
-
-  .commands {
-    width: 176px;
-    flex-shrink: 0;
-    padding: 14px 12px;
-    border-right: 1px solid var(--line);
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    background: var(--rail-bg);
-  }
-  .rail-label {
-    font-family: var(--mono);
-    font-size: 10px;
-    letter-spacing: 1.4px;
-    text-transform: uppercase;
-    color: var(--faint);
-    padding: 2px 10px 8px;
-  }
-  .cmd {
-    position: relative;
-    text-align: left;
-    border: 0;
+  .det-cols { display: grid; grid-template-columns: 190px minmax(0, 1fr); }
+  .det-nav { border-right: 1px solid var(--pn-line); padding: 10px; display: flex; flex-direction: column; gap: 2px; }
+  .det-nav button {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px; border: 0; border-radius: 8px; background: none; cursor: pointer;
+    font-size: 13.5px; font-weight: 500; color: var(--pn-ink-2); text-align: left;
     border-left: 2px solid transparent;
-    background: transparent;
-    color: var(--dim);
-    padding: 10px 12px;
-    border-radius: var(--radius-sm);
-    font-family: var(--disp);
-    font-weight: 600;
-    font-size: 14.5px;
-    letter-spacing: -0.1px;
-    cursor: pointer;
-    transition: background .14s, color .14s, border-color .14s;
   }
-  .cmd:hover { background: var(--raise); color: var(--ink-2); }
-  .cmd.active {
-    background: var(--raise);
-    color: var(--ink);
-    border-left-color: var(--k1);
-  }
-  .cmd.active::after {
-    content: "";
-    position: absolute;
-    right: 11px; top: 50%;
-    width: 5px; height: 5px;
-    border-radius: 50%;
-    background: var(--k1);
-    transform: translateY(-50%);
-    box-shadow: 0 0 8px var(--k1);
-  }
-  .cmd:focus-visible { outline: 2px solid var(--cool); outline-offset: 2px; }
+  .det-nav button svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+  .det-nav button:hover { background: var(--pn-panel-2); }
+  .det-nav button[aria-pressed="true"] { background: var(--pn-k1-soft); color: var(--pn-ink); font-weight: 600; border-left-color: var(--pn-k1); }
+  .det-body { padding: 18px; min-width: 0; }
+  .det-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); gap: 18px; }
+  .det-facts { padding: 16px; border-radius: var(--pn-r-lg); background: var(--pn-panel-2); border: 1px solid var(--pn-line); align-self: start; }
 
-  .options {
-    flex: 1;
-    padding: 20px 22px;
-    overflow-y: auto;
-    min-width: 0;
-  }
-  .eyebrow {
-    font-family: var(--mono);
-    font-size: 10.5px;
-    letter-spacing: 0.5px;
-    color: var(--faint);
-    margin-bottom: 6px;
-  }
-  .desc { font-size: 13px; color: var(--dim); margin: 0 0 18px; line-height: 1.45; }
+  .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0 16px; }
+  .form-grid .pn-field.span { grid-column: 1 / -1; }
 
-  .field { margin-bottom: 15px; }
-  .field > label:not(.check):not(.filepick) {
-    display: block;
-    font-size: 11.5px;
-    font-weight: 600;
-    letter-spacing: 0.2px;
-    color: var(--ink-2);
-    margin-bottom: 6px;
+  @media (max-width: 1080px) {
+    .det-cols { grid-template-columns: minmax(0, 1fr); }
+    .det-nav { border-right: 0; border-bottom: 1px solid var(--pn-line); flex-direction: row; overflow-x: auto; }
+    .det-nav button { border-left: 0; border-bottom: 2px solid transparent; white-space: nowrap; }
+    .det-nav button[aria-pressed="true"] { border-left-color: transparent; border-bottom-color: var(--pn-k1); }
+    .det-split { grid-template-columns: minmax(0, 1fr); }
   }
-  .field .opt { color: var(--faint); font-weight: 400; }
-  input[type=text], input[type=number], input[type=password], select {
-    width: 100%;
-    background: var(--bg);
-    border: 1px solid var(--line);
-    color: var(--ink);
-    border-radius: var(--radius-sm);
-    padding: 10px 12px;
-    font-size: 13.5px;
-    font-family: var(--body);
-    outline: none;
-    transition: border-color .14s, box-shadow .14s;
-  }
-  input::placeholder { color: var(--faint); }
-  input:focus, select:focus {
-    border-color: var(--cool);
-    box-shadow: 0 0 0 3px var(--focus);
-  }
-  select {
-    appearance: none;
-    background-image: var(--select-arrow);
-    background-repeat: no-repeat;
-    background-position: right 12px center;
-    padding-right: 32px;
-  }
-  .hint { font-size: 12px; color: var(--dim); }
-
-  textarea.editor {
-    width: 100%;
-    min-height: 360px;
-    resize: vertical;
-    background: var(--bg);
-    border: 1px solid var(--line);
-    color: var(--ink);
-    border-radius: var(--radius-sm);
-    padding: 12px 14px;
-    font-size: 13px;
-    font-family: var(--mono);
-    line-height: 1.5;
-    tab-size: 2;
-    outline: none;
-    transition: border-color .14s, box-shadow .14s;
-  }
-  textarea.editor:focus { border-color: var(--cool); box-shadow: 0 0 0 3px var(--focus); }
-  .editor-status { font-size: 12px; color: var(--dim); margin: 0 0 8px; }
-  .editor-status .tag {
-    display: inline-block; font-family: var(--mono); font-size: 11px;
-    padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line);
-    color: var(--ink-2); margin-right: 7px;
-  }
-
-  .check { display: flex; align-items: center; gap: 11px; cursor: pointer; user-select: none; font-size: 13.5px; color: var(--ink-2); }
-  .check input { position: absolute; opacity: 0; width: 0; height: 0; }
-  .check .box {
-    width: 19px; height: 19px; flex-shrink: 0;
-    border: 1px solid var(--line-2);
-    background: var(--bg);
-    border-radius: 6px;
-    display: inline-flex; align-items: center; justify-content: center;
-    transition: border-color .14s, background .14s;
-  }
-  .check .box::after {
-    content: ""; width: 10px; height: 10px; border-radius: 3px;
-    background: linear-gradient(135deg, var(--k1), var(--k2));
-    transform: scale(0); transition: transform .14s;
-  }
-  .check input:checked + .box { border-color: var(--k1); }
-  .check input:checked + .box::after { transform: scale(1); }
-  .check input:focus-visible + .box { box-shadow: 0 0 0 3px var(--focus); }
-
-  .filepick { display: flex; align-items: center; gap: 12px; cursor: pointer; }
-  .filepick input[type=file] { display: none; }
-  .filebtn {
-    font-family: var(--mono);
-    background: var(--raise); color: var(--ink-2);
-    border: 1px solid var(--line-2); border-radius: var(--radius-sm);
-    padding: 9px 14px; font-size: 12.5px; white-space: nowrap;
-    transition: border-color .14s, color .14s;
-  }
-  .filepick:hover .filebtn { border-color: var(--k1); color: var(--ink); }
-  .filename {
-    font-family: var(--mono); font-size: 12px; color: var(--faint);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .filename.has { color: var(--ink); }
-
-  .selrow { display: flex; gap: 8px; }
-  .selrow select { flex: 1; }
-  .mini {
-    border: 1px solid var(--line-2); background: var(--raise);
-    color: var(--dim); border-radius: var(--radius-sm); padding: 0 13px;
-    font-size: 15px; cursor: pointer; line-height: 1;
-    transition: border-color .14s, color .14s, transform .3s;
-  }
-  .mini:hover { border-color: var(--k1); color: var(--ink); transform: rotate(90deg); }
-  .mini:focus-visible { outline: 2px solid var(--cool); outline-offset: 2px; }
-
-  .output {
-    border-top: 1px solid var(--line);
-    padding: 16px 22px;
-    max-height: 36vh;
-    overflow: auto;
-    background: var(--out-bg);
-  }
-  .output:empty { display: none; }
-  pre {
-    margin: 10px 0 0;
-    font-family: var(--mono);
-    font-size: 12.5px;
-    line-height: 1.55;
-    white-space: pre-wrap;
-    word-break: break-word;
-    color: var(--ink-2);
-  }
-  .mono { font-family: var(--mono); }
-  .muted { color: var(--dim); }
-
-  table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12.5px; }
-  th, td { text-align: left; padding: 8px 8px; border-bottom: 1px solid var(--line); }
-  th { color: var(--faint); font-weight: 600; font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.8px; text-transform: uppercase; }
-  td.trunc { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-  .pill {
-    display: inline-block; font-family: var(--mono); font-size: 11px; font-weight: 600;
-    padding: 2px 9px; border-radius: 6px; letter-spacing: 0.3px;
-    border: 1px solid var(--line-2); color: var(--ink-2); background: var(--panel-2);
-  }
-  .pill.ok { color: var(--done); border-color: var(--ok-line); }
-  .pill.err { color: var(--bad); border-color: var(--bad-line); }
-
-  .chip {
-    display: inline-block; font-family: var(--mono); font-size: 11px; font-weight: 600;
-    padding: 3px 9px; border-radius: 7px; letter-spacing: 0.3px;
-    border: 1px solid var(--line); color: var(--ink-2); background: var(--panel-2);
-  }
-  .chip.active { color: var(--k1); border-color: var(--tint-line); background: var(--tint-bg); }
-  .chip.done { color: var(--done); border-color: var(--ok-line); background: var(--ok-bg); }
-  .chip.bad { color: var(--bad); border-color: var(--bad-line); background: var(--bad-bg); }
-  .chip.idle { color: var(--dim); }
-
-  /* signature: karaoke pipeline */
-  .stat-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
-  .stat-id { font-size: 12.5px; color: var(--ink); }
-  .stat-type { font-size: 12.5px; color: var(--dim); }
-  .pipe { display: flex; gap: 10px; margin: 6px 0 10px; }
-  .seg { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 9px; }
-  .seg-track { height: 8px; border-radius: 999px; background: var(--line); display: block; overflow: hidden; }
-  .seg-prog { display: block; height: 100%; width: 0; border-radius: 999px; transition: width .5s ease; }
-  .seg-name {
-    font-family: var(--mono); font-size: 11px; color: var(--faint);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0.4px;
-  }
-  .seg.done .seg-prog { background: var(--cool); }
-  .seg.done .seg-name { color: var(--ink-2); }
-  .seg.fin .seg-prog { background: var(--done); }
-  .seg.fin .seg-name { color: var(--done); }
-  .seg.active .seg-track { box-shadow: 0 0 0 1px var(--tint-line) inset; }
-  .seg.active .seg-prog {
-    background: var(--karaoke);
-    background-size: 300% 100%;
-    animation: ksweep 1.7s linear infinite;
-    box-shadow: 0 0 14px -2px var(--k2);
-  }
-  .seg.active .seg-name { color: var(--k1); font-weight: 600; }
-  @keyframes ksweep { from { background-position: 200% 0; } to { background-position: 0 0; } }
-  /* indeterminate "waiting on a cached/duplicate input" state */
-  .seg.wait .seg-track { box-shadow: 0 0 0 1px var(--tint-line) inset; }
-  .seg.wait .seg-prog {
-    width: 100% !important;
-    background: repeating-linear-gradient(90deg, var(--k2) 0 9px, transparent 9px 18px);
-    background-size: 18px 100%;
-    animation: kslide 0.9s linear infinite;
-    opacity: 0.6;
-  }
-  @keyframes kslide { from { background-position: 0 0; } to { background-position: 18px 0; } }
-  .seg.wait .seg-name { color: var(--k1); font-weight: 600; }
-  .accepted { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 12px 0; font-size: 13px; }
-
-  /* progress readout + uploaded links */
-  .prog-meta { margin-top: 2px; font-size: 12px; color: var(--ink-2); }
-  .prog-label {
-    font-family: var(--mono); font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
-    color: var(--faint); margin: 14px 0 6px;
-  }
-  .link-row {
-    display: flex; gap: 12px; align-items: baseline; padding: 5px 0;
-    border-bottom: 1px solid var(--line); font-size: 12.5px; word-break: break-all;
-  }
-  .link-host { color: var(--k1); min-width: 88px; flex-shrink: 0; }
-  .link-row a { color: var(--cool); text-decoration: none; }
-  .link-row a:hover { text-decoration: underline; }
-
-  .up-hosts { margin-top: 9px; display: flex; flex-direction: column; gap: 4px; }
-  .up-host { font-size: 12px; color: var(--ink-2); word-break: break-all; }
-  .up-host a { color: var(--cool); text-decoration: none; }
-  .up-host a:hover { text-decoration: underline; }
-
-  .footer {
-    display: flex;
-    align-items: flex-end;
-    gap: 12px;
-    padding: 14px 16px;
-    border-top: 1px solid var(--line);
-    background: var(--bar-bg);
-  }
-  .footer .tok { flex: 1; display: flex; flex-direction: column; gap: 6px; }
-  .footer .toklabel {
-    font-family: var(--mono); font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
-    color: var(--faint); display: flex; gap: 8px; align-items: center;
-  }
-  .saved { color: var(--done); opacity: 0; transition: opacity .2s; text-transform: none; letter-spacing: 0; }
-  .saved.show { opacity: 1; }
-  .run {
-    font-family: var(--disp);
-    background: linear-gradient(120deg, var(--k1), var(--k2));
-    color: var(--on-accent);
-    border: 0;
-    border-radius: var(--radius-sm);
-    padding: 10px 26px;
-    font-size: 14px;
-    font-weight: 700;
-    letter-spacing: 0.2px;
-    cursor: pointer;
-    align-self: flex-end;
-    box-shadow: 0 10px 22px -9px var(--accent-shadow);
-    transition: filter .14s, transform .08s, opacity .14s;
-  }
-  .run:hover { filter: brightness(1.06); }
-  .run:active { transform: translateY(1px); }
-  .run:focus-visible { outline: 2px solid var(--cool); outline-offset: 2px; }
-  .run:disabled { opacity: 0.5; cursor: default; filter: saturate(0.5); }
-
-  @media (max-width: 760px) {
-    body { padding: 0; align-items: stretch; }
-    /* mobile: no window manager — keep the plain single-card layout */
-    .titlebar { cursor: default; gap: 8px; padding: 0 12px; }
-    .brand .sub { display: none; }
-    .navlink { margin-left: 0; padding: 4px 7px; }
-    .theme-toggle { padding: 5px 7px; }
-    .jobwin { display: none !important; }
-    .popout { display: none !important; }
-    .jobrow { cursor: default; }
-    .window {
-      width: 100%;
-      max-width: none;
-      min-height: 100%;
-      max-height: none;
-      border: 0;
-      border-radius: 0;
-      box-shadow: none;
-    }
-    .grid { flex-direction: column; }
-    .commands {
-      width: auto;
-      flex-direction: row;
-      flex-wrap: wrap;
-      gap: 6px;
-      border-right: none;
-      border-bottom: 1px solid var(--line);
-    }
-    .rail-label { display: none; }
-    .cmd {
-      flex: 1 1 auto;
-      text-align: center;
-      padding: 9px 12px;
-      border-left: 0;
-      border-bottom: 2px solid transparent;
-    }
-    .cmd.active { border-left: 0; border-bottom-color: var(--k1); }
-    .cmd.active::after { display: none; }
-    .options { padding: 18px 16px; }
-    .output { padding: 14px 16px; max-height: none; }
-    .seg-name { display: none; }
-    .footer { flex-wrap: wrap; padding: 12px 16px; gap: 10px; }
-    .footer .tok { flex: 1 1 100%; }
-    .run { width: 100%; align-self: stretch; padding: 13px 26px; }
-    /* 16px on inputs keeps iOS Safari from auto-zooming on focus */
-    input[type=text], input[type=number], input[type=password], select { font-size: 16px; }
-    td.trunc { max-width: 140px; }
-    .link-host { min-width: 0; }
-  }
-  @media (max-width: 380px) {
-    .titlebar { gap: 5px; padding: 0 8px; }
-    .navlink { padding: 4px 5px; }
-    .theme-toggle { padding: 5px 6px; }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .seg.active .seg-prog { animation: none; background: var(--karaoke); }
-    .mini:hover { transform: none; }
+  @media (max-width: 640px) {
+    .repo-search { flex: 1 1 100%; }
+    .repo-search input { width: 100%; }
   }
 </style>
-<script>
-  (function () {
-    function preferredTheme(fallback) {
-      var t = null;
-      try { t = localStorage.getItem("pandora_theme"); } catch (e) {}
-      if (t === "light" || t === "dark") return t;
-      if (fallback === "light" || fallback === "dark") return fallback;
-      return (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
-    }
-    try {
-      document.documentElement.setAttribute("data-theme", preferredTheme());
-      if (/[?&]embed=1\b/.test(location.search)) document.documentElement.classList.add("embed");
-      if (/[?&]job=/.test(location.search) || /[?&]jobs=1\b/.test(location.search)) document.documentElement.classList.add("jobonly");
-    } catch (e) {}
-  })();
-</script>
 </head>
-<body>
-  <div class="window">
-    <div class="titlebar">
-      <div class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></div>
-      <div class="brand"><b>pandora</b><span class="sub">git console</span></div>
-      <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle theme">☀</button>
-      <a class="navlink" href="/" title="Desktop">⊞ desktop</a>
-      <a class="navlink" href="/encode" title="Encode console">‹ encode</a>
-    </div>
-
-    <div class="grid">
-      <div class="commands" id="commands"></div>
-      <div class="options" id="options"></div>
-    </div>
-
-    <div class="output" id="output"></div>
-
-    <div class="footer">
-      <div class="tok">
-        <div class="toklabel">Local API token <span class="saved" id="saved">saved ✓</span></div>
-        <input type="password" id="token" placeholder="Bearer token (local)" autocomplete="off" spellcheck="false">
-      </div>
-      <button class="run" id="run">Run</button>
-    </div>
-  </div>
+<body class="pn-body">
+<div class="pn-app">
+  <main class="pn-main">
+    <div class="pn-content" id="view"></div>
+  </main>
+</div>
 
 <script>
 (function () {
   "use strict";
 
-  // ---- theme toggle (Pandora light / dark), shared across both consoles ----
-  (function () {
-    var root = document.documentElement;
-    var btn = document.getElementById("themeToggle");
-    function storedTheme() {
-      var t = null;
-      try { t = localStorage.getItem("pandora_theme"); } catch (e) {}
-      if (t === "light" || t === "dark") return t;
-      t = root.getAttribute("data-theme");
-      if (t === "light" || t === "dark") return t;
-      return (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
-    }
-    function applyTheme(t) {
-      t = t === "dark" ? "dark" : "light";
-      root.setAttribute("data-theme", t);
-      paint();
-    }
-    function paint() {
-      var dark = root.getAttribute("data-theme") === "dark";
-      if (btn) { btn.textContent = dark ? "☾" : "☀"; btn.title = dark ? "Light mode" : "Dark mode"; }
-    }
-    applyTheme(storedTheme());
-    window.pandoraSetTheme = applyTheme;
-    if (btn) btn.addEventListener("click", function () {
-      var next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
-      applyTheme(next);
-      try { localStorage.setItem("pandora_theme", next); } catch (e) {}
-      try { window.parent.postMessage({ type: "pandora:theme", theme: next }, "*"); } catch (e) {}
-    });
-    window.addEventListener("storage", function (e) {
-      if (e.key !== "pandora_theme") return;
-      applyTheme(e.newValue);
-    });
-    window.addEventListener("message", function (e) {
-      var d = e.data || {};
-      if (d.type === "pandora:theme") applyTheme(d.theme);
-    });
-    window.addEventListener("pageshow", function () { applyTheme(storedTheme()); });
-  })();
+  var esc = PN.esc, api = PN.api, icon = PN.icon;
 
-  var API = "";
-  var commandsEl = document.getElementById("commands");
-  var optionsEl  = document.getElementById("options");
-  var outputEl   = document.getElementById("output");
-  var tokenEl    = document.getElementById("token");
-  var savedEl    = document.getElementById("saved");
-  var runEl      = document.getElementById("run");
-
-  var active = "init";
-  var busyFlag = false;
-
-  // ---- token persistence (shared with the encode console) ----
-  tokenEl.value = localStorage.getItem("pandora_token") || "";
-  // when embedded in the desktop, the token is set from the taskbar — keep this copy in sync
-  window.addEventListener("storage", function (e) {
-    if (e.key === "pandora_token") tokenEl.value = e.newValue || "";
-  });
-  var savedT;
-  tokenEl.addEventListener("input", function () {
-    localStorage.setItem("pandora_token", tokenEl.value);
-    savedEl.classList.add("show");
-    clearTimeout(savedT);
-    savedT = setTimeout(function () { savedEl.classList.remove("show"); }, 900);
+  PN.shell({
+    page: "repositories",
+    title: "Repositories",
+    actions: '<div style="margin-left:18px;display:flex;gap:8px">' +
+      '<button class="pn-btn" id="btnAttach" type="button">Attach existing</button>' +
+      '<button class="pn-btn pn-primary" id="btnInit" type="button">New repository</button></div>'
   });
 
-  var NOTICE = 'Needs a <b>local</b> token bound to this server. Mint one in Discord with ' +
-    '<span class="mono">/gentoken local</span> (run it in the target server). The token carries the server id; ' +
-    'pick the channel below.';
+  var LOCAL_NOTE = 'Repository work needs a <b>local</b> token. Mint one in Discord with ' +
+    '<span class="pn-tag">/gentoken local</span> from the server you want to work on — the token carries ' +
+    'the server id, so you only ever pick a channel here.';
 
-  // ---- command specs ----
-  var COMMANDS = {
+  var attachments = [];
+  var channels = [];
+  var selected = "";        // channel_id of the selected attachment
+  var detailTab = "source";
+  var creating = "";        // "" | "init" | "attach"
+  var search = "";
+  var busy = false;
+
+  // ── forms ──────────────────────────────────────────────────────────────────
+
+  var CREDITS = ["tl", "tlc", "ts", "qc"];
+  function creditFields() {
+    return CREDITS.map(function (k) {
+      return { name: k, label: k.toUpperCase() + " credit", type: "text", optional: true, placeholder: "---" };
+    });
+  }
+
+  var FORMS = {
     init: {
-      label: "Init",
-      desc: "Create a new Forgejo repo for a MyAnimeList entry, bootstrap its episode folders, and attach it to a channel.",
+      title: "New repository",
+      submit: "Create and attach",
+      desc: "Create a Forgejo repo for a MyAnimeList entry, bootstrap its episode folders, and attach it to a channel.",
       fields: [
-        { name: "mal",        label: "MyAnimeList URL", type: "text", required: true, placeholder: "https://myanimelist.net/anime/..." },
-        { name: "channel_id", label: "Channel", type: "channelpick", required: true },
-        { name: "season",     label: "Season", type: "number", optional: true, placeholder: "1" },
-        { name: "tl",         label: "TL credit", type: "text", optional: true, placeholder: "---" },
-        { name: "tlc",        label: "TLC credit", type: "text", optional: true, placeholder: "---" },
-        { name: "ts",         label: "TS credit", type: "text", optional: true, placeholder: "---" },
-        { name: "qc",         label: "QC credit", type: "text", optional: true, placeholder: "---" }
-      ],
-      run: function (v) { return api("POST", "/api/v1/git/init", bodyFrom(v, ["mal", "channel_id", "season", "tl", "tlc", "ts", "qc"])); }
+        { name: "mal", label: "MyAnimeList URL", type: "text", required: true, span: true, placeholder: "https://myanimelist.net/anime/…" },
+        { name: "channel_id", label: "Channel", type: "channels", required: true, span: true },
+        { name: "season", label: "Season", type: "number", optional: true, placeholder: "1" }
+      ].concat(creditFields()),
+      run: function (v) { return api("POST", "/api/v1/git/init", bodyFrom(v, ["mal", "channel_id", "season"].concat(CREDITS))); }
     },
     attach: {
-      label: "Attach",
-      desc: "Bootstrap an existing Forgejo repo from a MyAnimeList entry and attach it to a channel.",
+      title: "Attach an existing repository",
+      submit: "Attach repository",
+      desc: "Bootstrap a repo that already exists from a MyAnimeList entry and attach it to a channel.",
       fields: [
-        { name: "mal",        label: "MyAnimeList URL", type: "text", required: true, placeholder: "https://myanimelist.net/anime/..." },
-        { name: "repo",       label: "Repo URL", type: "text", required: true, placeholder: "https://git.example.com/Org/repo" },
-        { name: "channel_id", label: "Channel", type: "channelpick", required: true },
-        { name: "season",     label: "Season", type: "number", optional: true, placeholder: "1" },
-        { name: "tl",         label: "TL credit", type: "text", optional: true, placeholder: "---" },
-        { name: "tlc",        label: "TLC credit", type: "text", optional: true, placeholder: "---" },
-        { name: "ts",         label: "TS credit", type: "text", optional: true, placeholder: "---" },
-        { name: "qc",         label: "QC credit", type: "text", optional: true, placeholder: "---" }
-      ],
-      run: function (v) { return api("POST", "/api/v1/git/attach", bodyFrom(v, ["mal", "repo", "channel_id", "season", "tl", "tlc", "ts", "qc"])); }
+        { name: "mal", label: "MyAnimeList URL", type: "text", required: true, span: true, placeholder: "https://myanimelist.net/anime/…" },
+        { name: "repo", label: "Repository URL", type: "text", required: true, span: true, placeholder: "https://git.example.com/Org/repo" },
+        { name: "channel_id", label: "Channel", type: "channels", required: true, span: true },
+        { name: "season", label: "Season", type: "number", optional: true, placeholder: "1" }
+      ].concat(creditFields()),
+      run: function (v) { return api("POST", "/api/v1/git/attach", bodyFrom(v, ["mal", "repo", "channel_id", "season"].concat(CREDITS))); }
     },
     source: {
-      label: "Source",
-      desc: "Write a release's SOURCE.md (the source link for an episode) to the channel's attached repo.",
+      submit: "Write SOURCE.md",
+      desc: "Record where an episode's source came from. Smartcode reads this when you leave its source link blank.",
       fields: [
-        { name: "channel_id", label: "Attached anime", type: "attachment", required: true },
-        { name: "episode",    label: "Episode", type: "number", required: true, placeholder: "1" },
-        { name: "link",       label: "Source link", type: "text", required: true, placeholder: "https://nyaa.si/view/... or magnet:?..." }
+        { name: "episode", label: "Episode", type: "number", required: true, placeholder: "1" },
+        { name: "link", label: "Source link", type: "text", required: true, span: true, placeholder: "https://nyaa.si/view/… or magnet:?…" }
       ],
       run: function (v) { return api("POST", "/api/v1/git/source", bodyFrom(v, ["channel_id", "episode", "link"])); }
     },
     smartcode: {
-      label: "Smartcode",
-      desc: "Merge the channel's TL (+ TS) for an episode, upload the release, and queue an encode job.",
+      submit: "Merge and queue encode",
+      desc: "Merge this anime's TL (and TS) for an episode, upload the release, then queue an encode from it.",
       fields: [
-        { name: "channel_id", label: "Attached anime", type: "attachment", required: true },
-        { name: "episode",    label: "Episode", type: "number", required: true, placeholder: "1" },
-        { name: "link",       label: "Source link", type: "text", optional: true, placeholder: "blank → read the episode's SOURCE.md" },
+        { name: "episode", label: "Episode", type: "number", required: true, placeholder: "1" },
+        { name: "link", label: "Source link", type: "text", optional: true, span: true, placeholder: "Leave blank to read the episode's SOURCE.md" }
       ],
       run: function (v) { return api("POST", "/api/v1/git/smartcode", bodyFrom(v, ["channel_id", "episode", "link"])); }
-    },
-    detach: {
-      label: "Detach",
-      desc: "Remove this channel's anime attachment. The Forgejo repo is left untouched.",
-      fields: [
-        { name: "channel_id", label: "Attached anime", type: "attachment", required: true }
-      ],
-      run: function (v) { return api("POST", "/api/v1/git/detach", bodyFrom(v, ["channel_id"])); }
-    },
-    destruct: {
-      label: "Destruct",
-      desc: "Delete the Forgejo repo AND detach the channel. This cannot be undone.",
-      fields: [
-        { name: "channel_id", label: "Attached anime", type: "attachment", required: true },
-        { name: "confirm",    label: "I understand this permanently deletes the Forgejo repo", type: "checkbox", required: true }
-      ],
-      run: function (v) { return api("POST", "/api/v1/git/destruct", bodyFrom(v, ["channel_id"])); }
-    },
-    readmebase: {
-      label: "Credits/Readme",
-      desc: "Edit this server's README template (base.md) used when bootstrapping repos. It loads automatically; if none is set, the formatting guide is shown as a starting point. Run to save.",
-      fields: [
-        { name: "content", label: "README template (base.md)", type: "editor", loadPath: "/api/v1/git/readmebase" }
-      ],
-      run: function (v) { return api("POST", "/api/v1/git/readmebase", { content: v.content }); }
     }
   };
-  var ORDER = ["init", "attach", "source", "smartcode", "detach", "destruct", "readmebase"];
 
-  // ---- render command list ----
-  var rail = document.createElement("div");
-  rail.className = "rail-label";
-  rail.textContent = "Git";
-  commandsEl.appendChild(rail);
-  ORDER.forEach(function (key) {
-    var b = document.createElement("button");
-    b.className = "cmd" + (key === active ? " active" : "");
-    b.textContent = COMMANDS[key].label;
-    b.addEventListener("click", function () { select(key); });
-    commandsEl.appendChild(b);
-  });
+  // ── page ───────────────────────────────────────────────────────────────────
 
-  function select(key) {
-    active = key;
-    Array.prototype.forEach.call(commandsEl.querySelectorAll(".cmd"), function (c, i) {
-      c.classList.toggle("active", ORDER[i] === key);
+  function render() {
+    document.getElementById("view").innerHTML =
+      '<div class="pn-notice" id="localNote" style="margin-bottom:16px">' + LOCAL_NOTE + "</div>" +
+      '<section class="pn-grid pn-stats" id="repoStats"></section>' +
+      '<div id="createHost" style="margin-top:16px"></div>' +
+      '<section class="pn-card" style="margin-top:16px">' +
+        '<div class="pn-cardhead"><h2>Attached anime</h2><span class="pn-spacer"></span>' +
+          '<div class="repo-search">' + icon("search") +
+            '<input class="pn-input" id="repoSearch" type="search" placeholder="Search anime or repository" autocomplete="off"></div>' +
+          '<button class="pn-btn pn-sm" id="repoRefresh" type="button">' + icon("refresh") + "Refresh</button></div>" +
+        '<div id="repoTable"><div class="pn-empty"><span class="pn-spin"></span></div></div>' +
+      "</section>" +
+      '<section id="detailHost" style="margin-top:16px"></section>' +
+      '<section class="pn-card" id="readmeCard" style="margin-top:16px">' +
+        '<div class="pn-cardhead"><h2>README template</h2><span class="pn-spacer"></span>' +
+          '<span class="pn-eyebrow" id="readmeState"></span></div>' +
+        '<div class="pn-cardbody">' +
+          '<p class="pn-hint" style="margin:0 0 12px">Used as <span class="pn-tag">README.md</span> whenever a repo is bootstrapped. ' +
+          "If this server has no template yet, the formatting guide is loaded as a starting point.</p>" +
+          '<textarea class="pn-textarea" id="readmeText" spellcheck="false" placeholder="Loading…"></textarea>' +
+        "</div>" +
+        '<div class="pn-cardfoot"><span class="pn-spacer" style="margin-left:auto"></span>' +
+          '<button class="pn-btn pn-primary" id="readmeSave" type="button">Save template</button></div>' +
+      "</section>";
+
+    document.getElementById("repoRefresh").addEventListener("click", function () { loadAttachments(); loadChannels(); });
+    document.getElementById("repoSearch").addEventListener("input", function () {
+      search = this.value.trim().toLowerCase();
+      paintTable();
     });
-    renderOptions(key);
-    updateRunState();
+    document.getElementById("readmeSave").addEventListener("click", saveReadme);
+    document.getElementById("btnInit").addEventListener("click", function () { toggleCreate("init"); });
+    document.getElementById("btnAttach").addEventListener("click", function () { toggleCreate("attach"); });
+
+    paintStats();
+    loadAttachments();
+    loadChannels();
+    loadReadme();
+    PN.refreshIdentity().then(function (id) {
+      var note = document.getElementById("localNote");
+      if (note && (id.kind === "local" || id.kind === "pnwitch")) note.style.display = "none";
+    });
   }
 
-  function renderOptions(key) {
-    var cmd = COMMANDS[key];
-    var html = '<div class="eyebrow">// git ' + esc(key) + "</div>";
-    if (cmd.desc) html += '<p class="desc">' + esc(cmd.desc) + "</p>";
-    html += '<div class="notice">' + NOTICE + "</div>";
-    (cmd.fields || []).forEach(function (f) {
+  function paintStats() {
+    var episodes = attachments.reduce(function (n, a) { return n + (Number(a.episode_count) || 0); }, 0);
+    function tile(label, value, ic, tone) {
+      return '<article class="pn-card pn-stat"' + (tone ? ' data-tone="' + tone + '"' : "") + '>' +
+        '<div class="pn-staticon">' + icon(ic) + "</div><div>" +
+        '<div class="pn-statlabel">' + label + '</div><div class="pn-statvalue">' + value + "</div></div></article>";
+    }
+    var dash = '<span style="color:var(--pn-faint)">—</span>';
+    document.getElementById("repoStats").innerHTML =
+      tile("Attached anime", attachments.length ? String(attachments.length) : dash, "repos") +
+      tile("Episodes tracked", episodes ? String(episodes) : dash, "film") +
+      tile("Channels available", channels.length ? String(channels.length) : dash, "hash");
+  }
+
+  function loadAttachments() {
+    api("GET", "/api/v1/git/attachments").then(function (res) {
+      var host = document.getElementById("repoTable");
+      if (res.status === 401) { host.innerHTML = emptyFor("No token", "Add a local bearer token in <a class=\"pn-link\" href=\"/settings\">Settings</a> to list this server's repositories."); return; }
+      if (res.status === 403) { host.innerHTML = emptyFor("Needs a local token", "A plain token reads jobs but cannot reach the git routes. Mint one with <span class=\"pn-tag\">/gentoken local</span>."); return; }
+      if (!res.ok || !Array.isArray(res.data)) { host.innerHTML = emptyFor("Could not load", esc(PN.messageText(res.data, false))); return; }
+      attachments = res.data;
+      PN.navCount("repositories", attachments.length || "");
+      paintStats();
+      paintTable();
+      if (selected) paintDetail();
+    }).catch(function () {});
+  }
+
+  function loadChannels() {
+    api("GET", "/api/v1/git/channels").then(function (res) {
+      channels = res.ok && Array.isArray(res.data) ? res.data : [];
+      paintStats();
+      paintTable();
+      if (creating) paintCreate();
+    }).catch(function () {});
+  }
+
+  function emptyFor(title, html) {
+    return '<div class="pn-empty"><strong>' + esc(title) + "</strong><p>" + html + "</p></div>";
+  }
+
+  function paintTable() {
+    var host = document.getElementById("repoTable");
+    var list = attachments.filter(function (a) {
+      if (!search) return true;
+      return String(a.name || "").toLowerCase().indexOf(search) !== -1 ||
+        String(a.repo_url || "").toLowerCase().indexOf(search) !== -1;
+    });
+    if (!attachments.length) {
+      host.innerHTML = emptyFor("No anime attached yet",
+        "Create a repository or attach an existing one, and it will show up here with its channel and episode count.");
+      return;
+    }
+    if (!list.length) {
+      host.innerHTML = emptyFor("Nothing matches", "No anime or repository contains &ldquo;" + esc(search) + "&rdquo;.");
+      return;
+    }
+    var rows = list.map(function (a) {
+      var ch = channelName(a.channel_id);
+      return "<tr data-clickable data-ch='" + esc(a.channel_id) + "'" +
+        (String(a.channel_id) === selected ? ' aria-selected="true"' : "") + ">" +
+        "<td><b style='color:var(--pn-ink);font-weight:600'>" + esc(a.name) + "</b></td>" +
+        '<td class="pn-mono pn-trunc" title="' + esc(a.repo_url) + '">' + esc(shortRepo(a.repo_url)) + "</td>" +
+        "<td>" + esc(a.kind || "—") + "</td>" +
+        '<td class="pn-mono pn-num">' + esc(a.episode_count) + "</td>" +
+        '<td class="pn-mono pn-num">' + esc(a.season) + "</td>" +
+        '<td class="pn-mono">' + esc(ch) + "</td></tr>";
+    }).join("");
+    host.innerHTML = '<div class="pn-tablewrap"><table class="pn-table"><thead><tr>' +
+      "<th>Anime</th><th>Repository</th><th>Kind</th><th>Episodes</th><th>Season</th><th>Channel</th>" +
+      "</tr></thead><tbody>" + rows + "</tbody></table></div>";
+    host.querySelectorAll("tr[data-ch]").forEach(function (tr) {
+      tr.addEventListener("click", function () { select(tr.getAttribute("data-ch")); });
+    });
+  }
+
+  function channelName(id) {
+    var c = channels.filter(function (x) { return String(x.id) === String(id); })[0];
+    return c ? "#" + c.name : String(id);
+  }
+  function shortRepo(url) {
+    return String(url || "").replace(/^https?:\/\//, "").replace(/\.git$/, "");
+  }
+  function current() {
+    return attachments.filter(function (a) { return String(a.channel_id) === selected; })[0] || null;
+  }
+
+  function select(id) {
+    selected = String(id);
+    creating = "";
+    paintCreate();
+    paintTable();
+    paintDetail();
+    document.getElementById("detailHost").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  // ── detail panel ───────────────────────────────────────────────────────────
+
+  var DETAIL_TABS = [
+    { key: "source", label: "Source", icon: "upload" },
+    { key: "smartcode", label: "Smartcode", icon: "code" }
+  ];
+
+  function paintDetail() {
+    var host = document.getElementById("detailHost");
+    var a = current();
+    if (!a) { host.innerHTML = ""; return; }
+    host.innerHTML =
+      '<div class="pn-card">' +
+        '<div class="pn-cardhead"><h2>' + esc(a.name) + "</h2>" +
+          '<span class="pn-tag">S' + esc(a.season) + " · " + esc(a.episode_count) + " ep</span>" +
+          '<span class="pn-spacer"></span>' +
+          '<a class="pn-btn pn-sm" href="' + esc(a.repo_url) + '" target="_blank" rel="noopener">' + icon("external") + "Open repository</a>" +
+          '<button class="pn-btn pn-sm" id="btnDetach" type="button">Detach</button>' +
+          '<button class="pn-btn pn-sm pn-danger" id="btnDestruct" type="button">Destruct</button>' +
+        "</div>" +
+        '<div class="det-cols">' +
+          '<nav class="det-nav" id="detNav">' + DETAIL_TABS.map(function (t) {
+            return '<button type="button" data-tab="' + t.key + '"' +
+              (t.key === detailTab ? ' aria-pressed="true"' : "") + ">" + icon(t.icon) + esc(t.label) + "</button>";
+          }).join("") + "</nav>" +
+          '<div class="det-body"><div class="det-split">' +
+            '<div class="det-facts">' +
+              '<div class="pn-eyebrow" style="margin-bottom:10px">Attachment</div>' +
+              '<dl class="pn-kv">' +
+                "<dt>Channel</dt><dd class='pn-mono'>" + esc(channelName(a.channel_id)) + "</dd>" +
+                "<dt>Slug</dt><dd class='pn-mono'>" + esc(a.slug) + "</dd>" +
+                "<dt>Kind</dt><dd>" + esc(a.kind || "—") + "</dd>" +
+                "<dt>MAL</dt><dd class='pn-mono'>" + esc(a.mal_id) + "</dd>" +
+                "<dt>Repository</dt><dd class='pn-mono' style='font-size:12px'>" + esc(shortRepo(a.repo_url)) + "</dd>" +
+              "</dl>" +
+            "</div>" +
+            '<div id="detForm"></div>' +
+          "</div></div>" +
+        "</div>" +
+      "</div>" +
+      '<div class="pn-card" id="detResultCard" style="margin-top:16px;display:none">' +
+        '<div class="pn-cardhead"><h2>Result</h2></div><div class="pn-cardbody" id="detResult"></div></div>';
+
+    document.getElementById("detNav").addEventListener("click", function (e) {
+      var b = e.target.closest("[data-tab]");
+      if (!b) return;
+      detailTab = b.getAttribute("data-tab");
+      Array.prototype.forEach.call(this.querySelectorAll("button"), function (x) {
+        x.setAttribute("aria-pressed", x.getAttribute("data-tab") === detailTab ? "true" : "false");
+      });
+      paintDetailForm();
+    });
+    document.getElementById("btnDetach").addEventListener("click", detach);
+    document.getElementById("btnDestruct").addEventListener("click", destruct);
+    paintDetailForm();
+  }
+
+  function paintDetailForm() {
+    var form = FORMS[detailTab];
+    document.getElementById("detForm").innerHTML =
+      '<p class="pn-hint" style="margin:0 0 16px">' + esc(form.desc) + "</p>" +
+      '<div class="form-grid">' + fieldsHtml(form.fields) + "</div>" +
+      '<button class="pn-btn pn-primary" id="detRun" type="button" style="margin-top:6px">' + esc(form.submit) + "</button>";
+    wireFields(form.fields);
+    document.getElementById("detRun").addEventListener("click", function () {
+      runForm(form, this, function (v) { v.channel_id = selected; return v; }, showDetailResult);
+    });
+  }
+
+  // ── create panel ───────────────────────────────────────────────────────────
+
+  function toggleCreate(which) {
+    creating = creating === which ? "" : which;
+    if (creating) { selected = ""; paintTable(); document.getElementById("detailHost").innerHTML = ""; }
+    paintCreate();
+  }
+
+  function paintCreate() {
+    var host = document.getElementById("createHost");
+    if (!creating) { host.innerHTML = ""; return; }
+    var form = FORMS[creating];
+    host.innerHTML =
+      '<div class="pn-card"><div class="pn-cardhead"><h2>' + esc(form.title) + "</h2>" +
+        '<span class="pn-spacer"></span>' +
+        '<button class="pn-btn pn-icon pn-quiet" id="createClose" type="button" aria-label="Close">' + icon("x") + "</button></div>" +
+        '<div class="pn-cardbody"><p class="pn-hint" style="margin:0 0 16px">' + esc(form.desc) + "</p>" +
+        '<div class="form-grid">' + fieldsHtml(form.fields) + "</div></div>" +
+        '<div class="pn-cardfoot"><span class="pn-spacer" style="margin-left:auto"></span>' +
+        '<button class="pn-btn pn-primary" id="createRun" type="button">' + esc(form.submit) + "</button></div></div>" +
+      '<div class="pn-card" id="createResultCard" style="margin-top:16px;display:none">' +
+        '<div class="pn-cardhead"><h2>Result</h2></div><div class="pn-cardbody" id="createResult"></div></div>';
+    wireFields(form.fields);
+    document.getElementById("createClose").addEventListener("click", function () { toggleCreate(creating); });
+    document.getElementById("createRun").addEventListener("click", function () {
+      runForm(form, this, null, showCreateResult);
+    });
+  }
+
+  // ── field plumbing ─────────────────────────────────────────────────────────
+
+  function fieldsHtml(fields) {
+    return fields.map(function (f) {
       var id = "f_" + f.name;
+      var cls = "pn-field" + (f.span ? " span" : "");
       if (f.type === "checkbox") {
-        html += '<div class="field"><label class="check"><input type="checkbox" id="' + id +
-                '"><span class="box"></span><span>' + esc(f.label) + "</span></label></div>";
-        return;
+        return '<div class="' + cls + '"><label class="pn-check"><input type="checkbox" id="' + id +
+          '"><span class="pn-box"></span><span>' + esc(f.label) + "</span></label></div>";
       }
-      var optTag = f.optional ? ' <span class="opt">(optional)</span>' : "";
-      html += '<div class="field"><label for="' + id + '">' + esc(f.label) + optTag + "</label>";
-      if (f.type === "editor") {
-        html += '<div class="editor-status" id="s_' + f.name + '"></div>' +
-                '<textarea class="editor" id="' + id + '" placeholder="Loading…" spellcheck="false"></textarea>';
-      } else if (f.type === "attachment" || f.type === "channelpick") {
-        html += '<div class="selrow"><select id="' + id + '"><option value="">Loading…</option></select>' +
-                '<button type="button" class="mini" id="r_' + f.name + '" title="Refresh">↻</button></div>';
-      } else if (f.type === "select") {
-        html += '<select id="' + id + '">' + f.options.map(function (o) {
-          return '<option value="' + esc(o) + '">' + esc(o) + "</option>";
-        }).join("") + "</select>";
-      } else {
-        html += '<input type="' + (f.type === "number" ? "number" : "text") + '" id="' + id +
-                '" placeholder="' + esc(f.placeholder || "") + '">';
+      var head = '<div class="' + cls + '"><label class="pn-label" for="' + id + '">' + esc(f.label) +
+        (f.optional ? ' <span class="pn-opt">(optional)</span>' : "") + "</label>";
+      if (f.type === "channels") {
+        return head + '<div class="pn-selrow"><select class="pn-select" id="' + id + '"></select>' +
+          '<button class="pn-btn pn-icon" type="button" id="r_' + f.name + '" aria-label="Reload channels">' + icon("refresh") + "</button></div></div>";
       }
-      html += "</div>";
-    });
-    optionsEl.innerHTML = html;
+      return head + '<input class="pn-input' + (f.name === "link" || f.name === "mal" || f.name === "repo" ? " pn-mono" : "") +
+        '" type="' + (f.type === "number" ? "number" : "text") + '" id="' + id +
+        '" placeholder="' + esc(f.placeholder || "") + '" autocomplete="off" spellcheck="false"></div>';
+    }).join("");
+  }
 
-    (cmd.fields || []).forEach(function (f) {
-      if (f.type === "editor" && f.loadPath) { loadEditor(f); return; }
-      if (f.type !== "attachment" && f.type !== "channelpick") return;
-      var sel = document.getElementById("f_" + f.name);
-      var load = f.type === "attachment" ? loadAttachments : loadChannels;
-      load(sel);
+  function wireFields(fields) {
+    fields.forEach(function (f) {
+      if (f.type !== "channels") return;
+      fillChannels();
       var btn = document.getElementById("r_" + f.name);
-      if (btn) btn.addEventListener("click", function () { load(sel); });
+      if (btn) btn.addEventListener("click", function () { loadChannels(); });
     });
   }
 
-  function loadEditor(f) {
-    var ta = document.getElementById("f_" + f.name);
-    var st = document.getElementById("s_" + f.name);
-    if (!ta) return;
-    ta.value = "";
-    ta.placeholder = "Loading…";
-    if (st) st.textContent = "Loading current template…";
-    api("GET", f.loadPath).then(function (res) {
-      if (res.status === 401) { ta.placeholder = "Enter a local token below"; if (st) st.textContent = ""; return; }
-      if (res.status === 403) { ta.placeholder = "Needs a local token (see above)"; if (st) st.textContent = ""; return; }
-      if (!res.ok || !res.data || typeof res.data.content !== "string") {
-        ta.placeholder = "Could not load"; if (st) st.textContent = ""; return;
-      }
-      ta.value = res.data.content;
-      if (st) {
-        st.innerHTML = res.data.is_guide
-          ? '<span class="tag">guide</span>No template set yet — this is the formatting guide. Edit and Run to save it as this server’s template.'
-          : '<span class="tag">base.md</span>This server’s current README template. Edit and Run to overwrite it.';
-      }
-    }).catch(function () { ta.placeholder = "Could not load"; if (st) st.textContent = ""; });
-  }
-
-  function fillSelect(sel, path, emptyMsg, optionFn) {
+  function fillChannels() {
+    var sel = document.getElementById("f_channel_id");
     if (!sel) return;
-    sel.innerHTML = '<option value="">Loading…</option>';
-    api("GET", path).then(function (res) {
-      if (res.status === 401) { sel.innerHTML = '<option value="">Enter a local token below</option>'; return; }
-      if (res.status === 403) { sel.innerHTML = '<option value="">Needs a local token (see above)</option>'; return; }
-      if (!res.ok || !Array.isArray(res.data)) { sel.innerHTML = '<option value="">Could not load</option>'; return; }
-      if (!res.data.length) { sel.innerHTML = '<option value="">' + esc(emptyMsg) + "</option>"; return; }
-      var prev = localStorage.getItem("pandora_git_channel") || "";
-      sel.innerHTML = res.data.map(function (item) {
-        var o = optionFn(item);
-        return '<option value="' + esc(o.value) + '"' + (o.value === prev ? " selected" : "") + ">" + esc(o.label) + "</option>";
-      }).join("");
-      if (sel.value) localStorage.setItem("pandora_git_channel", sel.value);
-      sel.onchange = function () { localStorage.setItem("pandora_git_channel", sel.value); };
-    }).catch(function () { sel.innerHTML = '<option value="">Could not load</option>'; });
-  }
-
-  function loadChannels(sel) {
-    fillSelect(sel, "/api/v1/git/channels", "No channels found for this server", function (c) {
-      return { value: c.id, label: "#" + c.name + " · " + c.kind };
+    if (!channels.length) {
+      sel.innerHTML = "<option value=''>No channels published for this server</option>";
+      return;
+    }
+    var prev = "";
+    try { prev = localStorage.getItem("pandora_git_channel") || ""; } catch (e) {}
+    sel.innerHTML = channels.map(function (c) {
+      return '<option value="' + esc(c.id) + '"' + (String(c.id) === prev ? " selected" : "") + ">#" +
+        esc(c.name) + " · " + esc(c.kind) + "</option>";
+    }).join("");
+    sel.addEventListener("change", function () {
+      try { localStorage.setItem("pandora_git_channel", sel.value); } catch (e) {}
     });
   }
 
-  function loadAttachments(sel) {
-    fillSelect(sel, "/api/v1/git/attachments", "No attached animes on this server", function (a) {
-      return { value: a.channel_id, label: a.name + " — S" + a.season + " · " + a.episode_count + " ep · #" + a.channel_id };
-    });
-  }
-
-  // ---- run ----
-  runEl.addEventListener("click", doRun);
-
-  function doRun() {
-    var cmd = COMMANDS[active];
-    var vals, err;
-    try { vals = gather(cmd); } catch (e) { err = e; }
-    if (err) { showError(err.message || String(err)); return; }
-    busy(true);
-    cmd.run(vals).then(function (res) {
-      renderGit(res);
-    }).catch(function (e) {
-      showError(e && e.message ? e.message : String(e));
-    }).then(function () { busy(false); });
-  }
-
-  function gather(cmd) {
+  function gather(fields) {
     var out = {};
-    (cmd.fields || []).forEach(function (f) {
+    fields.forEach(function (f) {
       var el = document.getElementById("f_" + f.name);
-      if (f.type === "checkbox") {
-        var checked = !!(el && el.checked);
-        if (f.required && !checked) throw new Error("Please confirm: " + f.label);
-        out[f.name] = checked;
-        return;
-      }
-      if (f.type === "editor") { out[f.name] = el ? el.value : ""; return; }
-      var val = el ? el.value.trim() : "";
-      if (f.required && !val) throw new Error(f.label + " is required");
-      out[f.name] = val;
+      if (f.type === "checkbox") { out[f.name] = !!(el && el.checked); return; }
+      var v = el ? el.value.trim() : "";
+      if (f.required && !v) throw new Error(f.label + " is required.");
+      out[f.name] = v;
     });
     return out;
   }
@@ -981,205 +447,191 @@
     return b;
   }
 
-  // ---- API call ----
-  function api(method, path, body) {
-    var token = tokenEl.value.trim();
-    var opts = { method: method, headers: {} };
-    if (token) opts.headers["Authorization"] = "Bearer " + token;
-    if (body !== undefined) {
-      opts.headers["Content-Type"] = "application/json";
-      opts.body = JSON.stringify(body);
+  function runForm(form, btn, transform, show) {
+    if (busy) return;
+    var vals;
+    try { vals = gather(form.fields); } catch (e) {
+      show('<div class="pn-notice" data-tone="bad">' + esc(e.message) + "</div>");
+      return;
     }
-    return fetch(API + path, opts).then(function (resp) {
-      var retryAfter = resp.headers.get("Retry-After");
-      return resp.text().then(function (text) {
-        var data;
-        try { data = JSON.parse(text); } catch (e) { data = text; }
-        return { status: resp.status, ok: resp.ok, data: data, retryAfter: retryAfter };
-      });
+    if (transform) vals = transform(vals);
+    busy = true;
+    var label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Working…";
+    form.run(vals).then(function (res) {
+      show(resultHtml(res));
+    }).catch(function (e) {
+      show('<div class="pn-notice" data-tone="bad">' + esc(e.message || String(e)) + "</div>");
+    }).then(function () {
+      busy = false;
+      btn.disabled = false;
+      btn.textContent = label;
+      loadAttachments();
     });
   }
 
-  // ---- renderers ----
-  function pill(res) {
-    return '<span class="pill ' + (res.ok ? "ok" : "err") + '">' + res.status + "</span>";
+  function showDetailResult(html) {
+    var card = document.getElementById("detResultCard");
+    if (!card) return;
+    card.style.display = "";
+    document.getElementById("detResult").innerHTML = html;
   }
+  function showCreateResult(html) {
+    var card = document.getElementById("createResultCard");
+    if (!card) return;
+    card.style.display = "";
+    document.getElementById("createResult").innerHTML = html;
+  }
+
+  // ── result rendering ───────────────────────────────────────────────────────
+
+  function kv(rows) { return '<dl class="pn-kv">' + rows + "</dl>"; }
   function linkOf(url) {
     var s = String(url || "");
     return /^https?:\/\//.test(s)
-      ? '<a href="' + esc(s) + '" target="_blank" rel="noopener">' + esc(s) + "</a>"
+      ? '<a class="pn-link" href="' + esc(s) + '" target="_blank" rel="noopener">' + esc(s) + "</a>"
       : esc(s);
   }
-  function row(k, v) {
-    return '<div class="link-row"><span class="link-host mono">' + esc(k) + "</span><span>" + v + "</span></div>";
-  }
-  function messageText(data, ok) {
-    if (typeof data === "string" && data) return data;
-    if (data && typeof data === "object") {
-      if (data.error) return data.error;
-      if (data.message) return data.message;
-      if (data.detail) return data.detail;
-    }
-    return ok ? "Request completed." : "Request failed.";
-  }
-
-  function warningsBlock(w) {
+  function warnings(w) {
     if (!w || !w.length) return "";
-    return '<div class="prog-label">Warnings (' + w.length + ")</div><pre>" + esc(w.join("\n")) + "</pre>";
+    return '<div class="pn-eyebrow" style="margin:18px 0 6px">Warnings (' + w.length + ")</div>" +
+      '<pre class="pn-pre">' + esc(w.join("\n")) + "</pre>";
   }
 
-  function renderGit(res) {
+  function resultHtml(res) {
     var d = res.data;
-    var isObj = res.ok && d && typeof d === "object";
-    if (res.status === 403) {
-      outputEl.innerHTML = pill(res) +
-        '<p class="muted">This needs a <b>local</b> token. Mint one in Discord with ' +
-        '<span class="mono">/gentoken local</span> (run it in the target server), then paste it below. ' +
-        'A plain token works on the encode console but not here.</p>';
-      return;
+    var obj = res.ok && d && typeof d === "object";
+    if (res.status === 401) return '<div class="pn-notice" data-tone="warn">No valid token. Add one in <a class="pn-link" href="/settings">Settings</a>.</div>';
+    if (res.status === 403) return '<div class="pn-notice" data-tone="warn">This needs a <b>local</b> token. Mint one with <span class="pn-tag">/gentoken local</span> in the target server.</div>';
+    if (res.status === 429) return '<div class="pn-notice" data-tone="warn">' + esc(PN.rateNote(res)) + "</div>";
+
+    if (obj && d.job_id) {
+      return '<div class="res-head" style="display:flex;gap:10px;align-items:center;margin-bottom:16px">' +
+        '<span class="pn-chip" data-tone="queued">Encode queued</span>' +
+        '<span class="pn-jobid">#' + esc(d.job_id) + "</span></div>" +
+        kv("<dt>Release</dt><dd class='pn-mono'>" + esc(d.release_path || "—") + "</dd>" +
+           "<dt>Source</dt><dd class='pn-mono' style='font-size:12px'>" + esc(d.link || "—") + "</dd>") +
+        warnings(d.warnings) +
+        '<p class="pn-hint">The merge uploaded and an encode is queued. ' +
+        '<a class="pn-link" href="/jobs?job=' + esc(d.job_id) + '">Follow it in Jobs</a>.</p>';
     }
-    if (res.status === 429) {
-      var secs = parseInt(res.retryAfter, 10);
-      var when = (secs > 0) ? (" Try again in " + secs + "s.") : "";
-      outputEl.innerHTML = pill(res) +
-        '<p class="muted">Rate limit hit — too many requests on this token.' + when +
-        ' The API caps write requests per token (default 30 / 60s).</p>';
-      return;
-    }
-    if (isObj && d.job_id) {
-      var rowsS = "";
-      rowsS += row("Job", '<span class="mono">#' + esc(d.job_id) + "</span>");
-      if (d.release_path) rowsS += row("Release", esc(d.release_path));
-      if (d.link) rowsS += row("Source", esc(d.link));
-      outputEl.innerHTML = '<div class="stat-head">' + pill(res) +
-        '<span class="chip active">smartcode</span>' +
-        '<span class="stat-type">merged · encode queued</span></div>' +
-        '<div class="prog-label">Result</div>' + rowsS +
-        warningsBlock(d.warnings) +
-        '<p class="muted">Merge uploaded and an encode job was queued. Track it on the ' +
-        '<a class="navlink" href="/encode">encode console</a>.</p>';
-      return;
-    }
-    if (isObj && Array.isArray(d.created)) {
-      var rows = "";
-      rows += row("Repo", linkOf(d.repo_url));
-      rows += row("Owner/Repo", esc(d.owner_repo));
-      rows += row("Name", esc(d.name));
-      rows += row("Slug", esc(d.slug));
-      rows += row("Kind", esc(d.kind));
-      rows += row("Episodes", esc(d.episode_count));
-      rows += row("Season", esc(d.season));
-      var created = d.created.length ? d.created.join(", ") : "none — repo already had all folders and README";
+    if (obj && Array.isArray(d.created)) {
+      var created = d.created.length ? d.created.join(", ") : "nothing — the repo already had every folder and its README";
       var renamed = (d.renamed_files && d.renamed_files.length) ? d.renamed_files.join("\n") : "";
-      outputEl.innerHTML = '<div class="stat-head">' + pill(res) +
-        '<span class="chip done">' + esc(d.label || "attached") + "</span>" +
-        '<span class="stat-type">attached to channel</span></div>' +
-        '<div class="prog-label">Repository</div>' + rows +
-        '<div class="prog-label">Created / updated</div><pre>' + esc(created) + "</pre>" +
-        (renamed ? '<div class="prog-label">Renamed files</div><pre>' + esc(renamed) + "</pre>" : "");
-      return;
+      return '<div style="margin-bottom:16px"><span class="pn-chip" data-tone="done">Attached</span></div>' +
+        kv("<dt>Repository</dt><dd>" + linkOf(d.repo_url) + "</dd>" +
+           "<dt>Owner/Repo</dt><dd class='pn-mono'>" + esc(d.owner_repo) + "</dd>" +
+           "<dt>Name</dt><dd>" + esc(d.name) + "</dd>" +
+           "<dt>Slug</dt><dd class='pn-mono'>" + esc(d.slug) + "</dd>" +
+           "<dt>Kind</dt><dd>" + esc(d.kind) + "</dd>" +
+           "<dt>Episodes</dt><dd>" + esc(d.episode_count) + "</dd>" +
+           "<dt>Season</dt><dd>" + esc(d.season) + "</dd>") +
+        '<div class="pn-eyebrow" style="margin:18px 0 6px">Created or updated</div><pre class="pn-pre">' + esc(created) + "</pre>" +
+        (renamed ? '<div class="pn-eyebrow" style="margin:18px 0 6px">Renamed files</div><pre class="pn-pre">' + esc(renamed) + "</pre>" : "");
     }
-    if (isObj && d.owner_repo) {
-      outputEl.innerHTML = '<div class="stat-head">' + pill(res) +
-        '<span class="chip bad">destructed</span></div>' +
-        '<div class="prog-label">Deleted repo</div>' +
-        row("Owner/Repo", esc(d.owner_repo)) + (d.name ? row("Name", esc(d.name)) : "") +
-        '<p class="muted">Repo deleted and the channel was detached.</p>';
-      return;
+    if (obj && d.owner_repo && d.repo_url === undefined) {
+      return '<div style="margin-bottom:16px"><span class="pn-chip" data-tone="bad">Destroyed</span></div>' +
+        kv("<dt>Owner/Repo</dt><dd class='pn-mono'>" + esc(d.owner_repo) + "</dd>" +
+           (d.name ? "<dt>Name</dt><dd>" + esc(d.name) + "</dd>" : "")) +
+        '<p class="pn-hint">The Forgejo repo was deleted and the channel detached.</p>';
     }
-    if (isObj && d.saved) {
-      outputEl.innerHTML = '<div class="stat-head">' + pill(res) +
-        '<span class="chip done">base.md</span>' +
-        '<span class="stat-type">README template saved</span></div>' +
-        '<p class="muted">Saved this server\'s README template (' + esc(d.bytes) +
-        ' bytes). It will be used as <span class="mono">README.md</span> the next time a repo is bootstrapped with Init/Attach.</p>';
-      return;
+    if (obj && d.saved) {
+      return '<div style="margin-bottom:16px"><span class="pn-chip" data-tone="done">Saved</span></div>' +
+        '<p class="pn-hint" style="margin:0">Stored ' + esc(d.bytes) + ' bytes as this server&rsquo;s README template. ' +
+        "The next repo bootstrapped with New or Attach will use it.</p>";
     }
-    if (isObj && d.path) {
-      outputEl.innerHTML = '<div class="stat-head">' + pill(res) +
-        '<span class="chip done">SOURCE.md</span></div>' +
-        '<div class="prog-label">Wrote ' + esc(d.path) + "</div><pre>" + esc((d.content || "").replace(/\s+$/, "")) + "</pre>";
-      return;
+    if (obj && d.path) {
+      return '<div style="margin-bottom:16px"><span class="pn-chip" data-tone="done">SOURCE.md</span>' +
+        '<span class="pn-tag" style="margin-left:8px">' + esc(d.path) + "</span></div>" +
+        '<pre class="pn-pre">' + esc((d.content || "").replace(/\s+$/, "")) + "</pre>";
     }
-    if (isObj && d.repo_url !== undefined) {
-      outputEl.innerHTML = '<div class="stat-head">' + pill(res) +
-        '<span class="chip idle">detached</span></div>' +
-        '<div class="prog-label">Detached channel</div>' +
-        (d.name ? row("Name", esc(d.name)) : "") +
-        (d.repo_url ? row("Repo", linkOf(d.repo_url)) : "") +
-        '<p class="muted">Channel detached. The repo was left untouched.</p>';
-      return;
+    if (obj && d.repo_url !== undefined) {
+      return '<div style="margin-bottom:16px"><span class="pn-chip" data-tone="queued">Detached</span></div>' +
+        kv((d.name ? "<dt>Name</dt><dd>" + esc(d.name) + "</dd>" : "") +
+           (d.repo_url ? "<dt>Repository</dt><dd>" + linkOf(d.repo_url) + "</dd>" : "")) +
+        '<p class="pn-hint">The channel is detached. The repository was left untouched.</p>';
     }
-    var note = "";
-    if (res.status === 401) note = '<p class="muted">Invalid or missing token — check the field below.</p>';
-    outputEl.innerHTML = pill(res) + note + '<p class="muted">' + esc(messageText(d, res.ok)) + "</p>";
+    return '<div class="pn-notice"' + (res.ok ? "" : ' data-tone="bad"') + ">" +
+      esc(PN.messageText(d, res.ok)) + "</div>";
   }
 
-  function showError(msg) {
-    outputEl.innerHTML = '<span class="pill err">err</span><pre>' + esc(msg) + "</pre>";
+  // ── detach / destruct ──────────────────────────────────────────────────────
+
+  function detach() {
+    var btn = document.getElementById("btnDetach");
+    if (btn.getAttribute("data-armed") !== "1") {
+      btn.setAttribute("data-armed", "1");
+      btn.textContent = "Detach — confirm?";
+      setTimeout(function () {
+        if (btn.getAttribute("data-armed") !== "1") return;
+        btn.removeAttribute("data-armed");
+        btn.textContent = "Detach";
+      }, 5000);
+      return;
+    }
+    btn.removeAttribute("data-armed");
+    btn.textContent = "Detach";
+    btn.disabled = true;
+    api("POST", "/api/v1/git/detach", { channel_id: selected }).then(function (res) {
+      showDetailResult(resultHtml(res));
+      btn.disabled = false;
+      if (res.ok) { selected = ""; document.getElementById("detailHost").innerHTML = ""; loadAttachments(); }
+    }).catch(function () { btn.disabled = false; });
   }
 
-  function busy(on) { busyFlag = on; updateRunState(); }
-  function updateRunState() {
-    runEl.disabled = busyFlag;
-    var isSave = active === "readmebase";
-    runEl.textContent = busyFlag ? (isSave ? "Saving…" : "Running…") : (isSave ? "Save" : "Run");
-  }
-  function esc(s) {
-    return String(s === undefined || s === null ? "" : s)
-      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  // Destruct deletes the Forgejo repo, so it asks for the anime's name back before it runs.
+  function destruct() {
+    var a = current();
+    if (!a) return;
+    var typed = prompt("Deleting the Forgejo repo cannot be undone.\n\nType the anime's name to confirm:\n" + a.name);
+    if (typed === null) return;
+    if (typed.trim() !== a.name) {
+      PN.toast("That name does not match. Nothing was deleted.", "bad");
+      return;
+    }
+    var btn = document.getElementById("btnDestruct");
+    btn.disabled = true;
+    btn.textContent = "Deleting…";
+    api("POST", "/api/v1/git/destruct", { channel_id: selected }).then(function (res) {
+      showDetailResult(resultHtml(res));
+      btn.disabled = false;
+      btn.textContent = "Destruct";
+      if (res.ok) { selected = ""; document.getElementById("detailHost").innerHTML = ""; loadAttachments(); }
+    }).catch(function () { btn.disabled = false; btn.textContent = "Destruct"; });
   }
 
-  // ---- window manager (Phase 1: drag the console; desktop only) ----
-  function wmMobile() { return window.matchMedia("(max-width: 760px)").matches; }
-  var zTop = 100;
-  function bringToFront(el) { el.style.zIndex = String(++zTop); }
+  // ── readme template ────────────────────────────────────────────────────────
 
-  function makeDraggable(winEl, handleEl) {
-    handleEl.addEventListener("pointerdown", function (e) {
-      if (wmMobile()) return;
-      if (e.target.closest("button, a, input, select, textarea")) return;
-      var rect = winEl.getBoundingClientRect();
-      winEl.style.position = "fixed";
-      winEl.style.margin = "0";
-      winEl.style.width = rect.width + "px";
-      winEl.style.left = rect.left + "px";
-      winEl.style.top = rect.top + "px";
-      bringToFront(winEl);
-      var sx = e.clientX, sy = e.clientY, ox = rect.left, oy = rect.top;
-      try { handleEl.setPointerCapture(e.pointerId); } catch (err) {}
-      function move(ev) {
-        var nx = ox + (ev.clientX - sx), ny = oy + (ev.clientY - sy);
-        nx = Math.max(60 - rect.width, Math.min(nx, window.innerWidth - 60));
-        ny = Math.max(0, Math.min(ny, window.innerHeight - 44));
-        winEl.style.left = nx + "px";
-        winEl.style.top = ny + "px";
+  function loadReadme() {
+    var ta = document.getElementById("readmeText");
+    var st = document.getElementById("readmeState");
+    api("GET", "/api/v1/git/readmebase").then(function (res) {
+      if (res.status === 401) { ta.placeholder = "Add a token in Settings"; return; }
+      if (res.status === 403) { ta.placeholder = "Needs a local token"; return; }
+      if (!res.ok || !res.data || typeof res.data.content !== "string") { ta.placeholder = "Could not load the template"; return; }
+      ta.value = res.data.content;
+      st.textContent = res.data.is_guide ? "showing the formatting guide" : "base.md";
+    }).catch(function () { ta.placeholder = "Could not load the template"; });
+  }
+
+  function saveReadme() {
+    var btn = document.getElementById("readmeSave");
+    btn.disabled = true;
+    btn.textContent = "Saving…";
+    api("POST", "/api/v1/git/readmebase", { content: document.getElementById("readmeText").value }).then(function (res) {
+      btn.disabled = false;
+      btn.textContent = "Save template";
+      if (res.ok) {
+        PN.toast("README template saved.");
+        document.getElementById("readmeState").textContent = "base.md";
+      } else {
+        PN.toast(PN.messageText(res.data, false), "bad");
       }
-      function up(ev) {
-        handleEl.removeEventListener("pointermove", move);
-        handleEl.removeEventListener("pointerup", up);
-        try { handleEl.releasePointerCapture(ev.pointerId); } catch (err) {}
-      }
-      handleEl.addEventListener("pointermove", move);
-      handleEl.addEventListener("pointerup", up);
-    });
+    }).catch(function () { btn.disabled = false; btn.textContent = "Save template"; });
   }
 
-  var mainWin = document.querySelector(".window");
-  if (mainWin) {
-    var mainBar = mainWin.querySelector(".titlebar");
-    if (mainBar) makeDraggable(mainWin, mainBar);
-  }
-
-  window.addEventListener("resize", function () {
-    if (!wmMobile() || !mainWin) return;
-    mainWin.style.position = ""; mainWin.style.left = ""; mainWin.style.top = "";
-    mainWin.style.width = ""; mainWin.style.margin = ""; mainWin.style.zIndex = "";
-  });
-
-  // ---- boot ----
-  renderOptions(active);
+  render();
 })();
 </script>
 </body>

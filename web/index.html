@@ -3,995 +3,1009 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>pandora — encode console</title>
+<title>Pandora console</title>
 <link rel="icon" href="/favicon">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/console.css">
+<script src="/console.js"></script>
 <style>
-  /* theme: Pandora (Re:Zero) — silver-white hair, cobalt eyes, navy ribbon, violet flowers */
-  :root {
-    --bg: #eaeff7;
-    --bg-2: #fafcff;
-    --panel: rgba(255,255,255,0.95);
-    --panel-2: #f0f4fb;
-    --raise: #e5ecf7;
-    --line: #d2dcec;
-    --line-2: #b1c2de;
-    --ink: #1e2c4d;
-    --ink-2: #3f5681;
-    --dim: #6b7c9e;
-    --faint: #9aa9c6;
-    --k1: #2f6fd0;
-    --k2: #a9cef4;
-    --cool: #5a83c6;
-    --done: #7c6cc8;
-    --bad: #d2687f;
-    --body-bg:
-      radial-gradient(720px 520px at 18% 0%, rgba(255,255,255,0.95), transparent 64%),
-      radial-gradient(820px 640px at 85% -10%, rgba(169,206,244,0.45), transparent 60%),
-      radial-gradient(860px 680px at -8% 110%, rgba(124,108,200,0.16), transparent 56%),
-      linear-gradient(180deg, var(--bg-2), var(--bg));
-    --scan: rgba(47,111,208,0.035);
-    --scan-blend: multiply;
-    --shadow: rgba(40,60,110,0.42);
-    --inset: rgba(255,255,255,0.9);
-    --bar-bg: linear-gradient(180deg, rgba(255,255,255,0.92), rgba(234,240,250,0.88));
-    --rail-bg: linear-gradient(180deg, rgba(230,238,250,0.78), rgba(255,255,255,0.46));
-    --out-bg: linear-gradient(180deg, rgba(230,238,250,0.82), rgba(255,255,255,0.56));
-    --focus: rgba(90,131,198,0.20);
-    --tint-bg: rgba(47,111,208,0.08);
-    --tint-line: rgba(47,111,208,0.32);
-    --ok-bg: rgba(124,108,200,0.10);
-    --ok-line: rgba(124,108,200,0.40);
-    --bad-bg: rgba(210,104,127,0.10);
-    --bad-line: rgba(210,104,127,0.40);
-    --on-accent: #ffffff;
-    --accent-shadow: rgba(47,111,208,0.55);
-    --traffic-r: var(--k1);
-    --traffic-y: var(--cool);
-    --traffic-g: var(--line-2);
-    --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%236b7c9e' stroke-width='1.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
-    --karaoke: linear-gradient(90deg, #dcecff, #a9cef4, #2f6fd0, #c4dcff, #ffffff, #a9cef4, #dcecff);
-    --radius: 16px;
-    --radius-sm: 9px;
-    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-    --disp: "Bricolage Grotesque", "Hanken Grotesk", system-ui, sans-serif;
-    --body: "Hanken Grotesk", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  }
-  :root[data-theme="dark"] {
-    --bg: #0f1626;
-    --bg-2: #131c30;
-    --panel: rgba(22,30,49,0.96);
-    --panel-2: #1a2440;
-    --raise: #212c4a;
-    --line: #2c3a5c;
-    --line-2: #44557d;
-    --ink: #e9f0fb;
-    --ink-2: #bfceea;
-    --dim: #8a9cbf;
-    --faint: #5f7298;
-    --k1: #6ba6f0;
-    --k2: #bfe0ff;
-    --cool: #7ca2dc;
-    --done: #a99bf0;
-    --bad: #e58aa0;
-    --body-bg:
-      radial-gradient(720px 520px at 18% 0%, rgba(54,72,116,0.45), transparent 64%),
-      radial-gradient(820px 640px at 85% -10%, rgba(47,90,170,0.30), transparent 60%),
-      radial-gradient(860px 680px at -8% 110%, rgba(124,108,200,0.20), transparent 56%),
-      linear-gradient(180deg, var(--bg-2), var(--bg));
-    --scan: rgba(150,185,240,0.06);
-    --scan-blend: screen;
-    --shadow: rgba(0,0,0,0.55);
-    --inset: rgba(255,255,255,0.06);
-    --bar-bg: linear-gradient(180deg, rgba(28,38,62,0.92), rgba(18,26,44,0.9));
-    --rail-bg: linear-gradient(180deg, rgba(26,36,60,0.8), rgba(18,26,44,0.5));
-    --out-bg: linear-gradient(180deg, rgba(24,33,55,0.85), rgba(16,23,40,0.6));
-    --focus: rgba(124,162,220,0.30);
-    --tint-bg: rgba(107,166,240,0.12);
-    --tint-line: rgba(107,166,240,0.40);
-    --ok-bg: rgba(169,155,240,0.14);
-    --ok-line: rgba(169,155,240,0.42);
-    --bad-bg: rgba(229,138,160,0.14);
-    --bad-line: rgba(229,138,160,0.42);
-    --on-accent: #0d1424;
-    --accent-shadow: rgba(0,0,0,0.5);
-    --traffic-r: var(--line-2);
-    --traffic-y: var(--cool);
-    --traffic-g: var(--k1);
-    --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238a9cbf' stroke-width='1.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
-    --karaoke: linear-gradient(90deg, #1f3a66, #6ba6f0, #bfe0ff, #ffffff, #bfe0ff, #6ba6f0, #1f3a66);
-  }
-  * { box-sizing: border-box; }
-  html { -webkit-text-size-adjust: 100%; }
-  html, body { height: 100%; margin: 0; }
-  body {
-    font-family: var(--body);
-    color: var(--ink);
-    background: var(--body-bg);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 24px;
-  }
-  body::before {
-    content: "";
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    z-index: 0;
-    background: repeating-linear-gradient(0deg, var(--scan) 0 1px, transparent 1px 4px);
-    mix-blend-mode: var(--scan-blend);
-  }
+  /* Page-specific layout only — everything else comes from the shell stylesheet. */
+  .ops-cols { display: grid; grid-template-columns: minmax(0, 1fr) 336px; gap: 16px; margin-top: 16px; align-items: start; }
+  .ops-cols > * { min-width: 0; }
+  .jobs-cols > *, .enc-cols > * { min-width: 0; }
+  .ops-side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  /* The dashboard's job is Stage and Elapsed; the source only has to be recognisable. */
+  .pn-table td.ops-src { max-width: 250px; }
+  .ops-worker { margin-top: 4px; font-family: var(--pn-mono); font-size: 12px; color: var(--pn-faint); white-space: nowrap; }
+  .ops-stage { font-size: 14px; color: var(--pn-ink-2); }
+  .cap-row { padding: 15px 18px; border-bottom: 1px solid var(--pn-line); }
+  .cap-row:last-child { border-bottom: 0; }
+  .cap-top { display: flex; align-items: baseline; gap: 10px; margin-bottom: 9px; }
+  .cap-top b { font-size: 14px; font-weight: 600; }
+  .cap-top .pn-mono { margin-left: auto; font-family: var(--pn-mono); font-size: 12.5px; color: var(--pn-dim); }
+  .cap-bar { height: 5px; border-radius: 3px; background: var(--pn-track); overflow: hidden; }
+  .cap-bar i { display: block; height: 100%; border-radius: 3px; background: var(--pn-ok); }
+  .cap-bar[data-tone="warn"] i { background: var(--pn-warn); }
+  .cap-bar[data-tone="bad"] i { background: var(--pn-bad); }
+  .cap-facts { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; font-family: var(--pn-mono); font-size: 11.5px; color: var(--pn-dim); }
+  .cap-facts span + span::before { content: "·"; margin-right: 8px; color: var(--pn-faint); }
+  .cap-facts b { color: var(--pn-ink-2); font-weight: 500; }
 
-  .window {
-    position: relative;
-    z-index: 1;
-    width: 94%;
-    max-width: 880px;
-    max-height: 90vh;
-    display: flex;
-    flex-direction: column;
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    box-shadow: 0 34px 80px -28px var(--shadow), 0 2px 0 0 var(--inset) inset;
-    overflow: hidden;
-  }
+  .ev { display: flex; align-items: flex-start; gap: 11px; padding: 11px 18px; border-bottom: 1px solid var(--pn-line); font-size: 13.5px; }
+  .ev:last-child { border-bottom: 0; }
+  .ev svg { flex: 0 0 auto; width: 17px; height: 17px; margin-top: 1px; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+  .ev[data-tone="ok"] svg { color: var(--pn-ok); }
+  .ev[data-tone="bad"] svg { color: var(--pn-bad); }
+  .ev[data-tone="warn"] svg { color: var(--pn-warn); }
+  .ev .ev-text { min-width: 0; color: var(--pn-ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ev .ev-text b { color: var(--pn-ink); font-weight: 600; }
+  .ev .ev-meta { margin-left: auto; flex: 0 0 auto; font-family: var(--pn-mono); font-size: 11.5px; color: var(--pn-faint); }
 
-  .titlebar {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 0 16px;
-    height: 46px;
-    background: var(--bar-bg);
-    border-bottom: 1px solid var(--line);
-    user-select: none;
-  }
-  .dots { display: flex; gap: 8px; }
-  .dot { width: 12px; height: 12px; border-radius: 50%; opacity: 0.95; }
-  .dot.r { background: var(--traffic-r); }
-  .dot.y { background: var(--traffic-y); }
-  .dot.g { background: var(--traffic-g); }
-  .brand { display: flex; align-items: center; gap: 9px; margin-left: 4px; min-width: 0; }
-  .brand b { flex: 0 0 auto; font-family: var(--disp); font-weight: 800; font-size: 16px; letter-spacing: -0.2px; color: var(--ink); }
-  .brand .sub { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11px; color: var(--dim); letter-spacing: 0.4px; }
-  .navlink {
-    margin-left: 14px;
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--k1);
-    text-decoration: none;
-    letter-spacing: 0.3px;
-    white-space: nowrap;
-    padding: 4px 9px;
-    border: 1px solid var(--line);
-    border-radius: 7px;
-    transition: border-color .14s, color .14s;
-  }
-  .navlink:hover { border-color: var(--k1); color: var(--ink); }
-  .navlink:focus-visible { outline: 2px solid var(--cool); outline-offset: 2px; }
-  .theme-toggle {
-    margin-left: auto;
-    font-size: 13px;
-    line-height: 1;
-    color: var(--ink-2);
-    background: transparent;
-    border: 1px solid var(--line);
-    border-radius: 7px;
-    padding: 5px 9px;
-    cursor: pointer;
-    transition: border-color .14s, color .14s;
-  }
-  .theme-toggle:hover { border-color: var(--k1); color: var(--ink); }
-  .theme-toggle:focus-visible { outline: 2px solid var(--cool); outline-offset: 2px; }
+  .jobs-cols { display: grid; grid-template-columns: minmax(0, 1fr) 316px; gap: 16px; align-items: start; margin-top: 16px; }
+  .jobs-bar { display: flex; align-items: center; gap: 12px; padding: 0 14px 0 6px; }
+  .jobs-bar .pn-tabs { flex: 1 1 auto; overflow-x: auto; }
+  .jobs-search { position: relative; flex: 0 0 auto; }
+  .jobs-search svg { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); width: 15px; height: 15px; stroke: var(--pn-faint); fill: none; stroke-width: 1.7; }
+  .jobs-search input { padding-left: 33px; width: 190px; }
+  .pn-table td.jobs-src { max-width: 225px; }
+  .detail-sticky { position: sticky; top: calc(var(--pn-top-h) + 24px); }
 
-  /* window manager (desktop): drag handle + floating job windows */
-  .titlebar { cursor: move; }
-  .jobwin {
-    position: fixed; z-index: 120;
-    width: 380px; max-width: calc(100vw - 32px); max-height: 58vh;
-    display: flex; flex-direction: column;
-    background: var(--panel); border: 1px solid var(--line);
-    border-radius: var(--radius);
-    box-shadow: 0 34px 80px -28px var(--shadow), 0 2px 0 0 var(--inset) inset;
-    overflow: hidden;
-  }
-  .jobwin-bar {
-    display: flex; align-items: center; gap: 9px;
-    padding: 0 12px; height: 40px; cursor: move; user-select: none;
-    background: var(--bar-bg); border-bottom: 1px solid var(--line);
-  }
-  .jobwin-bar .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--k1); flex-shrink: 0; }
-  .jobwin-bar .t { font-family: var(--mono); font-size: 12px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .jobwin-close {
-    margin-left: auto; cursor: pointer; width: 22px; height: 22px; line-height: 1; flex-shrink: 0;
-    font-size: 13px; color: var(--ink-2); background: transparent;
-    border: 1px solid var(--line); border-radius: 6px;
-  }
-  .jobwin-close:hover { border-color: var(--k1); color: var(--ink); }
-  .jobwin-body { padding: 16px; overflow: auto; }
-  .jobwin-body .stat-head { display: none; }
-  .popout {
-    margin-left: auto; cursor: pointer; font-family: var(--mono); font-size: 11px;
-    color: var(--k1); background: transparent; border: 1px solid var(--line);
-    border-radius: 6px; padding: 2px 8px;
-  }
-  .popout:hover { border-color: var(--k1); color: var(--ink); }
-  .jobrow { cursor: pointer; }
-  .jobrow:hover td { background: var(--raise); }
+  .enc-cols { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
+  .enc-side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .enc-ready { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--pn-line); font-size: 13.5px; }
+  .enc-ready:last-of-type { border-bottom: 0; }
+  .enc-ready svg { width: 17px; height: 17px; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; color: var(--pn-dim); }
+  .enc-ready[data-tone="ok"] svg { color: var(--pn-ok); }
+  .enc-ready[data-tone="warn"] svg { color: var(--pn-warn); }
+  .enc-ready[data-tone="bad"] svg { color: var(--pn-bad); }
+  .enc-ready b { margin-left: auto; font-size: 13.5px; font-weight: 500; color: var(--pn-ink-2); }
 
-  /* embed mode: rendered inside a desktop-shell iframe — drop the outer chrome */
-  html.embed, html.embed body { height: 100%; }
-  html.embed body { padding: 0; align-items: stretch; background: transparent; }
-  html.embed body::before { display: none; }
-  html.embed .titlebar { display: none; }
-  html.embed .window {
-    width: 100%; max-width: none; height: 100%; max-height: none;
-    border: 0; border-radius: 0; box-shadow: none;
-  }
-  /* fill the iframe: let the command area grow so the footer pins to the bottom (no gap) */
-  html.embed .grid { flex: 1 1 auto; min-height: 0; }
-  html.embed .options { overflow: auto; }
-  /* the API token lives in the desktop taskbar when embedded */
-  html.embed .footer .tok { display: none; }
-  html.embed .footer { justify-content: flex-end; }
-  /* job-only mode: a single job's live view, no command UI (used by desktop job windows) */
-  html.jobonly .grid, html.jobonly .footer { display: none; }
-  html.jobonly .output { flex: 1; height: 100%; max-height: none; overflow: auto; }
-  html.jobonly .stat-head { display: none; }
+  .set-cols { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 16px; align-items: start; }
+  .set-nav { display: flex; flex-direction: column; padding: 6px; gap: 2px; }
+  .set-nav a { padding: 9px 12px; border-radius: 8px; text-decoration: none; color: var(--pn-ink-2); font-size: 13.5px; font-weight: 500; border-left: 2px solid transparent; }
+  .set-nav a:hover { background: var(--pn-panel-2); }
+  .set-nav a.on { background: var(--pn-k1-soft); color: var(--pn-ink); font-weight: 600; border-left-color: var(--pn-k1); }
+  .set-row { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 16px; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--pn-line); }
+  .set-row:last-child { border-bottom: 0; }
+  .set-row > span:first-child { font-size: 13.5px; color: var(--pn-dim); }
+  .set-reveal { display: flex; gap: 8px; }
+  .set-choices { display: flex; gap: 22px; flex-wrap: wrap; }
 
-  .notice {
-    font-size: 12px; color: var(--ink-2); line-height: 1.45;
-    background: var(--tint-bg);
-    border: 1px solid var(--tint-line);
-    border-radius: var(--radius-sm);
-    padding: 9px 12px; margin: 0 0 16px;
-  }
-  .notice b { color: var(--ink); }
-  .notice .mono { color: var(--k1); }
+  .res-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+  .res-links a { display: block; font-family: var(--pn-mono); font-size: 12.5px; padding: 6px 0; color: var(--pn-k1-hi); overflow-wrap: anywhere; }
 
-  .grid { display: flex; min-height: 250px; }
-
-  .commands {
-    width: 176px;
-    flex-shrink: 0;
-    padding: 14px 12px;
-    border-right: 1px solid var(--line);
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    background: var(--rail-bg);
+  @media (max-width: 1180px) {
+    .ops-cols, .jobs-cols, .enc-cols, .set-cols { grid-template-columns: minmax(0, 1fr); }
+    .detail-sticky { position: static; }
   }
-  .rail-label {
-    font-family: var(--mono);
-    font-size: 10px;
-    letter-spacing: 1.4px;
-    text-transform: uppercase;
-    color: var(--faint);
-    padding: 2px 10px 8px;
-  }
-  .cmd {
-    position: relative;
-    text-align: left;
-    border: 0;
-    border-left: 2px solid transparent;
-    background: transparent;
-    color: var(--dim);
-    padding: 10px 12px;
-    border-radius: var(--radius-sm);
-    font-family: var(--disp);
-    font-weight: 600;
-    font-size: 14.5px;
-    letter-spacing: -0.1px;
-    cursor: pointer;
-    transition: background .14s, color .14s, border-color .14s;
-  }
-  .cmd:hover { background: var(--raise); color: var(--ink-2); }
-  .cmd.active {
-    background: var(--raise);
-    color: var(--ink);
-    border-left-color: var(--k1);
-  }
-  .cmd.active::after {
-    content: "";
-    position: absolute;
-    right: 11px; top: 50%;
-    width: 5px; height: 5px;
-    border-radius: 50%;
-    background: var(--k1);
-    transform: translateY(-50%);
-    box-shadow: 0 0 8px var(--k1);
-  }
-  .cmd:focus-visible { outline: 2px solid var(--cool); outline-offset: 2px; }
-
-  .options {
-    flex: 1;
-    padding: 20px 22px;
-    overflow-y: auto;
-    min-width: 0;
-  }
-  .eyebrow {
-    font-family: var(--mono);
-    font-size: 10.5px;
-    letter-spacing: 0.5px;
-    color: var(--faint);
-    margin-bottom: 6px;
-  }
-  .desc { font-size: 13px; color: var(--dim); margin: 0 0 18px; line-height: 1.45; }
-
-  .field { margin-bottom: 15px; }
-  .field > label:not(.check):not(.filepick) {
-    display: block;
-    font-size: 11.5px;
-    font-weight: 600;
-    letter-spacing: 0.2px;
-    color: var(--ink-2);
-    margin-bottom: 6px;
-  }
-  .field .opt { color: var(--faint); font-weight: 400; }
-  input[type=text], input[type=number], input[type=password], select {
-    width: 100%;
-    background: var(--bg);
-    border: 1px solid var(--line);
-    color: var(--ink);
-    border-radius: var(--radius-sm);
-    padding: 10px 12px;
-    font-size: 13.5px;
-    font-family: var(--body);
-    outline: none;
-    transition: border-color .14s, box-shadow .14s;
-  }
-  input::placeholder { color: var(--faint); }
-  input:focus, select:focus {
-    border-color: var(--cool);
-    box-shadow: 0 0 0 3px var(--focus);
-  }
-  select {
-    appearance: none;
-    background-image: var(--select-arrow);
-    background-repeat: no-repeat;
-    background-position: right 12px center;
-    padding-right: 32px;
-  }
-  .hint { font-size: 12px; color: var(--dim); }
-
-  textarea.editor {
-    width: 100%;
-    min-height: 360px;
-    resize: vertical;
-    background: var(--bg);
-    border: 1px solid var(--line);
-    color: var(--ink);
-    border-radius: var(--radius-sm);
-    padding: 12px 14px;
-    font-size: 13px;
-    font-family: var(--mono);
-    line-height: 1.5;
-    tab-size: 2;
-    outline: none;
-    transition: border-color .14s, box-shadow .14s;
-  }
-  textarea.editor:focus { border-color: var(--cool); box-shadow: 0 0 0 3px var(--focus); }
-  .editor-status { font-size: 12px; color: var(--dim); margin: 0 0 8px; }
-  .editor-status .tag {
-    display: inline-block; font-family: var(--mono); font-size: 11px;
-    padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line);
-    color: var(--ink-2); margin-right: 7px;
-  }
-
-  .check { display: flex; align-items: center; gap: 11px; cursor: pointer; user-select: none; font-size: 13.5px; color: var(--ink-2); }
-  .check input { position: absolute; opacity: 0; width: 0; height: 0; }
-  .check .box {
-    width: 19px; height: 19px; flex-shrink: 0;
-    border: 1px solid var(--line-2);
-    background: var(--bg);
-    border-radius: 6px;
-    display: inline-flex; align-items: center; justify-content: center;
-    transition: border-color .14s, background .14s;
-  }
-  .check .box::after {
-    content: ""; width: 10px; height: 10px; border-radius: 3px;
-    background: linear-gradient(135deg, var(--k1), var(--k2));
-    transform: scale(0); transition: transform .14s;
-  }
-  .check input:checked + .box { border-color: var(--k1); }
-  .check input:checked + .box::after { transform: scale(1); }
-  .check input:focus-visible + .box { box-shadow: 0 0 0 3px var(--focus); }
-
-  .filepick { display: flex; align-items: center; gap: 12px; cursor: pointer; }
-  .filepick input[type=file] { display: none; }
-  .filebtn {
-    font-family: var(--mono);
-    background: var(--raise); color: var(--ink-2);
-    border: 1px solid var(--line-2); border-radius: var(--radius-sm);
-    padding: 9px 14px; font-size: 12.5px; white-space: nowrap;
-    transition: border-color .14s, color .14s;
-  }
-  .filepick:hover .filebtn { border-color: var(--k1); color: var(--ink); }
-  .filename {
-    font-family: var(--mono); font-size: 12px; color: var(--faint);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .filename.has { color: var(--ink); }
-
-  .selrow { display: flex; gap: 8px; }
-  .selrow select { flex: 1; }
-  .mini {
-    border: 1px solid var(--line-2); background: var(--raise);
-    color: var(--dim); border-radius: var(--radius-sm); padding: 0 13px;
-    font-size: 15px; cursor: pointer; line-height: 1;
-    transition: border-color .14s, color .14s, transform .3s;
-  }
-  .mini:hover { border-color: var(--k1); color: var(--ink); transform: rotate(90deg); }
-  .mini:focus-visible { outline: 2px solid var(--cool); outline-offset: 2px; }
-
-  .output {
-    border-top: 1px solid var(--line);
-    padding: 16px 22px;
-    max-height: 36vh;
-    overflow: auto;
-    background: var(--out-bg);
-  }
-  .output:empty { display: none; }
-  pre {
-    margin: 10px 0 0;
-    font-family: var(--mono);
-    font-size: 12.5px;
-    line-height: 1.55;
-    white-space: pre-wrap;
-    word-break: break-word;
-    color: var(--ink-2);
-  }
-  .mono { font-family: var(--mono); }
-  .muted { color: var(--dim); }
-
-  table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12.5px; }
-  th, td { text-align: left; padding: 8px 8px; border-bottom: 1px solid var(--line); }
-  th { color: var(--faint); font-weight: 600; font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.8px; text-transform: uppercase; }
-  td.trunc { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-  .pill {
-    display: inline-block; font-family: var(--mono); font-size: 11px; font-weight: 600;
-    padding: 2px 9px; border-radius: 6px; letter-spacing: 0.3px;
-    border: 1px solid var(--line-2); color: var(--ink-2); background: var(--panel-2);
-  }
-  .pill.ok { color: var(--done); border-color: var(--ok-line); }
-  .pill.err { color: var(--bad); border-color: var(--bad-line); }
-
-  .chip {
-    display: inline-block; font-family: var(--mono); font-size: 11px; font-weight: 600;
-    padding: 3px 9px; border-radius: 7px; letter-spacing: 0.3px;
-    border: 1px solid var(--line); color: var(--ink-2); background: var(--panel-2);
-  }
-  .chip.active { color: var(--k1); border-color: var(--tint-line); background: var(--tint-bg); }
-  .chip.done { color: var(--done); border-color: var(--ok-line); background: var(--ok-bg); }
-  .chip.bad { color: var(--bad); border-color: var(--bad-line); background: var(--bad-bg); }
-  .chip.idle { color: var(--dim); }
-  .term-banner {
-    font-family: var(--mono); font-size: 12.5px; font-weight: 600; letter-spacing: 0.3px;
-    padding: 8px 12px; border-radius: var(--radius-sm); margin-bottom: 12px;
-    border: 1px solid var(--bad-line); color: var(--bad); background: var(--bad-bg);
-  }
-
-  /* signature: karaoke pipeline */
-  .stat-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
-  .stat-id { font-size: 12.5px; color: var(--ink); }
-  .stat-type { font-size: 12.5px; color: var(--dim); }
-  .stat-worker { font-size: 12px; color: var(--k1); border: 1px solid var(--tint-line); background: var(--tint-bg); border-radius: 7px; padding: 2px 8px; }
-  .pipe { display: flex; gap: 10px; margin: 6px 0 10px; }
-  .seg { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 9px; }
-  .seg-track { height: 8px; border-radius: 999px; background: var(--line); display: block; overflow: hidden; }
-  .seg-prog { display: block; height: 100%; width: 0; border-radius: 999px; transition: width .5s ease; }
-  .seg-name {
-    font-family: var(--mono); font-size: 11px; color: var(--faint);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0.4px;
-  }
-  .seg.done .seg-prog { background: var(--cool); }
-  .seg.done .seg-name { color: var(--ink-2); }
-  .seg.fin .seg-prog { background: var(--done); }
-  .seg.fin .seg-name { color: var(--done); }
-  .seg.active .seg-track { box-shadow: 0 0 0 1px var(--tint-line) inset; }
-  .seg.active .seg-prog {
-    background: var(--karaoke);
-    background-size: 300% 100%;
-    animation: ksweep 1.7s linear infinite;
-    box-shadow: 0 0 14px -2px var(--k2);
-  }
-  .seg.active .seg-name { color: var(--k1); font-weight: 600; }
-  @keyframes ksweep { from { background-position: 200% 0; } to { background-position: 0 0; } }
-  /* indeterminate "waiting on a cached/duplicate input" state */
-  .seg.wait .seg-track { box-shadow: 0 0 0 1px var(--tint-line) inset; }
-  .seg.wait .seg-prog {
-    width: 100% !important;
-    background: repeating-linear-gradient(90deg, var(--k2) 0 9px, transparent 9px 18px);
-    background-size: 18px 100%;
-    animation: kslide 0.9s linear infinite;
-    opacity: 0.6;
-  }
-  @keyframes kslide { from { background-position: 0 0; } to { background-position: 18px 0; } }
-  .seg.wait .seg-name { color: var(--k1); font-weight: 600; }
-  /* indeterminate-but-moving "forwarded — riding another job's encode" state */
-  .seg.forward .seg-track { box-shadow: 0 0 0 1px var(--tint-line) inset; }
-  .seg.forward .seg-prog {
-    width: 42% !important;
-    background: var(--karaoke);
-    background-size: 300% 100%;
-    box-shadow: 0 0 14px -2px var(--k2);
-    animation: kindet 1.25s ease-in-out infinite, ksweep 1.7s linear infinite;
-  }
-  @keyframes kindet { from { transform: translateX(-100%); } to { transform: translateX(238%); } }
-  .seg.forward .seg-name { color: var(--k1); font-weight: 600; }
-  .accepted { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 12px 0; font-size: 13px; }
-
-  /* progress readout + uploaded links */
-  .prog-meta { margin-top: 2px; font-size: 12px; color: var(--ink-2); }
-  .prog-label {
-    font-family: var(--mono); font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
-    color: var(--faint); margin: 14px 0 6px;
-  }
-  .link-row {
-    display: flex; gap: 12px; align-items: baseline; padding: 5px 0;
-    border-bottom: 1px solid var(--line); font-size: 12.5px; word-break: break-all;
-  }
-  .link-host { color: var(--k1); min-width: 88px; flex-shrink: 0; }
-  .link-row a { color: var(--cool); text-decoration: none; }
-  .link-row a:hover { text-decoration: underline; }
-
-  .up-hosts { margin-top: 9px; display: flex; flex-direction: column; gap: 4px; }
-  .up-host { font-size: 12px; color: var(--ink-2); word-break: break-all; }
-  .up-host a { color: var(--cool); text-decoration: none; }
-  .up-host a:hover { text-decoration: underline; }
-
-  .footer {
-    display: flex;
-    align-items: flex-end;
-    gap: 12px;
-    padding: 14px 16px;
-    border-top: 1px solid var(--line);
-    background: var(--bar-bg);
-  }
-  .footer .tok { flex: 1; display: flex; flex-direction: column; gap: 6px; }
-  .footer .toklabel {
-    font-family: var(--mono); font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
-    color: var(--faint); display: flex; gap: 8px; align-items: center;
-  }
-  .saved { color: var(--done); opacity: 0; transition: opacity .2s; text-transform: none; letter-spacing: 0; }
-  .saved.show { opacity: 1; }
-  .run {
-    font-family: var(--disp);
-    background: linear-gradient(120deg, var(--k1), var(--k2));
-    color: var(--on-accent);
-    border: 0;
-    border-radius: var(--radius-sm);
-    padding: 10px 26px;
-    font-size: 14px;
-    font-weight: 700;
-    letter-spacing: 0.2px;
-    cursor: pointer;
-    align-self: flex-end;
-    box-shadow: 0 10px 22px -9px var(--accent-shadow);
-    transition: filter .14s, transform .08s, opacity .14s;
-  }
-  .run:hover { filter: brightness(1.06); }
-  .run:active { transform: translateY(1px); }
-  .run:focus-visible { outline: 2px solid var(--cool); outline-offset: 2px; }
-  .run:disabled { opacity: 0.5; cursor: default; filter: saturate(0.5); }
-
-  @media (max-width: 760px) {
-    body { padding: 0; align-items: stretch; }
-    /* mobile: no window manager — keep the plain single-card layout */
-    .titlebar { cursor: default; gap: 8px; padding: 0 12px; }
-    .brand .sub { display: none; }
-    .navlink { margin-left: 0; padding: 4px 7px; }
-    .theme-toggle { padding: 5px 7px; }
-    .jobwin { display: none !important; }
-    .popout { display: none !important; }
-    .jobrow { cursor: default; }
-    .window {
-      width: 100%;
-      max-width: none;
-      min-height: 100%;
-      max-height: none;
-      border: 0;
-      border-radius: 0;
-      box-shadow: none;
-    }
-    .grid { flex-direction: column; }
-    .commands {
-      width: auto;
-      flex-direction: row;
-      flex-wrap: wrap;
-      gap: 6px;
-      border-right: none;
-      border-bottom: 1px solid var(--line);
-    }
-    .rail-label { display: none; }
-    .cmd {
-      flex: 1 1 auto;
-      text-align: center;
-      padding: 9px 12px;
-      border-left: 0;
-      border-bottom: 2px solid transparent;
-    }
-    .cmd.active { border-left: 0; border-bottom-color: var(--k1); }
-    .cmd.active::after { display: none; }
-    .options { padding: 18px 16px; }
-    .output { padding: 14px 16px; max-height: none; }
-    .seg-name { display: none; }
-    .footer { flex-wrap: wrap; padding: 12px 16px; gap: 10px; }
-    .footer .tok { flex: 1 1 100%; }
-    .run { width: 100%; align-self: stretch; padding: 13px 26px; }
-    /* 16px on inputs keeps iOS Safari from auto-zooming on focus */
-    input[type=text], input[type=number], input[type=password], select { font-size: 16px; }
-    td.trunc { max-width: 140px; }
-    .link-host { min-width: 0; }
-  }
-  @media (max-width: 380px) {
-    .titlebar { gap: 5px; padding: 0 8px; }
-    .navlink { padding: 4px 5px; }
-    .theme-toggle { padding: 5px 6px; }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .seg.active .seg-prog { animation: none; background: var(--karaoke); }
-    .seg.forward .seg-prog { animation: none; width: 100% !important; transform: none; opacity: 0.6; }
-    .mini:hover { transform: none; }
+  @media (max-width: 640px) {
+    .jobs-bar { flex-wrap: wrap; padding: 8px; }
+    .jobs-search input { width: 100%; }
+    .jobs-search { flex: 1 1 160px; }
+    .set-row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
   }
 </style>
-<script>
-  (function () {
-    function preferredTheme(fallback) {
-      var t = null;
-      try { t = localStorage.getItem("pandora_theme"); } catch (e) {}
-      if (t === "light" || t === "dark") return t;
-      if (fallback === "light" || fallback === "dark") return fallback;
-      return (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
-    }
-    try {
-      document.documentElement.setAttribute("data-theme", preferredTheme());
-      if (/[?&]embed=1\b/.test(location.search)) document.documentElement.classList.add("embed");
-      if (/[?&]job=/.test(location.search) || /[?&]jobs=1\b/.test(location.search)) document.documentElement.classList.add("jobonly");
-    } catch (e) {}
-  })();
-</script>
 </head>
-<body>
-  <div class="window">
-    <div class="titlebar">
-      <div class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></div>
-      <div class="brand"><b>pandora</b><span class="sub">encode console</span></div>
-      <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle theme">☀</button>
-      <a class="navlink" href="/" title="Desktop">⊞ desktop</a>
-      <a class="navlink" href="/git" title="Git operations console">git ›</a>
-    </div>
-
-    <div class="grid">
-      <div class="commands" id="commands"></div>
-      <div class="options" id="options"></div>
-    </div>
-
-    <div class="output" id="output"></div>
-
-    <div class="footer">
-      <div class="tok">
-        <div class="toklabel">API token <span class="saved" id="saved">saved ✓</span></div>
-        <input type="password" id="token" placeholder="Bearer token" autocomplete="off" spellcheck="false">
-      </div>
-      <button class="run" id="run">Run</button>
-    </div>
-  </div>
+<body class="pn-body">
+<div class="pn-app">
+  <main class="pn-main">
+    <div class="pn-content" id="view"></div>
+  </main>
+</div>
 
 <script>
 (function () {
   "use strict";
 
-  // ---- theme toggle (Pandora light / dark), shared across both consoles ----
-  (function () {
-    var root = document.documentElement;
-    var btn = document.getElementById("themeToggle");
-    function storedTheme() {
-      var t = null;
-      try { t = localStorage.getItem("pandora_theme"); } catch (e) {}
-      if (t === "light" || t === "dark") return t;
-      t = root.getAttribute("data-theme");
-      if (t === "light" || t === "dark") return t;
-      return (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+  var esc = PN.esc, api = PN.api, icon = PN.icon;
+
+  // Four URLs, four views, one document. A full page load per view keeps the address bar
+  // honest and means no client-side router.
+  var ROUTES = {
+    "/": "operations",
+    "/jobs": "jobs",
+    "/encode": "encode",
+    "/settings": "settings"
+  };
+  var TITLES = {
+    operations: "Operations",
+    jobs: "Jobs",
+    encode: "New Encode",
+    settings: "Settings"
+  };
+  var view = ROUTES[location.pathname] || "operations";
+  var viewEl = document.getElementById("view");
+
+  var TOPACTIONS = {
+    operations: '<a class="pn-btn pn-primary" href="/encode" style="margin-left:18px">' + icon("encode") + "New encode</a>"
+  };
+
+  PN.shell({ page: view === "operations" ? "operations" : view, title: TITLES[view], actions: TOPACTIONS[view] || "" });
+
+  // ── shared job rendering ───────────────────────────────────────────────────
+
+  function phaseLabel(t) {
+    if (t === "download") return "downloading";
+    if (t === "encode") return "encoding";
+    if (t === "upload" || t === "upload_all") return "uploading";
+    if (t === "probe") return "probing";
+    if (t === "forward") return "waiting on a shared job";
+    if (t === "queue") return "waiting to encode";
+    return "";
+  }
+
+  // The mono readout under a meter: what an encoder actually watches while it runs.
+  function readout(p, stage) {
+    if (!p || typeof p !== "object") return "";
+    if (stage === "Cancelled" || stage === "Failed" || stage === "Declined") return "";
+    if (p.type === "encode") {
+      var m = PN.pct(p.percent) + "% · frame " + esc(p.frame) + "/" + esc(p.total) + " · " + esc(p.fps) + " fps";
+      if (p.kbps) m += " · " + esc(p.kbps) + " kbit/s";
+      if (p.eta_secs != null) m += " · ETA " + esc(PN.formatEta(p.eta_secs));
+      return m;
     }
-    function applyTheme(t) {
-      t = t === "dark" ? "dark" : "light";
-      root.setAttribute("data-theme", t);
-      paint();
+    if (p.type === "download") {
+      if (p.waiting) return "Waiting on a cached input — a duplicate job is fetching the same source.";
+      if (p.cached) return "Loaded from cache — no re-download needed.";
+      var d = PN.pct(p.percent) + "%";
+      if (p.done != null && p.total != null) d += " · " + esc(p.done) + "/" + esc(p.total) + " MB";
+      else if (p.done != null) d += " · " + esc(p.done) + " MB";
+      return d;
     }
-    function paint() {
-      var dark = root.getAttribute("data-theme") === "dark";
-      if (btn) { btn.textContent = dark ? "☾" : "☀"; btn.title = dark ? "Light mode" : "Dark mode"; }
+    if (p.type === "queue") {
+      return "Position #" + esc(p.position) + " · estimated wait " + (p.eta_secs == null ? "?" : esc(PN.formatEta(p.eta_secs)));
     }
-    applyTheme(storedTheme());
-    window.pandoraSetTheme = applyTheme;
-    paint();
-    if (btn) btn.addEventListener("click", function () {
-      var next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
-      applyTheme(next);
-      try { localStorage.setItem("pandora_theme", next); } catch (e) {}
-      try { window.parent.postMessage({ type: "pandora:theme", theme: next }, "*"); } catch (e) {}
+    if (p.type === "forward") {
+      return "Shared with " + (p.parent_job_id ? "job #" + esc(p.parent_job_id) : "another job") +
+        " — same source, preset and subtitle, so this reuses that encode.";
+    }
+    if (p.type === "upload" || p.type === "upload_all") return PN.pct(p.percent) + "%";
+    return "";
+  }
+
+  function linkRows(l) {
+    if (!l || typeof l !== "object") return "";
+    var rows = Object.keys(l).map(function (host) {
+      if (host === "warnings") return "";
+      var v = l[host];
+      if (v === null || v === undefined || v === "") return "";
+      var s = String(v);
+      return /^https?:\/\//.test(s)
+        ? '<a href="' + esc(s) + '" target="_blank" rel="noopener">' + esc(s) + "</a>"
+        : '<div class="pn-mono" style="font-size:12.5px;padding:6px 0">' + esc(s) + "</div>";
+    }).join("");
+    return rows ? '<div class="pn-eyebrow" style="margin:18px 0 6px">Output</div><div class="res-links">' + rows + "</div>" : "";
+  }
+
+  function uploadHosts(p) {
+    if (!p || p.type !== "upload") return "";
+    var hosts = (Array.isArray(p.hosts) ? p.hosts : []).map(function (h) { return h == null ? "" : String(h).trim(); }).filter(Boolean);
+    if (!hosts.length) return "";
+    return '<div class="pn-eyebrow" style="margin:18px 0 6px">Destinations</div><div class="res-links">' +
+      hosts.map(function (s) {
+        return /^https?:\/\//.test(s)
+          ? '<a href="' + esc(s) + '" target="_blank" rel="noopener">' + esc(s) + "</a>"
+          : '<div class="pn-mono" style="font-size:12.5px;padding:6px 0">' + esc(s) + "</div>";
+      }).join("") + "</div>";
+  }
+
+  function warnRows(w) {
+    if (!w) return "";
+    var list = (Array.isArray(w) ? w : [String(w)]).map(function (s) { return String(s || "").trim(); }).filter(Boolean);
+    if (!list.length) return "";
+    return '<div class="pn-eyebrow" style="margin:18px 0 6px">Warnings</div><pre class="pn-pre">' + esc(list.join("\n")) + "</pre>";
+  }
+
+  function detailRows(d) {
+    var rows = "";
+    if (d.job_type) rows += "<dt>Type</dt><dd>" + esc(d.job_type) + "</dd>";
+    if (d.preset) rows += "<dt>Preset</dt><dd>" + esc(d.preset) + "</dd>";
+    if (d.worker) rows += '<dt>Worker</dt><dd class="pn-mono">' + esc(d.worker) + "</dd>";
+    if (d.progress && d.progress.type === "keep" && d.progress.keyword) {
+      rows += '<dt>Keyword</dt><dd class="pn-mono">' + esc(d.progress.keyword) + "</dd>";
+    }
+    if (d.link) rows += '<dt>Source</dt><dd class="pn-mono" style="font-size:12.5px">' + esc(d.link) + "</dd>";
+    return rows ? '<div class="pn-eyebrow" style="margin:18px 0 8px">Details</div><dl class="pn-kv">' + rows + "</dl>" : "";
+  }
+
+  function isJobStatus(d) { return d && typeof d === "object" && typeof d.stage === "string" && d.job_id !== undefined; }
+
+  // One job, fully rendered. Used by the encode result panel and the Jobs detail drawer.
+  function jobBody(d) {
+    var terminalBad = ["Failed", "Declined", "Cancelled"].indexOf(d.stage) !== -1;
+    var head = '<div class="res-head">' + PN.chip(d.stage, true) +
+      '<span class="pn-jobid">#' + esc(d.job_id) + "</span>" +
+      (d.worker ? '<span class="pn-tag">' + esc(d.worker) + "</span>" : "") + "</div>";
+    var banner = "";
+    if (terminalBad) {
+      var ph = d.progress && typeof d.progress === "object" ? phaseLabel(d.progress.type) : "";
+      banner = '<div class="pn-notice" data-tone="bad" style="margin-bottom:16px">' +
+        esc(d.stage + (ph ? " while " + ph : "")) + "</div>";
+    }
+    var pipeline = PN.PIPELINE_STAGES.indexOf(d.stage) !== -1
+      ? '<div class="pn-eyebrow" style="margin:0 0 14px">Pipeline</div>' + PN.stepper(d.stage, d.progress)
+      : "";
+    var read = readout(d.progress, d.stage);
+    var links = terminalBad ? "" : (d.progress && d.progress.type === "upload" ? uploadHosts(d.progress) : linkRows(d.links));
+    var probe = d.progress && d.progress.type === "probe" && d.progress.files
+      ? '<div class="pn-eyebrow" style="margin:18px 0 6px">Files</div><pre class="pn-pre">' + esc(d.progress.files) + "</pre>" : "";
+    return head + banner + pipeline + (read ? '<div class="pn-readout">' + esc(read) + "</div>" : "") +
+      probe + links + warnRows(d.links && d.links.warnings) + detailRows(d);
+  }
+
+  function failureBody(res) {
+    if (res.status === 401) return '<div class="pn-notice" data-tone="warn">No valid token. Add one in <a class="pn-link" href="/settings">Settings</a>.</div>';
+    if (res.status === 403) return '<div class="pn-notice" data-tone="warn">' + esc(PN.messageText(res.data, false)) + "</div>";
+    if (res.status === 429) return '<div class="pn-notice" data-tone="warn">' + esc(PN.rateNote(res)) + "</div>";
+    if (res.status === 404) return '<div class="pn-notice">Job not found — it may have been archived.</div>';
+    return '<div class="pn-notice" data-tone="bad">' + esc(PN.messageText(res.data, res.ok)) + "</div>";
+  }
+
+  // ── OPERATIONS ─────────────────────────────────────────────────────────────
+
+  function renderOperations() {
+    viewEl.innerHTML =
+      '<section class="pn-grid pn-stats" id="opsStats">' + statTiles(null, null) + "</section>" +
+      '<section class="ops-cols">' +
+        '<div class="pn-card">' +
+          '<div class="pn-cardhead"><h2>Live pipeline</h2><span class="pn-spacer"></span>' +
+          '<button class="pn-btn pn-sm pn-quiet" id="opsRefresh" type="button">' + icon("refresh") + "Refresh</button></div>" +
+          '<div id="opsPipeline"><div class="pn-empty"><span class="pn-spin"></span></div></div>' +
+          '<div class="pn-cardfoot"><a class="pn-link" href="/jobs">View all jobs</a></div>' +
+        "</div>" +
+        '<div class="ops-side">' +
+          '<div class="pn-card"><div class="pn-cardhead"><h2>Worker capacity</h2>' +
+            '<span class="pn-spacer"></span><span class="pn-eyebrow" id="opsWorkerCount"></span></div>' +
+            '<div id="opsWorkers"><div class="pn-empty"><span class="pn-spin"></span></div></div></div>' +
+          '<div class="pn-card"><div class="pn-cardhead"><h2>Recently finished</h2></div>' +
+            '<div id="opsEvents"><div class="pn-empty"><span class="pn-spin"></span></div></div>' +
+            '<div class="pn-cardfoot"><a class="pn-link" href="/jobs">View all jobs</a></div></div>' +
+        "</div>" +
+      "</section>";
+    document.getElementById("opsRefresh").addEventListener("click", loadOperations);
+    loadOperations();
+    setInterval(loadOperations, 5000);
+  }
+
+  function statTiles(ongoing, recent, workers) {
+    function tile(label, value, ic, tone) {
+      return '<article class="pn-card pn-stat"' + (tone ? ' data-tone="' + tone + '"' : "") + ">" +
+        '<div class="pn-staticon">' + icon(ic) + "</div><div>" +
+        '<div class="pn-statlabel">' + label + "</div>" +
+        '<div class="pn-statvalue">' + value + "</div></div></article>";
+    }
+    var dash = '<span style="color:var(--pn-faint)">—</span>';
+    var running = dash, queued = dash, workerCell = dash, rate = dash;
+    if (ongoing) {
+      var q = ongoing.filter(function (j) { return j.stage === "Queued"; }).length;
+      running = String(ongoing.length - q);
+      queued = String(q);
+    }
+    if (workers && workers.nodes) {
+      var alive = (workers.hearts || []).filter(function (h) { return h.alive; }).length;
+      var nodes = workers.nodes.filter(function (n) { return n.last_seen_secs < 60; }).length;
+      workerCell = String(alive + nodes) + "<small> / " + ((workers.hearts || []).length + workers.nodes.length) + "</small>";
+    }
+    if (recent && recent.length) {
+      var done = recent.filter(function (j) { return j.stage === "Uploaded"; }).length;
+      var ended = recent.filter(function (j) { return PN.TERMINAL.indexOf(j.stage) !== -1; }).length;
+      if (ended) rate = (Math.round((done / ended) * 1000) / 10).toFixed(1) + "<small>%</small>";
+    }
+    return tile("Active workers", workerCell, "users") +
+      tile("Running jobs", running, "play") +
+      tile("Queued", queued, "clock") +
+      tile("Success rate", rate, "shield");
+  }
+
+  function loadOperations() {
+    Promise.all([
+      api("GET", "/api/v1/jobs?status=ongoing"),
+      api("GET", "/api/v1/jobs?status=recent"),
+      api("GET", "/api/v1/workers")
+    ]).then(function (r) {
+      var ongoing = r[0].ok && Array.isArray(r[0].data) ? r[0].data : null;
+      var recent = r[1].ok && Array.isArray(r[1].data) ? r[1].data : null;
+      var workers = r[2].ok && r[2].data && typeof r[2].data === "object" ? r[2].data : null;
+
+      document.getElementById("opsStats").innerHTML = statTiles(ongoing, recent, workers);
+      PN.navCount("jobs", ongoing ? ongoing.length || "" : "");
+      renderPipeline(r[0], ongoing, workers);
+      renderCapacity(r[2], workers);
+      renderFinished(r[1], recent);
+    }).catch(function () {});
+  }
+
+  function renderPipeline(res, ongoing, workers) {
+    var host = document.getElementById("opsPipeline");
+    if (!ongoing) { host.innerHTML = failureShell(res, "Nothing to show yet."); return; }
+    if (!ongoing.length) {
+      host.innerHTML = '<div class="pn-empty"><strong>The queue is clear</strong>' +
+        "<p>No job is downloading, encoding, or uploading right now.</p></div>";
+      return;
+    }
+    // Elapsed lives only in the worker snapshot, so it fills in for PNwitch tokens and
+    // stays blank otherwise rather than being invented.
+    var elapsed = {};
+    if (workers && Array.isArray(workers.queue)) {
+      workers.queue.forEach(function (q) { if (q.secs_since_request != null) elapsed[String(q.job_id)] = q.secs_since_request; });
+    }
+    var rows = ongoing.map(function (j) {
+      var secs = elapsed[String(j.job_id)];
+      return '<tr data-clickable data-job="' + esc(j.job_id) + '">' +
+        '<td><span class="pn-jobid">#' + esc(j.job_id) + "</span>" +
+          '<div class="ops-worker">' + esc(j.worker || "unassigned") + "</div></td>" +
+        "<td>" + esc(j.job_type) + "</td>" +
+        '<td class="pn-mono pn-trunc ops-src" title="' + esc(j.link) + '">' + esc(j.link) + "</td>" +
+        '<td class="pn-progcell"><div class="ops-stage">' + esc(j.stage) + "</div>" +
+          PN.bar(j.stage, j.progress) + "</td>" +
+        '<td class="pn-mono pn-num">' + (secs == null ? "—" : PN.formatDuration(secs)) + "</td></tr>";
+    }).join("");
+    host.innerHTML = '<div class="pn-tablewrap"><table class="pn-table"><thead><tr>' +
+      "<th>Job</th><th>Type</th><th>Source</th><th>Stage</th><th>Elapsed</th>" +
+      "</tr></thead><tbody>" + rows + "</tbody></table></div>";
+    host.querySelectorAll("tr[data-job]").forEach(function (tr) {
+      tr.addEventListener("click", function () { location.href = "/jobs?job=" + encodeURIComponent(tr.getAttribute("data-job")); });
     });
-    window.addEventListener("storage", function (e) {
-      if (e.key !== "pandora_theme") return;
-      applyTheme(e.newValue);
+  }
+
+  function failureShell(res, blankText) {
+    if (res.status === 401) return '<div class="pn-empty"><strong>No token</strong><p>Add a bearer token in <a class="pn-link" href="/settings">Settings</a> to see live work.</p></div>';
+    if (res.status === 403) return '<div class="pn-empty"><strong>This token cannot read that</strong><p>' + esc(PN.messageText(res.data, false)) + "</p></div>";
+    return '<div class="pn-empty"><strong>' + esc(blankText) + "</strong><p>" + esc(PN.messageText(res.data, res.ok)) + "</p></div>";
+  }
+
+  function renderCapacity(res, workers) {
+    var host = document.getElementById("opsWorkers");
+    var countEl = document.getElementById("opsWorkerCount");
+    if (!workers) {
+      countEl.textContent = "";
+      host.innerHTML = res.status === 403
+        ? '<div class="pn-empty"><strong>Needs a PNwitch token</strong><p>Worker liveness is operator-only. Mint one with <span class="pn-tag">/gentoken label:PNwitch</span>.</p></div>'
+        : failureShell(res, "Worker snapshot unavailable");
+      return;
+    }
+    var hearts = workers.hearts || [];
+    var nodes = workers.nodes || [];
+    var online = hearts.filter(function (h) { return h.alive; }).length + nodes.filter(function (n) { return n.last_seen_secs < 60; }).length;
+    countEl.textContent = online + " online";
+
+    var rows = hearts.map(function (h) {
+      return capRow(h.worker, h.alive ? 1 : 0, 1, h.alive ? "beating " + h.last_beat_secs + "s ago" : "no heartbeat",
+        h.reboot_count ? h.reboot_count + " reboots" : "steady");
+    }).join("");
+    if (nodes.length) {
+      var live = nodes.filter(function (n) { return n.last_seen_secs < 60; }).length;
+      rows += capRow("Linked nodes", live, nodes.length, live + " reachable", (nodes.length - live) + " silent");
+    }
+    if (workers.queue_len != null) {
+      rows += '<div class="cap-row"><div class="cap-top"><b>Queue depth</b>' +
+        '<span class="pn-mono">' + esc(workers.queue_len) + "</span></div>" +
+        '<div class="cap-facts" style="margin-top:2px"><span><b>' + esc(workers.encode_reboot_count || 0) + "</b> encoder reboots</span>" +
+        "<span>git query " + (workers.gitquery_pending ? "pending" : "idle") + "</span></div></div>";
+    }
+    host.innerHTML = rows || '<div class="pn-empty"><strong>No workers reported</strong><p>The worker loop has not published a snapshot.</p></div>';
+  }
+
+  function capRow(name, live, total, factA, factB) {
+    var ratio = total ? Math.round((live / total) * 100) : 0;
+    var tone = ratio === 100 ? "" : ratio >= 50 ? "warn" : "bad";
+    return '<div class="cap-row"><div class="cap-top"><b>' + esc(name) + "</b>" +
+      '<span class="pn-mono">' + live + " / " + total + "</span></div>" +
+      '<div class="cap-bar"' + (tone ? ' data-tone="' + tone + '"' : "") + '><i style="width:' + ratio + '%"></i></div>' +
+      '<div class="cap-facts"><span><b>' + ratio + "%</b> available</span>" +
+      "<span>" + esc(factA) + "</span><span>" + esc(factB) + "</span></div></div>";
+  }
+
+  // No events route exists, so this is the honest equivalent: jobs that recently ended.
+  function renderFinished(res, recent) {
+    var host = document.getElementById("opsEvents");
+    if (!recent) { host.innerHTML = failureShell(res, "Nothing to show yet."); return; }
+    var ended = recent.filter(function (j) { return PN.TERMINAL.indexOf(j.stage) !== -1; }).slice(0, 6);
+    if (!ended.length) {
+      host.innerHTML = '<div class="pn-empty"><strong>No finished jobs yet</strong><p>Completed and failed jobs land here.</p></div>';
+      return;
+    }
+    host.innerHTML = ended.map(function (j) {
+      var ok = j.stage === "Uploaded";
+      var tone = ok ? "ok" : j.stage === "Cancelled" ? "warn" : "bad";
+      var verb = ok ? "finished" : j.stage.toLowerCase();
+      return '<a class="ev" data-tone="' + tone + '" href="/jobs?job=' + esc(j.job_id) + '" style="text-decoration:none">' +
+        icon(ok ? "check" : j.stage === "Cancelled" ? "info" : "alert") +
+        '<span class="ev-text"><b>Job #' + esc(j.job_id) + "</b> " + esc(j.job_type + " " + verb) + "</span>" +
+        '<span class="ev-meta">' + esc(j.preset || "") + "</span></a>";
+    }).join("");
+  }
+
+  // ── JOBS ───────────────────────────────────────────────────────────────────
+
+  var jobFilter = "all";
+  var jobSearch = "";
+  var jobsCache = [];
+  var selectedJob = "";
+  var detailTimer = null;
+
+  var FILTERS = [
+    { key: "all", label: "All jobs" },
+    { key: "active", label: "Active" },
+    { key: "queued", label: "Queued" },
+    { key: "completed", label: "Completed" },
+    { key: "failed", label: "Failed" }
+  ];
+
+  function renderJobsView() {
+    viewEl.innerHTML =
+      '<div class="pn-card jobs-bar">' +
+        '<nav class="pn-tabs" id="jobTabs">' + FILTERS.map(function (f) {
+          return '<button class="pn-tab" type="button" role="tab" data-filter="' + f.key + '"' +
+            (f.key === jobFilter ? ' aria-selected="true"' : "") + ">" + f.label + "</button>";
+        }).join("") + "</nav>" +
+        '<div class="jobs-search">' + icon("search") +
+          '<input class="pn-input" id="jobSearch" type="search" placeholder="Search jobs" autocomplete="off"></div>' +
+        '<button class="pn-btn pn-sm" id="jobRefresh" type="button">' + icon("refresh") + "Refresh</button>" +
+      "</div>" +
+      '<div class="jobs-cols">' +
+        '<div class="pn-card"><div class="pn-cardhead"><h2>Job history</h2><span class="pn-spacer"></span>' +
+          '<span class="pn-eyebrow" id="jobCount"></span></div>' +
+          '<div id="jobTable"><div class="pn-empty"><span class="pn-spin"></span></div></div></div>' +
+        '<aside class="pn-card detail-sticky" id="jobDetail">' +
+          '<div class="pn-empty"><strong>No job selected</strong><p>Pick a row to watch its pipeline, read its output links, or cancel it.</p></div>' +
+        "</aside>" +
+      "</div>";
+
+    document.getElementById("jobTabs").addEventListener("click", function (e) {
+      var b = e.target.closest("[data-filter]");
+      if (!b) return;
+      jobFilter = b.getAttribute("data-filter");
+      Array.prototype.forEach.call(this.querySelectorAll(".pn-tab"), function (t) {
+        t.setAttribute("aria-selected", t.getAttribute("data-filter") === jobFilter ? "true" : "false");
+      });
+      paintJobTable();
     });
-    window.addEventListener("message", function (e) {
-      var d = e.data || {};
-      if (d.type === "pandora:theme") applyTheme(d.theme);
+    document.getElementById("jobSearch").addEventListener("input", function () {
+      jobSearch = this.value.trim().toLowerCase();
+      paintJobTable();
     });
-    window.addEventListener("pageshow", function () { applyTheme(storedTheme()); });
-  })();
+    document.getElementById("jobRefresh").addEventListener("click", loadJobs);
 
-  var API = "";              // same origin; cloudflared/nginx proxies /api/v1
-  var TERMINAL = ["Uploaded", "Failed", "Declined", "Cancelled"];
-  var PHASES = ["Queue", "Download", "Encode", "Upload"];
-  var PIPELINE_STAGES = ["Queued", "Downloading", "Downloaded", "Encoding", "Encoded", "Uploading", "Uploaded"];
-  var PHASE_ACTIVE = { Queued: 0, Downloading: 1, Encoding: 2, Uploading: 3 };
-  var PHASE_DONE = { Queued: -1, Downloading: 0, Downloaded: 1, Encoding: 1, Encoded: 2, Uploading: 2, Uploaded: 3 };
+    var deep = location.search.match(/[?&]job=([^&]+)/);
+    if (deep) selectJob(decodeURIComponent(deep[1]));
+    loadJobs();
+    setInterval(loadJobs, 5000);
+  }
 
-  var commandsEl = document.getElementById("commands");
-  var optionsEl  = document.getElementById("options");
-  var outputEl   = document.getElementById("output");
-  var tokenEl    = document.getElementById("token");
-  var savedEl    = document.getElementById("saved");
-  var runEl      = document.getElementById("run");
+  function loadJobs() {
+    api("GET", "/api/v1/jobs?status=recent").then(function (res) {
+      if (!res.ok || !Array.isArray(res.data)) {
+        document.getElementById("jobTable").innerHTML = failureShell(res, "Could not load jobs");
+        return;
+      }
+      jobsCache = res.data;
+      PN.navCount("jobs", jobsCache.filter(function (j) { return PN.TERMINAL.indexOf(j.stage) === -1; }).length || "");
+      paintJobTable();
+    }).catch(function () {});
+  }
 
-  var pollTimer = null;
-  var pollMode = "";
-  var watchedJobId = "";
-  var activeEncodeJobId = "";
-  var busyFlag = false;
-  var pancodeProbeJobId = "";
-  var pancodeProbeTorrent = "";
-  var pancodeProbeReady = false;
-  var pancodeProbeFiles = "";
-  var active = "encode";
+  function matchesFilter(j) {
+    var terminal = PN.TERMINAL.indexOf(j.stage) !== -1;
+    if (jobFilter === "active") return !terminal && j.stage !== "Queued";
+    if (jobFilter === "queued") return j.stage === "Queued";
+    if (jobFilter === "completed") return j.stage === "Uploaded";
+    if (jobFilter === "failed") return j.stage === "Failed" || j.stage === "Declined" || j.stage === "Cancelled";
+    return true;
+  }
 
-  // ---- token persistence (lives in footer, never cleared on command switch) ----
-  tokenEl.value = localStorage.getItem("pandora_token") || "";
-  // when embedded in the desktop, the token is set from the taskbar — keep this copy in sync
-  window.addEventListener("storage", function (e) {
-    if (e.key === "pandora_token") tokenEl.value = e.newValue || "";
-  });
-  var savedT;
-  tokenEl.addEventListener("input", function () {
-    localStorage.setItem("pandora_token", tokenEl.value);
-    savedEl.classList.add("show");
-    clearTimeout(savedT);
-    savedT = setTimeout(function () { savedEl.classList.remove("show"); }, 900);
-  });
+  function paintJobTable() {
+    var list = jobsCache.filter(matchesFilter).filter(function (j) {
+      if (!jobSearch) return true;
+      return String(j.job_id).indexOf(jobSearch) !== -1 || String(j.link || "").toLowerCase().indexOf(jobSearch) !== -1;
+    });
+    document.getElementById("jobCount").textContent = list.length + " of " + jobsCache.length;
+    var host = document.getElementById("jobTable");
+    if (!list.length) {
+      host.innerHTML = '<div class="pn-empty"><strong>Nothing matches</strong><p>' +
+        (jobSearch ? "No job id or source contains “" + esc(jobSearch) + "”." : "No job is in this state right now.") + "</p></div>";
+      return;
+    }
+    var rows = list.map(function (j) {
+      var keep = j.progress && j.progress.type === "keep" ? j.progress.keyword : "";
+      return "<tr data-clickable data-job='" + esc(j.job_id) + "'" +
+        (String(j.job_id) === selectedJob ? ' aria-selected="true"' : "") + ">" +
+        '<td><span class="pn-jobid">#' + esc(j.job_id) + "</span>" +
+          (keep ? '<div class="ops-worker">keep: ' + esc(keep) + "</div>" : "") + "</td>" +
+        "<td>" + esc(j.job_type) + "</td>" +
+        '<td class="pn-mono pn-trunc jobs-src" title="' + esc(j.link) + '">' + esc(j.link || "—") + "</td>" +
+        "<td>" + esc(j.stage) + "</td>" +
+        '<td class="pn-mono">' + esc(j.worker || "—") + "</td>" +
+        "<td>" + PN.chip(j.stage) + PN.bar(j.stage, j.progress, true) + "</td></tr>";
+    }).join("");
+    host.innerHTML = '<div class="pn-tablewrap"><table class="pn-table"><thead><tr>' +
+      "<th>Job</th><th>Type</th><th>Source</th><th>Stage</th><th>Worker</th><th>Status</th>" +
+      "</tr></thead><tbody>" + rows + "</tbody></table></div>";
+    host.querySelectorAll("tr[data-job]").forEach(function (tr) {
+      tr.addEventListener("click", function () { selectJob(tr.getAttribute("data-job")); });
+    });
+  }
 
-  // ---- command specs ----
+  function selectJob(id) {
+    selectedJob = String(id);
+    paintJobTable();
+    if (detailTimer) clearInterval(detailTimer);
+    var host = document.getElementById("jobDetail");
+    if (!host) return;
+    host.innerHTML = '<div class="pn-empty"><span class="pn-spin"></span></div>';
+    function tick() {
+      api("GET", "/api/v1/jobs/" + encodeURIComponent(selectedJob)).then(function (res) {
+        if (!res.ok || !isJobStatus(res.data)) {
+          host.innerHTML = '<div class="pn-cardhead"><h2>Job #' + esc(selectedJob) + "</h2>" +
+            '<span class="pn-spacer"></span>' + closeBtn() + '</div><div class="pn-cardbody">' + failureBody(res) + "</div>";
+          bindClose(host);
+          if (detailTimer) { clearInterval(detailTimer); detailTimer = null; }
+          return;
+        }
+        var d = res.data;
+        var cancellable = PN.TERMINAL.indexOf(d.stage) === -1;
+        host.innerHTML =
+          '<div class="pn-cardhead"><h2>Job #' + esc(d.job_id) + "</h2><span class=\"pn-spacer\"></span>" + closeBtn() + "</div>" +
+          '<div class="pn-cardbody">' + jobBody(d) + "</div>" +
+          (cancellable
+            ? '<div class="pn-cardfoot"><button class="pn-btn pn-danger" id="jobCancel" type="button" style="width:100%">Cancel job</button></div>'
+            : "");
+        bindClose(host);
+        var c = document.getElementById("jobCancel");
+        if (c) c.addEventListener("click", function () { cancelJob(d.job_id, c); });
+        if (!cancellable && detailTimer) { clearInterval(detailTimer); detailTimer = null; }
+      }).catch(function () {});
+    }
+    tick();
+    detailTimer = setInterval(tick, 2000);
+  }
+
+  function closeBtn() {
+    return '<button class="pn-btn pn-icon pn-quiet" id="jobClose" type="button" aria-label="Close job details">' + icon("x") + "</button>";
+  }
+  function bindClose(host) {
+    var b = document.getElementById("jobClose");
+    if (!b) return;
+    b.addEventListener("click", function () {
+      if (detailTimer) { clearInterval(detailTimer); detailTimer = null; }
+      selectedJob = "";
+      paintJobTable();
+      host.innerHTML = '<div class="pn-empty"><strong>No job selected</strong><p>Pick a row to watch its pipeline, read its output links, or cancel it.</p></div>';
+    });
+  }
+
+  // Cancel needs a local token and only accepts non-terminal jobs on the token's own server.
+  function cancelJob(id, btn) {
+    btn.disabled = true;
+    btn.textContent = "Cancelling…";
+    api("POST", "/api/v1/jobs/" + encodeURIComponent(id) + "/cancel").then(function (res) {
+      if (res.status === 202) { PN.toast("Cancelling job #" + id + "."); return; }
+      PN.toast(PN.messageText(res.data, false), "bad");
+      btn.disabled = false;
+      btn.textContent = "Cancel job";
+    }).catch(function () {
+      btn.disabled = false;
+      btn.textContent = "Cancel job";
+    });
+  }
+
+  // ── ENCODE ─────────────────────────────────────────────────────────────────
+
+  var PRESETS = [
+    { value: "", label: "Server default", note: "Uses the encoder profile configured for this server with /edit." },
+    { value: "standard", label: "Standard x264", note: "The everyday profile. Balanced speed against size." },
+    { value: "veryslow", label: "Very Slow x264 (CRF 18)", note: "Smallest file for the quality. Costs hours of encode time." },
+    { value: "720p", label: "720p", note: "Standard profile with the frame height capped at 720. Never upscales." },
+    { value: "480p", label: "480p", note: "Standard profile with the frame height capped at 480. Never upscales." },
+    { value: "gpu", label: "GPU", note: "Hardware encode. Fast, larger output, and only offered to GPU-purpose nodes." },
+    { value: "av1", label: "AV1 NVENC", note: "AV1 hardware encode. Requires a Drive-only server with HLS disabled." },
+    { value: "pseudolossless", label: "Pseudo Lossless", note: "Near-transparent and very large. For masters, not releases." },
+    { value: "dummy", label: "DEV", note: "A stub encode for testing the pipeline. Produces nothing usable." }
+  ];
+  function presetField() {
+    return { name: "preset", label: "Encoding preset", type: "select", optional: true,
+      options: PRESETS.map(function (p) { return { value: p.value, label: p.label }; }) };
+  }
+
   var COMMANDS = {
     encode: {
       label: "Encode",
-      desc: "Pull the release, mux the subtitle track, and re-encode.",
+      submit: "Queue encode",
+      desc: "Pull the release, mux the subtitle track, and re-encode it.",
       fields: [
-        { name: "torrent",  label: "Torrent / Magnet / GDrive", type: "text", required: true, placeholder: "magnet:?... or https://..." },
-        { name: "subtitle", label: "Subtitle (.ass)", type: "file", required: true, accept: ".ass" },
-        { name: "preset",   label: "Preset", type: "select", optional: true, options: [
-          { value: "", label: "Server default" }, { value: "standard", label: "Standard x264" },
-          { value: "veryslow", label: "Very Slow x264 (CRF 18)" }, { value: "720p", label: "720p" },
-          { value: "480p", label: "480p" }, { value: "gpu", label: "GPU" },
-          { value: "pseudolossless", label: "Pseudo Lossless" }, { value: "dummy", label: "DEV" }
-        ] },
-        { name: "keep",     label: "Keep output for keycode", type: "checkbox" },
-        { name: "keyword",  label: "Keyword", type: "text", optional: true, placeholder: "New keyword" }
+        { name: "torrent", label: "Source", type: "text", required: true, placeholder: "Torrent, magnet, or Google Drive URL" },
+        { name: "subtitle", label: "Subtitle track", type: "file", required: true, accept: ".ass" },
+        presetField(),
+        { name: "keep", label: "Keep the output for a later keycode", type: "checkbox" },
+        { name: "keyword", label: "Keyword", type: "text", optional: true, placeholder: "Names the kept output" }
       ],
       run: function (v) {
         return api("POST", "/api/v1/jobs/encode", { torrent: v.torrent, subtitle_b64: v.subtitle, preset: v.preset || null, keep: !!v.keep, keyword: v.keyword || null });
-      },
-      render: renderResult
+      }
     },
     gitcode: {
       label: "Git Encode",
-      desc: "Encode with a subtitle fetched from a URL (GitHub blob links are auto-rewritten).",
+      submit: "Queue encode",
+      desc: "Encode with a subtitle fetched from a URL. GitHub blob links are rewritten to raw automatically.",
       fields: [
-        { name: "torrent",      label: "Torrent / Magnet / GDrive", type: "text", required: true, placeholder: "magnet:?... or https://..." },
-        { name: "subtitle_url", label: "Subtitle URL (.ass)", type: "text", required: true, placeholder: "https://.../sub.ass" },
-        { name: "preset",       label: "Preset", type: "select", optional: true, options: [
-          { value: "", label: "Server default" }, { value: "standard", label: "Standard x264" },
-          { value: "veryslow", label: "Very Slow x264 (CRF 18)" }, { value: "720p", label: "720p" },
-          { value: "480p", label: "480p" }, { value: "gpu", label: "GPU" },
-          { value: "pseudolossless", label: "Pseudo Lossless" }, { value: "dummy", label: "DEV" }
-        ] },
-        { name: "keep",         label: "Keep output for keycode", type: "checkbox" },
-        { name: "keyword",      label: "Keyword", type: "text", optional: true, placeholder: "New keyword" }
+        { name: "torrent", label: "Source", type: "text", required: true, placeholder: "Torrent, magnet, or Google Drive URL" },
+        { name: "subtitle_url", label: "Subtitle URL", type: "text", required: true, placeholder: "https://…/episode.ass" },
+        presetField(),
+        { name: "keep", label: "Keep the output for a later keycode", type: "checkbox" },
+        { name: "keyword", label: "Keyword", type: "text", optional: true, placeholder: "Names the kept output" }
       ],
       run: function (v) {
         return api("POST", "/api/v1/jobs/gitcode", { torrent: v.torrent, subtitle_url: v.subtitle_url, preset: v.preset || null, keep: !!v.keep, keyword: v.keyword || null });
-      },
-      render: renderResult
+      }
     },
     backup: {
       label: "Backup",
-      desc: "Archive the raw release to storage without re-encoding.",
+      submit: "Queue backup",
+      desc: "Archive the raw release to storage without re-encoding it.",
+      route: ["Download", "Upload"],
       fields: [
-        { name: "torrent", label: "Torrent / Magnet / GDrive", type: "text", required: true, placeholder: "magnet:?... or https://..." },
-        { name: "all",     label: "Back up every file in the torrent", type: "checkbox" },
-        { name: "keep",    label: "Keep output for keycode", type: "checkbox" },
-        { name: "keyword", label: "Keyword", type: "text", optional: true, placeholder: "New keyword" }
+        { name: "torrent", label: "Source", type: "text", required: true, placeholder: "Torrent, magnet, or Google Drive URL" },
+        { name: "all", label: "Back up every file in the torrent", type: "checkbox" },
+        { name: "keep", label: "Keep the output for a later keycode", type: "checkbox" },
+        { name: "keyword", label: "Keyword", type: "text", optional: true, placeholder: "Names the kept output" }
       ],
       run: function (v) {
         return api("POST", "/api/v1/jobs/backup", { torrent: v.torrent, all: !!v.all, keep: !!v.keep, keyword: v.keyword || null });
-      },
-      render: renderResult
+      }
     },
     pancode: {
       label: "Pancode",
-      desc: "Probe a torrent, choose the file index, then re-encode that file with subtitles.",
+      submit: "Probe torrent",
+      desc: "Probe a multi-file torrent, choose which file to use, then encode that one with subtitles.",
       fields: [
-        { name: "torrent",    label: "Torrent / Magnet", type: "text", required: true, placeholder: "magnet:?... or https://..." },
+        { name: "torrent", label: "Source", type: "text", required: true, placeholder: "Torrent or magnet" },
         { name: "file_index", label: "File", type: "fileselect", required: true },
-        { name: "subtitle",   label: "Subtitle (.ass)", type: "file", required: true, accept: ".ass" },
-        { name: "keep",       label: "Keep output for keycode", type: "checkbox" },
-        { name: "keyword",    label: "Keyword", type: "text", optional: true, placeholder: "New keyword" }
+        { name: "subtitle", label: "Subtitle track", type: "file", required: true, accept: ".ass" },
+        { name: "keep", label: "Keep the output for a later keycode", type: "checkbox" },
+        { name: "keyword", label: "Keyword", type: "text", optional: true, placeholder: "Names the kept output" }
       ],
       run: function (v) {
         return api("POST", "/api/v1/jobs/pancode", {
-          probe_job_id: pancodeProbeJobId,
+          probe_job_id: probeJobId,
           file_index: parseInt(v.file_index, 10) || 0,
           subtitle_b64: v.subtitle,
           keep: !!v.keep,
           keyword: v.keyword || null
         });
-      },
-      render: renderResult
+      }
     },
     keycode: {
       label: "Keycode",
-      desc: "[EXPERIMENTAL] Join kept keywords and upload.",
+      submit: "Queue keycode",
+      desc: "Experimental. Join previously kept outputs by keyword and upload the result.",
+      route: ["Join", "Upload"],
       fields: [
-        { name: "keywords", label: "Keywords", type: "text", required: true, placeholder: "somekey,anotherkey" },
-        { name: "subtitle", label: "Subtitle (.ass)", type: "file", optional: true, accept: ".ass" }
+        { name: "keywords", label: "Keywords", type: "text", required: true, placeholder: "opening,episode,ending" },
+        { name: "subtitle", label: "Subtitle track", type: "file", optional: true, accept: ".ass" }
       ],
       run: function (v) {
         return api("POST", "/api/v1/jobs/keycode", {
           keywords: String(v.keywords || "").split(",").map(function (s) { return s.trim(); }).filter(Boolean),
           subtitle_b64: v.subtitle || null
         });
-      },
-      render: renderResult
-    },
-    jobs: {
-      label: "Jobs",
-      desc: "Recent jobs — queued, rendering, finished, and failed.",
-      fields: [],
-      run: function () { return api("GET", "/api/v1/jobs?status=recent"); },
-      render: renderJobs
-    },
-    cancel: {
-      label: "Cancel",
-      desc: "Stop an ongoing job before it finishes.",
-      fields: [
-        { name: "job_id", label: "Job", type: "jobselect", required: true }
-      ],
-      run: function (v) { return api("POST", "/api/v1/jobs/" + encodeURIComponent(v.job_id) + "/cancel"); },
-      render: renderResult
+      }
     }
   };
-  var ORDER = ["encode", "gitcode", "backup", "pancode", "keycode", "cancel"];
+  var ORDER = ["encode", "gitcode", "backup", "pancode", "keycode"];
 
-  // ---- render command list ----
-  var rail = document.createElement("div");
-  rail.className = "rail-label";
-  rail.textContent = "Commands";
-  commandsEl.appendChild(rail);
-  ORDER.forEach(function (key) {
-    var b = document.createElement("button");
-    b.className = "cmd" + (key === active ? " active" : "");
-    b.textContent = COMMANDS[key].label;
-    b.addEventListener("click", function () { select(key); });
-    commandsEl.appendChild(b);
-  });
+  var activeCmd = "encode";
+  var busy = false;
+  var watchTimer = null;
+  var watchedJob = "";
+  var lockedJob = "";
+  var probeJobId = "";
+  var probeTorrent = "";
+  var probeReady = false;
+  var probeFiles = "";
+  var probeTimer = null;
 
-  function select(key) {
-    active = key;
-    if (pollMode !== "watch") stopPoll();
-    Array.prototype.forEach.call(commandsEl.querySelectorAll(".cmd"), function (c, i) {
-      c.classList.toggle("active", ORDER[i] === key);
+  function renderEncodeView() {
+    viewEl.innerHTML =
+      '<div class="enc-cols">' +
+        '<div class="pn-card">' +
+          '<div class="pn-cardhead" style="padding:0 8px"><nav class="pn-tabs" id="encTabs">' +
+            ORDER.map(function (k) {
+              return '<button class="pn-tab" type="button" role="tab" data-cmd="' + k + '"' +
+                (k === activeCmd ? ' aria-selected="true"' : "") + ">" + esc(COMMANDS[k].label) + "</button>";
+            }).join("") + "</nav></div>" +
+          '<div class="pn-cardbody" id="encFields"></div>' +
+          '<div class="pn-cardfoot"><span class="pn-hint" id="encHint" style="margin:0"></span>' +
+            '<span class="pn-spacer" style="margin-left:auto"></span>' +
+            '<button class="pn-btn pn-primary" id="encRun" type="button">Queue encode</button></div>' +
+        "</div>" +
+        '<div class="enc-side">' +
+          '<div class="pn-card"><div class="pn-cardhead"><h2>Submission summary</h2></div>' +
+            '<div class="pn-cardbody">' +
+              '<div class="pn-eyebrow" style="margin-bottom:4px">Pipeline readiness</div>' +
+              '<div id="encReady"></div>' +
+              '<div class="pn-eyebrow" style="margin:20px 0 8px">Expected route</div>' +
+              '<div id="encRoute" style="font-size:14px;color:var(--pn-ink)"></div>' +
+            "</div></div>" +
+          '<div class="pn-card"><div class="pn-cardhead"><h2>Preset guidance</h2></div>' +
+            '<div class="pn-cardbody"><p class="pn-hint" id="encPreset" style="margin:0"></p></div></div>' +
+        "</div>" +
+      "</div>" +
+      '<div class="pn-card" id="encResultCard" style="margin-top:16px;display:none">' +
+        '<div class="pn-cardhead"><h2>Submitted job</h2><span class="pn-spacer"></span>' +
+        '<a class="pn-link" href="/jobs" id="encJobsLink">Open in Jobs</a></div>' +
+        '<div class="pn-cardbody" id="encResult"></div></div>';
+
+    document.getElementById("encTabs").addEventListener("click", function (e) {
+      var b = e.target.closest("[data-cmd]");
+      if (!b) return;
+      activeCmd = b.getAttribute("data-cmd");
+      Array.prototype.forEach.call(this.querySelectorAll(".pn-tab"), function (t) {
+        t.setAttribute("aria-selected", t.getAttribute("data-cmd") === activeCmd ? "true" : "false");
+      });
+      renderFields();
+      paintRoute();
+      paintRun();
     });
-    renderOptions(key);
-    updateRunState();
-    if (key === "jobs") {
-      if (window.parent && window.parent !== window) {
-        try { window.parent.postMessage({ type: "pandora:openJobs" }, "*"); return; } catch (e) {}
-      }
-      doRun();
-    }
+    document.getElementById("encRun").addEventListener("click", submit);
+
+    renderFields();
+    paintRoute();
+    paintRun();
+    loadReadiness();
+    setInterval(loadReadiness, 8000);
   }
 
-  function renderOptions(key) {
-    var cmd = COMMANDS[key];
-    var html = '<div class="eyebrow">// ' + esc(key) + "</div>";
-    if (cmd.desc) html += '<p class="desc">' + esc(cmd.desc) + "</p>";
-    (cmd.fields || []).forEach(function (f) {
+  function renderFields() {
+    var cmd = COMMANDS[activeCmd];
+    var html = '<p class="pn-hint" style="margin:0 0 18px">' + esc(cmd.desc) + "</p>";
+    cmd.fields.forEach(function (f) {
       var id = "f_" + f.name;
       if (f.type === "checkbox") {
-        html += '<div class="field"><label class="check"><input type="checkbox" id="' + id +
-                '"><span class="box"></span><span>' + esc(f.label) + "</span></label></div>";
+        html += '<div class="pn-field"><label class="pn-check"><input type="checkbox" id="' + id +
+          '"><span class="pn-box"></span><span>' + esc(f.label) + "</span></label></div>";
         return;
       }
-      var optTag = f.optional ? ' <span class="opt">(optional)</span>' : "";
-      html += '<div class="field"><label for="' + id + '">' + esc(f.label) + optTag + "</label>";
+      html += '<div class="pn-field"><label class="pn-label" for="' + id + '">' + esc(f.label) +
+        (f.optional ? ' <span class="pn-opt">(optional)</span>' : "") + "</label>";
       if (f.type === "select") {
-        html += '<select id="' + id + '">' + f.options.map(function (o) {
-          var value = (o && typeof o === "object") ? o.value : o;
-          var label = (o && typeof o === "object") ? o.label : o;
-          return '<option value="' + esc(value) + '">' + esc(label) + "</option>";
+        html += '<select class="pn-select" id="' + id + '">' + f.options.map(function (o) {
+          return '<option value="' + esc(o.value) + '">' + esc(o.label) + "</option>";
         }).join("") + "</select>";
-      } else if (f.type === "jobselect") {
-        html += '<div class="selrow"><select id="' + id + '"><option value="">Loading…</option></select>' +
-                '<button type="button" class="mini" id="r_' + f.name + '" title="Refresh">↻</button></div>';
       } else if (f.type === "fileselect") {
-        html += '<select id="' + id + '" disabled><option value="">Run Probe first</option></select>';
+        html += '<select class="pn-select pn-mono" id="' + id + '" disabled><option>Probe the torrent first</option></select>';
       } else if (f.type === "file") {
-        html += '<label class="filepick"><input type="file" id="' + id + '" accept="' + esc(f.accept || "") + '">' +
-                '<span class="filebtn">Choose file</span>' +
-                '<span class="filename" id="' + id + '_name">No file selected</span></label>';
+        html += '<label class="pn-drop" id="d_' + f.name + '"><input type="file" id="' + id + '" accept="' + esc(f.accept || "") + '">' +
+          '<span class="pn-dropbtn">Choose ' + esc(f.accept || "file") + "</span>" +
+          '<span class="pn-dropname" id="' + id + '_name">No file chosen</span></label>';
       } else {
-        html += '<input type="' + (f.type === "number" ? "number" : "text") + '" id="' + id +
-                '" placeholder="' + esc(f.placeholder || "") + '">';
+        html += '<input class="pn-input' + (f.name === "torrent" || f.name === "subtitle_url" ? " pn-mono" : "") +
+          '" type="' + (f.type === "number" ? "number" : "text") + '" id="' + id +
+          '" placeholder="' + esc(f.placeholder || "") + '" autocomplete="off" spellcheck="false">';
       }
       html += "</div>";
     });
-    optionsEl.innerHTML = html;
+    document.getElementById("encFields").innerHTML = html;
 
-    (cmd.fields || []).forEach(function (f) {
+    cmd.fields.forEach(function (f) {
       if (f.type === "file") {
-        var fin = document.getElementById("f_" + f.name);
-        var nm = document.getElementById("f_" + f.name + "_name");
-        fin.addEventListener("change", function () {
-          var file = fin.files[0];
-          nm.textContent = file ? file.name : "No file selected";
-          nm.classList.toggle("has", !!file);
+        var input = document.getElementById("f_" + f.name);
+        var name = document.getElementById("f_" + f.name + "_name");
+        var drop = document.getElementById("d_" + f.name);
+        input.addEventListener("change", function () {
+          var file = input.files[0];
+          name.textContent = file ? file.name : "No file chosen";
+          name.classList.toggle("pn-has", !!file);
         });
-      } else if (f.type === "jobselect") {
-        var sel = document.getElementById("f_" + f.name);
-        loadJobOptions(sel);
-        var btn = document.getElementById("r_" + f.name);
-        if (btn) btn.addEventListener("click", function () { loadJobOptions(sel); });
-      } else if (f.type === "fileselect") {
-        renderPancodeFiles();
+        ["dragenter", "dragover"].forEach(function (ev) {
+          drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add("pn-dragging"); });
+        });
+        ["dragleave", "drop"].forEach(function (ev) {
+          drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.remove("pn-dragging"); });
+        });
+        drop.addEventListener("drop", function (e) {
+          if (!e.dataTransfer.files.length) return;
+          input.files = e.dataTransfer.files;
+          input.dispatchEvent(new Event("change"));
+        });
       }
+      if (f.type === "select" && f.name === "preset") {
+        var sel = document.getElementById("f_preset");
+        sel.addEventListener("change", paintPresetNote);
+      }
+      if (f.type === "fileselect") paintProbeFiles();
     });
-    if (key === "pancode") {
+
+    if (activeCmd === "pancode") {
       var tor = document.getElementById("f_torrent");
-      if (tor) {
-        if (pancodeProbeTorrent) tor.value = pancodeProbeTorrent;
-        tor.addEventListener("input", function () {
-          if (tor.value.trim() !== pancodeProbeTorrent) resetPancodeProbe();
-        });
+      if (probeTorrent) tor.value = probeTorrent;
+      tor.addEventListener("input", function () {
+        if (tor.value.trim() !== probeTorrent) resetProbe();
+      });
+    }
+    paintPresetNote();
+  }
+
+  function paintPresetNote() {
+    var el = document.getElementById("encPreset");
+    if (!el) return;
+    var sel = document.getElementById("f_preset");
+    if (!sel) {
+      el.textContent = COMMANDS[activeCmd].label + " does not take an encoder preset.";
+      return;
+    }
+    var p = PRESETS.filter(function (x) { return x.value === sel.value; })[0];
+    el.textContent = p ? p.note : "";
+  }
+
+  function paintRoute() {
+    var names = COMMANDS[activeCmd].route || ["Download", "Encode", "Upload"];
+    document.getElementById("encRoute").textContent = PN.routeText(names);
+  }
+
+  function loadReadiness() {
+    var host = document.getElementById("encReady");
+    if (!host) return;
+    Promise.all([
+      api("GET", "/api/v1/jobs?status=ongoing"),
+      api("GET", "/api/v1/workers")
+    ]).then(function (r) {
+      var ongoing = r[0].ok && Array.isArray(r[0].data) ? r[0].data : null;
+      var workers = r[1].ok && r[1].data && typeof r[1].data === "object" ? r[1].data : null;
+      var id = PN.identity();
+      var rows = "";
+      rows += readyRow("Token", id.label, id.kind === "none" || id.kind === "invalid" ? "bad" : "ok",
+        id.kind === "none" || id.kind === "invalid" ? "alert" : "check");
+      if (workers) {
+        var alive = (workers.hearts || []).filter(function (h) { return h.alive; }).length +
+          (workers.nodes || []).filter(function (n) { return n.last_seen_secs < 60; }).length;
+        rows += readyRow("Workers", alive + " online", alive ? "ok" : "bad", "users");
+      } else {
+        rows += readyRow("Workers", r[1].status === 403 ? "PNwitch only" : "unknown", "", "users");
       }
+      if (ongoing) {
+        var q = ongoing.filter(function (j) { return j.stage === "Queued"; }).length;
+        rows += readyRow("Queue", q + " waiting", q > 4 ? "warn" : "", "clock");
+      } else {
+        rows += readyRow("Queue", "unknown", "", "clock");
+      }
+      host.innerHTML = rows;
+    }).catch(function () {});
+  }
+
+  function readyRow(label, value, tone, ic) {
+    return '<div class="enc-ready"' + (tone ? ' data-tone="' + tone + '"' : "") + ">" +
+      icon(ic) + "<span>" + esc(label) + "</span><b>" + esc(value) + "</b></div>";
+  }
+
+  function paintRun() {
+    var btn = document.getElementById("encRun");
+    if (!btn) return;
+    var cmd = COMMANDS[activeCmd];
+    var probing = activeCmd === "pancode" && !!probeTimer;
+    btn.disabled = busy || probing || !!lockedJob;
+    if (busy) btn.textContent = "Submitting…";
+    else if (probing) btn.textContent = "Probing…";
+    else if (lockedJob) btn.textContent = "Encoding #" + lockedJob;
+    else if (activeCmd === "pancode") btn.textContent = probeReady ? "Queue pancode" : "Probe torrent";
+    else btn.textContent = cmd.submit;
+    var hint = document.getElementById("encHint");
+    if (hint) {
+      hint.textContent = lockedJob
+        ? "This page is watching job #" + lockedJob + ". It will free up when that job ends."
+        : activeCmd === "pancode" && !probeReady ? "Probing reads the torrent's file list. It does not download anything yet."
+        : "";
     }
   }
 
-  function loadJobOptions(sel) {
-    sel.innerHTML = '<option value="">Loading…</option>';
-    api("GET", "/api/v1/jobs?status=ongoing").then(function (res) {
-      if (res.status === 401) { sel.innerHTML = '<option value="">Enter a valid token below</option>'; return; }
-      if (!res.ok || !Array.isArray(res.data)) { sel.innerHTML = '<option value="">Could not load jobs</option>'; return; }
-      if (!res.data.length) { sel.innerHTML = '<option value="">No ongoing jobs</option>'; return; }
-      sel.innerHTML = res.data.map(function (j) {
-        return '<option value="' + esc(j.job_id) + '">' + esc(j.job_id) + " — " + esc(j.job_type) + " · " + esc(j.stage) + "</option>";
-      }).join("");
-    }).catch(function () { sel.innerHTML = '<option value="">Could not load jobs</option>'; });
+  function gather(cmd) {
+    return Promise.all(cmd.fields.map(function (f) {
+      var el = document.getElementById("f_" + f.name);
+      if (!el) return Promise.resolve([f.name, undefined]);
+      if (f.type === "checkbox") return Promise.resolve([f.name, el.checked]);
+      if (f.type === "file") {
+        var file = el.files[0];
+        if (!file) {
+          if (f.required) return Promise.reject(new Error(f.label + " is required."));
+          return Promise.resolve([f.name, ""]);
+        }
+        return fileToB64(file).then(function (b64) { return [f.name, b64]; });
+      }
+      var val = el.value.trim();
+      if (f.required && !val) return Promise.reject(new Error(f.label + " is required."));
+      return Promise.resolve([f.name, val]);
+    })).then(function (pairs) {
+      var out = {};
+      pairs.forEach(function (p) { out[p[0]] = p[1]; });
+      return out;
+    });
   }
 
-  function resetPancodeProbe() {
-    if (pollMode === "pancode_probe") stopPoll();
-    pancodeProbeJobId = "";
-    pancodeProbeTorrent = "";
-    pancodeProbeReady = false;
-    pancodeProbeFiles = "";
-    renderPancodeFiles();
-    updateRunState();
+  function fileToB64(file) {
+    return new Promise(function (res, rej) {
+      var r = new FileReader();
+      r.onload = function () { res(String(r.result).split(",")[1] || ""); };
+      r.onerror = function () { rej(new Error("Could not read " + file.name + ".")); };
+      r.readAsDataURL(file);
+    });
+  }
+
+  function submit() {
+    if (activeCmd === "pancode") { submitPancode(); return; }
+    if (lockedJob) return;
+    var cmd = COMMANDS[activeCmd];
+    gather(cmd).then(function (vals) {
+      busy = true; paintRun();
+      return cmd.run(vals).then(handleSubmitResult);
+    }).catch(function (e) {
+      showResult('<div class="pn-notice" data-tone="bad">' + esc(e && e.message ? e.message : String(e)) + "</div>");
+    }).then(function () { busy = false; paintRun(); });
+  }
+
+  // Pancode is two submits: probe the torrent, pick a file, then encode that file.
+  function submitPancode() {
+    var tor = document.getElementById("f_torrent");
+    var torrent = tor ? tor.value.trim() : "";
+    if (!torrent) {
+      showResult('<div class="pn-notice" data-tone="bad">Source is required.</div>');
+      return;
+    }
+    if (!probeReady || torrent !== probeTorrent) {
+      busy = true; paintRun();
+      api("POST", "/api/v1/jobs/probe", { torrent: torrent }).then(function (res) {
+        if (res.status === 202 && res.data && res.data.job_id) {
+          probeJobId = String(res.data.job_id);
+          probeTorrent = torrent;
+          probeReady = false;
+          probeFiles = "";
+          showResult('<div class="res-head">' + PN.chip("Probing", true) + '<span class="pn-jobid">#' + esc(probeJobId) + "</span></div>" +
+            '<p class="pn-hint" style="margin:0">Reading torrent metadata. The file list appears in the form when probing finishes.</p>');
+          watchProbe();
+          return;
+        }
+        showResult(failureBody(res));
+      }).catch(function (e) {
+        showResult('<div class="pn-notice" data-tone="bad">' + esc(e.message || String(e)) + "</div>");
+      }).then(function () { busy = false; paintRun(); });
+      return;
+    }
+    gather(COMMANDS.pancode).then(function (vals) {
+      busy = true; paintRun();
+      return COMMANDS.pancode.run(vals).then(handleSubmitResult);
+    }).catch(function (e) {
+      showResult('<div class="pn-notice" data-tone="bad">' + esc(e && e.message ? e.message : String(e)) + "</div>");
+    }).then(function () { busy = false; paintRun(); });
+  }
+
+  function watchProbe() {
+    if (probeTimer) clearInterval(probeTimer);
+    function tick() {
+      api("GET", "/api/v1/jobs/" + encodeURIComponent(probeJobId)).then(function (res) {
+        if (res.status === 404) return;
+        if (res.ok && isJobStatus(res.data)) showResult(jobBody(res.data));
+        if (!res.ok || !isJobStatus(res.data)) return;
+        var d = res.data;
+        if (d.stage === "Probed") {
+          probeReady = true;
+          probeFiles = (d.progress && (d.progress.file_options || d.progress.files)) || "";
+          paintProbeFiles();
+          clearInterval(probeTimer); probeTimer = null;
+          paintRun();
+        } else if (PN.TERMINAL.indexOf(d.stage) !== -1) {
+          resetProbe();
+        }
+      }).catch(function () {});
+    }
+    tick();
+    probeTimer = setInterval(tick, 2000);
+    paintRun();
+  }
+
+  function resetProbe() {
+    if (probeTimer) { clearInterval(probeTimer); probeTimer = null; }
+    probeJobId = ""; probeTorrent = ""; probeReady = false; probeFiles = "";
+    paintProbeFiles();
+    paintRun();
   }
 
   function parseProbeFiles(files) {
@@ -1003,23 +1017,22 @@
     }
     return String(files).split("\n").map(function (line) {
       var m = line.match(/`?(\d+)`?\s*[—-]\s*(.*)/);
-      if (!m) return null;
-      return { index: m[1], label: line.replace(/`/g, "") };
+      return m ? { index: m[1], label: line.replace(/`/g, "") } : null;
     }).filter(Boolean);
   }
 
-  function renderPancodeFiles() {
+  function paintProbeFiles() {
     var sel = document.getElementById("f_file_index");
     if (!sel) return;
-    if (!pancodeProbeReady) {
+    if (!probeReady) {
       sel.disabled = true;
-      sel.innerHTML = '<option value="">' + (pancodeProbeJobId ? "Probing…" : "Run Probe first") + "</option>";
+      sel.innerHTML = "<option>" + (probeJobId ? "Probing…" : "Probe the torrent first") + "</option>";
       return;
     }
-    var files = parseProbeFiles(pancodeProbeFiles);
+    var files = parseProbeFiles(probeFiles);
     if (!files.length) {
       sel.disabled = true;
-      sel.innerHTML = '<option value="">No files returned</option>';
+      sel.innerHTML = "<option>The probe returned no files</option>";
       return;
     }
     sel.disabled = false;
@@ -1028,628 +1041,209 @@
     }).join("");
   }
 
-  function doPancode() {
-    if (activeEncodeJobId) {
-      outputEl.innerHTML = '<span class="pill err">busy</span><p class="muted">This page is already watching encode job <span class="mono">#' + esc(activeEncodeJobId) + '</span>. Wait until it finishes before starting another encode.</p>';
-      updateRunState();
-      return;
-    }
-    var tor = document.getElementById("f_torrent");
-    var torrent = tor ? tor.value.trim() : "";
-    if (!torrent) { showError("Torrent / Magnet is required"); return; }
-    if (!pancodeProbeReady || torrent !== pancodeProbeTorrent) {
-      if (pollMode !== "watch") stopPoll();
-      busy(true);
-      api("POST", "/api/v1/jobs/probe", { torrent: torrent }).then(function (res) {
-        if (res.status === 202 && res.data && res.data.job_id) {
-          pancodeProbeJobId = String(res.data.job_id);
-          pancodeProbeTorrent = torrent;
-          pancodeProbeReady = false;
-          pancodeProbeFiles = "";
-          renderProbeAccepted(pancodeProbeJobId);
-          startPancodeProbeWatch(pancodeProbeJobId);
-          return;
-        }
-        renderResult(res);
-      }).catch(function (e) {
-        showError(e && e.message ? e.message : String(e));
-      }).then(function () { busy(false); });
-      return;
-    }
-    gather(COMMANDS.pancode).then(function (vals) {
-      busy(true);
-      return COMMANDS.pancode.run(vals).then(function (res) {
-        COMMANDS.pancode.render(res);
-        if (res.status === 202 && res.data && res.data.job_id) {
-          afterSubmit(res.data.job_id, true, pancodeProbeTorrent + " : " + vals.file_index);
-        }
-      });
-    }).catch(function (e) {
-      showError(e && e.message ? e.message : String(e));
-    }).then(function () { busy(false); });
-  }
-
-  function startPancodeProbeWatch(jobId) {
-    clearPollTimer();
-    pollMode = "pancode_probe";
-    watchedJobId = String(jobId);
-    renderPancodeFiles();
-    function tick() {
-      pollJob(watchedJobId).then(handlePancodeProbeStatus).catch(function () {});
-    }
-    tick();
-    pollTimer = setInterval(tick, 2000);
-    updateRunState();
-  }
-
-  function handlePancodeProbeStatus(res) {
-    if (res.status === 404) return;
-    renderResult(res);
-    if (!res.ok || !isJobStatus(res.data)) return;
-    var d = res.data;
-    if (d.stage === "Probed") {
-      pancodeProbeReady = true;
-      pancodeProbeFiles = d.progress && d.progress.file_options ? d.progress.file_options : (d.progress && d.progress.files ? d.progress.files : "");
-      renderPancodeFiles();
-      clearPollTimer();
-      pollMode = "";
-      watchedJobId = "";
-      updateRunState();
-    } else if (TERMINAL.indexOf(d.stage) !== -1) {
-      pancodeProbeJobId = "";
-      pancodeProbeTorrent = "";
-      pancodeProbeReady = false;
-      pancodeProbeFiles = "";
-      renderPancodeFiles();
-      stopPoll();
-    }
-  }
-
-  // ---- run ----
-  runEl.addEventListener("click", doRun);
-
-  function doRun() {
-    var key = active;
-    if (key === "pancode") { doPancode(); return; }
-    if (isEncodeStarter(key) && activeEncodeJobId) {
-      outputEl.innerHTML = '<span class="pill err">busy</span><p class="muted">This page is already watching encode job <span class="mono">#' + esc(activeEncodeJobId) + '</span>. Wait until it finishes before starting another encode.</p>';
-      updateRunState();
-      return;
-    }
-    if (pollMode !== "watch") stopPoll();
-    var cmd = COMMANDS[key];
-    gather(cmd).then(function (vals) {
-      busy(true);
-      return cmd.run(vals).then(function (res) {
-        cmd.render(res);
-        if (res.status === 202 && res.data && res.data.job_id) {
-          afterSubmit(res.data.job_id, isEncodeStarter(key));
-          return;
-        }
-      });
-    }).catch(function (e) {
-      showError(e && e.message ? e.message : String(e));
-    }).then(function () { busy(false); });
-  }
-
-  function isEncodeStarter(key) {
-    return key === "encode" || key === "gitcode" || key === "pancode" || key === "keycode";
-  }
-
-  function pollJob(jobId) {
-    return api("GET", "/api/v1/jobs/" + encodeURIComponent(jobId));
-  }
-
-  function startJobWatch(jobId, lockEncode) {
-    clearPollTimer();
-    pollMode = "watch";
-    watchedJobId = String(jobId);
-    if (lockEncode) activeEncodeJobId = watchedJobId;
-    pollJob(watchedJobId).then(function (res) {
-      if (res.status === 404) return;
-      renderResult(res);
-      finishWatched(res);
-    }).catch(function () {});
-    pollTimer = setInterval(function () {
-      pollJob(watchedJobId).then(function (res) {
-        if (res.status === 404) return;
-        renderResult(res);
-        finishWatched(res);
-      }).catch(function () {});
-    }, 2000);
-    updateRunState();
-  }
-
-  function finishWatched(res) {
-    if (!isTerminal(res)) return;
-    if (res.data && String(res.data.job_id) === activeEncodeJobId) activeEncodeJobId = "";
-    stopPoll();
-  }
-
-  function startPoll(cmd, vals) {
-    clearPollTimer();
-    pollMode = "manual";
-    pollTimer = setInterval(function () {
-      cmd.run(vals).then(function (res) {
-        cmd.render(res);
-        if (isTerminal(res)) stopPoll();
-      }).catch(function () { stopPoll(); });
-    }, 2000);
-  }
-  function clearPollTimer() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
-  function stopPoll() { clearPollTimer(); pollMode = ""; watchedJobId = ""; updateRunState(); }
-
-  function isTerminal(res) {
-    return res && res.data && typeof res.data === "object" && TERMINAL.indexOf(res.data.stage) !== -1;
-  }
-
-  // ---- collect field values (reads files to base64) ----
-  function gather(cmd) {
-    var fields = cmd.fields || [];
-    var jobs = fields.map(function (f) {
-      var el = document.getElementById("f_" + f.name);
-      if (!el) return Promise.resolve([f.name, undefined]);
-      if (f.type === "checkbox") return Promise.resolve([f.name, el.checked]);
-      if (f.type === "file") {
-        var file = el.files[0];
-        if (!file) {
-          if (f.required) return Promise.reject(new Error(f.label + " is required"));
-          return Promise.resolve([f.name, ""]);
-        }
-        return fileToB64(file).then(function (b64) { return [f.name, b64]; });
-      }
-      var val = el.value.trim();
-      if (f.required && !val) return Promise.reject(new Error(f.label + " is required"));
-      return Promise.resolve([f.name, val]);
-    });
-    return Promise.all(jobs).then(function (pairs) {
-      var out = {};
-      pairs.forEach(function (p) { out[p[0]] = p[1]; });
-      return out;
-    });
-  }
-
-  function fileToB64(file) {
-    return new Promise(function (res, rej) {
-      var r = new FileReader();
-      r.onload = function () { res(String(r.result).split(",")[1] || ""); };
-      r.onerror = function () { rej(new Error("could not read file")); };
-      r.readAsDataURL(file);
-    });
-  }
-
-  // ---- API call ----
-  function api(method, path, body) {
-    var token = tokenEl.value.trim();
-    var opts = { method: method, headers: {}, cache: "no-store" };
-    if (token) opts.headers["Authorization"] = "Bearer " + token;
-    if (body !== undefined) {
-      opts.headers["Content-Type"] = "application/json";
-      opts.body = JSON.stringify(body);
-    }
-    if (method === "GET") path += (path.indexOf("?") === -1 ? "?" : "&") + "_=" + Date.now();
-    return fetch(API + path, opts).then(function (resp) {
-      var retryAfter = resp.headers.get("Retry-After");
-      return resp.text().then(function (text) {
-        var data;
-        try { data = JSON.parse(text); } catch (e) { data = text; }
-        return { status: resp.status, ok: resp.ok, data: data, retryAfter: retryAfter };
-      });
-    });
-  }
-
-  // ---- renderers ----
-  function pill(res) {
-    return '<span class="pill ' + (res.ok ? "ok" : "err") + '">' + res.status + "</span>";
-  }
-  // 429: the API rate-limits write requests per token (default 30 / 60s, set via
-  // api_rate_limit / api_rate_window_secs). The Retry-After header is the wait in seconds.
-  function rateNote(res) {
-    if (!res || res.status !== 429) return "";
-    var secs = parseInt(res.retryAfter, 10);
-    var when = (secs > 0) ? (" Try again in " + secs + "s.") : "";
-    return '<p class="muted">Rate limit hit — too many requests on this token.' + when +
-      ' (The limit applies to submits/cancels, not status polling.)</p>';
-  }
-  function isJobStatus(d) {
-    return d && typeof d === "object" && typeof d.stage === "string" && d.job_id !== undefined;
-  }
-  function chipClass(stage) {
-    if (stage === "Uploaded") return "done";
-    if (stage === "Failed" || stage === "Declined" || stage === "Cancelled") return "bad";
-    if (stage === "Queued") return "idle";
-    return "active";
-  }
-  function chip(stage) { return '<span class="chip ' + chipClass(stage) + '">' + esc(stage) + "</span>"; }
-
-  function phaseLivePercent(stage, progress) {
-    if (!progress || typeof progress !== "object") return 0;
-    var active = PHASE_ACTIVE[stage];
-    var t = progress.type;
-    if ((active === 1 && t === "download") ||
-        (active === 2 && t === "encode") ||
-        (active === 3 && (t === "upload" || t === "upload_all"))) {
-      return pct(progress.percent);
-    }
-    return 0;
-  }
-  function renderPipeline(stage, progress) {
-    var fin = stage === "Uploaded";
-    var doneUpTo = PHASE_DONE.hasOwnProperty(stage) ? PHASE_DONE[stage] : -1;
-    var active = PHASE_ACTIVE.hasOwnProperty(stage) ? PHASE_ACTIVE[stage] : -1;
-    var segs = PHASES.map(function (name, i) {
-      var cls = "todo", w = 0;
-      if (fin) { cls = "fin"; w = 100; }
-      else if (i <= doneUpTo) { cls = "done"; w = 100; }
-      else if (i === active && progress && progress.type === "forward") { cls = "forward"; w = 42; }
-      else if (i === active && stage === "Downloading" && progress && progress.waiting) { cls = "wait"; w = 100; }
-      else if (i === active) { cls = "active"; w = (i === 0) ? 100 : phaseLivePercent(stage, progress); }
-      var delay = cls === "active" ? ";animation-delay:-" + ((Date.now() % 1700) / 1000).toFixed(3) + "s" : "";
-      return '<div class="seg ' + cls + '"><span class="seg-track">' +
-             '<span class="seg-prog" style="width:' + w + '%' + delay + '"></span></span>' +
-             '<span class="seg-name">' + esc(name) + "</span></div>";
-    }).join("");
-    return '<div class="pipe">' + segs + "</div>";
-  }
-
-  function pct(v) { return Math.max(0, Math.min(100, Math.round(Number(v) || 0))); }
-  function progMeta(text) { return '<div class="prog-meta mono">' + esc(text) + "</div>"; }
-  function phaseLabel(t) {
-    if (t === "download") return "downloading";
-    if (t === "encode") return "encoding";
-    if (t === "upload" || t === "upload_all") return "uploading";
-    if (t === "probe") return "probing";
-    if (t === "forward") return "waiting on a shared job";
-    if (t === "queue") return "waiting to encode";
-    return "";
-  }
-  // Visible terminal status — the job-window header (with its stage chip) is hidden by CSS,
-  // so a cancelled/failed job needs its state shown in the body instead.
-  function statusBlock(d) {
-    if (TERMINAL.indexOf(d.stage) === -1 || d.stage === "Uploaded") return "";
-    var phase = d.progress && typeof d.progress === "object" ? phaseLabel(d.progress.type) : "";
-    var txt = d.stage + (phase ? " while " + phase : "");
-    return '<div class="term-banner">' + esc(txt) + "</div>";
-  }
-  function progressBlock(p, stage) {
-    if (!p || typeof p !== "object") return "";
-    // Cancelled/Failed/Declined keep whatever progress they died with; don't render it as
-    // if still running (a cancelled upload would otherwise show a live "0%" host list).
-    if (stage === "Cancelled" || stage === "Failed" || stage === "Declined") return "";
-    if (p.type === "keep") {
-      var title = p.ready ? "Keep ready" : "Keep keyword reserved";
-      var rows = '<div class="link-row"><span class="link-host mono">Keyword</span><span class="mono">' + esc(p.keyword) + "</span></div>";
-      if (p.parent_keyword) rows += '<div class="link-row"><span class="link-host mono">Parent</span><span class="mono">' + esc(p.parent_keyword) + "</span></div>";
-      if (p.kind) rows += '<div class="link-row"><span class="link-host mono">Type</span><span>' + esc(p.kind) + "</span></div>";
-      if (p.expires_at) rows += '<div class="link-row"><span class="link-host mono">Expires</span><span>' + esc(new Date(Number(p.expires_at) * 1000).toLocaleString()) + "</span></div>";
-      return '<div class="prog-label">' + title + "</div>" + rows;
-    }
-    if (p.type === "forward") {
-      var parent = p.parent_job_id ? (" job #" + esc(p.parent_job_id)) : " another job";
-      return progMeta("Shared with" + parent + " — same source, preset and subtitle, so this reuses that encode instead of downloading and encoding again.");
-    }
-    if ((stage === "Downloading" || stage === "Downloaded") && p.type !== "download" && p.type !== "queue") return "";
-    if ((stage === "Encoding" || stage === "Encoded") && p.type !== "encode") return "";
-    if (stage === "Uploading" && p.type !== "upload" && p.type !== "upload_all") return "";
-    if (stage === "Uploaded" && p.type !== "upload" && p.type !== "upload_all") return "";
-    if ((stage === "Probing" || stage === "Probed") && p.type !== "probe") return "";
-    if (p.type === "encode") {
-      var meta = pct(p.percent) + "% · frame " + esc(p.frame) + "/" + esc(p.total) + " · " + esc(p.fps) + " fps";
-      if (p.kbps) meta += " · " + esc(p.kbps) + " kbit/s";
-      if (p.eta_secs != null) meta += " · ETA " + esc(formatQueueEta(p.eta_secs));
-      return progMeta(meta);
-    }
-    if (p.type === "download") {
-      if (p.waiting) return progMeta("Waiting on a cached input — a duplicate job is fetching the same source.");
-      if (p.cached) return progMeta("Loaded from cache — no re-download needed.");
-      var meta = pct(p.percent) + "%";
-      if (p.done != null && p.total != null) meta += " · " + esc(p.done) + "/" + esc(p.total) + " MB";
-      else if (p.done != null) meta += " · " + esc(p.done) + " MB";
-      return progMeta(meta);
-    }
-    if (p.type === "queue") {
-      var eta = p.eta_secs == null ? "?" : formatQueueEta(p.eta_secs);
-      return progMeta("Position #" + esc(p.position) + " · estimated wait " + esc(eta));
-    }
-    if (p.type === "upload") {
-      var hosts = Array.isArray(p.hosts) ? p.hosts : [];
-      var nonempty = hosts.map(function (h) { return h == null ? "" : String(h).trim(); }).filter(Boolean);
-      var linksOnly = nonempty.length > 0 && nonempty.every(function (s) { return /^https?:\/\//.test(s); });
-      var detail = nonempty.map(function (s) {
-        if (/^https?:\/\//.test(s)) {
-          return '<div class="up-host"><a href="' + esc(s) + '" target="_blank" rel="noopener">' + esc(s) + "</a></div>";
-        }
-        return '<div class="up-host mono">' + esc(s) + "</div>";
-      }).join("");
-      return (linksOnly ? "" : progMeta(pct(p.percent) + "%")) + (detail ? '<div class="up-hosts">' + detail + "</div>" : "");
-    }
-    if (p.type === "upload_all") {
-      var rows = p.rows ? '<div class="up-hosts"><pre>' + esc(p.rows) + "</pre></div>" : "";
-      return progMeta(pct(p.percent) + "%") + rows;
-    }
-    if (p.type === "probe") {
-      return '<div class="prog-label">Files</div><pre>' + esc(p.files) + "</pre>";
-    }
-    return "";
-  }
-  function formatQueueEta(secs) {
-    var mins = Math.ceil(Math.max(0, Number(secs) || 0) / 60);
-    if (mins < 60) return mins + "m";
-    var h = Math.floor(mins / 60);
-    var m = String(mins % 60).padStart(2, "0");
-    return h + "h " + m + "m";
-  }
-  function linksBlock(l) {
-    if (!l || typeof l !== "object") return "";
-    var rows = Object.keys(l).map(function (host) {
-      if (host === "warnings") return "";
-      var val = l[host];
-      if (val === null || val === undefined || val === "") return "";
-      var s = String(val);
-      var cell = /^https?:\/\//.test(s)
-        ? '<a href="' + esc(s) + '" target="_blank" rel="noopener">' + esc(s) + "</a>"
-        : esc(s);
-      return '<div class="up-host">' + cell + "</div>";
-    }).join("");
-    if (!rows) return "";
-    return '<div class="prog-label">Links</div><div class="up-hosts">' + rows + "</div>";
-  }
-  function warningsBlock(w) {
-    if (!w) return "";
-    var list = Array.isArray(w) ? w : [String(w)];
-    list = list.map(function (s) { return String(s || "").trim(); }).filter(Boolean);
-    if (!list.length) return "";
-    return '<div class="prog-label">Warnings</div><pre>' + esc(list.join("\n")) + "</pre>";
-  }
-  function summaryBlock(d) {
-    var rows = "";
-    if (d.worker) rows += '<div class="link-row"><span class="link-host mono">Worker</span><span class="mono">' + esc(d.worker) + "</span></div>";
-    if (d.preset) rows += '<div class="link-row"><span class="link-host mono">Preset</span><span>' + esc(d.preset) + "</span></div>";
-    if (d.progress && d.progress.type === "pancode" && d.progress.file_index !== undefined) {
-      var src = d.progress.torrent || d.link || "";
-      rows += '<div class="link-row"><span class="link-host mono">Selection</span><span class="mono">' + esc(src + " : " + d.progress.file_index) + "</span></div>";
-    }
-    if (d.link) rows += '<div class="link-row"><span class="link-host mono">Source</span><span>' + esc(d.link) + "</span></div>";
-    var warnings = warningsBlock(d.links && d.links.warnings);
-    return (rows ? '<div class="prog-label">Details</div>' + rows : "") + warnings;
-  }
-  function messageText(data, ok) {
-    if (typeof data === "string") return data;
-    if (data && typeof data === "object") {
-      if (data.error) return data.error;
-      if (data.message) return data.message;
-      if (data.detail) return data.detail;
-    }
-    return ok ? "Request completed." : "Request failed.";
-  }
-  function renderProbeAccepted(jobId) {
-    outputEl.innerHTML = '<div class="stat-head">' +
-      '<span class="pill ok">202</span>' + chip("Probing") +
-      '<span class="stat-id mono">#' + esc(jobId) + '</span>' +
-      '<span class="stat-type">Probe</span></div>' +
-      '<p class="muted">Reading torrent metadata. The file dropdown will appear here when probing finishes.</p>';
-  }
-  function renderResult(res) {
-    if (res.ok && isJobStatus(res.data)) {
-      var d = res.data;
-      var head = '<div class="stat-head">' + pill(res) + chip(d.stage) +
-                 '<span class="stat-id mono">#' + esc(d.job_id) + "</span>" +
-                 '<span class="stat-type">' + esc(d.job_type) + "</span>" +
-                 (d.worker ? '<span class="stat-worker mono">' + esc(d.worker) + "</span>" : "") +
-                 '<button class="popout" type="button" data-job="' + esc(d.job_id) + '" title="Open in a window">⤢ pop out</button>' +
-                 "</div>";
-      var pipe = PIPELINE_STAGES.indexOf(d.stage) !== -1 ? renderPipeline(d.stage, d.progress) : "";
-      var links = (["Cancelled","Failed","Declined"].indexOf(d.stage) === -1 && d.progress && d.progress.type === "upload") ? "" : linksBlock(d.links);
-      outputEl.innerHTML = head + statusBlock(d) + pipe + progressBlock(d.progress, d.stage) + links + summaryBlock(d);
-      return;
-    }
+  function handleSubmitResult(res) {
     if (res.status === 202 && res.data && res.data.job_id) {
-      outputEl.innerHTML = pill(res) +
-        '<div class="accepted">' + chip("Queued") +
-        '<span class="mono">#' + esc(res.data.job_id) + "</span>" +
-        '<span class="muted">Queued. This page will watch it automatically.</span></div>' +
-        renderPipeline("Queued");
+      var id = String(res.data.job_id);
+      PN.toast("Job #" + id + " queued.");
+      document.getElementById("encJobsLink").href = "/jobs?job=" + encodeURIComponent(id);
+      lockedJob = id;
+      watchJob(id);
       return;
     }
-    var note = "";
-    if (res.status === 401) note = '<p class="muted">Invalid or missing token — check the field below.</p>';
-    if (res.status === 429) note = rateNote(res);
-    if (res.status === 202 && (!res.data || res.data === "")) {
-      outputEl.innerHTML = pill(res) + '<p class="muted">Accepted.</p>';
-      return;
+    showResult(failureBody(res));
+  }
+
+  function watchJob(id) {
+    if (watchTimer) clearInterval(watchTimer);
+    watchedJob = String(id);
+    function tick() {
+      api("GET", "/api/v1/jobs/" + encodeURIComponent(watchedJob)).then(function (res) {
+        if (res.status === 404) return;
+        if (res.ok && isJobStatus(res.data)) {
+          showResult(jobBody(res.data));
+          if (PN.TERMINAL.indexOf(res.data.stage) !== -1) {
+            clearInterval(watchTimer); watchTimer = null;
+            if (lockedJob === watchedJob) { lockedJob = ""; paintRun(); }
+          }
+        } else {
+          showResult(failureBody(res));
+        }
+      }).catch(function () {});
     }
-    outputEl.innerHTML = pill(res) + note + '<p class="muted">' + esc(messageText(res.data, res.ok)) + "</p>";
-  }
-
-  function renderJobs(res) {
-    if (!res.ok || !Array.isArray(res.data)) { renderResult(res); return; }
-    if (!res.data.length) { outputEl.innerHTML = pill(res) + '<p class="muted">Nothing in the queue right now.</p>'; return; }
-    var html = pill(res) + "<table><thead><tr><th>Job</th><th>Type</th><th>Stage</th><th>Worker</th><th>Keep</th><th>Source</th><th></th></tr></thead><tbody>";
-    res.data.forEach(function (j) {
-      var keep = j.progress && j.progress.type === "keep" ? j.progress.keyword : "";
-      html += "<tr class='jobrow' data-job='" + esc(j.job_id) + "' title='Open in a window'><td class='mono'>" + esc(j.job_id) + "</td><td>" + esc(j.job_type) +
-              "</td><td>" + chip(j.stage) + "</td><td class='mono'>" + esc(j.worker || "") + "</td><td class='mono'>" + esc(keep) + "</td><td class='mono trunc' title='" + esc(j.link) + "'>" + esc(j.link) +
-              "</td><td><button class='popout' type='button' data-job='" + esc(j.job_id) + "' title='Open in a window'>⤢</button></td></tr>";
-    });
-    html += "</tbody></table>";
-    outputEl.innerHTML = html;
-  }
-
-  function showError(msg) {
-    outputEl.innerHTML = '<span class="pill err">err</span><pre>' + esc(msg) + "</pre>";
-  }
-
-  function busy(on) { busyFlag = on; updateRunState(); }
-  function updateRunState() {
-    var locked = !!activeEncodeJobId && isEncodeStarter(active);
-    var probingPancode = active === "pancode" && pollMode === "pancode_probe";
-    runEl.disabled = busyFlag || locked || probingPancode;
-    if (busyFlag) runEl.textContent = "Running…";
-    else if (locked) runEl.textContent = "Encoding…";
-    else if (probingPancode) runEl.textContent = "Probing…";
-    else if (active === "pancode") runEl.textContent = pancodeProbeReady ? "Pancode" : "Probe";
-    else runEl.textContent = "Run";
-  }
-  function esc(s) {
-    return String(s === undefined || s === null ? "" : s)
-      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-  }
-
-  // ---- window manager (Phase 1: drag the console + pop jobs into floating windows; desktop only) ----
-  function wmMobile() { return window.matchMedia("(max-width: 760px)").matches; }
-  var zTop = 100;
-  function bringToFront(el) { el.style.zIndex = String(++zTop); }
-
-  function makeDraggable(winEl, handleEl) {
-    handleEl.addEventListener("pointerdown", function (e) {
-      if (wmMobile()) return;
-      if (e.target.closest("button, a, input, select, textarea")) return;
-      var rect = winEl.getBoundingClientRect();
-      winEl.style.position = "fixed";
-      winEl.style.margin = "0";
-      winEl.style.width = rect.width + "px";
-      winEl.style.left = rect.left + "px";
-      winEl.style.top = rect.top + "px";
-      bringToFront(winEl);
-      var sx = e.clientX, sy = e.clientY, ox = rect.left, oy = rect.top;
-      try { handleEl.setPointerCapture(e.pointerId); } catch (err) {}
-      function move(ev) {
-        var nx = ox + (ev.clientX - sx), ny = oy + (ev.clientY - sy);
-        nx = Math.max(60 - rect.width, Math.min(nx, window.innerWidth - 60));
-        ny = Math.max(0, Math.min(ny, window.innerHeight - 44));
-        winEl.style.left = nx + "px";
-        winEl.style.top = ny + "px";
-      }
-      function up(ev) {
-        handleEl.removeEventListener("pointermove", move);
-        handleEl.removeEventListener("pointerup", up);
-        try { handleEl.releasePointerCapture(ev.pointerId); } catch (err) {}
-      }
-      handleEl.addEventListener("pointermove", move);
-      handleEl.addEventListener("pointerup", up);
-    });
-  }
-
-  var mainWin = document.querySelector(".window");
-  if (mainWin) {
-    var mainBar = mainWin.querySelector(".titlebar");
-    if (mainBar) makeDraggable(mainWin, mainBar);
-    mainWin.addEventListener("pointerdown", function () { if (!wmMobile()) bringToFront(mainWin); }, true);
-  }
-
-  var jobWindows = {};
-
-  function renderJobInto(node, res) {
-    if (res.ok && isJobStatus(res.data)) {
-      var d = res.data;
-      var head = '<div class="stat-head">' + pill(res) + chip(d.stage) +
-                 '<span class="stat-id mono">#' + esc(d.job_id) + "</span>" +
-                 '<span class="stat-type">' + esc(d.job_type) + "</span>" +
-                 (d.worker ? '<span class="stat-worker mono">' + esc(d.worker) + "</span>" : "") +
-                 "</div>";
-      var pipe = PIPELINE_STAGES.indexOf(d.stage) !== -1 ? renderPipeline(d.stage, d.progress) : "";
-      var links = (["Cancelled","Failed","Declined"].indexOf(d.stage) === -1 && d.progress && d.progress.type === "upload") ? "" : linksBlock(d.links);
-      node.innerHTML = head + statusBlock(d) + pipe + progressBlock(d.progress, d.stage) + links + summaryBlock(d);
-    } else if (res.status === 404) {
-      node.innerHTML = pill(res) + '<p class="muted">Job not found (it may be archived).</p>';
-    } else if (res.status === 429) {
-      node.innerHTML = pill(res) + rateNote(res);
-    } else {
-      node.innerHTML = pill(res) + '<p class="muted">' + esc(messageText(res.data, res.ok)) + "</p>";
-    }
-  }
-
-  function openJobWindow(jobId) {
-    if (wmMobile()) return;
-    jobId = String(jobId);
-    if (jobWindows[jobId]) { bringToFront(jobWindows[jobId].el); return; }
-    var n = Object.keys(jobWindows).length;
-    var el = document.createElement("div");
-    el.className = "jobwin";
-    el.style.left = Math.max(16, Math.min(90 + n * 26, window.innerWidth - 396)) + "px";
-    el.style.top = Math.max(16, Math.min(96 + n * 26, window.innerHeight - 220)) + "px";
-    el.innerHTML =
-      '<div class="jobwin-bar"><span class="dot"></span>' +
-      '<span class="t">job #' + esc(jobId) + '</span>' +
-      '<button class="jobwin-close" type="button" title="Close">✕</button></div>' +
-      '<div class="jobwin-body"><p class="muted">Loading…</p></div>';
-    document.body.appendChild(el);
-    var body = el.querySelector(".jobwin-body");
-    el.querySelector(".jobwin-close").addEventListener("click", function () { closeJobWindow(jobId); });
-    el.addEventListener("pointerdown", function () { bringToFront(el); }, true);
-    makeDraggable(el, el.querySelector(".jobwin-bar"));
-    bringToFront(el);
-    var rec = { el: el, body: body, timer: null };
-    jobWindows[jobId] = rec;
-    function tick() { pollJob(jobId).then(function (res) { renderJobInto(body, res); if (isTerminal(res) && rec.timer) { clearInterval(rec.timer); rec.timer = null; } }).catch(function () {}); }
     tick();
-    rec.timer = setInterval(tick, 2000);
+    watchTimer = setInterval(tick, 2000);
+    paintRun();
   }
 
-  function closeJobWindow(jobId) {
-    var rec = jobWindows[jobId];
-    if (!rec) return;
-    if (rec.timer) clearInterval(rec.timer);
-    if (rec.el && rec.el.parentNode) rec.el.parentNode.removeChild(rec.el);
-    delete jobWindows[jobId];
+  function showResult(html) {
+    document.getElementById("encResultCard").style.display = "";
+    document.getElementById("encResult").innerHTML = html;
   }
 
-  // pop a job into a window — on the desktop shell when embedded, locally otherwise
-  function popJob(jobId) {
-    jobId = String(jobId);
-    if (window.parent && window.parent !== window) {
-      try { window.parent.postMessage({ type: "pandora:openJob", jobId: jobId }, "*"); return; } catch (e) {}
+  // ── SETTINGS ───────────────────────────────────────────────────────────────
+
+  var POLL_KEY = "pandora_poll";
+  function pollSetting() {
+    try { return JSON.parse(localStorage.getItem(POLL_KEY)) || { on: true, secs: 2 }; }
+    catch (e) { return { on: true, secs: 2 }; }
+  }
+  function savePoll(v) { try { localStorage.setItem(POLL_KEY, JSON.stringify(v)); } catch (e) {} }
+
+  function renderSettings() {
+    var poll = pollSetting();
+    var theme = PN.getThemePref();
+    viewEl.innerHTML =
+      '<div class="set-cols">' +
+        '<nav class="pn-card set-nav">' +
+          '<a href="#connection" class="on">Connection</a>' +
+          '<a href="#appearance">Appearance</a>' +
+          '<a href="#monitoring">Job monitoring</a>' +
+        "</nav>" +
+        "<div>" +
+          '<section class="pn-card" id="connection"><div class="pn-cardhead"><h2>API connection</h2></div>' +
+            '<div class="pn-cardbody">' +
+              '<div class="set-row"><span>Endpoint</span><span class="pn-mono" style="font-size:13px">' +
+                esc(location.origin) + ' <span class="pn-tag">same origin</span></span></div>' +
+              '<div class="set-row"><span>Bearer token</span><div class="set-reveal">' +
+                '<input class="pn-input pn-mono" id="setToken" type="password" placeholder="Paste a token from /gentoken" autocomplete="off" spellcheck="false">' +
+                '<button class="pn-btn pn-icon" id="setReveal" type="button" aria-label="Show token">' + icon("eye") + "</button></div></div>" +
+              '<div class="set-row"><span>Token reach</span><div id="setReach"><span class="pn-spin"></span></div></div>' +
+              '<div style="display:flex;gap:10px;margin-top:18px;flex-wrap:wrap">' +
+                '<button class="pn-btn pn-primary" id="setSave" type="button">Save connection</button>' +
+                '<button class="pn-btn" id="setForget" type="button">Forget saved token</button>' +
+                '<button class="pn-btn pn-danger" id="setRevoke" type="button">' + icon("trash") + "Revoke on the server</button>" +
+              "</div>" +
+              '<p class="pn-hint">Forget removes the token from this browser only. Revoke deletes its line from ' +
+              '<span class="pn-tag">api.pandora</span>, so it stops working everywhere.</p>' +
+            "</div></section>" +
+          '<section class="pn-card" id="appearance" style="margin-top:16px"><div class="pn-cardhead"><h2>Appearance</h2></div>' +
+            '<div class="pn-cardbody"><div class="set-row"><span>Theme</span><div class="set-choices">' +
+              ["dark", "system", "light"].map(function (t) {
+                return '<label class="pn-radio"><input type="radio" name="pn-theme" value="' + t + '"' +
+                  (theme === t ? " checked" : "") + '><span class="pn-ring"></span><span>' +
+                  t.charAt(0).toUpperCase() + t.slice(1) + "</span></label>";
+              }).join("") +
+            "</div></div></div></section>" +
+          '<section class="pn-card" id="monitoring" style="margin-top:16px"><div class="pn-cardhead"><h2>Job monitoring</h2></div>' +
+            '<div class="pn-cardbody">' +
+              '<div class="set-row"><span>Auto-refresh active jobs</span>' +
+                '<label class="pn-switch"><input type="checkbox" id="setPoll"' + (poll.on ? " checked" : "") +
+                '><span class="pn-track"></span></label></div>' +
+              '<div class="set-row"><span>Refresh interval</span>' +
+                '<select class="pn-select" id="setPollSecs" style="max-width:200px">' +
+                  [2, 5, 10, 30].map(function (s) {
+                    return '<option value="' + s + '"' + (poll.secs === s ? " selected" : "") + ">" + s + " seconds</option>";
+                  }).join("") + "</select></div>" +
+              '<p class="pn-hint">Status polling is a GET, so it never counts against the write rate limit.</p>' +
+            "</div></section>" +
+        "</div>" +
+      "</div>";
+
+    var tokenInput = document.getElementById("setToken");
+    tokenInput.value = PN.getToken();
+
+    document.getElementById("setReveal").addEventListener("click", function () {
+      tokenInput.type = tokenInput.type === "password" ? "text" : "password";
+    });
+    document.getElementById("setSave").addEventListener("click", function () {
+      PN.setToken(tokenInput.value.trim());
+      PN.toast("Connection saved.");
+      paintReach();
+    });
+    document.getElementById("setForget").addEventListener("click", function () {
+      PN.clearToken();
+      tokenInput.value = "";
+      PN.toast("Token removed from this browser.");
+      paintReach();
+    });
+    document.getElementById("setRevoke").addEventListener("click", revokeToken);
+    Array.prototype.forEach.call(document.querySelectorAll('input[name="pn-theme"]'), function (r) {
+      r.addEventListener("change", function () { PN.setTheme(this.value); });
+    });
+    document.getElementById("setPoll").addEventListener("change", function () {
+      var p = pollSetting(); p.on = this.checked; savePoll(p);
+    });
+    document.getElementById("setPollSecs").addEventListener("change", function () {
+      var p = pollSetting(); p.secs = parseInt(this.value, 10) || 2; savePoll(p);
+    });
+    document.querySelector(".set-nav").addEventListener("click", function (e) {
+      var a = e.target.closest("a");
+      if (!a) return;
+      Array.prototype.forEach.call(this.querySelectorAll("a"), function (x) { x.classList.remove("on"); });
+      a.classList.add("on");
+    });
+
+    paintReach();
+  }
+
+  // What this token can actually reach, probed rather than claimed.
+  function paintReach() {
+    var host = document.getElementById("setReach");
+    if (!host) return;
+    if (!PN.getToken()) {
+      host.innerHTML = '<span class="pn-chip" data-tone="bad">No token saved</span>';
+      PN.refreshIdentity();
+      return;
     }
-    openJobWindow(jobId);
+    host.innerHTML = '<span class="pn-spin"></span>';
+    Promise.all([
+      api("GET", "/api/v1/jobs?status=ongoing"),
+      api("GET", "/api/v1/workers"),
+      api("GET", "/api/v1/git/attachments")
+    ]).then(function (r) {
+      if (r[0].status === 401) {
+        host.innerHTML = '<span class="pn-chip" data-tone="bad">Rejected by the API</span>';
+        PN.refreshIdentity();
+        return;
+      }
+      var chips = ['<span class="pn-chip" data-tone="done">Jobs</span>'];
+      if (r[2].ok) chips.push('<span class="pn-chip" data-tone="done">Local — git &amp; Studio</span>');
+      if (r[1].ok) chips.push('<span class="pn-chip" data-tone="done">PNwitch — workers &amp; logs</span>');
+      host.innerHTML = '<div style="display:flex;gap:8px;flex-wrap:wrap">' + chips.join("") + "</div>";
+      PN.refreshIdentity();
+    }).catch(function () {
+      host.innerHTML = '<span class="pn-chip" data-tone="bad">API unreachable</span>';
+    });
   }
 
-  // after a job is submitted: pop it into its own window, keep the console output clean
-  function afterSubmit(jobId, lockEncode, detail) {
-    if (wmMobile()) { startJobWatch(jobId, lockEncode); return; }
-    popJob(jobId);
-    outputEl.innerHTML = '<span class="pill ok">202</span>' +
-      '<div class="accepted">' + chip("Queued") +
-      '<span class="mono">#' + esc(jobId) + '</span>' +
-      (detail ? '<span class="mono">' + esc(detail) + '</span>' : "") +
-      '<span class="muted">Popped out into its own window.</span></div>';
-  }
-
-  // open a job window from the Jobs table (row or pop-out button) or the watched-job header
-  outputEl.addEventListener("click", function (e) {
-    var t = e.target.closest("[data-job]");
-    if (t) { popJob(t.getAttribute("data-job")); }
-  });
-
-  // shrinking into mobile drops the WM and restores the plain card
-  window.addEventListener("resize", function () {
-    if (!wmMobile()) return;
-    Object.keys(jobWindows).forEach(closeJobWindow);
-    if (mainWin) {
-      mainWin.style.position = ""; mainWin.style.left = ""; mainWin.style.top = "";
-      mainWin.style.width = ""; mainWin.style.margin = ""; mainWin.style.zIndex = "";
+  function revokeToken() {
+    if (!PN.getToken()) { PN.toast("There is no token to revoke.", "bad"); return; }
+    var btn = document.getElementById("setRevoke");
+    if (btn.getAttribute("data-armed") !== "1") {
+      btn.setAttribute("data-armed", "1");
+      btn.innerHTML = "Revoke for good?";
+      setTimeout(function () {
+        if (btn.getAttribute("data-armed") !== "1") return;
+        btn.removeAttribute("data-armed");
+        btn.innerHTML = icon("trash") + "Revoke on the server";
+      }, 5000);
+      return;
     }
-  });
-
-  // ---- boot ----
-  var jobOnly = location.search.match(/[?&]job=([^&]+)/);
-  if (jobOnly) {
-    var onlyId = decodeURIComponent(jobOnly[1]);
-    (function () {
-      var timer = null;
-      function tick() { pollJob(onlyId).then(function (res) { renderJobInto(outputEl, res); if (isTerminal(res) && timer) { clearInterval(timer); timer = null; } }).catch(function () {}); }
-      tick();
-      timer = setInterval(tick, 2000);
-    })();
-  } else if (/[?&]jobs=1\b/.test(location.search)) {
-    (function () {
-      function tick() { COMMANDS.jobs.run().then(renderJobs).catch(function () {}); }
-      tick();
-      setInterval(tick, 2000);
-    })();
-  } else {
-    renderOptions(active);
+    btn.removeAttribute("data-armed");
+    btn.disabled = true;
+    api("POST", "/api/v1/token/revoke").then(function (res) {
+      btn.disabled = false;
+      btn.innerHTML = icon("trash") + "Revoke on the server";
+      if (res.ok) {
+        PN.clearToken();
+        document.getElementById("setToken").value = "";
+        PN.toast("Token revoked. It no longer works anywhere.");
+        paintReach();
+      } else {
+        PN.toast(PN.messageText(res.data, false), "bad");
+      }
+    }).catch(function () {
+      btn.disabled = false;
+      btn.innerHTML = icon("trash") + "Revoke on the server";
+    });
   }
+
+  // ── boot ───────────────────────────────────────────────────────────────────
+
+  if (view === "operations") renderOperations();
+  else if (view === "jobs") renderJobsView();
+  else if (view === "encode") renderEncodeView();
+  else renderSettings();
 })();
 </script>
 </body>
