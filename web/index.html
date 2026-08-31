@@ -61,11 +61,7 @@
   .enc-ready[data-tone="bad"] svg { color: var(--pn-bad); }
   .enc-ready b { margin-left: auto; font-size: 13.5px; font-weight: 500; color: var(--pn-ink-2); }
 
-  .set-cols { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 16px; align-items: start; }
-  .set-nav { display: flex; flex-direction: column; padding: 6px; gap: 2px; }
-  .set-nav a { padding: 9px 12px; border-radius: 8px; text-decoration: none; color: var(--pn-ink-2); font-size: 13.5px; font-weight: 500; border-left: 2px solid transparent; }
-  .set-nav a:hover { background: var(--pn-panel-2); }
-  .set-nav a.on { background: var(--pn-k1-soft); color: var(--pn-ink); font-weight: 600; border-left-color: var(--pn-k1); }
+  .set-cols { max-width: 860px; }
   .set-row { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 16px; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--pn-line); }
   .set-row:last-child { border-bottom: 0; }
   .set-row > span:first-child { font-size: 13.5px; color: var(--pn-dim); }
@@ -76,7 +72,7 @@
   .res-links a { display: block; font-family: var(--pn-mono); font-size: 12.5px; padding: 6px 0; color: var(--pn-k1-hi); overflow-wrap: anywhere; }
 
   @media (max-width: 1180px) {
-    .ops-cols, .jobs-cols, .enc-cols, .set-cols { grid-template-columns: minmax(0, 1fr); }
+    .ops-cols, .jobs-cols, .enc-cols { grid-template-columns: minmax(0, 1fr); }
     .detail-sticky { position: static; }
   }
   @media (max-width: 640px) {
@@ -599,7 +595,7 @@
     { value: "720p", label: "720p", note: "Standard profile with the frame height capped at 720. Never upscales." },
     { value: "480p", label: "480p", note: "Standard profile with the frame height capped at 480. Never upscales." },
     { value: "gpu", label: "GPU", note: "Hardware encode. Fast, larger output, and only offered to GPU-purpose nodes." },
-    { value: "av1", label: "AV1 NVENC", note: "AV1 hardware encode. Requires a Drive-only server with HLS disabled." },
+    { value: "av1", label: "AV1 NVENC", note: "AV1 hardware encode. Requires a Drive-only or HLS-only server." },
     { value: "pseudolossless", label: "Pseudo Lossless", note: "Near-transparent and very large. For masters, not releases." },
     { value: "dummy", label: "DEV", note: "A stub encode for testing the pipeline. Produces nothing usable." }
   ];
@@ -766,8 +762,11 @@
           '"><span class="pn-box"></span><span>' + esc(f.label) + "</span></label></div>";
         return;
       }
-      html += '<div class="pn-field"><label class="pn-label" for="' + id + '">' + esc(f.label) +
-        (f.optional ? ' <span class="pn-opt">(optional)</span>' : "") + "</label>";
+      var head = f.type === "file"
+        ? '<span class="pn-label">' + esc(f.label) + (f.optional ? ' <span class="pn-opt">(optional)</span>' : "") + "</span>"
+        : '<label class="pn-label" for="' + id + '">' + esc(f.label) +
+          (f.optional ? ' <span class="pn-opt">(optional)</span>' : "") + "</label>";
+      html += '<div class="pn-field">' + head;
       if (f.type === "select") {
         html += '<select class="pn-select" id="' + id + '">' + f.options.map(function (o) {
           return '<option value="' + esc(o.value) + '">' + esc(o.label) + "</option>";
@@ -1094,12 +1093,6 @@
     var theme = PN.getThemePref();
     viewEl.innerHTML =
       '<div class="set-cols">' +
-        '<nav class="pn-card set-nav">' +
-          '<a href="#connection" class="on">Connection</a>' +
-          '<a href="#appearance">Appearance</a>' +
-          '<a href="#monitoring">Job monitoring</a>' +
-        "</nav>" +
-        "<div>" +
           '<section class="pn-card" id="connection"><div class="pn-cardhead"><h2>API connection</h2></div>' +
             '<div class="pn-cardbody">' +
               '<div class="set-row"><span>Endpoint</span><span class="pn-mono" style="font-size:13px">' +
@@ -1136,7 +1129,6 @@
                   }).join("") + "</select></div>" +
               '<p class="pn-hint">Status polling is a GET, so it never counts against the write rate limit.</p>' +
             "</div></section>" +
-        "</div>" +
       "</div>";
 
     var tokenInput = document.getElementById("setToken");
@@ -1166,13 +1158,6 @@
     document.getElementById("setPollSecs").addEventListener("change", function () {
       var p = pollSetting(); p.secs = parseInt(this.value, 10) || 2; savePoll(p);
     });
-    document.querySelector(".set-nav").addEventListener("click", function (e) {
-      var a = e.target.closest("a");
-      if (!a) return;
-      Array.prototype.forEach.call(this.querySelectorAll("a"), function (x) { x.classList.remove("on"); });
-      a.classList.add("on");
-    });
-
     paintReach();
   }
 
