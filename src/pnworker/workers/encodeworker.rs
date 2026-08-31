@@ -181,6 +181,13 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             // read back.
             let hls_direct = hls_only && intro_dir.is_none();
             let hls_directory = directory.join("work").join("hls");
+            // The names this server publishes under. Read once per job, because the layout has to
+            // be spelled the same way by whichever run ends up writing it.
+            let hls_name = if hls_only {
+                crate::pnworker::server_config::server_hls_name(server_id).await
+            } else {
+                String::new()
+            };
             // A retry of this job may have left a layout from the attempt before it; the upload
             // worker adopts whatever is here, so it cannot be allowed to outlive its encode.
             tokio::fs::remove_dir_all(&hls_directory).await.ok();
@@ -225,6 +232,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             ]);
             if hls_direct {
                 encode_params.insert("HLS", PathValue::from(path_to_ffmpeg(hls_directory.as_path())));
+                encode_params.insert("HLSNAME", PathValue::from(hls_name.clone()));
             }
             let result = run_tool(
                 &pnmpeg_path,
@@ -296,6 +304,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 ]);
                 if hls_only {
                     concat_params.insert("HLS", PathValue::from(path_to_ffmpeg(hls_directory.as_path())));
+                    concat_params.insert("HLSNAME", PathValue::from(hls_name.clone()));
                 }
                 let result = run_tool(
                     &pnmpeg_path,

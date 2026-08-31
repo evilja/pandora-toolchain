@@ -162,6 +162,7 @@ pub async fn publish_hls(
     prepared: Option<&FsPath>,
     config: &Config,
     cancel_file: Option<&FsPath>,
+    name_template: &str,
 ) -> Result<HlsPublication, String> {
     cleanup_expired_hls().await;
     let adoptable = match prepared {
@@ -213,9 +214,14 @@ pub async fn publish_hls(
                 .await
                 .ok_or_else(|| "HLS source video codec could not be probed".to_string())?;
             let segment_type = HlsSegmentType::for_video_codec(&codec)?;
-            let names = HlsNames::new(
+            // Only this branch names anything: an adopted layout was already named by the encoder,
+            // which read the same template off the same server.
+            let names = HlsNames::from_template(
+                name_template,
                 probe_dimensions(source).await.map(|(_, height)| height),
                 &crate::lib::secret::random_uuid_v4()
+                    .map_err(|_| "secure HLS name generation failed".to_string())?,
+                &crate::lib::secret::random_short_id()
                     .map_err(|_| "secure HLS name generation failed".to_string())?,
                 segment_type,
             );
@@ -608,39 +614,30 @@ mod tests {
     use super::*;
 
     const ID: &str = "f28305c9-74d0-449e-920b-938155931dd6";
+    // What the default template renders for a 720p output; the tests below only need a stem some
+    // template produced, not that particular one.
+    const STEM: &str = "f28305c9-74d0-449e-920b-938155931dd6_a1b2c3_720p";
 
+    // Names are the server's to choose, so what is checked here is the shape a public resource has
+    // to hold — one directory deep at most, no relative component, and an extension the route knows.
     #[test]
-    fn public_hls_names_are_a_small_fixed_surface() {
-        assert!(is_public_hls_resource(&format!("1080p_{ID}.m3u8")));
-        assert!(is_public_hls_resource(&format!("chunk-1080p/p12-{ID}.ts")));
-        assert!(is_public_hls_resource(&format!("chunk-1080p/p12-{ID}.m4s")));
-        assert!(is_public_hls_resource(&format!(
-            "chunk-1080p/init-{ID}.mp4"
-        )));
+    fn public_hls_names_are_a_shape_and_never_a_path() {
+        assert!(is_public_hls_resource(&format!("{STEM}.m3u8")));
+        assert!(is_public_hls_resource(&format!("{STEM}_variant.m3u8")));
+        assert!(is_public_hls_resource(&format!("chunk/p12-{STEM}.ts")));
+        assert!(is_public_hls_resource(&format!("chunk/p12-{STEM}.m4s")));
+        assert!(is_public_hls_resource(&format!("chunk/init-{STEM}.mp4")));
+        // Published before names became configurable, still inside its 12 hours.
+        assert!(is_public_hls_resource(&format!("chunk-1080p/p12-1080p_{ID}.ts")));
+
         assert!(!is_public_hls_resource(".expires"));
-        assert!(!is_public_hls_resource("master.m3u8"));
-        assert!(!is_public_hls_resource(&format!("../720p_{ID}.m3u8")));
-        assert!(!is_public_hls_resource(&format!(
-            "chunk-720p/../p0-{ID}.ts"
-        )));
-        assert!(!is_public_hls_resource(&format!(
-            "chunk-720p/p0-{ID}.ts.ts"
-        )));
-        assert!(!is_public_hls_resource(&format!(
-            "chunk-720p/init-{ID}.m4s"
-        )));
-        assert!(!is_public_hls_resource(&format!("chunk-720p/p0-{ID}.mp4")));
-        assert!(!is_public_hls_resource(&format!("720p_{ID}")));
-        assert!(!is_public_hls_resource(&format!("720_{ID}.m3u8")));
-        assert!(!is_public_hls_resource("720p_not-a-uuid.m3u8"));
-        assert!(!is_public_hls_resource(&format!(
-            "720p_{}.m3u8",
-            ID.to_uppercase()
-        )));
-        assert!(!is_public_hls_resource(&format!("chunk-720p/px-{ID}.ts")));
-        assert!(!is_public_hls_resource(&format!(
-            "chunk-720p/sub/p0-{ID}.ts"
-        )));
+        assert!(!is_public_hls_resource(&format!("../{STEM}.m3u8")));
+        assert!(!is_public_hls_resource(&format!("chunk/../p0-{STEM}.ts")));
+        assert!(!is_public_hls_resource(&format!("chunk/init-{STEM}.m4s")));
+        assert!(!is_public_hls_resource(&format!("chunk/p0-{STEM}.mp4")));
+        assert!(!is_public_hls_resource(&STEM.to_string()));
+        assert!(!is_public_hls_resource(&format!("chunk/px-{STEM}.ts")));
+        assert!(!is_public_hls_resource(&format!("chunk/sub/p0-{STEM}.ts")));
     }
 
     #[test]
@@ -657,7 +654,7 @@ mod tests {
 
     #[test]
     fn fmp4_master_advertises_version_resolution_and_av1_codecs() {
-        let names = HlsNames::new(Some(1080), ID, HlsSegmentType::Fmp4);
+        let names = HlsNames::new(STEM, HlsSegmentType::Fmp4);
         let master = master_playlist(
             &names,
             4_000_000,
@@ -693,10 +690,10 @@ mod tests {
         assert_eq!(prepared_media_playlist(&root).await, None);
         assert_eq!(prepared_media_playlist(&root.join("absent")).await, None);
 
-        let names = HlsNames::new(Some(720), ID, HlsSegmentType::Ts);
+        let names = HlsNames::new(STEM, HlsSegmentType::Ts);
         tokio::fs::write(
             root.join(&names.media),
-            format!("#EXTM3U\n#EXTINF:4,\nchunk-720p/p0-{ID}.ts\n"),
+            format!("#EXTM3U\n#EXTINF:4,\nchunk/p0-{STEM}.ts\n"),
         )
         .await
         .unwrap();
@@ -705,10 +702,10 @@ mod tests {
             .unwrap();
         assert_eq!(prepared_media_playlist(&root).await, Some(names));
 
-        let other = HlsNames::new(Some(480), ID, HlsSegmentType::Ts);
+        let other = HlsNames::new("480p-other", HlsSegmentType::Ts);
         tokio::fs::write(
             root.join(&other.media),
-            format!("#EXTM3U\n#EXTINF:4,\nchunk-480p/p0-{ID}.ts\n"),
+            String::from("#EXTM3U\n#EXTINF:4,\nchunk/p0-480p-other.ts\n"),
         )
         .await
         .unwrap();
@@ -719,17 +716,17 @@ mod tests {
     #[test]
     fn media_playlist_validation_rejects_external_or_nested_paths() {
         let valid = format!(
-            "#EXTM3U\n#EXTINF:6.0,\nchunk-720p/p0-{ID}.ts\n#EXTINF:2.5,\nchunk-720p/p1-{ID}.ts\n"
+            "#EXTM3U\n#EXTINF:6.0,\nchunk/p0-{STEM}.ts\n#EXTINF:2.5,\nchunk/p1-{STEM}.ts\n"
         );
-        let names = HlsNames::new(Some(720), ID, HlsSegmentType::Ts);
+        let names = HlsNames::new(STEM, HlsSegmentType::Ts);
         let (duration, chunks, init) = validate_media_playlist(&valid, &names).unwrap();
         assert_eq!(duration, 8.5);
         assert_eq!(init, None);
         assert_eq!(
             chunks,
             [
-                format!("chunk-720p/p0-{ID}.ts"),
-                format!("chunk-720p/p1-{ID}.ts")
+                format!("chunk/p0-{STEM}.ts"),
+                format!("chunk/p1-{STEM}.ts")
             ]
         );
         assert!(
@@ -738,7 +735,7 @@ mod tests {
         );
         assert!(
             validate_media_playlist(
-                &format!("#EXTM3U\n#EXTINF:6,\nsub/chunk-720p/p0-{ID}.ts\n"),
+                &format!("#EXTM3U\n#EXTINF:6,\nsub/chunk/p0-{STEM}.ts\n"),
                 &names,
             )
             .is_err()
@@ -747,24 +744,24 @@ mod tests {
 
     #[test]
     fn fmp4_playlist_validation_requires_its_exact_init_and_segments() {
-        let names = HlsNames::new(Some(1080), ID, HlsSegmentType::Fmp4);
+        let names = HlsNames::new(STEM, HlsSegmentType::Fmp4);
         let valid = format!(
-            "#EXTM3U\n#EXT-X-MAP:URI=\"chunk-1080p/init-{ID}.mp4\"\n#EXTINF:4,\nchunk-1080p/p0-{ID}.m4s\n"
+            "#EXTM3U\n#EXT-X-MAP:URI=\"chunk/init-{STEM}.mp4\"\n#EXTINF:4,\nchunk/p0-{STEM}.m4s\n"
         );
         let (_, chunks, init) = validate_media_playlist(&valid, &names).unwrap();
-        assert_eq!(chunks, [format!("chunk-1080p/p0-{ID}.m4s")]);
-        assert_eq!(init, Some(format!("chunk-1080p/init-{ID}.mp4")));
+        assert_eq!(chunks, [format!("chunk/p0-{STEM}.m4s")]);
+        assert_eq!(init, Some(format!("chunk/init-{STEM}.mp4")));
 
         for invalid in [
-            format!("#EXTM3U\n#EXTINF:4,\nchunk-1080p/p0-{ID}.m4s\n"),
+            format!("#EXTM3U\n#EXTINF:4,\nchunk/p0-{STEM}.m4s\n"),
             format!(
-                "#EXTM3U\n#EXT-X-MAP:URI=\"../init.mp4\"\n#EXTINF:4,\nchunk-1080p/p0-{ID}.m4s\n"
+                "#EXTM3U\n#EXT-X-MAP:URI=\"../init.mp4\"\n#EXTINF:4,\nchunk/p0-{STEM}.m4s\n"
             ),
             format!(
-                "#EXTM3U\n#EXT-X-MAP:URI=\"chunk-720p/init-{ID}.mp4\"\n#EXTINF:4,\nchunk-1080p/p0-{ID}.m4s\n"
+                "#EXTM3U\n#EXT-X-MAP:URI=\"chunk/init-other.mp4\"\n#EXTINF:4,\nchunk/p0-{STEM}.m4s\n"
             ),
             format!(
-                "#EXTM3U\n#EXT-X-MAP:URI=\"chunk-1080p/init-{ID}.mp4\"\n#EXTINF:4,\nchunk-1080p/p0-{ID}.ts\n"
+                "#EXTM3U\n#EXT-X-MAP:URI=\"chunk/init-{STEM}.mp4\"\n#EXTINF:4,\nchunk/p0-{STEM}.ts\n"
             ),
         ] {
             assert!(validate_media_playlist(&invalid, &names).is_err());

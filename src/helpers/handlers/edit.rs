@@ -1,6 +1,8 @@
 use super::*;
+use pandora_toolchain::lib::mpeg::hls::{validate_name_template, DEFAULT_NAME_TEMPLATE};
 use pandora_toolchain::pnworker::server_config::{
-    drive_only_from_meta, fansub_from_meta, hls_from_meta, validate_preset_delivery, FansubSite,
+    drive_only_from_meta, fansub_from_meta, hls_from_meta, hls_name_from_meta,
+    validate_preset_delivery, FansubSite,
 };
 use serenity::builder::CreateAutocompleteResponse;
 
@@ -160,6 +162,7 @@ pub async fn handle_edit(
     let existing_concat = existing_lines.get(12).copied().unwrap_or("");
     let existing_drive_only = drive_only_from_meta(&existing_meta);
     let existing_hls = hls_from_meta(&existing_meta);
+    let existing_hls_name = hls_name_from_meta(&existing_meta);
 
     let language = match option_str(command, "language") {
         Some(l) if matches!(l, "EN" | "TR" | "JP") => l.to_string(),
@@ -206,6 +209,19 @@ pub async fn handle_edit(
         .unwrap_or_else(|| existing_local_gdrive.to_string());
     let drive_only = option_bool(command, "drive_only").unwrap_or(existing_drive_only);
     let hls = option_bool(command, "hls").unwrap_or(existing_hls);
+    // The template is stored as written, not as rendered: `-` restores the default rather than
+    // clearing the line to nothing, because a name is not something a release can go without.
+    let hls_name = match option_str(command, "hls_name").map(str::trim) {
+        None => existing_hls_name,
+        Some(CLEAR_SENTINEL) | Some("") => DEFAULT_NAME_TEMPLATE.to_string(),
+        Some(template) => match validate_name_template(template) {
+            Ok(template) => template,
+            Err(reason) => {
+                edit_error(ctx, command, deferred, format!("Error: hls_name {reason}")).await;
+                return;
+            }
+        },
+    };
     let preset = match option_str(command, "preset").map(str::trim) {
         None => existing_preset.to_string(),
         Some("standard") | Some("veryslow") | Some("gpu") | Some("av1") | Some("pseudolossless") | Some("dummy") => option_str(command, "preset").unwrap().to_string(),
@@ -265,6 +281,7 @@ pub async fn handle_edit(
         openanime_fansub: fansub_value(FansubSite::OpenAnime),
         anizm_fansub: fansub_value(FansubSite::Anizm),
         hls: hls.to_string(),
+        hls_name: hls_name.clone(),
     });
     let path = dir.join("meta.pandora");
     if let Err(e) = tokio::fs::write(&path, body).await {
@@ -309,6 +326,7 @@ pub async fn handle_edit(
         .field(command_message(command, FIELD_LOCAL_GDRIVE), local_gdrive_display, true)
         .field(command_message(command, FIELD_DRIVE_ONLY), drive_only_display, true)
         .field(command_message(command, FIELD_HLS), hls_display, true)
+        .field(command_message(command, FIELD_HLS_NAME), format!("`{}`", hls_name), true)
         .field(command_message(command, FIELD_WRAPSTYLE), wrap_display, true)
         .field(command_message(command, FIELD_PRESET), preset, true)
         .field(command_message(command, FIELD_CONCAT), concat_display, true);

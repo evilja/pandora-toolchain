@@ -22,6 +22,15 @@ pub fn random_hex_token() -> Result<String, getrandom::Error> {
     Ok(hex_bytes(&bytes))
 }
 
+// The short half of a configurable HLS name. Six hex characters is not a secret — `random_hex_token`
+// still guards the directory the layout is served from — it is there so two releases that share a
+// template, a height, and a server still land on different names.
+pub fn random_short_id() -> Result<String, getrandom::Error> {
+    let mut bytes = [0u8; 3];
+    getrandom::getrandom(&mut bytes)?;
+    Ok(hex_bytes(&bytes))
+}
+
 // The identity an HLS release names its playlists and chunks after. A random v4 UUID rather than a
 // counter so nothing about one output's filenames tells a viewer what the next release's are called;
 // it is an identifier, not the capability — `random_hex_token` still guards the directory.

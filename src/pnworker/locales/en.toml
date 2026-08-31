@@ -342,6 +342,10 @@ args = 0
 text = "Lumiere HLS-only output (12 hours)"
 args = 0
 
+[FIELD_HLS_NAME]
+text = "HLS output name"
+args = 0
+
 [FIELD_ANIMECIX_FANSUB]
 text = "AnimeciX fansub"
 args = 0

@@ -10,7 +10,7 @@ use crate::pnworker::messages::{
     BACKUPALL_PROG, JOB_CANCELLED, MessagePayload, UPLOAD_BACKUP_PROG, UPLOAD_DONE, UPLOAD_FAIL,
     UPLOAD_PROG, WORKER_ASSIGN,
 };
-use crate::pnworker::server_config::{server_drive_only, server_hls_enabled};
+use crate::pnworker::server_config::{server_drive_only, server_hls_enabled, server_hls_name};
 use crate::pnworker::util::string_byte_to_mb;
 use crate::pnworker::util::{OUTPUT_RESOLUTION_FILE, WorkerNamePool, job_cancelled};
 use crate::pnworker::worker_slots::upload_worker_slots;
@@ -270,6 +270,7 @@ async fn run_lumiere_single_upload(
             Some(prepared.as_path()),
             client.config(),
             cancel_file.as_deref(),
+            &server_hls_name(server_id).await,
         )
         .await
         {

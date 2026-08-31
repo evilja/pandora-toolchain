@@ -135,6 +135,7 @@ struct ServerMetaFields {
     openanime_fansub: String,
     anizm_fansub: String,
     hls: String,
+    hls_name: String,
 }
 
 fn compose_server_meta(fields: &ServerMetaFields) -> String {
@@ -157,6 +158,7 @@ fn compose_server_meta(fields: &ServerMetaFields) -> String {
         fields.openanime_fansub.as_str(),
         fields.anizm_fansub.as_str(),
         fields.hls.as_str(),
+        fields.hls_name.as_str(),
     ];
     format!("{}\n", lines.join("\n"))
 }
@@ -1214,7 +1216,7 @@ async fn font_response(
 mod server_meta_tests {
     use super::{compose_server_meta, ServerMetaFields};
     use pandora_toolchain::pnworker::server_config::{
-        drive_only_from_meta, fansub_from_meta, hls_from_meta, FansubSite,
+        drive_only_from_meta, fansub_from_meta, hls_from_meta, hls_name_from_meta, FansubSite,
     };
 
     fn fields() -> ServerMetaFields {
@@ -1237,6 +1239,7 @@ mod server_meta_tests {
             openanime_fansub: "akira-subs".to_string(),
             anizm_fansub: "42".to_string(),
             hls: "true".to_string(),
+            hls_name: "%uuid%_%res%".to_string(),
         }
     }
 
@@ -1244,7 +1247,7 @@ mod server_meta_tests {
     fn every_field_lands_on_its_documented_line() {
         let meta = compose_server_meta(&fields());
         let lines = meta.lines().collect::<Vec<_>>();
-        assert_eq!(lines.len(), 18);
+        assert_eq!(lines.len(), 19);
         assert_eq!(lines[0], "EN");
         assert_eq!(lines[8], "2");
         assert_eq!(lines[11], "standard");
@@ -1263,6 +1266,7 @@ mod server_meta_tests {
             Some("42")
         );
         assert!(hls_from_meta(&meta));
+        assert_eq!(hls_name_from_meta(&meta), "%uuid%_%res%");
     }
 
     #[test]

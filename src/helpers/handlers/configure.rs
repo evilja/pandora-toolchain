@@ -60,6 +60,7 @@ pub async fn handle_configure(
     let existing_concat = existing_lines.get(12).copied().unwrap_or("").to_string();
     let existing_drive_only = drive_only_from_meta(&existing_meta);
     let existing_hls = hls_from_meta(&existing_meta);
+    let existing_hls_name = existing_lines.get(18).copied().unwrap_or("").trim().to_string();
     let existing_fansub = |site: FansubSite| fansub_from_meta(&existing_meta, site).unwrap_or_default();
 
     let wrap_style = match option_str(command, "wrapstyle").map(str::trim) {
@@ -102,6 +103,7 @@ pub async fn handle_configure(
         openanime_fansub: existing_fansub(FansubSite::OpenAnime),
         anizm_fansub: existing_fansub(FansubSite::Anizm),
         hls: existing_hls.to_string(),
+        hls_name: existing_hls_name,
     });
     let path = dir.join("meta.pandora");
     if let Err(e) = tokio::fs::write(&path, body).await {

@@ -342,6 +342,10 @@ args = 0
 text = "Lumiere HLSのみの出力（12時間）"
 args = 0
 
+[FIELD_HLS_NAME]
+text = "HLS出力名"
+args = 0
+
 [FIELD_ANIMECIX_FANSUB]
 text = "AnimeciXファンサブ"
 args = 0

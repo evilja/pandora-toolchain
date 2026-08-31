@@ -3,6 +3,7 @@ use std::path::PathBuf;
 // Positional indexes of server-level upload settings in `meta.pandora`.
 pub const SERVER_DRIVE_ONLY_LINE: usize = 14;
 pub const SERVER_HLS_LINE: usize = 17;
+pub const SERVER_HLS_NAME_LINE: usize = 18;
 
 // Every distribution site names its fansubs differently — AnimeciX addresses a numeric translator
 // template, OpenAnime a `fansubSecureName` string, Anizm a numeric staff-form fansub id — so each
@@ -115,6 +116,29 @@ pub async fn server_hls_enabled(server_id: Option<u64>) -> bool {
         .unwrap_or(false)
 }
 
+// The template this server names its HLS output files after. A blank line, a missing one, and one
+// holding a template that could not produce a usable file name all mean the default: the stored
+// value is re-validated on the way out, so a hand-edited `meta.pandora` cannot make a release
+// publish under a name the serving route would then refuse.
+pub fn hls_name_from_meta(meta: &str) -> String {
+    meta.lines()
+        .nth(SERVER_HLS_NAME_LINE)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| crate::lib::mpeg::hls::validate_name_template(value).ok())
+        .unwrap_or_else(|| crate::lib::mpeg::hls::DEFAULT_NAME_TEMPLATE.to_string())
+}
+
+pub async fn server_hls_name(server_id: Option<u64>) -> String {
+    let Some(server_id) = server_id else {
+        return crate::lib::mpeg::hls::DEFAULT_NAME_TEMPLATE.to_string();
+    };
+    tokio::fs::read_to_string(server_meta_path(server_id))
+        .await
+        .map(|meta| hls_name_from_meta(&meta))
+        .unwrap_or_else(|_| crate::lib::mpeg::hls::DEFAULT_NAME_TEMPLATE.to_string())
+}
+
 // AV1 may be delivered unchanged through Drive or as fMP4/CMAF HLS. The external streaming hosts
 // may transcode an AV1 upload into a different release, so a non-HLS AV1 server remains Drive-only.
 pub fn validate_preset_delivery(
@@ -183,6 +207,21 @@ mod tests {
     }
 
     #[test]
+    fn the_name_template_defaults_and_refuses_an_unusable_stored_value() {
+        let default = crate::lib::mpeg::hls::DEFAULT_NAME_TEMPLATE;
+        let mut lines = vec![String::new(); SERVER_HLS_NAME_LINE + 1];
+        assert_eq!(hls_name_from_meta(&lines.join("\n")), default);
+        assert_eq!(hls_name_from_meta(""), default);
+
+        lines[SERVER_HLS_NAME_LINE] = "  %res%-%random%  ".to_string();
+        assert_eq!(hls_name_from_meta(&lines.join("\n")), "%res%-%random%");
+
+        // Only reachable by editing the file by hand, and it must not reach the muxer.
+        lines[SERVER_HLS_NAME_LINE] = "../%uuid%".to_string();
+        assert_eq!(hls_name_from_meta(&lines.join("\n")), default);
+    }
+
+    #[test]
     fn av1_accepts_hls_or_requires_drive_only() {
         assert!(validate_preset_delivery("standard", false, true).is_ok());
         assert!(validate_preset_delivery("av1", true, false).is_ok());
@@ -231,6 +270,7 @@ mod tests {
             assert_eq!(FansubSite::from_option_name(site.option_name()), Some(site));
             assert_ne!(site.meta_line(), SERVER_DRIVE_ONLY_LINE);
             assert_ne!(site.meta_line(), SERVER_HLS_LINE);
+            assert_ne!(site.meta_line(), SERVER_HLS_NAME_LINE);
         }
         assert_eq!(FansubSite::from_option_name("concat"), None);
     }

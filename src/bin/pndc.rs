@@ -1079,8 +1079,8 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "admin",
             name: "edit",
             summary: "Edit individual server metadata fields, leaving the rest untouched.",
-            usage: "/edit [language] [forgejo] [api_key] [local_gdrive] [drive_only] [wrapstyle] [preset] [concat] [announcement_channel]",
-            details: "Like /configure but every field is optional — omitted fields keep their current value. Pass `-` to clear a text field. local_gdrive selects whether Lumiere should prefer the deterministic guild Drive profile before the global profile. drive_only:true restricts future release uploads to Google Drive and suppresses Byse, LuluStream, and Voe; false restores all configured Lumiere providers. AV1 requires either drive_only:true or hls:true; HLS uses fMP4/CMAF. Active uploads are unchanged. Drive credentials and roots are managed only in Lumiere. wrapstyle can be dont_touch or 0-3. preset and concat set server-wide encode defaults; type/search in concat and select a registered `/touchintro` group, or select `Disable concat` to clear it. The dropdown updates from the global intro config as groups are added. Set announcement_channel:true to point announcements at the current channel. Requires the server to already be configured.",
+            usage: "/edit [language] [forgejo] [api_key] [local_gdrive] [drive_only] [hls] [hls_name] [wrapstyle] [preset] [concat] [announcement_channel]",
+            details: "Like /configure but every field is optional — omitted fields keep their current value. Pass `-` to clear a text field. local_gdrive selects whether Lumiere should prefer the deterministic guild Drive profile before the global profile. drive_only:true restricts future release uploads to Google Drive and suppresses Byse, LuluStream, and Voe; false restores all configured Lumiere providers. AV1 requires either drive_only:true or hls:true; HLS uses fMP4/CMAF. hls_name is the template every file in an HLS release is named after — `%uuid%` a fresh v4 UUID, `%random%` six random hex characters, `%res%` the published height as `720p` — defaulting to `%uuid%_%random%_%res%`; pass `-` to restore it. Active uploads are unchanged. Drive credentials and roots are managed only in Lumiere. wrapstyle can be dont_touch or 0-3. preset and concat set server-wide encode defaults; type/search in concat and select a registered `/touchintro` group, or select `Disable concat` to clear it. The dropdown updates from the global intro config as groups are added. Set announcement_channel:true to point announcements at the current channel. Requires the server to already be configured.",
         },
         HelpCommand {
             section: "admin",
@@ -2999,6 +2999,10 @@ impl EventHandler for Handler {
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::Boolean, "hls", "Use only Lumiere HLS output for releases; retain it for 12 hours.")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "hls_name", "HLS file name template: %uuid%, %random%, %res%. `-` restores the default.")
                         .required(false)
                 )
                 .add_option(

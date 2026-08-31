@@ -12,9 +12,9 @@ use tokio::{fs::File, io::AsyncWriteExt, time::{Duration, Instant}};
 use pandora_toolchain::{pn_data, pn_emit, pn_schema};
 use pandora_toolchain::lib::mpeg::core::RpbData;
 use pandora_toolchain::lib::bin::resolve_runtime_binary;
-use pandora_toolchain::lib::mpeg::hls::{HlsNames, HlsSegmentType};
+use pandora_toolchain::lib::mpeg::hls::{HlsNames, HlsSegmentType, DEFAULT_NAME_TEMPLATE};
 use pandora_toolchain::lib::mpeg::probe::{ffprobe_video_codec, ffprobe_video_height};
-use pandora_toolchain::lib::secret::random_uuid_v4;
+use pandora_toolchain::lib::secret::{random_short_id, random_uuid_v4};
 use pandora_toolchain::lib::logging::diag::{exit_reason, memory_line, process_rss_mib, tail_line};
 use pandora_toolchain::lib::logging::tool::ToolLog;
 use pandora_toolchain::lib::mpeg::studio::{studio_ffmpeg_params, write_ffconcat, StudioRenderManifest};
@@ -194,11 +194,26 @@ struct Args {
     #[arg(long)]
     hls: Option<String>,
 
+    /// Template the HLS output files are named after: %uuid%, %random%, and %res%.
+    #[arg(long = "hls-name")]
+    hls_name: Option<String>,
+
     #[arg(long)]
     cancelfile: Option<String>,
 
     #[arg(long)]
     logfile: Option<String>,
+}
+
+impl Args {
+    // The worker passes the job's server template; a hand-run pnmpeg and an older worker that does
+    // not send one both get the default, so `--hls` on its own still produces a servable layout.
+    fn hls_name_template(&self) -> &str {
+        match self.hls_name.as_deref().map(str::trim) {
+            Some(template) if !template.is_empty() => template,
+            _ => DEFAULT_NAME_TEMPLATE,
+        }
+    }
 }
 
 #[inline]
@@ -317,8 +332,10 @@ fn prepare_hls_output(
     height_source: &str,
     height_cap: Option<u32>,
     output_codec: Option<&str>,
+    name_template: &str,
 ) -> Result<HlsNames, String> {
     let id = random_uuid_v4().map_err(|e| format!("HLS output has no entropy: {e}"))?;
+    let random = random_short_id().map_err(|e| format!("HLS output has no entropy: {e}"))?;
     // A downscaling preset is about to write fewer lines than the source it was measured on, and
     // the playlist name is what the player reads the variant's resolution off.
     let height = match (ffprobe_video_height(height_source), height_cap) {
@@ -332,7 +349,7 @@ fn prepare_hls_output(
             .ok_or_else(|| format!("could not probe the HLS source codec in `{height_source}`"))?,
     };
     let segment_type = HlsSegmentType::for_video_codec(&codec)?;
-    let names = HlsNames::new(height, &id, segment_type);
+    let names = HlsNames::from_template(name_template, height, &id, &random, segment_type);
     std::fs::remove_dir_all(directory).ok();
     std::fs::create_dir_all(directory.join(&names.chunk_directory))
         .map_err(|e| format!("HLS directory {} could not be created: {e}", directory.display()))?;
@@ -348,6 +365,7 @@ fn retarget_params_to_hls(
     directory: &Path,
     height_source: &str,
     height_cap: Option<u32>,
+    name_template: &str,
     log: &mut ToolLog,
 ) -> Result<(), String> {
     let output_codec = params.iter().find_map(|param| match param {
@@ -359,6 +377,7 @@ fn retarget_params_to_hls(
         height_source,
         height_cap,
         output_codec.as_deref(),
+        name_template,
     )?;
     params.retain(|param| !matches!(param, FfmpegParams::Movflags));
     let output = params
@@ -381,9 +400,16 @@ fn mux_linear_aot_hls(
     audio: &Path,
     directory: &Path,
     mux_errors: &Path,
+    name_template: &str,
     log: &mut ToolLog,
 ) -> Result<String, String> {
-    let names = prepare_hls_output(directory, &video.display().to_string(), None, None)?;
+    let names = prepare_hls_output(
+        directory,
+        &video.display().to_string(),
+        None,
+        None,
+        name_template,
+    )?;
     let status = Command::new(resolve_runtime_binary("ffmpeg"))
         .args(["-v", "error", "-i"])
         .arg(video)
@@ -744,7 +770,14 @@ fn finish_linear_aot(
     // finished video and its AAC track straight into the layout the broker publishes instead.
     let destination = match args.hls.as_deref() {
         Some(directory) => {
-            mux_linear_aot_hls(&aot_video, &audio, Path::new(directory), &mux_errors, log)?
+            mux_linear_aot_hls(
+                &aot_video,
+                &audio,
+                Path::new(directory),
+                &mux_errors,
+                args.hls_name_template(),
+                log,
+            )?
         }
         None => {
             let mux_status = Command::new(resolve_runtime_binary("ffmpeg"))
@@ -1526,7 +1559,7 @@ async fn main() {
     // write — the broker would only take it apart into the same chunks. The intro concat arrives
     // here too, and is as much a final mux as the encode: it stream-copies what it joins.
     if let Some(directory) = args.hls.as_deref() {
-        if let Err(error) = retarget_params_to_hls(&mut params, Path::new(directory), &args.input, scale_height(active_preset.as_ref()), &mut log) {
+        if let Err(error) = retarget_params_to_hls(&mut params, Path::new(directory), &args.input, scale_height(active_preset.as_ref()), args.hls_name_template(), &mut log) {
             log.line(&format!("HLS output could not be prepared: {error}"));
             eprintln!("pnmpeg HLS output could not be prepared: {error}");
             println!("{}", pn_emit!(
