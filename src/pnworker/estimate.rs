@@ -221,7 +221,7 @@ pub(crate) fn remaining_secs_queued(frames: Option<u64>, preset: &Preset) -> Opt
         Preset::PseudoLossless(_) => 30.0,
         Preset::VerySlow(_) => 12.0,
         Preset::Dummy(_) => 150.0,
-        Preset::Standard(_) | Preset::Gpu(_) => 60.0,
+        Preset::Standard(_) | Preset::Gpu(_) | Preset::Av1(_) => 60.0,
         // Fewer pixels per frame than the standard preset that is otherwise identical to them.
         Preset::Hd720(_) => 110.0,
         Preset::Sd480(_) => 200.0,
@@ -273,6 +273,7 @@ mod tests {
         assert_eq!(remaining_secs_queued(Some(300), &Preset::Dummy(None)), Some(2));
         assert_eq!(remaining_secs_queued(Some(300), &Preset::Standard(None)), Some(5));
         assert_eq!(remaining_secs_queued(Some(300), &Preset::Gpu(None)), Some(5));
+        assert_eq!(remaining_secs_queued(Some(300), &Preset::Av1(None)), Some(5));
         assert_eq!(remaining_secs_queued(None, &Preset::Standard(None)), None);
     }
 

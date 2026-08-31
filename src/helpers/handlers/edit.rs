@@ -1,6 +1,6 @@
 use super::*;
 use pandora_toolchain::pnworker::server_config::{
-    drive_only_from_meta, fansub_from_meta, hls_from_meta, FansubSite,
+    drive_only_from_meta, fansub_from_meta, hls_from_meta, validate_preset_delivery, FansubSite,
 };
 use serenity::builder::CreateAutocompleteResponse;
 
@@ -208,12 +208,16 @@ pub async fn handle_edit(
     let hls = option_bool(command, "hls").unwrap_or(existing_hls);
     let preset = match option_str(command, "preset").map(str::trim) {
         None => existing_preset.to_string(),
-        Some("standard") | Some("veryslow") | Some("gpu") | Some("pseudolossless") | Some("dummy") => option_str(command, "preset").unwrap().to_string(),
+        Some("standard") | Some("veryslow") | Some("gpu") | Some("av1") | Some("pseudolossless") | Some("dummy") => option_str(command, "preset").unwrap().to_string(),
         Some(other) => {
-            edit_error(ctx, command, deferred, format!("Error: preset `{}` is not standard, veryslow, gpu, pseudolossless, or dummy", other)).await;
+            edit_error(ctx, command, deferred, format!("Error: preset `{}` is not standard, veryslow, gpu, av1, pseudolossless, or dummy", other)).await;
             return;
         }
     };
+    if let Err(reason) = validate_preset_delivery(&preset, drive_only, hls) {
+        edit_error(ctx, command, deferred, format!("Error: {reason}")).await;
+        return;
+    }
     let concat = match option_str(command, "concat").map(str::trim) {
         None => existing_concat.to_string(),
         Some("-") | Some("") => String::new(),

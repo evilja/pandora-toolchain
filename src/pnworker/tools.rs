@@ -128,6 +128,8 @@ pub const PNMPEG_CONCAT: &[CliParam] = &[
     CliParam::Literal("--concat"),
     CliParam::Literal("--intro-dir"),
     CliParam::Path("INTRO_DIR"),
+    CliParam::Literal("--intro-preset"),
+    CliParam::Path("PRESET"),
     CliParam::Literal("--negkey"),
     CliParam::Path("NEGKEY"),
     CliParam::Literal("--negotiator"),

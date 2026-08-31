@@ -64,7 +64,7 @@ State:
 
 - `DB/config/global/environment/link_nodes.json` (coordinator, mode `0600`) — the node roster as a
   JSON array of `{ name, pandora_version, encoder_identity, ffmpeg_version, threads,
-  max_jobs, presets, build, migration_error, registered_at, last_seen, drain }`. The roster is
+  max_jobs, encoders, build, migration_error, registered_at, last_seen, drain }`. The roster is
   advisory: a node re-registers within seconds of coming up. It is persisted for the one field a
   restart must not forget — an operator's drain flag. `purpose` is deliberately *not* persisted: it
   belongs to the token, and a value carried across a restart would outlive the token that justified
@@ -96,7 +96,8 @@ for as long as it works, which is a heartbeat on a fixed cadence rather than use
 All under `/api/v1/link/`, all requiring a link token.
 
 - `POST /link/register` — the node announces itself (name, version, `encoder_identity`, thread
-  count, `max_jobs`, the `build` it is level with, and any `migration_error`). Returns
+  count, `max_jobs`, hardware `encoders` proved by real test encodes, the `build` it is level with,
+  and any `migration_error`). Returns
   `{ accepted, reason?, renew_secs, lease_timeout_secs, assets_revision, purpose, release }`.
 - `GET /link/lease?node=<name>` — **long poll**, up to 30s. Returns a job spec, or `204` when there
   is nothing waiting. This is the only dispatch mechanism.
@@ -175,6 +176,13 @@ token as "anything" would send the first GPU preset to one of them.
 
 `both` exists for a machine that genuinely serves both, and is the only way to say so. A `gpu` node
 is not a fallback for CPU work — it was marked `gpu` to keep general encoding off it.
+
+Purpose is necessary but not sufficient for GPU work. After the token tells a node it is `gpu` or
+`both`, it runs a half-second `testsrc2` encode through each known AMF/NVENC/QSV/VAAPI backend and
+re-registers only the encoders that produced output. The coordinator resolves the preset's video
+codec and requires it in that list. `ffmpeg -encoders` is deliberately not used: it reports what
+the binary was built with, not what this card and driver can open. An empty list grants no GPU
+capability, so an older node cannot accept AV1 merely because its token says `gpu`.
 
 ## Staying level
 
@@ -328,7 +336,7 @@ lease.
 
 Offload is automatic and non-blocking. A job is offered to a node when one is registered, alive,
 undrained, under its `max_jobs`, marked for the hardware the job's preset needs (see
-[Purpose](#purpose)), and advertising the job's preset; otherwise the job runs locally exactly as
+[Purpose](#purpose)), and, for GPU work, advertising the encoder codec the preset names; otherwise the job runs locally exactly as
 before. **A job never waits for a node** — the cluster being full, drained or absent is
 never a reason for work to sit still.
 
@@ -429,7 +437,7 @@ it re-registers on its next poll unless its token is revoked with `/rmtoken`, an
 holds is reclaimed when its lease expires.
 
 `GET /api/v1/workers` (PNwitch token only) gains a `nodes` array — name, purpose, thread count,
-`max_jobs`, presets, drain state, seconds since last contact, the jobs it holds, its
+`max_jobs`, measured encoders, drain state, seconds since last contact, the jobs it holds, its
 `encoder_identity`, the `build` it is level with, and any `migration_error`.
 Queue entries gain `link_node` and `link_attempts`. See [API.md](API.md#worker-snapshot).
 

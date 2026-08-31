@@ -105,6 +105,7 @@ pub fn intro_candidates(preset: &Preset) -> Option<String> {
         | Preset::Standard(candidates)
         | Preset::VerySlow(candidates)
         | Preset::Gpu(candidates)
+        | Preset::Av1(candidates)
         | Preset::Hd720(candidates)
         | Preset::Sd480(candidates) => candidates.clone(),
         Preset::Copy => None,
@@ -203,6 +204,7 @@ mod tests {
             Preset::Standard(folder.clone()),
             Preset::VerySlow(folder.clone()),
             Preset::Gpu(folder.clone()),
+            Preset::Av1(folder.clone()),
             Preset::PseudoLossless(folder.clone()),
             Preset::Dummy(folder.clone()),
             Preset::Hd720(folder.clone()),

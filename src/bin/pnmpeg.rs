@@ -4,7 +4,7 @@ use pandora_toolchain::lib::mpeg::{
         CONCAT, CONCAT_LEGACY, ResolvedPreset, resolve as resolve_preset
     }, probe::{
         ConcatMedia, ffprobe_concat_media, ffprobe_estimated_frames, ffprobe_frame,
-        ffprobe_framerate, ffprobe_lang,
+        ffprobe_duration_millis, ffprobe_framerate, ffprobe_lang,
         ffprobe_samplerate
     }
 };
@@ -12,8 +12,8 @@ use tokio::{fs::File, io::AsyncWriteExt, time::{Duration, Instant}};
 use pandora_toolchain::{pn_data, pn_emit, pn_schema};
 use pandora_toolchain::lib::mpeg::core::RpbData;
 use pandora_toolchain::lib::bin::resolve_runtime_binary;
-use pandora_toolchain::lib::mpeg::hls::HlsNames;
-use pandora_toolchain::lib::mpeg::probe::ffprobe_video_height;
+use pandora_toolchain::lib::mpeg::hls::{HlsNames, HlsSegmentType};
+use pandora_toolchain::lib::mpeg::probe::{ffprobe_video_codec, ffprobe_video_height};
 use pandora_toolchain::lib::secret::random_uuid_v4;
 use pandora_toolchain::lib::logging::diag::{exit_reason, memory_line, process_rss_mib, tail_line};
 use pandora_toolchain::lib::logging::tool::ToolLog;
@@ -177,6 +177,10 @@ struct Args {
     #[arg(long)]
     intro_dir: Option<String>,
 
+    /// Preset whose encoder settings make a retained intro compatible with an encoded episode.
+    #[arg(long)]
+    intro_preset: Option<String>,
+
     #[arg(long)]
     negkey: Option<String>,
 
@@ -312,6 +316,7 @@ fn prepare_hls_output(
     directory: &Path,
     height_source: &str,
     height_cap: Option<u32>,
+    output_codec: Option<&str>,
 ) -> Result<HlsNames, String> {
     let id = random_uuid_v4().map_err(|e| format!("HLS output has no entropy: {e}"))?;
     // A downscaling preset is about to write fewer lines than the source it was measured on, and
@@ -321,7 +326,13 @@ fn prepare_hls_output(
         (Some(height), None) => Some(height),
         (None, cap) => cap,
     };
-    let names = HlsNames::new(height, &id);
+    let codec = match output_codec {
+        Some(codec) => codec.to_string(),
+        None => ffprobe_video_codec(Path::new(height_source))
+            .ok_or_else(|| format!("could not probe the HLS source codec in `{height_source}`"))?,
+    };
+    let segment_type = HlsSegmentType::for_video_codec(&codec)?;
+    let names = HlsNames::new(height, &id, segment_type);
     std::fs::remove_dir_all(directory).ok();
     std::fs::create_dir_all(directory.join(&names.chunk_directory))
         .map_err(|e| format!("HLS directory {} could not be created: {e}", directory.display()))?;
@@ -339,7 +350,16 @@ fn retarget_params_to_hls(
     height_cap: Option<u32>,
     log: &mut ToolLog,
 ) -> Result<(), String> {
-    let names = prepare_hls_output(directory, height_source, height_cap)?;
+    let output_codec = params.iter().find_map(|param| match param {
+        FfmpegParams::Cv(value) if value.as_ref() != "copy" => Some(value.to_string()),
+        _ => None,
+    });
+    let names = prepare_hls_output(
+        directory,
+        height_source,
+        height_cap,
+        output_codec.as_deref(),
+    )?;
     params.retain(|param| !matches!(param, FfmpegParams::Movflags));
     let output = params
         .iter()
@@ -363,7 +383,7 @@ fn mux_linear_aot_hls(
     mux_errors: &Path,
     log: &mut ToolLog,
 ) -> Result<String, String> {
-    let names = prepare_hls_output(directory, &video.display().to_string(), None)?;
+    let names = prepare_hls_output(directory, &video.display().to_string(), None, None)?;
     let status = Command::new(resolve_runtime_binary("ffmpeg"))
         .args(["-v", "error", "-i"])
         .arg(video)
@@ -1171,7 +1191,14 @@ async fn main() {
     let selected_subinput = match intro_dir {
         Some(intro_dir) => match log.step(
             &format!("prepare_compatible_intro from {} (may transcode the intro)", intro_dir),
-            || prepare_compatible_intro(Path::new(&args.input), Path::new(intro_dir)),
+            || {
+                let preset_name = args.intro_preset.as_deref().ok_or_else(|| {
+                    "--intro-preset is required when --intro-dir is used for concat".to_string()
+                })?;
+                let preset = resolve_preset(preset_name)
+                    .ok_or_else(|| format!("unknown intro preset `{preset_name}`"))?;
+                prepare_compatible_intro(Path::new(&args.input), Path::new(intro_dir), &preset)
+            },
         ) {
             Ok(path) => Some(path.display().to_string()),
             Err(e) => {
@@ -1618,13 +1645,21 @@ async fn run_with_progress(
     }
 }
 
-fn prepare_compatible_intro(main: &Path, intro_dir: &Path) -> Result<PathBuf, String> {
+fn prepare_compatible_intro(
+    main: &Path,
+    intro_dir: &Path,
+    preset: &ResolvedPreset,
+) -> Result<PathBuf, String> {
     let target = ffprobe_concat_media(main)
         .ok_or_else(|| format!("could not probe concat streams in `{}`", main.display()))?;
-    if target.video_codec != "h264" || target.audio_codec != "aac" {
+    if preset.output_video_codec().as_deref() != Some(target.video_codec.as_str()) {
         return Err(format!(
-            "unsupported concat target codecs {}/{} (expected h264/aac)",
-            target.video_codec, target.audio_codec
+            "intro preset `{}` encodes {}, but the episode contains {}",
+            preset.name,
+            preset
+                .output_video_codec()
+                .unwrap_or_else(|| "no video codec".to_string()),
+            target.video_codec,
         ));
     }
     let mut files = std::fs::read_dir(intro_dir)
@@ -1649,7 +1684,9 @@ fn prepare_compatible_intro(main: &Path, intro_dir: &Path) -> Result<PathBuf, St
         let Some(media) = ffprobe_concat_media(path) else {
             continue;
         };
-        if media == target {
+        if media == target
+            && (target.video_codec != "av1" || av1_concat_copy_is_playable(path, main))
+        {
             return Ok(path.clone());
         }
         let generated = path.file_name().and_then(|name| name.to_str())
@@ -1672,19 +1709,26 @@ fn prepare_compatible_intro(main: &Path, intro_dir: &Path) -> Result<PathBuf, St
         }
     }
     let (source, _) = source.ok_or_else(|| {
-        format!("intro folder `{}` contains no probeable H.264/AAC video", intro_dir.display())
+        format!("intro folder `{}` contains no probeable video with audio", intro_dir.display())
     })?;
     let signature = serde_json::to_vec(&target).map_err(|e| e.to_string())?;
     let signature_hash = format!("{:x}", md5::compute(signature));
     let cache = intro_dir.join(format!("pnmpeg_compat_{}.mp4", signature_hash));
     let temporary = intro_dir.join(format!("pnmpeg_compat_{}.tmp.mp4", signature_hash));
     std::fs::remove_file(&temporary).ok();
-    encode_compatible_intro(&source, &temporary, &target)?;
+    encode_compatible_intro(&source, &temporary, &target, preset)?;
     let encoded = ffprobe_concat_media(&temporary)
         .ok_or_else(|| "could not probe generated intro variant".to_string())?;
     if encoded != target {
         std::fs::remove_file(&temporary).ok();
         return Err(format!("generated intro is still incompatible: {:?} != {:?}", encoded, target));
+    }
+    if target.video_codec == "av1" && !av1_concat_copy_is_playable(&temporary, main) {
+        std::fs::remove_file(&temporary).ok();
+        return Err(
+            "generated AV1 intro matches the stream properties but fails across the concat boundary"
+                .to_string(),
+        );
     }
     if cache.exists() {
         std::fs::remove_file(&cache).map_err(|e| e.to_string())?;
@@ -1693,7 +1737,66 @@ fn prepare_compatible_intro(main: &Path, intro_dir: &Path) -> Result<PathBuf, St
     Ok(cache)
 }
 
-fn encode_compatible_intro(source: &Path, output: &Path, target: &ConcatMedia) -> Result<(), String> {
+// AV1 sequence headers can differ while ffprobe reports identical stream properties. Build the
+// exact stream-copy transition the final concat will use, then decode across that boundary; a
+// retained file is trusted only when both halves are playable as one stream.
+fn av1_concat_copy_is_playable(intro: &Path, main: &Path) -> bool {
+    let Some(intro_ms) = ffprobe_duration_millis(intro) else {
+        return false;
+    };
+    let parent = main.parent().unwrap_or_else(|| Path::new("."));
+    let stem = format!(".pnmpeg-av1-concat-check-{}", std::process::id());
+    let list = parent.join(format!("{stem}.txt"));
+    let output = parent.join(format!("{stem}.mp4"));
+    let quote = |path: &Path| {
+        path.canonicalize()
+            .unwrap_or_else(|_| path.to_path_buf())
+            .display()
+            .to_string()
+            .replace('\\', "\\\\")
+            .replace('\'', "\\'")
+    };
+    if std::fs::write(
+        &list,
+        format!("file '{}'
+file '{}'
+", quote(intro), quote(main)),
+    )
+    .is_err()
+    {
+        return false;
+    }
+    let through_boundary = format!("{:.3}", intro_ms as f64 / 1000.0 + 1.5);
+    let copied = Command::new(resolve_runtime_binary("ffmpeg"))
+        .args(["-v", "error", "-f", "concat", "-safe", "0", "-i"])
+        .arg(&list)
+        .args(["-t", &through_boundary, "-c", "copy", "-y"])
+        .arg(&output)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    let seek = format!("{:.3}", intro_ms.saturating_sub(250) as f64 / 1000.0);
+    let decoded = copied
+        && Command::new(resolve_runtime_binary("ffmpeg"))
+            .args(["-v", "error", "-i"])
+            .arg(&output)
+            .args(["-ss", &seek, "-t", "1.75", "-map", "0:v:0", "-f", "null", "-"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+    std::fs::remove_file(list).ok();
+    std::fs::remove_file(output).ok();
+    decoded
+}
+
+fn encode_compatible_intro(
+    source: &Path,
+    output: &Path,
+    target: &ConcatMedia,
+    preset: &ResolvedPreset,
+) -> Result<(), String> {
     use pandora_toolchain::lib::mpeg::core::run_ffmpeg_params;
 
     let sar = target.sample_aspect_ratio.replace(':', "/");
@@ -1702,25 +1805,62 @@ fn encode_compatible_intro(source: &Path, output: &Path, target: &ConcatMedia) -
         target.width, target.height, sar, target.pixel_format
     );
     let fps = format!("{}/{}", target.fps_num, target.fps_den);
-    let ok = run_ffmpeg_params(vec![
-        FfmpegParams::Overwrite,
-        FfmpegParams::Input(Cow::Owned(source.display().to_string())),
-        FfmpegParams::Map(Cow::Borrowed("0:v:0")),
-        FfmpegParams::Map(Cow::Borrowed("0:a:0")),
-        FfmpegParams::BasicFilter(Cow::Owned(filter)),
-        FfmpegParams::Cv(Cow::Borrowed("libx264")),
-        FfmpegParams::Profile(Cow::Borrowed("high")),
-        FfmpegParams::Level(Cow::Borrowed("4.1")),
-        FfmpegParams::Crf(17),
-        FfmpegParams::Preset(Cow::Borrowed("fast")),
-        FfmpegParams::R(Cow::Owned(fps)),
-        FfmpegParams::Ca(Cow::Borrowed("aac")),
-        FfmpegParams::Ba(Cow::Borrowed("192k")),
-        FfmpegParams::Ar(Cow::Owned(target.sample_rate.to_string())),
-        FfmpegParams::Ac(Cow::Owned(target.channels.to_string())),
-        FfmpegParams::Movflags,
-        FfmpegParams::Output(Cow::Owned(output.display().to_string())),
-    ]);
+    let mut params = preset.params.clone();
+    let mut map_index = 0usize;
+    let mut has_rate = false;
+    let mut has_channels = false;
+    for param in &mut params {
+        match param {
+            FfmpegParams::Input(_) => {
+                *param = FfmpegParams::Input(Cow::Owned(source.display().to_string()));
+            }
+            FfmpegParams::BasicFilter(_) => {
+                *param = FfmpegParams::BasicFilter(Cow::Owned(filter.clone()));
+            }
+            FfmpegParams::Map(_) => {
+                *param = FfmpegParams::Map(Cow::Borrowed(if map_index == 0 {
+                    "0:v:0"
+                } else {
+                    "0:a:0"
+                }));
+                map_index += 1;
+            }
+            FfmpegParams::R(_) => {
+                *param = FfmpegParams::R(Cow::Owned(fps.clone()));
+            }
+            FfmpegParams::Ar(_) => {
+                *param = FfmpegParams::Ar(Cow::Owned(target.sample_rate.to_string()));
+                has_rate = true;
+            }
+            FfmpegParams::Ac(_) => {
+                *param = FfmpegParams::Ac(Cow::Owned(target.channels.to_string()));
+                has_channels = true;
+            }
+            FfmpegParams::Output(_) => {
+                *param = FfmpegParams::Output(Cow::Owned(output.display().to_string()));
+            }
+            _ => {}
+        }
+    }
+    params.retain(|param| {
+        !matches!(param, FfmpegParams::NoStats | FfmpegParams::Progress(_))
+    });
+    let output_index = params
+        .iter()
+        .position(|param| matches!(param, FfmpegParams::Output(_)))
+        .ok_or_else(|| format!("preset `{}` has no output parameter", preset.name))?;
+    let mut compatibility = Vec::new();
+    if !params.iter().any(|param| matches!(param, FfmpegParams::R(_))) {
+        compatibility.push(FfmpegParams::R(Cow::Owned(fps)));
+    }
+    if !has_rate {
+        compatibility.push(FfmpegParams::Ar(Cow::Owned(target.sample_rate.to_string())));
+    }
+    if !has_channels {
+        compatibility.push(FfmpegParams::Ac(Cow::Owned(target.channels.to_string())));
+    }
+    params.splice(output_index..output_index, compatibility);
+    let ok = run_ffmpeg_params(params);
     if ok {
         Ok(())
     } else {
@@ -1834,7 +1974,13 @@ mod tests {
     // already spent CPU producing.
     #[test]
     fn the_presets_that_encode_ahead_do_so_under_either_spelling() {
-        for argv in [vec!["--x264"], vec!["--preset", "standard"], vec!["--pseudolossless"], vec![]] {
+        for argv in [
+            vec!["--x264"],
+            vec!["--preset", "standard"],
+            vec!["--pseudolossless"],
+            vec!["--preset", "av1"],
+            vec![],
+        ] {
             let preset = active_preset(&parsed(&argv));
             assert!(adopts_linear_prefix(preset.as_ref()), "{argv:?} lost its AOT handoff");
             assert!(!encodes_in_chunks(preset.as_ref()), "{argv:?} should stay linear");

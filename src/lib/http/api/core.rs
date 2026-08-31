@@ -642,32 +642,42 @@ async fn get_job(State(st): State<AppState>, Path(id): Path<u64>) -> Response {
 // `Job::new_api` has already resolved. The intro group that default carries belongs to the server
 // rather than to the preset, so the override keeps it.
 fn apply_preset(job: &mut Job, requested: Option<&str>) -> Result<(), Response> {
-    let Some(name) = requested.map(str::trim).filter(|name| !name.is_empty()) else {
-        return Ok(());
-    };
-    let candidates = match &job.preset {
-        Preset::PseudoLossless(candidates)
-        | Preset::Dummy(candidates)
-        | Preset::Standard(candidates)
-        | Preset::VerySlow(candidates)
-        | Preset::Hd720(candidates)
-        | Preset::Sd480(candidates)
-        | Preset::Gpu(candidates) => candidates.clone(),
-        Preset::Copy => None,
-    };
-    match preset_from_name(name, candidates) {
-        Some(preset) => {
-            job.preset = preset;
-            Ok(())
-        }
-        None => Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "preset `{name}` is not standard, veryslow, gpu, pseudolossless, dummy, 720p, or 480p"
-            ),
-        )
-            .into_response()),
+    if let Some(name) = requested.map(str::trim).filter(|name| !name.is_empty()) {
+        let candidates = match &job.preset {
+            Preset::PseudoLossless(candidates)
+            | Preset::Dummy(candidates)
+            | Preset::Standard(candidates)
+            | Preset::VerySlow(candidates)
+            | Preset::Hd720(candidates)
+            | Preset::Sd480(candidates)
+            | Preset::Gpu(candidates)
+            | Preset::Av1(candidates) => candidates.clone(),
+            Preset::Copy => None,
+        };
+        job.preset = preset_from_name(name, candidates).ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "preset `{name}` is not standard, veryslow, gpu, av1, pseudolossless, dummy, 720p, or 480p"
+                ),
+            )
+                .into_response()
+        })?;
     }
+    let meta = job
+        .server_id
+        .and_then(|server_id| {
+            std::fs::read_to_string(crate::pnworker::server_config::server_meta_path(server_id)).ok()
+        })
+        .unwrap_or_default();
+    if let Err(reason) = crate::pnworker::server_config::validate_preset_delivery(
+        job.preset.name().unwrap_or("copy"),
+        crate::pnworker::server_config::drive_only_from_meta(&meta),
+        crate::pnworker::server_config::hls_from_meta(&meta),
+    ) {
+        return Err((StatusCode::BAD_REQUEST, reason).into_response());
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]

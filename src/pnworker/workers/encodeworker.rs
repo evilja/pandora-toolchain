@@ -159,6 +159,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             let (intro_dir, insert) = match preset {
                 Preset::PseudoLossless(cc) => (cc, "pseudolossless"),
                 Preset::Gpu(cc)            => (cc, "gpu"),
+                Preset::Av1(cc)            => (cc, "av1"),
                 Preset::Standard(cc)       => (cc, "standard"),
                 Preset::VerySlow(cc)       => (cc, "veryslow"),
                 Preset::Dummy(cc)          => (cc, "dummy"),
@@ -288,6 +289,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                         ("INPUT",      PathValue::from(path_to_ffmpeg(directory.join("work").join("output_noconcat.mp4").as_path()))),
                         ("OUTPUT",     PathValue::from(path_to_ffmpeg(directory.join("work").join("output.mp4").as_path()))),
                         ("INTRO_DIR",  PathValue::from(path_to_ffmpeg(Path::new(intro_dir)))),
+                        ("PRESET",     PathValue::from(insert.to_string())),
                         ("NEGKEY",     PathValue::from("pn-encode-main".to_string())),
                         ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),
                         ("LOGFILE",    PathValue::from(directory.join("log").join(format!("PNmpeg_Concat{}.log", job_id)).display().to_string())),

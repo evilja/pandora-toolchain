@@ -770,6 +770,9 @@ pub fn studio_render_presets(
         Preset::PseudoLossless(_) => (Preset::PseudoLossless(None), StudioVideoPreset::PseudoLossless),
         Preset::VerySlow(_) => (Preset::VerySlow(None), StudioVideoPreset::VerySlow),
         Preset::Gpu(_) => (Preset::Gpu(None), StudioVideoPreset::Gpu),
+        // Studio's renderer has its own fixed encoder table. Until it accepts resolved presets,
+        // AV1 remains a release-encode choice and Studio renders use the established x264 path.
+        Preset::Av1(_) => (Preset::Standard(None), StudioVideoPreset::Standard),
         Preset::Dummy(_) => (Preset::Dummy(None), StudioVideoPreset::Dummy),
         // Studio renders at the timeline's own resolution; the downscaling presets have no
         // ffmpeg params on the Studio side, so they fall back to the standard one.

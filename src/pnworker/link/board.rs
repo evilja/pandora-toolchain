@@ -41,8 +41,8 @@ pub struct NodeState {
     pub threads: u32,
     #[serde(default = "one")]
     pub max_jobs: u32,
-    #[serde(default)]
-    pub presets: Vec<String>,
+    #[serde(default, alias = "presets")]
+    pub encoders: Vec<String>,
     // What this node is for, taken from its token at every register rather than persisted. A
     // purpose is a property of the token, and re-minting one has to take effect on the next
     // register — a value carried across a restart would outlive the token that justified it.
@@ -283,7 +283,7 @@ pub fn register(
         ffmpeg_version: request.ffmpeg_version,
         threads: request.threads,
         max_jobs: request.max_jobs.max(1),
-        presets: request.presets,
+        encoders: request.encoders,
         purpose,
         build: request.build,
         migration_error: request.migration_error,
@@ -359,6 +359,9 @@ pub fn pick_node(preset: &str, pin: Option<&str>) -> Option<String> {
         return None;
     }
     let hardware = crate::lib::mpeg::preset::hardware_for(preset);
+    let required_encoder = (hardware == crate::lib::mpeg::preset::PresetHardware::Gpu)
+        .then(|| crate::lib::mpeg::preset::video_codec_for(preset))
+        .flatten();
     let mut state = board().lock().unwrap();
     ensure_loaded(&mut state);
     let stale_before = now().saturating_sub(settings.lease_timeout_secs);
@@ -378,7 +381,7 @@ pub fn pick_node(preset: &str, pin: Option<&str>) -> Option<String> {
                 .as_deref()
                 .is_none_or(|only| node.name == only),
         })
-        .filter(|node| node.presets.is_empty() || node.presets.iter().any(|value| value == preset))
+        .filter(|node| advertises_encoder(&node.encoders, required_encoder.as_deref()))
         // A GPU preset on a CPU box does not fail cleanly: ffmpeg either refuses the encoder or
         // silently falls back to a software one, and the second outcome ships a release at a
         // quality tier nobody chose. The purpose comes off the node's token, so this is the
@@ -397,6 +400,10 @@ pub fn pick_node(preset: &str, pin: Option<&str>) -> Option<String> {
             .then(a.name.cmp(&b.name))
     });
     candidates.first().map(|node| node.name.clone())
+}
+
+fn advertises_encoder(encoders: &[String], required: Option<&str>) -> bool {
+    required.is_none_or(|required| encoders.iter().any(|encoder| encoder == required))
 }
 
 pub fn offer(node: &str, spec: LinkJobSpec) {
@@ -615,7 +622,7 @@ pub fn nodes_view() -> Value {
                 "node": node.name,
                 "threads": node.threads,
                 "max_jobs": node.max_jobs,
-                "presets": node.presets,
+                "encoders": node.encoders,
                 "drain": node.drain,
                 "last_seen_secs": seconds_since_seen(&node),
                 "jobs": jobs.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
@@ -632,6 +639,15 @@ pub fn nodes_view() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gpu_capability_requires_the_exact_proved_encoder() {
+        let encoders = vec!["h264_nvenc".to_string()];
+        assert!(advertises_encoder(&encoders, Some("h264_nvenc")));
+        assert!(!advertises_encoder(&encoders, Some("av1_nvenc")));
+        assert!(!advertises_encoder(&[], Some("av1_nvenc")));
+        assert!(advertises_encoder(&[], None));
+    }
 
     fn spec(job_id: u64) -> LinkJobSpec {
         LinkJobSpec {
@@ -672,7 +688,7 @@ mod tests {
             ffmpeg_version: String::new(),
             threads: 1,
             max_jobs: 1,
-            presets: Vec::new(),
+            encoders: Vec::new(),
             build: 0,
             migration_error: None,
         };
@@ -695,7 +711,7 @@ mod tests {
             ffmpeg_version: String::new(),
             threads: 1,
             max_jobs: 1,
-            presets: Vec::new(),
+            encoders: Vec::new(),
             build: 0,
             migration_error: None,
         };

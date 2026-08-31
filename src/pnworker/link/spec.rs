@@ -30,7 +30,10 @@ pub struct NodeRegister {
     pub ffmpeg_version: String,
     pub threads: u32,
     pub max_jobs: u32,
-    pub presets: Vec<String>,
+    // Hardware encoders this machine proved with a real test encode. `alias = "presets"` reads
+    // the placeholder field older nodes sent, but an empty list grants no GPU capability.
+    #[serde(default, alias = "presets")]
+    pub encoders: Vec<String>,
     // The build this node last recorded itself level with. Reported rather than enforced: the
     // coordinator shows it on `/lsnode` so a node that is failing to update is visible as a number
     // that stopped moving, which nothing else in the roster would reveal.
@@ -303,6 +306,7 @@ pub fn preset_name(preset: &Preset) -> String {
         Preset::Standard(_) => "standard",
         Preset::VerySlow(_) => "veryslow",
         Preset::Gpu(_) => "gpu",
+        Preset::Av1(_) => "av1",
         Preset::Hd720(_) => "720p",
         Preset::Sd480(_) => "480p",
         Preset::Copy => "copy",
@@ -462,6 +466,7 @@ mod tests {
             Preset::Standard(None),
             Preset::VerySlow(None),
             Preset::Gpu(None),
+            Preset::Av1(None),
             Preset::PseudoLossless(None),
             Preset::Dummy(None),
             Preset::Hd720(None),

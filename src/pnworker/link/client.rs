@@ -138,6 +138,37 @@ fn ffmpeg_version() -> String {
         .to_string()
 }
 
+// `ffmpeg -encoders` reports what the binary was compiled with. This runs each backend instead,
+// which proves that the local driver and hardware can open it and produce frames now.
+fn probe_hardware_encoders() -> Vec<String> {
+    let ffmpeg = crate::lib::bin::resolve_runtime_binary("ffmpeg");
+    crate::lib::mpeg::preset::HARDWARE_ENCODER_CANDIDATES
+        .into_iter()
+        .filter(|encoder| {
+            std::process::Command::new(&ffmpeg)
+                .args([
+                    "-v",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc2=size=256x144:rate=24:duration=0.5",
+                    "-an",
+                    "-c:v",
+                    encoder,
+                    "-f",
+                    "null",
+                    "-",
+                ])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        })
+        .map(str::to_string)
+        .collect()
+}
+
 // Reports the local worker runtime has produced but not yet sent. `render` is the single place
 // every user-visible effect passes through, so hooking it captures declines and cancellations as
 // faithfully as it captures encode progress — none of which reach a `CommData` stream.
@@ -404,9 +435,27 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
 
     let renew_secs;
     let registered_revision;
+    let mut encoders = Vec::new();
+    let mut probed_hardware = false;
     loop {
-        match register(&client, &config).await {
+        match register(&client, &config, &encoders).await {
             Ok(registered) if registered.accepted => {
+                if !probed_hardware
+                    && matches!(registered.purpose, crate::pnworker::link::spec::NodePurpose::Gpu | crate::pnworker::link::spec::NodePurpose::Both)
+                {
+                    encoders = tokio::task::spawn_blocking(probe_hardware_encoders)
+                        .await
+                        .unwrap_or_default();
+                    probed_hardware = true;
+                    println!(
+                        "[link] node {} proved hardware encoder(s): {}",
+                        config.node,
+                        if encoders.is_empty() { "none".to_string() } else { encoders.join(", ") }
+                    );
+                    // Register the measured list before polling, so the coordinator never offers
+                    // this process GPU work based only on the token's purpose.
+                    continue;
+                }
                 renew_secs = registered.renew_secs.max(1);
                 // Remembered so a sync that fails here is retried between polls. Without it a node
                 // whose first sync failed would sit unsynced until a job happened to arrive, and
@@ -636,6 +685,7 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
 async fn register(
     client: &reqwest::Client,
     config: &LinkConfig,
+    encoders: &[String],
 ) -> Result<NodeRegistered, String> {
     let ledger = crate::lib::migration::read_ledger();
     let body = NodeRegister {
@@ -649,7 +699,7 @@ async fn register(
             .map(|value| value.get() as u32)
             .unwrap_or(1),
         max_jobs: config.max_jobs,
-        presets: Vec::new(),
+        encoders: encoders.to_vec(),
     };
     let response = client
         .post(format!("{}/api/v1/link/register", config.coordinator))

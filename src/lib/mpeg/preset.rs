@@ -157,6 +157,36 @@ pub const GPU_SANE_DEFAULTS: [FfmpegParams; 18] =
     FfmpegParams::Overwrite,
     FfmpegParams::Output(Cow::Borrowed("OUTFILEV")),
 ];
+fn gpu_av1() -> &'static [FfmpegParams] {
+    static PARAMS: std::sync::OnceLock<Vec<FfmpegParams>> = std::sync::OnceLock::new();
+    PARAMS.get_or_init(|| vec![
+        FfmpegParams::Input(Cow::Borrowed("INPUTFILEV")),
+        FfmpegParams::BasicFilter(Cow::Borrowed("ass=INPUTFILEASS,format=yuv420p")),
+        FfmpegParams::Cv(Cow::Borrowed("av1_nvenc")),
+        FfmpegParams::Map(Cow::Borrowed("0:v:0")),
+        FfmpegParams::Map(Cow::Borrowed("0:JPN_INDEX")),
+        FfmpegParams::Preset(Cow::Borrowed("p6")),
+        FfmpegParams::Rc(Cow::Borrowed("vbr")),
+        FfmpegParams::Tune(Cow::Borrowed("hq")),
+        FfmpegParams::Ca(Cow::Borrowed("aac")),
+        FfmpegParams::Ba(Cow::Borrowed("192k")),
+        FfmpegParams::Passthrough(vec![
+            "-cq".to_string(), "28".to_string(), "-b:v".to_string(), "0".to_string(),
+            "-rc-lookahead".to_string(), "32".to_string(),
+            "-bf".to_string(), "3".to_string(),
+            "-b_ref_mode".to_string(), "middle".to_string(),
+            "-spatial-aq".to_string(), "1".to_string(),
+            "-aq-strength".to_string(), "8".to_string(),
+            "-temporal-aq".to_string(), "1".to_string(),
+            "-multipass".to_string(), "fullres".to_string(),
+        ]),
+        FfmpegParams::Movflags,
+        FfmpegParams::NoStats,
+        FfmpegParams::Progress(Cow::Borrowed("pipe:2")),
+        FfmpegParams::Overwrite,
+        FfmpegParams::Output(Cow::Borrowed("OUTFILEV")),
+    ])
+}
 pub const CONCAT: [FfmpegParams; 10] =
 [
     FfmpegParams::Format(Cow::Borrowed("concat")),
@@ -344,6 +374,29 @@ pub struct X264Settings {
 const CHUNKED_X264_PRESETS: [&str; 2] = ["veryslow", "placebo"];
 
 impl ResolvedPreset {
+    pub fn video_codec(&self) -> Option<String> {
+        self.params.iter().find_map(|param| match param {
+            FfmpegParams::Cv(value) => Some(value.to_string()),
+            _ => None,
+        })
+    }
+
+    pub fn output_video_codec(&self) -> Option<String> {
+        let encoder = self.video_codec()?;
+        Some(if encoder == "libx264" || encoder.starts_with("h264_") {
+            "h264".to_string()
+        } else if encoder == "libx265" || encoder.starts_with("hevc_") {
+            "hevc".to_string()
+        } else if encoder == "libsvtav1"
+            || encoder == "libaom-av1"
+            || encoder.starts_with("av1_")
+        {
+            "av1".to_string()
+        } else {
+            encoder
+        })
+    }
+
     pub fn x264_settings(&self) -> X264Settings {
         let mut settings = X264Settings::default();
         for param in &self.params {
@@ -494,6 +547,7 @@ pub fn builtin(name: &str) -> Option<(&'static [FfmpegParams], PresetHardware)> 
         "pseudolossless" | "pseudo_lossless" => (&CPU_PSEUDOLOSSLESS, PresetHardware::Cpu),
         "dummy" => (&CPU_DUMMY, PresetHardware::Cpu),
         "gpu" => (&GPU_SANE_DEFAULTS, PresetHardware::Gpu),
+        "av1" => (gpu_av1(), PresetHardware::Gpu),
         "720p" => (&CPU_720P, PresetHardware::Cpu),
         "480p" => (&CPU_480P, PresetHardware::Cpu),
         _ => return None,
@@ -502,12 +556,13 @@ pub fn builtin(name: &str) -> Option<(&'static [FfmpegParams], PresetHardware)> 
 
 // Every name the built-in table answers to under its canonical spelling, which is what a node
 // advertises and what `PRESETS_DIR` is scanned against.
-pub const BUILTIN_PRESET_NAMES: [&str; 7] = [
+pub const BUILTIN_PRESET_NAMES: [&str; 8] = [
     "standard",
     "veryslow",
     "pseudolossless",
     "dummy",
     "gpu",
+    "av1",
     "720p",
     "480p",
 ];
@@ -524,6 +579,23 @@ pub fn hardware_for(name: &str) -> PresetHardware {
     }
     builtin(name).map(|(_, hardware)| hardware).unwrap_or_default()
 }
+
+pub fn video_codec_for(name: &str) -> Option<String> {
+    resolve(name)?.video_codec()
+}
+
+// Hardware backends worth proving at node registration. The probe is a real encode, not
+// `ffmpeg -encoders`: a compiled-in backend says nothing about the driver or GPU in this machine.
+pub const HARDWARE_ENCODER_CANDIDATES: [&str; 8] = [
+    "h264_amf",
+    "h264_nvenc",
+    "h264_qsv",
+    "h264_vaapi",
+    "av1_amf",
+    "av1_nvenc",
+    "av1_qsv",
+    "av1_vaapi",
+];
 
 fn read_preset_file(name: &str) -> Option<PresetFile> {
     // A preset name reaches this from a job spec and becomes a path component, so anything that
@@ -556,11 +628,12 @@ pub fn resolve(name: &str) -> Option<ResolvedPreset> {
         return Some(resolved_from_file(name, &file));
     }
     let (params, hardware) = builtin(name)?;
+    let canonical = name.trim().to_ascii_lowercase();
     Some(ResolvedPreset {
         name: name.to_string(),
         hardware,
         params: params.to_vec(),
-        aot: None,
+        aot: (canonical == "av1").then_some(true),
         chunked: None,
         from_file: false,
     })
@@ -908,6 +981,10 @@ mod tests {
         let gpu = resolve("gpu").unwrap().x264_settings();
         assert_eq!(gpu.codec, "h264_amf");
         assert_eq!(gpu.crf, None);
+
+        assert_eq!(resolve("standard").unwrap().output_video_codec().as_deref(), Some("h264"));
+        assert_eq!(resolve("gpu").unwrap().output_video_codec().as_deref(), Some("h264"));
+        assert_eq!(resolve("av1").unwrap().output_video_codec().as_deref(), Some("av1"));
     }
 
     // Which presets may start encoding before the download finishes, and which of those chunk.

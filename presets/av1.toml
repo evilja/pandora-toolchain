@@ -1,0 +1,24 @@
+# NVIDIA AV1 NVENC, tuned as the quality-oriented GPU release preset. `cq = 28` is the starting
+# calibration point for Ada; run the private calibration harness on the deployment's L40S before
+# changing it, and compare line art and gradients by eye as well as by VMAF.
+hardware = "gpu"
+aot = true
+extra_args = [
+  "-cq", "28", "-b:v", "0",
+  "-rc-lookahead", "32",
+  "-bf", "3", "-b_ref_mode", "middle",
+  "-spatial-aq", "1", "-aq-strength", "8",
+  "-temporal-aq", "1",
+  "-multipass", "fullres",
+]
+
+[video]
+codec = "av1_nvenc"
+filter = "ass=INPUTFILEASS,format=yuv420p"
+preset = "p6"
+tune = "hq"
+rc = "vbr"
+
+[audio]
+codec = "aac"
+bitrate = "192k"

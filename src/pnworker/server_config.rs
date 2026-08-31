@@ -115,6 +115,27 @@ pub async fn server_hls_enabled(server_id: Option<u64>) -> bool {
         .unwrap_or(false)
 }
 
+// AV1 may be delivered unchanged through Drive or as fMP4/CMAF HLS. The external streaming hosts
+// may transcode an AV1 upload into a different release, so a non-HLS AV1 server remains Drive-only.
+pub fn validate_preset_delivery(
+    preset: &str,
+    drive_only: bool,
+    hls: bool,
+) -> Result<(), &'static str> {
+    if !preset.trim().eq_ignore_ascii_case("av1") {
+        return Ok(());
+    }
+    if hls {
+        return Ok(());
+    }
+    if !drive_only {
+        return Err(
+            "AV1 releases are Drive-only; set drive_only:true to disable external streaming hosts",
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,6 +183,15 @@ mod tests {
     }
 
     #[test]
+    fn av1_accepts_hls_or_requires_drive_only() {
+        assert!(validate_preset_delivery("standard", false, true).is_ok());
+        assert!(validate_preset_delivery("av1", true, false).is_ok());
+        assert!(validate_preset_delivery("av1", false, false).is_err());
+        assert!(validate_preset_delivery("AV1", true, true).is_ok());
+        assert!(validate_preset_delivery("AV1", false, true).is_ok());
+    }
+
+    #[test]
     fn every_site_reads_its_own_selection_line() {
         let mut lines = vec![String::new(); 17];
         lines[13] = "218".to_string();
@@ -177,12 +207,18 @@ mod tests {
             fansub_from_meta(&meta, FansubSite::OpenAnime).as_deref(),
             Some("akira-subs")
         );
-        assert_eq!(fansub_from_meta(&meta, FansubSite::Anizm).as_deref(), Some("42"));
+        assert_eq!(
+            fansub_from_meta(&meta, FansubSite::Anizm).as_deref(),
+            Some("42")
+        );
     }
 
     #[test]
     fn blank_and_missing_selection_lines_are_unset() {
-        let short = (0..14).map(|_| String::new()).collect::<Vec<_>>().join("\n");
+        let short = (0..14)
+            .map(|_| String::new())
+            .collect::<Vec<_>>()
+            .join("\n");
         for site in FansubSite::ALL {
             assert_eq!(fansub_from_meta(&short, site), None);
             assert_eq!(fansub_from_meta("", site), None);

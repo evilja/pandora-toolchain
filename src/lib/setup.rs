@@ -509,7 +509,7 @@ async fn verify_link(url: &str, token: &str, node: &str) -> Result<String, Strin
         ffmpeg_version: String::new(),
         threads: 1,
         max_jobs: 1,
-        presets: Vec::new(),
+        encoders: Vec::new(),
     };
     let response = reqwest::Client::new()
         .post(format!("{}/api/v1/link/register", url.trim_end_matches('/')))

@@ -792,7 +792,8 @@ async fn dispatch_keycode_ready(
         | Preset::VerySlow(intro_dir)
         | Preset::Hd720(intro_dir)
         | Preset::Sd480(intro_dir)
-        | Preset::Gpu(intro_dir) => intro_dir.clone(),
+        | Preset::Gpu(intro_dir)
+        | Preset::Av1(intro_dir) => intro_dir.clone(),
         Preset::Copy => None,
     };
     if inputs.is_empty() {
@@ -939,6 +940,7 @@ fn preset_without_intro(preset: &Preset) -> Preset {
         Preset::Standard(_) => Preset::Standard(None),
         Preset::VerySlow(_) => Preset::VerySlow(None),
         Preset::Gpu(_) => Preset::Gpu(None),
+        Preset::Av1(_) => Preset::Av1(None),
         Preset::Hd720(_) => Preset::Hd720(None),
         Preset::Sd480(_) => Preset::Sd480(None),
         Preset::Copy => Preset::Copy,
@@ -3141,6 +3143,7 @@ pub enum Preset {
     Standard(Option<String>),
     VerySlow(Option<String>),
     Gpu(Option<String>),
+    Av1(Option<String>),
     // Standard x264 settings at a capped frame height. API-only: no /edit choice offers them.
     Hd720(Option<String>),
     Sd480(Option<String>),
@@ -3158,6 +3161,7 @@ impl Preset {
             Preset::Standard(_) => "standard",
             Preset::VerySlow(_) => "veryslow",
             Preset::Gpu(_) => "gpu",
+            Preset::Av1(_) => "av1",
             Preset::Hd720(_) => "720p",
             Preset::Sd480(_) => "480p",
             Preset::Copy => return None,
@@ -3637,6 +3641,7 @@ impl Job {
                 | Preset::Hd720(candidates)
                 | Preset::Sd480(candidates)
                 | Preset::Gpu(candidates) => Preset::Standard(candidates),
+                Preset::Av1(candidates) => Preset::Standard(candidates),
                 Preset::Copy => Preset::Standard(None),
             },
             JobType::Studio => Preset::Copy,
@@ -3732,6 +3737,7 @@ impl Job {
                 | Preset::Hd720(candidates)
                 | Preset::Sd480(candidates)
                 | Preset::Gpu(candidates) => Preset::Standard(candidates),
+                Preset::Av1(candidates) => Preset::Standard(candidates),
                 Preset::Copy => Preset::Standard(None),
             },
             JobType::Studio => Preset::Copy,
@@ -3838,12 +3844,21 @@ mod tests {
             linear(Preset::VerySlow(None)),
             Some(("veryslow".to_string(), true))
         );
+        assert_eq!(
+            linear(Preset::Av1(None)),
+            Some(("av1".to_string(), false))
+        );
         // Off by default, and a stream copy has no preset to speculate with at all.
         for preset in [Preset::Gpu(None), Preset::Hd720(None), Preset::Sd480(None), Preset::Copy] {
             assert_eq!(linear(preset.clone()), None, "{:?}", preset);
         }
         // Whatever it decides, it names a preset pnmpeg can look up — including its file.
-        for preset in [Preset::Standard(None), Preset::VerySlow(None), Preset::Gpu(None)] {
+        for preset in [
+            Preset::Standard(None),
+            Preset::VerySlow(None),
+            Preset::Gpu(None),
+            Preset::Av1(None),
+        ] {
             let name = preset.name().unwrap();
             assert!(
                 crate::lib::mpeg::preset::resolve(name).is_some(),

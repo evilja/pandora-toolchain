@@ -46,8 +46,15 @@ and declines to adopt anything encoded differently. So editing a preset changes 
 encode together, and a preset edited *between* the two halves costs a re-encode rather than
 producing one file with two sets of settings in it.
 
-`hardware` is what the Pandora Mini scheduler routes on: a `gpu` preset is only ever offered to a
-node whose token is marked `gpu`. See [../docs/LINK.md](../docs/LINK.md).
+`hardware` is the first Pandora Mini routing filter: a `gpu` preset is only offered to a node whose
+token is marked `gpu` or `both`. The node must also prove the exact video encoder with a real test
+encode at registration; merely listing it in `ffmpeg -encoders` is not enough. See
+[../docs/LINK.md](../docs/LINK.md).
+
+`av1.toml` mirrors the built-in `av1` job preset: AV1 NVENC, `aot = true`, and quality-oriented Ada
+settings. Its CQ is hardware/content calibration, not the H.264 QP scale. AV1 release servers must
+use either `drive_only:true` for MP4 delivery or `hls:true` for fMP4/CMAF delivery; external
+streaming hosts remain disabled because they may transcode the release.
 
 `gpu-nvenc.toml` is the one file here that mirrors no built-in. There is no `nvenc` preset name a
 job can ask for, so it is copied across *as* `gpu.toml` to make the `gpu` preset encode with NVENC

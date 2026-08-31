@@ -30,6 +30,7 @@ pub fn preset_from_name(name: &str, candidates: Option<String>) -> Option<Preset
     Some(match name.trim().to_ascii_lowercase().as_str() {
         "standard" => Preset::Standard(candidates),
         "gpu" => Preset::Gpu(candidates),
+        "av1" => Preset::Av1(candidates),
         "pseudolossless" | "pseudo_lossless" => Preset::PseudoLossless(candidates),
         "dummy" => Preset::Dummy(candidates),
         "veryslow" | "very_slow" => Preset::VerySlow(candidates),
@@ -186,6 +187,7 @@ mod tests {
             preset_from_name("very_slow", None),
             Some(Preset::VerySlow(None))
         ));
+        assert!(matches!(preset_from_name("AV1", None), Some(Preset::Av1(None))));
         assert!(preset_from_name("1440p", None).is_none());
         assert!(preset_from_name("", None).is_none());
     }

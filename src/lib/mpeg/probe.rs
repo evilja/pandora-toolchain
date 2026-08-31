@@ -174,6 +174,30 @@ pub fn ffprobe_concat_media(path: &Path) -> Option<ConcatMedia> {
     })
 }
 
+pub fn ffprobe_video_codec(path: &Path) -> Option<String> {
+    let output = Command::new(resolve_runtime_binary("ffprobe"))
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=codec_name",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 pub fn ffprobe_duration_centiseconds(path: &str) -> Option<u64> {
     let output = Command::new(resolve_runtime_binary("ffprobe"))
         .args([
