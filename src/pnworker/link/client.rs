@@ -463,6 +463,12 @@ async fn reconcile_assets(
     refresh_fonts: FontRefresh,
 ) -> Result<String, String> {
     let manifest = fetch_manifest(client, config).await?;
+    // Before the fetch, because a deletion is the change a fetch cannot see: nothing is missing,
+    // so without this the node would record the new revision and go on holding a file the corpus
+    // no longer has.
+    for path in assets::prune_intros(&manifest) {
+        println!("[link] dropped {} (no longer in the corpus)", path.display());
+    }
     let missing = assets::missing(&manifest);
     if missing.is_empty() {
         assets::record_revision(&manifest.revision);

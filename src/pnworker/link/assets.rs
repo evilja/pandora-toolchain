@@ -105,6 +105,17 @@ fn revision_of(entries: &[AssetEntry]) -> String {
     format!("{:x}", Sha256::digest(lines.join("\n").as_bytes()))
 }
 
+// Variants pnmpeg produced to make a retained intro concat-compatible with one episode's exact
+// stream properties, and the temporaries it writes them through. They are a per-machine cache
+// derived from the corpus rather than part of it: they appear in the coordinator's own intro
+// folder as it encodes, so counting them would move the revision — and re-sync every node — every
+// time a new output format was encountered. A node regenerates its own on demand.
+const GENERATED_INTRO_PREFIX: &str = "pnmpeg_compat_";
+
+fn is_generated_intro(name: &str) -> bool {
+    name.starts_with(GENERATED_INTRO_PREFIX) || name.contains(".tmp.")
+}
+
 fn plain_files(directory: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(directory) else {
         return Vec::new();
@@ -150,6 +161,14 @@ pub fn build_manifest() -> AssetManifest {
             continue;
         }
         for file in plain_files(Path::new(folder)) {
+            let generated = file
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(is_generated_intro)
+                .unwrap_or(false);
+            if generated {
+                continue;
+            }
             push_entry(&mut entries, AssetKind::Intro, group, &file);
         }
     }
@@ -268,6 +287,57 @@ pub fn missing(manifest: &AssetManifest) -> Vec<AssetEntry> {
         .collect()
 }
 
+// Files under the node's synced intro root that the manifest no longer names, removed.
+//
+// `missing` only ever adds, which leaves the one change a fetch-what-is-missing sync cannot see:
+// a deletion. The coordinator's revision moves, nothing is missing, and the node records the new
+// revision while still holding a file the corpus no longer has — so two machines agreeing on a
+// revision did not mean they held the same corpus. For an intro that is not cosmetic: the whole
+// folder is handed to pnmpeg, which picks a variant out of it, so a retired intro goes on shipping
+// from every node that ever had it.
+//
+// Only intros are pruned. `DB/fontconfig` is shared with fonts an operator placed by hand, the
+// startup installer has already copied them into the OS font path where deleting the bucket copy
+// would not remove them, and a font the corpus no longer lists causes no substitution — which is
+// the failure the corpus exists to prevent. The intro root is the node's own and holds nothing
+// else, which is exactly why it is kept apart from the coordinator's.
+pub fn prune_intros(manifest: &AssetManifest) -> Vec<PathBuf> {
+    let mut removed = Vec::new();
+    let Ok(groups) = std::fs::read_dir(LINK_INTRO_ROOT) else {
+        return removed;
+    };
+    for group_entry in groups.flatten() {
+        if !group_entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let directory = group_entry.path();
+        let group = group_entry.file_name().to_string_lossy().to_string();
+        let wanted = manifest
+            .intro_entries(&group)
+            .map(|entry| entry.name.clone())
+            .collect::<Vec<_>>();
+        for file in plain_files(&directory) {
+            let Some(name) = file.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if wanted.iter().any(|kept| kept == name) {
+                continue;
+            }
+            // Generated variants go with everything else. They are derived from the files this
+            // group held, and this only runs when that set has changed.
+            if std::fs::remove_file(&file).is_ok() {
+                removed.push(file);
+            }
+        }
+        // A group the corpus dropped entirely leaves its directory behind, which
+        // `intro_group_is_populated` would go on treating as a group with no files.
+        if wanted.is_empty() {
+            std::fs::remove_dir(&directory).ok();
+        }
+    }
+    removed
+}
+
 pub fn write_asset(entry: &AssetEntry, bytes: &[u8]) -> Result<(), String> {
     if format!("{:x}", Sha256::digest(bytes)) != entry.hash {
         return Err(format!("{} did not hash to what the manifest said", entry.name));
@@ -373,6 +443,48 @@ mod tests {
         // A font is genuinely the same path on both sides; that coincidence is what hid the bug.
         let font = entry(AssetKind::Font, "main", "Roboto.ttf", "x");
         assert_eq!(source_path(&font), install_path(&font));
+    }
+
+    // pnmpeg writes its compatibility variants into whichever intro folder it is handed, which on
+    // a coordinator is the folder the manifest is built from. Counting them would move the
+    // revision — and re-sync every node — every time an episode with new stream properties was
+    // encoded, and would sync a cache one machine derived to every other machine.
+    #[test]
+    fn generated_intro_variants_are_not_part_of_the_corpus() {
+        assert!(is_generated_intro("pnmpeg_compat_9f8e.mp4"));
+        assert!(is_generated_intro("pnmpeg_compat_9f8e.tmp.mp4"));
+        assert!(!is_generated_intro("opening.mkv"));
+        assert!(!is_generated_intro("op1_v2.mp4"));
+    }
+
+    // The failure this exists for: `missing` only adds, so a corpus that lost a file left every
+    // node holding it while reporting itself level. pnmpeg picks a variant out of the whole
+    // folder, so that is a retired intro going out on real releases.
+    #[test]
+    fn a_dropped_intro_is_removed_from_the_nodes_own_root() {
+        let group = format!("prune-test-{}", std::process::id());
+        let directory = intro_dir(&group);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("kept.mkv"), b"kept").unwrap();
+        std::fs::write(directory.join("retired.mkv"), b"retired").unwrap();
+        std::fs::write(directory.join("pnmpeg_compat_abc.mp4"), b"derived").unwrap();
+
+        let manifest = AssetManifest {
+            revision: "r".to_string(),
+            entries: vec![entry(AssetKind::Intro, &group, "kept.mkv", "x")],
+        };
+        let removed = prune_intros(&manifest);
+        assert!(directory.join("kept.mkv").exists());
+        assert!(!directory.join("retired.mkv").exists());
+        // The generated variant was derived from a set that has just changed, and regenerates on
+        // demand; keeping it would concat an intro built from a file that is gone.
+        assert!(!directory.join("pnmpeg_compat_abc.mp4").exists());
+        assert_eq!(removed.len(), 2);
+
+        // A group the corpus dropped entirely takes its directory with it.
+        prune_intros(&AssetManifest { revision: "r".to_string(), entries: Vec::new() });
+        assert!(!directory.exists());
+        assert!(!intro_group_is_populated(&group));
     }
 
     // A node must never install bytes that are not what the manifest promised, whatever the reason

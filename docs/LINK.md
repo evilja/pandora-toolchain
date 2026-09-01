@@ -335,6 +335,41 @@ format — `pndc --setup` just wrote it — and there is nothing to convert. The
 of `env.pandora` at startup, which is the one unambiguous mark of a machine that has never run
 Pandora; a deployment that predates the ledger has no such guarantee and runs everything from zero.
 
+## Assets
+
+Fonts and intro videos are the two things a node needs that do not travel in a job spec, and a
+missing font does not fail — libass substitutes one and the release goes out in the wrong typeface
+with nothing to show for it. So a node syncs the coordinator's whole corpus, and a job whose
+revision it cannot prove it holds is declined rather than encoded.
+
+The corpus is compared **by content**, never by name or timestamp: two machines agree when their
+files hash the same, which is the only definition that survives a copy, a re-download, or a
+filesystem that rounds mtimes. The revision is a hash over the whole entry list, so it changes
+exactly when the corpus does and there is no counter for `/cfont` to remember to bump.
+
+- Fonts land in `DB/fontconfig/<bucket>`, which is where the startup installer already copies from
+  into the OS font path — libass resolves through system fontconfig, so a synced font is not a
+  usable font until that has run.
+- Intros land in `DB/cache/link-intros/<group>`, deliberately apart from anything an operator
+  hand-placed, because pnmpeg writes compatibility variants back into whatever folder it is given.
+  A spec carries the *group name*, never the coordinator's folder path, which means nothing on
+  another machine.
+
+**Deletions are pruned, and only for intros.** Fetching what is missing cannot see a file being
+removed: the revision moves, nothing is missing, and a node would record the new revision while
+still holding what the corpus dropped — so two machines agreeing on a revision would not mean they
+held the same corpus. That is not cosmetic for an intro, because the whole folder is handed to
+pnmpeg and it picks a variant out of it: a retired intro would go on shipping from every node that
+ever had it. Fonts are left alone on purpose — `DB/fontconfig` is shared with fonts an operator
+placed by hand, the installer has already copied them somewhere deleting the bucket copy would not
+reach, and an extra font substitutes for nothing.
+
+pnmpeg's own `pnmpeg_compat_*` variants are **not** part of the corpus. They are a per-machine cache
+derived from it, keyed by one episode's exact stream properties; they appear in the coordinator's
+intro folder as it encodes, and counting them would move the revision — and re-sync every node —
+every time an unfamiliar output format was met. A node regenerates its own, and a prune drops them
+along with everything else, since they were derived from a set that has just changed.
+
 ## What can be leased
 
 The rule is "does the job carry its own source", since a node fetches its own input:
