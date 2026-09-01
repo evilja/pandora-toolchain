@@ -161,7 +161,11 @@ pub(super) async fn asset(
     }
     // Addressed by content, and only content the current manifest lists. A node cannot ask for a
     // path, which is what keeps this from being an arbitrary read of the coordinator's disk.
-    let Some((entry, bytes)) = assets::read_asset(&hash) else {
+    //
+    // Off the runtime: it reads a whole font or intro into memory and hashes it again to prove the
+    // file has not changed under the cached manifest, and several nodes reconcile at once.
+    let read = tokio::task::spawn_blocking(move || assets::read_asset(&hash)).await;
+    let Ok(Some((entry, bytes))) = read else {
         return (StatusCode::NOT_FOUND, "no such asset in the current manifest").into_response();
     };
     (

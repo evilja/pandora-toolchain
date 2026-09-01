@@ -447,8 +447,18 @@ fn advertises_encoder(encoders: &[String], required: Option<&str>) -> bool {
     required.is_none_or(|required| encoders.iter().any(|encoder| encoder == required))
 }
 
-pub fn offer(node: &str, spec: LinkJobSpec) {
-    let job_id = spec.job_id.parse::<u64>().unwrap_or(0);
+// Puts a job under a node's name for it to collect. False when the spec carries a job id this
+// cannot key a lease on — `unwrap_or(0)` used to bucket every such spec under the same id, where
+// the second one silently evicted the first. The caller keeps the job local instead.
+pub fn offer(node: &str, spec: LinkJobSpec) -> bool {
+    let Ok(job_id) = spec.job_id.parse::<u64>() else {
+        eprintln!("[link] refusing to offer a job whose id is not a number: {:?}", spec.job_id);
+        return false;
+    };
+    if job_id == 0 {
+        eprintln!("[link] refusing to offer a job with no id");
+        return false;
+    }
     let mut state = board().lock().unwrap();
     ensure_loaded(&mut state);
     state.leases.insert(
@@ -462,6 +472,7 @@ pub fn offer(node: &str, spec: LinkJobSpec) {
             cancel: false,
         },
     );
+    true
 }
 
 // A node collecting the job it was offered. Leases are targeted at a node before it polls, so this

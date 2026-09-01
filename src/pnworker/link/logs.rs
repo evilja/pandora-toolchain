@@ -46,14 +46,18 @@ pub async fn collect(
             continue;
         }
         let take = (file.bytes - from).min(MAX_CHUNK_BYTES);
-        let Some(text) = read_range(&file.path, from, take) else {
+        // Off the runtime: this is up to MAX_CHUNK_BYTES of synchronous file I/O per log per
+        // renew, and the task calling it is the one holding this node's whole link.
+        let path = file.path.clone();
+        let read = tokio::task::spawn_blocking(move || read_range(&path, from, take)).await;
+        let Ok(Some(text)) = read else {
             continue;
         };
-        let read = text.len() as u64;
-        if read == 0 {
+        let shipped = text.len() as u64;
+        if shipped == 0 {
             continue;
         }
-        advanced.insert(file.name.clone(), from + read);
+        advanced.insert(file.name.clone(), from + shipped);
         chunks.push(LinkLogChunk {
             name: file.name.clone(),
             offset: from,
@@ -176,6 +180,9 @@ fn is_plain_name(name: &str) -> bool {
         && !name.contains('/')
         && !name.contains('\\')
         && !name.contains('\0')
+        // `Path::join("C:x")` on Windows is drive-relative and does not stay inside the directory
+        // it is joined to. Nothing legitimate names a log file with a colon on either platform.
+        && !name.contains(':')
         && name != "."
         && name != ".."
         && !name.starts_with('.')
@@ -192,6 +199,7 @@ mod tests {
         assert!(!is_plain_name("../../etc/passwd"));
         assert!(!is_plain_name("logs/inner.log"));
         assert!(!is_plain_name(".."));
+        assert!(!is_plain_name("C:escaped.log"));
         assert!(!is_plain_name(".hidden"));
         assert!(!is_plain_name(""));
     }

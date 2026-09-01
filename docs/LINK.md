@@ -31,7 +31,10 @@ pndc --mini            # or `pandora_mode|pntools|mini` in env.pandora
 Mini mode runs the same startup as a coordinator — config migration, `ensure_startup_binaries`
 (which bootstraps portable ffmpeg/ffprobe into `DB/bin`), the font cache, localisation — creates the
 same worker queue, spawns `pn_worker`, and then starts the link client **instead of** the Discord
-client. No `discord_token` is needed. Every job a node runs uses `Frontend::None`, which the worker
+client. No `discord_token` is needed, and **no HTTP API is served**: a node has no inbound surface
+by design, and its `env.pandora` is very often a copy of the coordinator's with the link keys added,
+which used to mean it quietly served the whole API on whatever `api_port` it inherited. An
+`api_port` on a node is noted at startup and ignored. Every job a node runs uses `Frontend::None`, which the worker
 pipeline already treats as a no-op for every message edit, reaction and presence update.
 
 A node keeps its own sqlite database because `pn_worker` needs one. It is scratch, not a record:
@@ -54,7 +57,10 @@ them are silent when it is wrong.
 - **It needs a restart loop around it.** There is no in-place upgrade — the binary that pulled the
   source is the old one — so `restart_into_new_build` records the build, exits, and expects
   something to rebuild and relaunch. `start.sh` is that loop for a coordinator; a node needs the
-  same shape around `pndc --mini`. Without one, a successful update stops the node.
+  same shape around `pndc --mini`. Without one, a successful update stops the node. A node that
+  cannot read its own link configuration exits `78`/`EX_CONFIG`, which `start.sh` stops on rather
+  than respins — returning normally would have ended the process successfully and had the loop
+  restart it forever.
 
 The loop is also where the **build environment** lives, and it is the one part of this that fails
 loudly. A node's `encoder_identity` is compared against the coordinator's and a mismatch is refused

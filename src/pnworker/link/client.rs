@@ -495,11 +495,15 @@ async fn reconcile_assets(
 }
 
 pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
+    // Returning from here would end `main` with a success code, and the restart loop a node needs
+    // around it would spin on that forever. `ensure_configured` has already handled the ordinary
+    // missing-key case; reaching this means a key was emptied after it ran, and 78/EX_CONFIG is
+    // what `start.sh` stops on rather than respins.
     let config = match load_config() {
         Ok(config) => config,
         Err(reason) => {
             eprintln!("[link] mini mode is enabled but not configured: {reason}");
-            return;
+            std::process::exit(78);
         }
     };
     let client = match reqwest::Client::builder()
@@ -509,7 +513,7 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
         Ok(client) => client,
         Err(e) => {
             eprintln!("[link] could not build an HTTP client: {e}");
-            return;
+            std::process::exit(70);
         }
     };
     println!(

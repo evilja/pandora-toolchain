@@ -426,7 +426,9 @@ async fn try_link_offload(
         return_output,
         drive_only,
     );
-    crate::pnworker::link::board::offer(&node, spec);
+    if !crate::pnworker::link::board::offer(&node, spec) {
+        return LinkOffload::Local;
+    }
     job.link_node = Some(node.clone());
     job.link_return_output = return_output;
     job.worker = label;
@@ -2586,19 +2588,23 @@ async fn do_batch_lease_things(db: &JobDb, queue: &mut Vec<Job>) {
                 break;
             };
             let mut child = crate::pnworker::batch::leased_batch_child(&parent, &entry);
+            // Asked before anything is read or written, because the answer is usually "no node is
+            // free" and that has to cost nothing: this runs twenty times a second for as long as a
+            // batch has an unclaimed episode. Reading the metainfo first meant a parent whose
+            // source arrived as a `.torrent` file re-read it off disk on every one of those passes.
+            //
+            // `true` here is the optimistic answer to "could a source travel with it": if there
+            // turns out to be no file and the child has no link either, `try_link_offload` finds
+            // that out below and keeps the episode local, which is where it was going anyway.
+            if crate::pnworker::link::coordinator::choose_node(&child, true).is_none() {
+                break;
+            }
             // The parent holds both halves a child cannot: the probe that produced the file list,
             // and the metainfo itself when it arrived as a file rather than a link.
             let source_extras = crate::pnworker::link::coordinator::LeaseSource {
                 torrent_file: read_job_torrent_file(&parent).await,
                 probe_job_id: Some(batch.probe_job_id),
             };
-            // Asked before anything is written, because the answer is usually "no node is free" and
-            // that has to cost nothing: this runs on every pass of the worker loop.
-            if crate::pnworker::link::coordinator::choose_node(&child, source_extras.has_file())
-                .is_none()
-            {
-                break;
-            }
             let child_id = child.job_id;
             match try_link_offload(db, &mut child, source_extras).await {
                 LinkOffload::Offered => {

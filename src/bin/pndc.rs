@@ -3806,7 +3806,16 @@ async fn main() {
     let env = get_pandora_env();
     let (tx, rx): (Sender<JobClass>, Receiver<JobClass>) = channel(5);
     tokio::spawn(pn_worker(rx));
-    if let Some(port) = env.get(API_PORT).and_then(|s| s.trim().parse::<u16>().ok()).filter(|p| *p != 0) {
+    // A node has no inbound surface by design, and its `env.pandora` is very often a copy of the
+    // coordinator's with the link keys added — which used to mean it quietly served the whole API
+    // on whatever `api_port` it inherited. Nothing on a node needs it: the consoles, the job
+    // routes and the submit tiers all belong to the machine that owns the queue.
+    let mini = pandora_toolchain::pnworker::link::client::is_mini();
+    if mini {
+        if env.get(API_PORT).is_some_and(|port| port.trim().parse::<u16>().is_ok_and(|p| p != 0)) {
+            println!("[Pandora] mini mode: api_port is set but no API will be served");
+        }
+    } else if let Some(port) = env.get(API_PORT).and_then(|s| s.trim().parse::<u16>().ok()).filter(|p| *p != 0) {
         let api_tx = tx.clone();
         tokio::spawn(async move {
             if let Err(e) = pandora_toolchain::lib::http::api::serve(api_tx, port).await {
@@ -3821,7 +3830,7 @@ async fn main() {
     // the first and none of the second: it takes its work from a coordinator's link instead of
     // from a guild, and every job it runs uses `Frontend::None`, which the worker pipeline already
     // treats as a no-op for every message edit, reaction and presence update.
-    if pandora_toolchain::pnworker::link::client::is_mini() {
+    if mini {
         println!("[Pandora] starting in mini mode: no Discord client will be started");
         pandora_toolchain::pnworker::link::client::run(tx, refresh_pandora_fonts).await;
         return;
