@@ -1555,6 +1555,19 @@ async fn submit_with_progress(
 ) -> Response {
     let job_id = job.job_id;
     let directory = job.directory.clone();
+    // A node token is a machine's credential for the link routes and nothing else. Every other
+    // tier is refused by the route it asks for, but a submit asks for no tier at all — a link
+    // token reaches `Reach::Own` like any plain one, and `effective_server_id` would then honour
+    // whichever `server_id` the body named, which is what decides the Drive profile an upload
+    // lands under. Refusing here closes every submit route at once rather than one at a time.
+    if auth.link_node.is_some() {
+        tokio::fs::remove_dir_all(&directory).await.ok();
+        return (
+            StatusCode::FORBIDDEN,
+            "a link token cannot submit jobs; it opens the /link routes only",
+        )
+            .into_response();
+    }
     if let Err(e) = st.db.insert_job(&job).await {
         tokio::fs::remove_dir_all(&directory).await.ok();
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
