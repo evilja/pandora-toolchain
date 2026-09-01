@@ -407,11 +407,41 @@ fn probe_rows(progress: Option<&str>) -> Vec<(u64, String)> {
     if value.get("type").and_then(|value| value.as_str()) != Some("probe") {
         return Vec::new();
     }
-    let Some(files) = value.get("files").and_then(|value| value.as_str()) else {
-        return Vec::new();
-    };
-    files
-        .lines()
+    // The rendered list, under the key it is written to today and the one older rows used. `files`
+    // has since become the structured array beside it, which is why asking only for that as a
+    // string found nothing and reported every probe as having produced no files.
+    let text = value
+        .get("file_text")
+        .and_then(|value| value.as_str())
+        .or_else(|| value.get("files").and_then(|value| value.as_str()));
+    if let Some(text) = text {
+        let rows = probe_rows_from_text(text);
+        if !rows.is_empty() {
+            return rows;
+        }
+    }
+    // Nothing rendered to read: fall back to the structured list. Its `name` is the file's real
+    // name rather than the episode label the rows were rendered with, so this is the second choice
+    // and not the first — a batch names its children after what the user was shown.
+    value
+        .get("files")
+        .or_else(|| value.get("file_options"))
+        .and_then(|value| value.as_array())
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| {
+                    let index = entry.get("index").and_then(|value| value.as_u64())?;
+                    let name = entry.get("name").and_then(|value| value.as_str())?;
+                    Some((index, name.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn probe_rows_from_text(text: &str) -> Vec<(u64, String)> {
+    text.lines()
         .filter_map(|line| {
             let rest = line.strip_prefix('`')?;
             let end = rest.find('`')?;
@@ -600,6 +630,42 @@ mod tests {
                 (1, "E02".to_string()),
                 (7, "Specials (420MB)".to_string()),
             ]
+        );
+    }
+
+    // The shape a probe actually writes: the rendered lines under `file_text`, with `files` beside
+    // them as the structured array. Reading `files` as a string here is what made `/encode batch`
+    // answer "that job has no probed file list" after every probe.
+    #[test]
+    fn probe_rows_read_the_list_a_probe_writes_today() {
+        let progress = serde_json::json!({
+            "type": "probe",
+            "file_text": "`3` — E01\n`1` — E02",
+            "files": [
+                { "index": 3, "name": "[Group] Show - 01.mkv", "bytes": 1 },
+                { "index": 1, "name": "[Group] Show - 02.mkv", "bytes": 2 },
+            ],
+            "file_options": [],
+        })
+        .to_string();
+        // The episode labels the user was shown, not the file names beside them.
+        assert_eq!(
+            probe_rows(Some(&progress)),
+            vec![(3, "E01".to_string()), (1, "E02".to_string())]
+        );
+    }
+
+    // A row with no rendered text at all still names its episodes, from the structured list.
+    #[test]
+    fn probe_rows_fall_back_to_the_structured_list() {
+        let progress = serde_json::json!({
+            "type": "probe",
+            "files": [{ "index": 7, "name": "Specials.mkv", "bytes": 3 }],
+        })
+        .to_string();
+        assert_eq!(
+            probe_rows(Some(&progress)),
+            vec![(7, "Specials.mkv".to_string())]
         );
     }
 
