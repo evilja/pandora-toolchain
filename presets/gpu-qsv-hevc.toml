@@ -13,19 +13,33 @@
 # sources is the main output rather than a side one.
 hardware = "gpu"
 aot = true
-# The average bitrate itself. `-b:v` has no field of its own — the built-ins are all
-# constant-quality — so it comes through the passthrough, which is appended verbatim and is read by
-# the ahead-of-time encoder along with everything else.
-extra_args = ["-b:v", "9000k"]
+# The average bitrate, and the source's global metadata and chapter list. None of the three has a
+# field of its own — the built-ins are all constant-quality and none of them has ever carried
+# chapters — so they come through the passthrough, which is appended verbatim and is read by the
+# ahead-of-time encoder along with everything else.
+#
+# `-map_metadata 0` / `-map_chapters 0` survive the ahead-of-time handoff without help: the prefix
+# run writes them into its intermediate, and the final mux copies chapters from the first input
+# that has any and global metadata from input 0, which is that intermediate. An intro concat is the
+# case where they do not survive, and should not — the episode no longer starts where its chapter
+# marks say it does.
+extra_args = ["-b:v", "9000k", "-map_metadata", "0", "-map_chapters", "0"]
 
 [video]
 codec = "hevc_qsv"
 # `min(1080,ih)` caps rather than forces the height, so a 720p source is not upscaled, and `-2`
 # keeps the width even; on 16:9 sources this is exactly 1920x1080. The scale runs before `ass` so
-# libass renders subtitles at the output size, and `nv12` is what QSV uploads without a conversion
-# of its own — the x264 presets end in `yuv420p` for the same reason.
-filter = "scale=-2:'min(1080,ih)':flags=lanczos,ass=INPUTFILEASS,format=nv12"
-profile = "main"
+# libass renders subtitles at the output size.
+#
+# `p010le` is 4:2:0 10-bit in the layout Quick Sync takes — the same pixels `yuv420p10le` names on
+# the libx265 side, which `hevc_qsv` does not accept and which ffmpeg would refuse outright rather
+# than convert. It is set in the filter chain because that is where every built-in names its pixel
+# format and because `scale_height` and the ahead-of-time compatibility check both read the chain
+# back; `-pix_fmt` in `extra_args` would reach the encoder just as well and would be the one part
+# of this preset written somewhere else. 10-bit HEVC encode is Kaby Lake and newer, and the encoder
+# probe at node registration is what proves this machine can actually open it.
+filter = "scale=-2:'min(1080,ih)':flags=lanczos,ass=INPUTFILEASS,format=p010le"
+profile = "main10"
 # `slow` is QSV's target-usage 2. Quick Sync's presets are cheap by libx264 standards; `slow` is
 # where it stops trading quality for speed a release would notice, and `veryslow` (TU1) is not
 # implemented on every generation and silently clamps where it is not.

@@ -66,10 +66,13 @@ cp presets/gpu-qsv-hevc.toml DB/config/global/presets/gpu.toml   # Intel iGPU, H
 ```
 
 `gpu-qsv-hevc.toml` is the only preset here that encodes to a bitrate rather than to a quality
-level: HEVC through Quick Sync at a 9000 kbit/s average with a 12000k ceiling, capped at 1080p. It
-is the one place `extra_args` is load-bearing rather than decorative — `-b:v` has no field of its
-own, because every built-in is constant-quality. HEVC releases publish through HLS as MPEG-TS
-segments, the same path H.264 takes; only AV1 switches to fMP4.
+level: 10-bit HEVC through Quick Sync at a 9000 kbit/s average with a 12000k ceiling, capped at
+1080p, carrying the source's global metadata and chapter list into the release. It is the one place
+`extra_args` is load-bearing rather than decorative — `-b:v`, `-map_metadata` and `-map_chapters`
+have no fields of their own, because every built-in is constant-quality and none of them has ever
+kept chapters. Its pixel format is `p010le` rather than `yuv420p10le`: same 4:2:0 10-bit pixels, in
+the layout `hevc_qsv` accepts. HEVC releases publish through HLS as MPEG-TS segments, the same path
+H.264 takes; only AV1 switches to fMP4.
 
 A unit test renders every file here against the built-in it mirrors and fails if the two disagree,
 so these stay honest as the built-ins change; every file is also parsed and checked to name an
