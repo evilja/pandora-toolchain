@@ -676,6 +676,9 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
                         }
                         Delivered::Failed(e) => {
                             eprintln!("[link] job {job_id} output could not be returned: {e}");
+                            // The lease is kept, so what was drained for this pass has to go back
+                            // or the encode's own progress and stage transitions end here.
+                            restore_reports(job_id, reports);
                             if spend_delivery_attempt(&mut delivery_attempts, job_id) {
                                 retire_lease(job_id, "output could not be returned at all; giving the lease up", &mut log_offsets, &mut delivery_attempts, &mut finished);
                             }
