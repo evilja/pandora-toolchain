@@ -63,6 +63,44 @@ The driver needs the input's frame total before it can lay out ranges, and the t
 
 Standard, Dummy, and PseudoLossless still encode ahead while downloading, but do so through `pnmpeg --linear-prefix`: one persistent ffmpeg/libx264 process reads the verified growing-source pipe, applies the final ASS chain, and writes a video-only MP4 plus atomic `work/linear-aot.state` progress. At foreground handoff the ordinary pnmpeg invocation adopts that still-live process, starts the one AAC pass, relays its frame progress, waits for the same x264 instance to flush, and stream-copy muxes its video with audio. When the encode worker passes `--hls <dir>` — a release job on an HLS-only server that is not being kept locally — the job's last ffmpeg run writes the HLS layout into `work/hls` instead of an MP4, named from the encoded height and a fresh v4 UUID, and no `output.mp4` is produced at all. Which run that is depends on the job: the AOT handoff's own final mux, or, when the handoff is refused, the preset run itself, whose `+faststart` is dropped and whose output filename is rewritten to the HLS muxer's options. A job with an intro passes the flag to the concat run instead — the encode still has to leave a file the concat can read back, and the concat stream-copies, so it is the final mux. Only the VerySlow parallel encoder writes an MP4 the broker then remuxes. It never serializes or guesses at x264 internals: live CRF predictors, MB-tree, lookahead, and frame history stay inside the original process. A dead, stale, absent, or incompatible state falls back to the established full linear encode. GPU, Copy, and the downscaling 720p/480p presets do not use AOT by default; `Copy` never can, and the other two are a preset file's `aot = true` away from it.
 
+### Background encodes
+
+A preset may declare `idle = true`, which makes its jobs background work. Such a job is dispatched
+to a **second encode lane** — `Worker::IdleEncode`, `enc-idle` — rather than to `enc-main`, and
+`pnmpeg` runs its encode through the same gate the speculative planners use: the encode worker
+passes `--aot-busyfile`/`--aot-lockfile` only for an idle preset, and their presence is the whole of
+how pnmpeg is told which kind of encode this is.
+
+The second lane is not an optimisation, it is what makes the feature possible. `Worker::Encode`
+serves its jobs one at a time, so an idle encode dispatched there would be waiting for a quiet
+machine while being the only reason it was busy, and would never pause. It also does not take
+`ForegroundEncodeGuard`: the marker is what every idle encoder waits on, and one that published it
+would be telling itself to stop. Between them, an ordinary encode ordered at any moment is
+dispatched to a free `enc-main`, takes the marker, and the idle encode stops within about a
+megabyte of source — roughly a second of media — because the gate is checked per buffer and the
+feeder is backpressured by the encoder's own 64 KiB pipe.
+
+**A pause costs nothing and a resume re-encodes nothing.** The gate stops the *feeder*, not the
+encoder: ffmpeg blocks on an empty stdin with its rate control, lookahead and frame history intact,
+and resumes from exactly where it stopped. The idle encode holds `.aot-owner` while running and
+releases it while paused, so it neither multiplies the idle budget nor denies it to download-time
+speculation for the hours it spends waiting.
+
+An idle preset that also encodes ahead adopts its speculative prefix exactly as any other preset
+does — that work was already gated, so re-doing it would spend the machine twice. Only when there is
+nothing to adopt (a cached or duplicate input, `aot = false`, a planner that died) does pnmpeg run
+the gated encoder itself, in-process, against a complete-from-the-start prefix sidecar describing
+the finished input, and then adopt its own output through the ordinary handoff. That handoff emits a
+progress frame every five seconds whether or not frames advanced, which is also what keeps a paused
+encode from tripping the twenty-minute stall watchdog. A paused job reads as `enc-idle` at 0 fps.
+
+Two limits are worth stating plainly. **The pause does not survive a pndc restart**: `fail_stale_active()`
+fails every non-terminal job at startup and the encode begins again from zero, which for a
+multi-hour encode under `start.sh`'s restart loop is a real cost. And an idle job is still an encode
+job as far as `/gitsync` is concerned, so a pending gitsync waits for it and declines encodes
+meanwhile — it resolves itself, since declining everything else is exactly the quiet the idle job
+needs, but it resolves slowly.
+
 **Which presets encode ahead is decided by the preset, not by the CLI flag it was reached by and not by a table anywhere else** (`ResolvedPreset::wants_linear_aot`). That is what makes the rule survive a preset arriving as `--preset <name>` rather than as `--x264`, and what extends it to preset files.
 
 Linear AOT is **codec-agnostic**: it is one ffmpeg process running the preset's own `-vf` chain and its own rendered encoder arguments (`ResolvedPreset::video_filter` and `video_encoder_args`), so libx264, NVENC, AMF, QSV and VAAPI presets all work through it unchanged. The argument list used to be reassembled from a fixed struct of x264 fields, which is the only reason it was ever libx264-only — and the filter was hardcoded to `ass=…,format=yuv420p`, which is why a scaling preset could not use it. Both now come from the preset, so a scaling preset encodes ahead at the height it asked for.
@@ -162,7 +200,7 @@ Chunk decoders use input seeking with preserved source timestamps, so per-chunk 
 
 ## Server-scoped encode effects
 
-Presets themselves may be **files**: `pnmpeg` takes `--preset <name>` and reads `DB/config/global/presets/<name>.toml` when one exists, falling back to its compiled-in table otherwise, so an untouched deployment encodes exactly as it always has and an operator opts one preset at a time out of the binary. A preset file also declares the `hardware` it needs, which is what keeps a GPU preset off a CPU-only Pandora Mini node (see [LINK.md](LINK.md#purpose)), and may declare `aot` and `chunked` to override how the encode is scheduled. `av1` is a first-class AV1 NVENC preset with linear AOT enabled; `gpu` remains H.264. `presets/gpu-nvenc.toml` remains the NVENC replacement for the AMF `gpu` built-in, and `presets/gpu-qsv-hevc.toml` is the Intel Quick Sync one — 10-bit HEVC at a 9000k average capped at 1080p, the only reference preset that encodes to a bitrate rather than a quality level and the only one that carries the source's metadata and chapters into the release. The field set is the union of what the built-in presets use plus an `extra_args` passthrough; the parameter *order* is fixed in code, because ffmpeg cares where the input, the maps and the output sit and a file that could reorder them would let a typo produce an encode that runs and is wrong. Reference copies of every built-in live in `presets/`, pinned by a unit test.
+Presets themselves may be **files**: `pnmpeg` takes `--preset <name>` and reads `DB/config/global/presets/<name>.toml` when one exists, falling back to its compiled-in table otherwise, so an untouched deployment encodes exactly as it always has and an operator opts one preset at a time out of the binary. A preset file also declares the `hardware` it needs, which is what keeps a GPU preset off a CPU-only Pandora Mini node (see [LINK.md](LINK.md#purpose)), and may declare `aot`, `chunked` and `idle` to override how the encode is scheduled. `av1` is a first-class AV1 NVENC preset with linear AOT enabled; `gpu` remains H.264. `presets/gpu-nvenc.toml` remains the NVENC replacement for the AMF `gpu` built-in, and `presets/gpu-qsv-hevc.toml` is the Intel Quick Sync one — 10-bit HEVC at a 9000k average capped at 1080p, the only reference preset that encodes to a bitrate rather than a quality level, the only one that carries the source's metadata and chapters into the release, and the only one that declares `idle = true`. The field set is the union of what the built-in presets use plus an `extra_args` passthrough; the parameter *order* is fixed in code, because ffmpeg cares where the input, the maps and the output sit and a file that could reorder them would let a typo produce an encode that runs and is wrong. Reference copies of every built-in live in `presets/`, pinned by a unit test.
 
 `Job::new` / `Job::new_api` snapshot the server's line-11 preset, line-12 concat group folder, and optional `DB/config/<server_id>/watermark.ass`. Missing or invalid preset values fall back to Standard; missing intro groups disable concat. Encode forwarding keys include the watermark hash, so jobs with different server-effect snapshots never share an encode. The encode worker passes both the intro folder and the resolved job preset to `pnmpeg`; `pnmpeg` stream-copies a matching retained variant or transcodes only the intro with that preset's video/audio encoder settings into a reusable compatibility variant before stream-copy concat. The compatibility signature includes the target codec and stream properties, so AV1 and H.264 variants never share a cache entry. Because AV1 sequence headers can disagree beyond those probed fields, an AV1 candidate is also stream-copied with the episode and decoded across the boundary before it is trusted.
 

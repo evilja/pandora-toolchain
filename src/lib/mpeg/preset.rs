@@ -322,6 +322,12 @@ pub struct PresetFile {
     // list would have named, and the operator who wrote the settings is the one who knows.
     #[serde(default)]
     pub chunked: Option<bool>,
+    // Whether this preset's encodes are background work: they run only while no other encode does,
+    // and stop the moment one is ordered. Off unless declared, because it is a scheduling promise
+    // rather than a quality setting — a preset that quietly took hours longer than it asked for
+    // would be a worse default than one that simply encodes.
+    #[serde(default)]
+    pub idle: Option<bool>,
     #[serde(default)]
     pub video: PresetVideo,
     #[serde(default)]
@@ -343,6 +349,8 @@ pub struct ResolvedPreset {
     // built-in never declares either.
     pub aot: Option<bool>,
     pub chunked: Option<bool>,
+    // Whether the encode runs as background work. A built-in never declares it.
+    pub idle: Option<bool>,
     // True when this came off disk, so a log can say which of the two an encode used. An operator
     // who edits a preset and sees no change needs to know the file was never read.
     pub from_file: bool,
@@ -512,6 +520,17 @@ impl ResolvedPreset {
         self.encodes_with_x264() && self.scale_height().is_none()
     }
 
+    // Whether this preset's encodes are background work: dispatched to their own lane, run only
+    // while `enc-main` is idle, and paused for as long as it is not.
+    //
+    // Unlike encoding ahead, there is no sensible default to derive this from. Nothing about a
+    // preset's settings says whether the operator is willing to wait days for the release — a
+    // 9000k 10-bit HEVC archive encode and a same-settings encode someone is watching the progress
+    // bar of are the same arguments to ffmpeg — so it is off until a file says otherwise.
+    pub fn wants_idle_encode(&self) -> bool {
+        self.idle.unwrap_or(false)
+    }
+
     // Whether the episode can be split across parallel encoders at all. Unlike encoding ahead, this
     // one is not a preference: the chunk scheduler drives libx264 through `pnx264` directly, and it
     // applies its own filter chain, so a preset that is not x264 or that scales cannot be chunked
@@ -527,8 +546,14 @@ impl ResolvedPreset {
     // A file may say so outright, because the derived answer can only recognise the x264 presets it
     // was written knowing about: a preset built on `slower` with a heavy `-x264-params` can be
     // slower than a bare `veryslow` and still be read as fast.
+    // An idle encode is never chunked, whatever it declares. The chunk scheduler's whole purpose is
+    // to finish one episode sooner by occupying every core; a preset that asked to stay out of the
+    // way and then took the whole machine would be two settings that cannot both be honoured, and
+    // the one the operator wrote down last is the one about staying out of the way.
     pub fn wants_chunked_encode(&self) -> bool {
-        self.can_chunk() && self.chunked.unwrap_or_else(|| self.chunks_by_default())
+        !self.wants_idle_encode()
+            && self.can_chunk()
+            && self.chunked.unwrap_or_else(|| self.chunks_by_default())
     }
 
     fn chunks_by_default(&self) -> bool {
@@ -582,6 +607,14 @@ pub fn hardware_for(name: &str) -> PresetHardware {
 
 pub fn video_codec_for(name: &str) -> Option<String> {
     resolve(name)?.video_codec()
+}
+
+// Whether a preset's encodes are background work, answered from the name alone — which is what the
+// coordinator wants, since it decides which lane a job is dispatched to and never runs the encode
+// itself. An unknown name is not background work: it is about to be refused anyway, and the answer
+// that keeps it on the ordinary lane is the one that fails visibly.
+pub fn idle_encode_for(name: &str) -> bool {
+    resolve(name).is_some_and(|preset| preset.wants_idle_encode())
 }
 
 // Hardware backends worth proving at node registration. The probe is a real encode, not
@@ -639,6 +672,7 @@ pub fn resolve(name: &str) -> Option<ResolvedPreset> {
         params: params.to_vec(),
         aot: (canonical == "av1").then_some(true),
         chunked: None,
+        idle: None,
         from_file: false,
     })
 }
@@ -650,12 +684,18 @@ fn resolved_from_file(name: &str, file: &PresetFile) -> ResolvedPreset {
         params: params_from_file(file),
         aot: file.aot,
         chunked: file.chunked,
+        idle: file.idle,
         from_file: true,
     };
     // A preset that asks for chunking it cannot have is a mistake worth naming. It runs — as one
     // linear encode, which is correct output — but silence would leave an operator waiting for a
     // speedup that was never going to arrive, and looking at the encoder rather than at the file.
-    if file.chunked == Some(true) && !preset.can_chunk() {
+    if file.chunked == Some(true) && preset.wants_idle_encode() {
+        eprintln!(
+            "[Pandora] preset {} asks for both chunked and idle encoding; idle wins and it will encode linearly",
+            name
+        );
+    } else if file.chunked == Some(true) && !preset.can_chunk() {
         eprintln!(
             "[Pandora] preset {} asks for chunked encoding but {}; it will encode linearly",
             name,
@@ -824,6 +864,48 @@ mod tests {
             seen += 1;
         }
         assert!(seen >= BUILTIN_PRESET_NAMES.len(), "only found {seen} reference presets");
+    }
+
+    // Background work is a promise about scheduling, not about settings, so nothing derives it: a
+    // preset says so or it does not.
+    #[test]
+    fn only_a_preset_that_says_so_encodes_as_background_work() {
+        let declare = |toml: &str| {
+            resolved_from_file("test", &toml::from_str::<PresetFile>(toml).expect(toml))
+        };
+
+        for name in BUILTIN_PRESET_NAMES {
+            let preset = resolve(name).expect(name);
+            assert!(
+                !preset.wants_idle_encode(),
+                "{name} became background work without asking"
+            );
+        }
+        assert!(!declare("[video]\ncodec = \"libx264\"\n").wants_idle_encode());
+        assert!(declare("idle = true\n[video]\ncodec = \"libx264\"\n").wants_idle_encode());
+        assert!(!declare("idle = false\n[video]\ncodec = \"libx264\"\n").wants_idle_encode());
+        // Read off the name too, which is the form the coordinator asks in: it picks the lane and
+        // never resolves an encode of its own.
+        assert!(!idle_encode_for("standard"));
+        assert!(!idle_encode_for("no-such-preset"));
+    }
+
+    // Chunking occupies every core to finish one episode sooner, which is the opposite of what an
+    // idle preset asked for. A file that declares both is not refused — it encodes, linearly.
+    #[test]
+    fn an_idle_preset_never_chunks_however_it_asks() {
+        let preset = resolved_from_file(
+            "test",
+            &toml::from_str::<PresetFile>(
+                "idle = true\nchunked = true\n[video]\ncodec = \"libx264\"\npreset = \"veryslow\"\n",
+            )
+            .unwrap(),
+        );
+        assert!(preset.can_chunk(), "the settings themselves are chunkable");
+        assert!(
+            !preset.wants_chunked_encode(),
+            "an idle preset must encode linearly whatever it declares"
+        );
     }
 
     // Encoding ahead of the download is one ffmpeg process running the preset's own filter and

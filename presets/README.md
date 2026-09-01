@@ -14,11 +14,13 @@ binary, so an untouched deployment encodes exactly as it always has. A file repl
 of the same name entirely — there is no merging, which is what keeps an edited preset readable as
 the whole truth about that encode.
 
-Two behaviours have defaults that follow from a preset's own settings, and both can be declared:
+Three behaviours can be declared. Two have defaults that follow from a preset's own settings; the
+third has no default to derive and is off until asked for:
 
 ```toml
 aot = true        # encode while the source is still downloading
 chunked = true    # split the episode across parallel encoders
+idle = true       # run only while no ordinary encode does, and pause when one is ordered
 ```
 
 - **`aot` — encoding ahead of the download.** One ffmpeg process reads the still-growing source and
@@ -34,6 +36,18 @@ chunked = true    # split the episode across parallel encoders
   survives to the handoff. Declare it when the default reads your preset wrong — it only recognises
   the x264 preset names it was written knowing about, and a preset built on `slower` with a heavy
   `-x264-params` can be slower than a bare `veryslow` and still be read as fast.
+
+- **`idle` — background encoding.** The job is dispatched to a second encode lane (`enc-idle`)
+  instead of `enc-main`, and its encoder is fed through the same gate the speculative planners use:
+  while any ordinary encode holds `DB/work/.foreground-encode`, it stops handing ffmpeg bytes and
+  waits. The encoder process is never killed, so a pause costs nothing and a resume re-encodes
+  nothing — rate control, lookahead and frame history are all still in memory. It takes `.aot-owner`
+  while running and releases it while paused, so one idle consumer uses the machine at a time and a
+  paused one does not deny the budget to download-time speculation. **The pause lives only as long
+  as pndc does**: a restart fails the job like any other non-terminal one, and it starts over.
+  Nothing derives this — a preset that would take days and one someone is watching are the same
+  arguments to ffmpeg — so it is off unless a file says otherwise. An idle preset never chunks,
+  whatever it declares: occupying every core is the opposite of what it asked for.
 
 Unlike `aot`, `chunked` cannot be declared onto an encode that is not eligible for it: the chunk
 scheduler drives libx264 directly and applies a filter chain of its own, so a preset that is not
@@ -67,7 +81,9 @@ cp presets/gpu-qsv-hevc.toml DB/config/global/presets/gpu.toml   # Intel iGPU, H
 
 `gpu-qsv-hevc.toml` is the only preset here that encodes to a bitrate rather than to a quality
 level: 10-bit HEVC through Quick Sync at a 9000 kbit/s average with a 12000k ceiling, capped at
-1080p, carrying the source's global metadata and chapter list into the release. It is the one place
+1080p, carrying the source's global metadata and chapter list into the release. It is also the only
+one that declares `idle = true`, on the reasoning that an encode at these settings is an archive
+pass rather than something anyone is waiting on. It is the one place
 `extra_args` is load-bearing rather than decorative — `-b:v`, `-map_metadata` and `-map_chapters`
 have no fields of their own, because every built-in is constant-quality and none of them has ever
 kept chapters. Its pixel format is `p010le` rather than `yuv420p10le`: same 4:2:0 10-bit pixels, in

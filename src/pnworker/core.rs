@@ -94,12 +94,17 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
     let mut shrine: TypedShrine<WorkerMsg> = TypedShrine::new();
     shrine.layer(Worker::Download, pn_dloadworker, 5, 50);
     shrine.layer(Worker::Encode, pn_encdeworker, 5, 50);
+    // The same worker function on a second channel. An idle encode spends most of its life blocked
+    // on the foreground marker, and `Worker::Encode` serves its jobs one at a time, so sharing that
+    // lane would mean an idle job waiting for a quiet machine while being the reason it is busy.
+    shrine.layer(Worker::IdleEncode, pn_encdeworker, 5, 50);
     shrine.layer(Worker::Upload, pn_uloadworker, 5, 50);
     shrine.layer(Worker::Probe, pn_probeworker, 5, 50);
     let mut queue_estimator = QueueEstimator::new();
     let mut next_encode_dispatch_order = 1u64;
     let mut encodes_since_batch = 0u64;
     let mut encode_reboot_epoch = shrine.reboot_epoch(&Worker::Encode);
+    let mut idle_encode_reboot_epoch = shrine.reboot_epoch(&Worker::IdleEncode);
     let mut gitquery: Option<HalfJob> = None;
     let mut next_cache_cleanup = tokio::time::Instant::now() + Duration::from_secs(1);
     let mut next_studio_cleanup = tokio::time::Instant::now() + Duration::from_secs(60);
@@ -116,6 +121,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
 
         shrine.drain_heartbeats().await;
         check_encode_reboot_epoch(&shrine, &mut encode_reboot_epoch, &mut queue);
+        check_idle_encode_reboot_epoch(&shrine, &mut idle_encode_reboot_epoch, &mut queue);
         if tokio::time::Instant::now() >= next_cache_cleanup {
             cleanup_expired_input_cache().await;
             cleanup_expired_keeps().await;
@@ -129,19 +135,23 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
 
         if do_queue_things(&mut rx, &db, &mut queue, &mut shrine, &mut gitquery).await {
             check_encode_reboot_epoch(&shrine, &mut encode_reboot_epoch, &mut queue);
+        check_idle_encode_reboot_epoch(&shrine, &mut idle_encode_reboot_epoch, &mut queue);
             continue;
         }
         do_link_things(&db, &mut queue, &mut shrine).await;
         do_probe_timeout_things(&db, &mut queue).await;
         do_encode_stall_things(&db, &mut queue, &mut shrine).await;
         check_encode_reboot_epoch(&shrine, &mut encode_reboot_epoch, &mut queue);
+        check_idle_encode_reboot_epoch(&shrine, &mut idle_encode_reboot_epoch, &mut queue);
         if do_worker_message_things(&db, &mut queue, &mut shrine).await {
             check_encode_reboot_epoch(&shrine, &mut encode_reboot_epoch, &mut queue);
+        check_idle_encode_reboot_epoch(&shrine, &mut idle_encode_reboot_epoch, &mut queue);
             continue;
         }
         do_duplicate_waiting_things(&db, &mut queue).await;
         do_queued_download_waiting_things(&db, &mut queue, &mut shrine).await;
         check_encode_reboot_epoch(&shrine, &mut encode_reboot_epoch, &mut queue);
+        check_idle_encode_reboot_epoch(&shrine, &mut idle_encode_reboot_epoch, &mut queue);
         do_job_progression_things(
             &db,
             &mut queue,
@@ -159,6 +169,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
             }
         }
         check_encode_reboot_epoch(&shrine, &mut encode_reboot_epoch, &mut queue);
+        check_idle_encode_reboot_epoch(&shrine, &mut idle_encode_reboot_epoch, &mut queue);
         queue_estimator.tick(&db, &mut queue).await;
     }
 }
@@ -303,12 +314,26 @@ async fn decline_job_setup(job: &mut Job, reason: &str) {
     let _ = remove_dir_all(&job.directory).await;
 }
 
+// The lane a job's encode was dispatched to, written into `job.worker` and read back wherever the
+// two have to be told apart — which lane rebooted, and whether the encode holds the foreground
+// marker every other idle encoder waits on.
+pub const FOREGROUND_ENCODE_WORKER: &str = "enc-main";
+pub const IDLE_ENCODE_WORKER: &str = "enc-idle";
+
 // A rebooted layer starts with an empty inbox, so whatever was queued for the old one is gone and
 // has to be dispatched again. Only jobs handed to a *previous* layer qualify: `shrine.send` reboots
 // an expired layer before sending, so without the epoch check the job dispatched microseconds ago
 // would be cleared and sent a second time, putting two encoders on one work directory.
-fn reset_encode_dispatches_after_reboot(queue: &mut [Job], epoch: u32) {
+//
+// The two encode lanes reboot on separate clocks, so a reset has to name the lane it is for: an
+// `enc-main` job holding a dispatch epoch from its own lane would otherwise be handed back every
+// time the idle lane rebooted past it, and dispatched a second time onto a directory an encoder
+// still holds.
+fn reset_encode_dispatches_after_reboot(queue: &mut [Job], epoch: u32, idle_lane: bool) {
     for job in queue {
+        if (job.worker == IDLE_ENCODE_WORKER) != idle_lane {
+            continue;
+        }
         if job.encode_dispatch_epoch >= epoch {
             continue;
         }
@@ -329,8 +354,23 @@ fn check_encode_reboot_epoch(
 ) {
     let current_encode_reboot_epoch = shrine.reboot_epoch(&Worker::Encode);
     if current_encode_reboot_epoch != *encode_reboot_epoch {
-        reset_encode_dispatches_after_reboot(queue, current_encode_reboot_epoch);
+        reset_encode_dispatches_after_reboot(queue, current_encode_reboot_epoch, false);
         *encode_reboot_epoch = current_encode_reboot_epoch;
+    }
+}
+
+// The idle lane reboots on its own clock, and a job dispatched into it before the reboot has to be
+// handed back the same way an `enc-main` one is. Its jobs carry the same `encode_dispatched` flag,
+// so the reset is the same; only the epoch it is compared against differs.
+fn check_idle_encode_reboot_epoch(
+    shrine: &TypedShrine<WorkerMsg>,
+    idle_encode_reboot_epoch: &mut u32,
+    queue: &mut [Job],
+) {
+    let current = shrine.reboot_epoch(&Worker::IdleEncode);
+    if current != *idle_encode_reboot_epoch {
+        reset_encode_dispatches_after_reboot(queue, current, true);
+        *idle_encode_reboot_epoch = current;
     }
 }
 
@@ -2882,11 +2922,28 @@ async fn do_job_progression_things(
                 {
                     continue;
                 }
-                job.worker = "enc-main".to_string();
+                // Which lane this encode runs in is the preset's own answer, resolved here rather
+                // than kept in a table beside it: a preset file that declares itself background
+                // work has to reach the coordinator, which never runs an encode itself and would
+                // otherwise have no way to know.
+                let idle_encode = job
+                    .preset
+                    .name()
+                    .is_some_and(crate::lib::mpeg::preset::idle_encode_for);
+                job.worker = if idle_encode {
+                    IDLE_ENCODE_WORKER.to_string()
+                } else {
+                    FOREGROUND_ENCODE_WORKER.to_string()
+                };
+                let lane = if idle_encode {
+                    Worker::IdleEncode
+                } else {
+                    Worker::Encode
+                };
                 db.update_worker(job.job_id, &job.worker).await.ok();
                 if !dispatch_or_kill(
                     shrine,
-                    &Worker::Encode,
+                    &lane,
                     WorkerMsg::Encode((
                         job.directory.clone(),
                         job.preset.clone(),
@@ -2914,7 +2971,7 @@ async fn do_job_progression_things(
                 mark_encode_dispatched(
                     job,
                     next_encode_dispatch_order,
-                    shrine.reboot_epoch(&Worker::Encode),
+                    shrine.reboot_epoch(&lane),
                 );
                 if job.batch_parent.is_some() {
                     batch_in_flight = true;
@@ -4006,9 +4063,34 @@ mod tests {
         fresh.encode_dispatch_epoch = 2;
         let mut queue = vec![lost, fresh];
 
-        reset_encode_dispatches_after_reboot(&mut queue, 2);
+        reset_encode_dispatches_after_reboot(&mut queue, 2, false);
 
         assert!(!queue[0].encode_dispatched, "job from the dead layer must be re-sent");
         assert!(queue[1].encode_dispatched, "job just handed to the new layer must not be re-sent");
+    }
+
+    // The two lanes count their reboots separately, so a reset carries the lane it is for. Without
+    // that, the idle lane rebooting past an `enc-main` job's epoch would hand that job back while
+    // an encoder still held its work directory, and dispatch a second one onto it.
+    #[test]
+    fn a_reboot_in_one_lane_leaves_the_other_lanes_jobs_dispatched() {
+        let now = Duration::from_secs(10_000);
+        let mut foreground = dispatched_encode(now);
+        foreground.job_id = 1;
+        foreground.worker = FOREGROUND_ENCODE_WORKER.to_string();
+        foreground.encode_dispatch_epoch = 0;
+        let mut idle = dispatched_encode(now);
+        idle.job_id = 2;
+        idle.worker = IDLE_ENCODE_WORKER.to_string();
+        idle.encode_dispatch_epoch = 0;
+        let mut queue = vec![foreground, idle];
+
+        reset_encode_dispatches_after_reboot(&mut queue, 1, true);
+
+        assert!(
+            queue[0].encode_dispatched,
+            "the idle lane rebooting must not re-send an enc-main job"
+        );
+        assert!(!queue[1].encode_dispatched, "the idle lane's own job must be re-sent");
     }
 }

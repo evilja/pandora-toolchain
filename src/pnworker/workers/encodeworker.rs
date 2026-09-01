@@ -140,7 +140,15 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             let WorkerMsg::Encode((directory, preset, job_id, server_id, watermark, cache_resolution, hls_only)) = msg else {
                 continue 'll;
             };
-            let _foreground = ForegroundEncodeGuard::acquire(&directory, job_id);
+            // A background encode does not take the foreground marker: the marker is what every
+            // idle encoder waits on, and one that published it would be telling itself the machine
+            // is busy. Not holding it is also what leaves `enc-main` free to start the encode this
+            // one is supposed to step aside for.
+            let idle_encode = preset
+                .name()
+                .is_some_and(crate::lib::mpeg::preset::idle_encode_for);
+            let _foreground = (!idle_encode)
+                .then(|| ForegroundEncodeGuard::acquire(&directory, job_id));
             let mut resolution_probe = if cache_resolution {
                 let input = directory
                     .join("contents")
@@ -233,6 +241,25 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             if hls_direct {
                 encode_params.insert("HLS", PathValue::from(path_to_ffmpeg(hls_directory.as_path())));
                 encode_params.insert("HLSNAME", PathValue::from(hls_name.clone()));
+            }
+            // The two files a background encode gates itself on, and the same two the speculative
+            // planners have always used: the marker that says an ordinary encode is running, and
+            // the lease that keeps one idle consumer on the machine at a time. Passing them is what
+            // turns the ordinary encode into a gated one; pnmpeg reads the preset for the rest.
+            if idle_encode {
+                let worker_root = directory.parent().unwrap_or(&directory);
+                encode_params.insert(
+                    "AOTBUSY",
+                    PathValue::from(worker_root.join(".foreground-encode").display().to_string()),
+                );
+                encode_params.insert(
+                    "AOTLOCK",
+                    PathValue::from(worker_root.join(".aot-owner").display().to_string()),
+                );
+                // Only so the gated encoder's own log lines name the job they belong to. A
+                // background encode never publishes the marker, so it can never be the owner the
+                // gate reads back and waves through.
+                encode_params.insert("AOTJOBID", PathValue::from(job_id.to_string()));
             }
             let result = run_tool(
                 &pnmpeg_path,

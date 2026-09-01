@@ -246,6 +246,124 @@ fn encodes_in_chunks(preset: Option<&ResolvedPreset>) -> bool {
     preset.is_some_and(ResolvedPreset::wants_chunked_encode)
 }
 
+// Whether this run is a background encode: one that only runs while no ordinary encode does, and
+// stops for as long as one is.
+//
+// It takes both a preset that asks for it and the marker files to gate on. The encode worker passes
+// those two only for a preset that declared itself background work, so their absence is not a
+// half-configured idle encode — it is every other encode there has ever been, and the check is
+// written to say that rather than to guess.
+fn runs_idle_gated(preset: Option<&ResolvedPreset>, args: &Args) -> bool {
+    preset.is_some_and(ResolvedPreset::wants_idle_encode) && args.aot_busyfile.is_some()
+}
+
+// The gated encode this process runs itself, for a background preset with no speculative prefix to
+// adopt — a cached or duplicate input, a preset that does not encode ahead, or a planner that died.
+//
+// It is deliberately the *same* machinery the download worker's speculation uses, run against a
+// finished file instead of a growing one: one ffmpeg process fed through a gate that stops handing
+// it bytes while an ordinary encode holds the foreground marker. The encoder is never killed and
+// never restarted, so a pause costs nothing and resuming re-encodes nothing — its rate control,
+// lookahead and frame history are all still in memory where it left them.
+struct IdleGatedEncode {
+    handle: Option<std::thread::JoinHandle<()>>,
+    error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+}
+
+impl IdleGatedEncode {
+    // The error the encode thread ended with, if it ended badly. Read after the handoff has stopped
+    // waiting: the thread removes its own state file on the way out, which is what stops the
+    // handoff from waiting on a run that is never going to publish another frame.
+    fn error(&self) -> Option<String> {
+        self.error.lock().ok().and_then(|value| value.clone())
+    }
+}
+
+impl Drop for IdleGatedEncode {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.join().ok();
+        }
+    }
+}
+
+fn start_idle_gated_encode(
+    args: &Args,
+    preset: &ResolvedPreset,
+    log: &mut ToolLog,
+) -> Result<IdleGatedEncode, String> {
+    let Some(ass) = args.ass.as_deref() else {
+        return Err("an idle encode needs --ass".to_string());
+    };
+    let output = PathBuf::from(&args.output);
+    let parent = output.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+    let state_path = parent.join("linear-aot.state");
+    let video_path = parent.join("linear-aot-video.mp4");
+    // The gated feeder reads its source through a download sidecar, because that is how it learns
+    // how much of a growing file has actually been written. A finished input is the same thing with
+    // nothing left to wait for, so it is described the same way and marked complete from the start.
+    let input = PathBuf::from(&args.input);
+    let total = std::fs::metadata(&input)
+        .map_err(|e| format!("idle encode cannot size {}: {e}", input.display()))?
+        .len();
+    let prefix_state = parent.join("idle-encode.prefix");
+    std::fs::create_dir_all(&parent).map_err(|e| e.to_string())?;
+    std::fs::write(
+        &prefix_state,
+        format!("PNPREFIX1\n{total}\n{total}\n1\n{}\n", input.display()),
+    )
+    .map_err(|e| format!("idle encode cannot write {}: {e}", prefix_state.display()))?;
+
+    let config = pnx264::linear::LinearAotConfig {
+        ffmpeg: resolve_runtime_binary("ffmpeg"),
+        prefix_state,
+        state: state_path.clone(),
+        output: video_path,
+        subtitle: PathBuf::from(ass),
+        cancel_file: args.cancelfile.as_deref().map(PathBuf::from),
+        busy_file: args.aot_busyfile.as_deref().map(PathBuf::from),
+        lease_file: args.aot_lockfile.as_deref().map(PathBuf::from),
+        job_id: args.aot_job_id.unwrap_or(0),
+        compatibility: preset.aot_compatibility(),
+        filter: preset
+            .video_filter()
+            .unwrap_or_else(|| format!("ass={},format=yuv420p", pnx264::linear::SUBTITLE_TOKEN)),
+        video_args: preset.video_encoder_args(),
+    };
+    log.line(&format!(
+        "idle encode starting gated on {} (lease {}): {} bytes of {}",
+        args.aot_busyfile.as_deref().unwrap_or("nothing"),
+        args.aot_lockfile.as_deref().unwrap_or("nothing"),
+        total,
+        input.display(),
+    ));
+    let error = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let thread_error = error.clone();
+    let handle = std::thread::spawn(move || {
+        if let Err(reason) = pnx264::linear::run_linear_aot(config.clone()) {
+            if let Ok(mut slot) = thread_error.lock() {
+                *slot = Some(reason);
+            }
+            // The handoff below is waiting on this state file and would otherwise wait forever:
+            // the process it checks for liveness is this one, which is still very much alive.
+            // Removing it is how a failed encode reaches the code that reports it.
+            std::fs::remove_file(&config.state).ok();
+        }
+    });
+    // The runner publishes its state before it does anything else, and the handoff refuses a run it
+    // cannot see. Waiting for the file is what keeps a slow filesystem from looking like no encode.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !state_path.exists() && std::time::Instant::now() < deadline {
+        if let Ok(slot) = error.lock() {
+            if let Some(reason) = slot.clone() {
+                return Err(reason);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Ok(IdleGatedEncode { handle: Some(handle), error })
+}
+
 fn planner_encoder_config(preset: Option<&ResolvedPreset>) -> pnx264::Config {
     let settings = preset.map(ResolvedPreset::x264_settings).unwrap_or_default();
     pnx264::Config {
@@ -1369,9 +1487,36 @@ async fn main() {
     };
     log.line(&format!("audio_index={}", audio_index));
 
-    if adopts_linear_prefix(active_preset.as_ref()) {
-        let preset = active_preset.as_ref().expect("adopts_linear_prefix implies a preset");
-        match finish_linear_aot(&args, preset, &audio_index, &proto, &neg, &mut log) {
+    let idle_gated = runs_idle_gated(active_preset.as_ref(), &args);
+    if adopts_linear_prefix(active_preset.as_ref()) || idle_gated {
+        let preset = active_preset
+            .as_ref()
+            .expect("an adopted prefix or an idle encode implies a preset");
+        // A background preset that also encodes ahead has a prefix waiting for it, and adopting it
+        // is the whole point: that speculation was itself gated, so the work is already background
+        // work and re-doing it here would only spend the machine twice.
+        let mut handoff = finish_linear_aot(&args, preset, &audio_index, &proto, &neg, &mut log);
+        // Nothing to adopt. An ordinary preset falls through to the linear encode below; a
+        // background one cannot, because that encode would run at full speed with nothing to stop
+        // it. It runs the same gated encoder here instead and adopts its own output.
+        if matches!(handoff, Ok(false)) && idle_gated {
+            handoff = match start_idle_gated_encode(&args, preset, &mut log) {
+                Ok(idle) => {
+                    let result = finish_linear_aot(&args, preset, &audio_index, &proto, &neg, &mut log);
+                    match (idle.error(), result) {
+                        // The thread's own account of the failure is the specific one; whatever the
+                        // handoff made of the state file disappearing underneath it is not.
+                        (Some(reason), _) => Err(reason),
+                        (None, Ok(false)) => Err(
+                            "idle encode produced nothing to adopt".to_string(),
+                        ),
+                        (None, other) => other,
+                    }
+                }
+                Err(reason) => Err(reason),
+            };
+        }
+        match handoff {
             Ok(true) => {
                 println!("{}", pn_emit!(
                     protocol = proto,

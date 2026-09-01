@@ -79,7 +79,10 @@ presets and stay compiled in: they are how an intro is stitched on, not a qualit
 The preset selected here also decides whether the run adopts a speculative ahead-of-time prefix and
 whether it chunks across parallel encoders — read off the preset rather than off the flag it was
 reached by, so the two spellings behave identically. A preset file decides both for itself with
-`aot` and `chunked`. `--linear-prefix` runs the preset's own filter and encoder arguments, so it
+`aot` and `chunked`, and a third declaration, `idle`, makes the encode background work: the encode
+worker then passes `--aot-busyfile` and `--aot-lockfile`, and pnmpeg feeds its encoder through the
+same gate the speculative planners use rather than running it at full speed. See
+[WORKER.md](WORKER.md#background-encodes). `--linear-prefix` runs the preset's own filter and encoder arguments, so it
 encodes ahead with whatever the preset names — libx264, NVENC, AMF — and requires a preset to be
 selected. See [WORKER.md](WORKER.md#parallel-veryslow-encoding).
 

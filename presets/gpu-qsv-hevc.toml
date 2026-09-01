@@ -13,6 +13,12 @@
 # sources is the main output rather than a side one.
 hardware = "gpu"
 aot = true
+# Background work. A 10-bit HEVC encode at these settings is an archive pass, not something anyone
+# is watching a progress bar for, so it runs on its own lane and only while `enc-main` is empty. The
+# moment an ordinary encode is ordered it stops feeding its encoder and waits; when the machine is
+# quiet again the same ffmpeg process picks up where it left off, with its rate control and frame
+# history intact. Nothing is re-encoded across a pause, and nothing survives a pndc restart.
+idle = true
 # The average bitrate, and the source's global metadata and chapter list. None of the three has a
 # field of its own — the built-ins are all constant-quality and none of them has ever carried
 # chapters — so they come through the passthrough, which is appended verbatim and is read by the

@@ -19,6 +19,10 @@ pub enum Worker {
     Encode,
     Upload,
     Probe,
+    // The second encode lane, for presets that declared themselves background work. It exists
+    // because `Encode` runs its jobs one at a time: an idle encode waiting for the machine to go
+    // quiet would, from that lane, be the very thing keeping it busy, and nothing would ever run.
+    IdleEncode,
 }
 
 // HeartStatus is returned by /hearts command.

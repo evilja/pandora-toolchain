@@ -102,6 +102,11 @@ pub const PNMPEG_ENCODE: &[CliParam] = &[
     CliParam::Path("OUTPUT"),
     CliParam::OptionalPair("--hls", "HLS"),
     CliParam::OptionalPair("--hls-name", "HLSNAME"),
+    // Present only for a preset that declared itself background work. Their absence is what makes
+    // every other encode ungated, so pnmpeg needs no second way to be told which kind this is.
+    CliParam::OptionalPair("--aot-busyfile", "AOTBUSY"),
+    CliParam::OptionalPair("--aot-lockfile", "AOTLOCK"),
+    CliParam::OptionalPair("--aot-job-id", "AOTJOBID"),
     CliParam::Literal("--ass"),
     CliParam::Path("ASS"),
     CliParam::Literal("--fontconfig"),
