@@ -149,6 +149,20 @@ fn generic_permission_hint(error: &serenity::Error, channel_id: u64) -> Vec<Stri
     }
 }
 
+// For a reply a call site builds itself. Every one of these used to end in `.await.ok()`, which is
+// how `/help` — a command that bypasses the rank gate entirely and answers ephemerally — could be
+// refused by Discord with nothing whatsoever reaching this log. That is the one command an operator
+// is told to try when something looks broken, so it is the one that must say why it did not answer.
+pub(super) fn or_report(
+    result: Result<(), serenity::Error>,
+    what: &str,
+    command: &serenity::all::CommandInteraction,
+) {
+    if let Err(error) = result {
+        report_interaction_failure(what, command, &error);
+    }
+}
+
 pub(super) async fn command_error(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,

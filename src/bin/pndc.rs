@@ -1597,9 +1597,9 @@ async fn handle_help_command(ctx: &Context, command: &serenity::all::CommandInte
                 .ephemeral(true)
         }
     };
-    command.create_response(ctx, CreateInteractionResponse::Message(
+    or_report(command.create_response(ctx, CreateInteractionResponse::Message(
         response
-    )).await.ok();
+    )).await, "reply", command);
 }
 
 #[derive(Debug, PartialEq)]
@@ -2236,20 +2236,20 @@ impl EventHandler for Handler {
         if let Interaction::Command(command) = interaction {
             if !is_authorized(command.data.name.as_str(), command.user.id.get()) {
                 println!("[gate] BLOCKED user={} cmd={}", command.user.id.get(), command.data.name.as_str());
-                command.create_response(&ctx, CreateInteractionResponse::Message(
+                or_report(command.create_response(&ctx, CreateInteractionResponse::Message(
                     CreateInteractionResponseMessage::new()
                         .content("Yetkisiz işlem.\nGeliştiricimden izin isteyin.")
                         .ephemeral(true)
-                )).await.ok();
+                )).await, "reply", &command);
                 return;
             }
             if requires_server_admin(command.data.name.as_str()) && !has_server_admin_access(&command) {
                 println!("[gate] BLOCKED_NON_ADMIN user={} cmd={}", command.user.id.get(), command.data.name.as_str());
-                command.create_response(&ctx, CreateInteractionResponse::Message(
+                or_report(command.create_response(&ctx, CreateInteractionResponse::Message(
                     CreateInteractionResponseMessage::new()
                         .content("This server-scoped command requires the Discord Server Administrator permission.")
                         .ephemeral(true)
-                )).await.ok();
+                )).await, "reply", &command);
                 return;
             }
             println!("[gate] ALLOWED user={} cmd={}", command.user.id.get(), command.data.name.as_str());
