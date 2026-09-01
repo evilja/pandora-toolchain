@@ -1,5 +1,5 @@
-# libx265 on the CPU: 10-bit H.265 at a 9000 kbit/s average, capped at 1080p, carrying the source's
-# global metadata and chapter list into the release.
+# libx265 on the CPU: 10-bit H.265 at a 9000 kbit/s average, scaled to exactly 1920x1080, carrying
+# the source's global metadata and chapter list into the release.
 #
 # This mirrors no built-in — there is no `x265` preset name a job can ask for — so copy it across
 # under whichever built-in name you want it to replace. `veryslow` is the natural one: it is already
@@ -16,8 +16,8 @@
 #
 # `aot = true` is what a CPU preset of this shape would default to anyway were it not scaling; it is
 # declared because a scaling preset otherwise stays out of encoding ahead, on the reasoning that
-# those run as a second output beside a source-resolution one. A 1080p cap on 1080p sources is the
-# main output rather than a side one.
+# those run as a second output beside a source-resolution one. Squaring a nearly-1080p source up to
+# 1080p is the main output rather than a side one.
 #
 # Chunking is not available here whatever is declared: the chunk scheduler drives libx264 through
 # `pnx264` directly and applies a filter chain of its own, so neither an x265 preset nor a scaling
@@ -39,15 +39,24 @@ extra_args = ["-b:v", "9000k", "-map_metadata", "0", "-map_chapters", "0"]
 
 [video]
 codec = "libx265"
-# `min(1080,ih)` caps rather than forces the height, so a 720p source is not upscaled, and `-2`
-# keeps the width even; on 16:9 sources this is exactly 1920x1080. The scale runs before `ass` so
-# libass renders subtitles at the output size.
+# A forced 1920x1080 rather than the `min(1080,ih)` cap the 720p and 480p presets use. A cap exists
+# to avoid upscaling, and refuses to fix a source that is a couple of lines short of its nominal
+# resolution: `min(1080,1078)` is 1078, so a 1918x1078 master would pass straight through and be
+# released at that size. This squares it up instead, at the cost of upscaling anything genuinely
+# smaller — a 720p source encoded through here becomes a 1080p file with no more detail in it.
+#
+# The aspect ratio moves by a fraction of a percent on a source that is not exactly 16:9 (1918x1078
+# is 1.7792 against 1080p's 1.7778). That is a sub-pixel stretch, and it is the reason this is a
+# plain `scale` rather than a `force_original_aspect_ratio=decrease` with a `pad`: two pixels do not
+# justify black bars.
+#
+# The scale runs before `ass` so libass renders subtitles at the output size.
 #
 # `yuv420p10le` is x265's own spelling of 4:2:0 10-bit. It is set in the filter chain because that
 # is where every built-in names its pixel format and because `scale_height` and the ahead-of-time
 # compatibility check both read the chain back; `-pix_fmt` in `extra_args` would reach the encoder
 # just as well and would be the one part of this preset written somewhere else.
-filter = "scale=-2:'min(1080,ih)':flags=lanczos,ass=INPUTFILEASS,format=yuv420p10le"
+filter = "scale=1920:1080:flags=lanczos,ass=INPUTFILEASS,format=yuv420p10le"
 profile = "main10"
 # x265's own preset scale, which is not x264's: `slow` here is roughly where the returns stop being
 # worth the time on release content, and `veryslow`/`placebo` cost hours for changes a viewer does

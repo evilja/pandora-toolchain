@@ -79,8 +79,8 @@ cp presets/cpu-x265.toml  DB/config/global/presets/veryslow.toml  # 10-bit HEVC 
 ```
 
 `cpu-x265.toml` is the only preset here that encodes to a bitrate rather than to a quality level:
-10-bit H.265 through libx265 at a 9000 kbit/s average with a 12000k ceiling, capped at 1080p,
-carrying the source's global metadata and chapter list into the release. It is also the only one
+10-bit H.265 through libx265 at a 9000 kbit/s average with a 12000k ceiling, scaled to exactly
+1920x1080, carrying the source's global metadata and chapter list into the release. It is also the only one
 that declares `idle = true`, on the reasoning that an encode at these settings is an archive pass
 rather than something anyone is waiting on. It is the one place `extra_args` is load-bearing rather
 than decorative — `-b:v`, `-map_metadata` and `-map_chapters` have no fields of their own, because

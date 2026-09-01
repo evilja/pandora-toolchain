@@ -422,15 +422,29 @@ impl ResolvedPreset {
         settings
     }
 
-    // The frame height the preset caps its output at, read out of its own filter chain rather than
+    // The frame height the preset's output ends up at, read out of its own filter chain rather than
     // configured beside it — a preset that scaled to one height and declared another would name its
     // release wrong, and the filter is the half that actually decides the pixels.
+    //
+    // Both spellings a scaling preset uses are recognised. `min(<h>,ih)` caps without upscaling, and
+    // is what `720p` and `480p` are built on. A literal `scale=<w>:<h>` forces the height instead,
+    // which a source a couple of lines short of its nominal resolution needs — and which would
+    // otherwise read as no scaling at all, so an HLS release off a 1078-line source that this
+    // preset had just made 1080 lines tall would be published as `1078p`.
     pub fn scale_height(&self) -> Option<u32> {
         let filter = self.params.iter().find_map(|param| match param {
             FfmpegParams::BasicFilter(value) => Some(value.to_string()),
             _ => None,
         })?;
-        let captures = regex::Regex::new(r"min\((\d+),\s*ih\)")
+        if let Some(captures) = regex::Regex::new(r"min\((\d+),\s*ih\)")
+            .unwrap()
+            .captures(&filter)
+        {
+            return captures.get(1)?.as_str().parse::<u32>().ok();
+        }
+        // The height has to be a literal for this to say anything: `-1`, `-2` and an expression are
+        // all "whatever the source implies", which is not a height this can report.
+        let captures = regex::Regex::new(r"scale=-?\d+:(\d+)")
             .unwrap()
             .captures(&filter)?;
         captures.get(1)?.as_str().parse::<u32>().ok()
@@ -888,6 +902,32 @@ mod tests {
         // never resolves an encode of its own.
         assert!(!idle_encode_for("standard"));
         assert!(!idle_encode_for("no-such-preset"));
+    }
+
+    // A preset that forces a height rather than capping one is still a scaling preset. Reading it
+    // as unscaled would publish an HLS release under the source's height instead of the encode's.
+    #[test]
+    fn a_forced_scale_reports_its_height_like_a_capped_one_does() {
+        let declare = |filter: &str| {
+            resolved_from_file(
+                "test",
+                &toml::from_str::<PresetFile>(&format!(
+                    "[video]\ncodec = \"libx265\"\nfilter = \"{filter}\"\n"
+                ))
+                .unwrap(),
+            )
+            .scale_height()
+        };
+
+        assert_eq!(
+            declare("scale=1920:1080:flags=lanczos,ass=INPUTFILEASS,format=yuv420p10le"),
+            Some(1080)
+        );
+        assert_eq!(declare("scale=-2:720:flags=lanczos,ass=INPUTFILEASS"), Some(720));
+        assert_eq!(declare("scale=-2:'min(1080,ih)',ass=INPUTFILEASS"), Some(1080));
+        // An expression or an auto height is whatever the source implies, which is not a height.
+        assert_eq!(declare("scale=1920:-2,ass=INPUTFILEASS"), None);
+        assert_eq!(declare("ass=INPUTFILEASS,format=yuv420p"), None);
     }
 
     // Chunking occupies every core to finish one episode sooner, which is the opposite of what an
