@@ -64,7 +64,11 @@ pub fn choose_node(job: &Job, has_source_file: bool) -> Option<String> {
     if !is_eligible(job, has_source_file) {
         return None;
     }
-    board::pick_node(&preset_name(&job.preset), job.link_pin.as_deref())
+    board::pick_node(
+        &preset_name(&job.preset),
+        job.link_pin.as_deref(),
+        job.server_id,
+    )
 }
 
 // Everything the node needs, resolved. Nothing here is an id for the node to look up: the server's

@@ -70,6 +70,13 @@ pub struct NodeState {
     // grouped a farm did not mean "until the next deploy".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    // The one guild this node works for, set by `/limit`. A node with a reservation is offered
+    // nothing from anywhere else — not the machine's preference but the cluster's rule about it,
+    // which is why it lives here and not in the node's own config: a box someone else paid for
+    // should not be reachable by editing a file on it. Persisted for the same reason `drain` and
+    // `group` are; an operator who reserved a node did not mean "until the next deploy".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reserved_for: Option<u64>,
 }
 
 fn one() -> u32 {
@@ -280,6 +287,9 @@ pub fn register(
     let existing = state.nodes.get(&request.node);
     let drain = existing.map(|node| node.drain).unwrap_or(false);
     let group = existing.and_then(|node| node.group.clone());
+    // Survives the node re-registering, exactly as the drain flag does. A node that reconnects has
+    // not been un-reserved; only `/limit` releases it.
+    let reserved_for = existing.and_then(|node| node.reserved_for);
     let registered_at = existing
         .map(|node| node.registered_at)
         .filter(|value| *value > 0)
@@ -299,6 +309,7 @@ pub fn register(
         last_seen: now(),
         drain,
         group,
+        reserved_for,
     };
     state.nodes.insert(request.node, node);
     save_roster(&state);
@@ -362,7 +373,7 @@ pub fn touch(node: &str) {
 
 // The node a job should be offered to, or None to keep it local. Called from `pn_worker`, which is
 // why it never blocks: a job that finds no free node runs here rather than waiting for one.
-pub fn pick_node(preset: &str, pin: Option<&str>) -> Option<String> {
+pub fn pick_node(preset: &str, pin: Option<&str>, server: Option<u64>) -> Option<String> {
     let settings = settings();
     if !settings.enabled {
         return None;
@@ -390,6 +401,11 @@ pub fn pick_node(preset: &str, pin: Option<&str>) -> Option<String> {
                 .as_deref()
                 .is_none_or(|only| node.name == only),
         })
+        // A reserved node belongs to one guild. A job from anywhere else does not see it, and a
+        // job with no guild at all — nothing on this machine submits one, but the field is an
+        // Option — sees no reserved node either, because "unknown" is not the guild it was kept
+        // for. Note this is not the inverse rule: that guild still uses every other free node.
+        .filter(|node| serves_server(node.reserved_for, server))
         .filter(|node| advertises_encoder(&node.encoders, required_encoder.as_deref()))
         // A GPU preset on a CPU box does not fail cleanly: ffmpeg either refuses the encoder or
         // silently falls back to a software one, and the second outcome ships a release at a
@@ -409,6 +425,19 @@ pub fn pick_node(preset: &str, pin: Option<&str>) -> Option<String> {
             .then(a.name.cmp(&b.name))
     });
     candidates.first().map(|node| node.name.clone())
+}
+
+// Whether a node will take a job from this guild. A node with no reservation takes anything; a
+// reserved one takes that guild and nothing else, including a job carrying no guild at all —
+// "unknown" is not the server it was kept for.
+//
+// This is not the inverse rule: reserving a node says nothing about which nodes that guild uses,
+// and it keeps every other one it could already reach.
+fn serves_server(reserved_for: Option<u64>, server: Option<u64>) -> bool {
+    match reserved_for {
+        Some(reserved) => server == Some(reserved),
+        None => true,
+    }
 }
 
 fn advertises_encoder(encoders: &[String], required: Option<&str>) -> bool {
@@ -598,6 +627,19 @@ pub fn set_group(node: &str, group: Option<&str>) -> Result<Option<String>, Stri
     Ok(group)
 }
 
+// Reserve a node for one guild, or release it. Returns what it is reserved for afterwards, so the
+// caller reports the state that actually landed rather than the one it asked for.
+pub fn set_reserved(node: &str, server: Option<u64>) -> Result<Option<u64>, String> {
+    let mut state = board().lock().unwrap();
+    ensure_loaded(&mut state);
+    let Some(entry) = state.nodes.get_mut(node) else {
+        return Err(format!("No node `{}` has registered.", node));
+    };
+    entry.reserved_for = server;
+    save_roster(&state);
+    Ok(server)
+}
+
 // The name a node's work reports under: its group when it has one, itself otherwise. Every worker
 // label goes through here, so grouping is one lookup rather than a rule each call site remembers.
 pub fn display_name(node: &str) -> String {
@@ -675,6 +717,10 @@ pub fn nodes_view() -> Value {
                 "max_jobs": node.max_jobs,
                 "encoders": node.encoders,
                 "drain": node.drain,
+                // Null unless `/limit` reserved it. A reserved node produces no other visible
+                // symptom — it simply stops being offered work and reads as idle — so the console
+                // has to be able to say why.
+                "reserved_for": node.reserved_for.map(|id| id.to_string()),
                 "last_seen_secs": seconds_since_seen(&node),
                 "jobs": jobs.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
                 "pandora_version": node.pandora_version,
@@ -698,6 +744,21 @@ mod tests {
         assert!(!advertises_encoder(&encoders, Some("av1_nvenc")));
         assert!(!advertises_encoder(&[], Some("av1_nvenc")));
         assert!(advertises_encoder(&[], None));
+    }
+
+    // `/limit` is one-way: it narrows who may use a node, never which nodes a server may use.
+    #[test]
+    fn a_reserved_node_serves_its_own_server_and_nobody_else() {
+        // Unreserved: every job, including one carrying no guild.
+        assert!(serves_server(None, Some(1)));
+        assert!(serves_server(None, None));
+
+        // Reserved: that guild only.
+        assert!(serves_server(Some(7), Some(7)));
+        assert!(!serves_server(Some(7), Some(8)));
+        // A job with no guild is not the guild it was kept for, so it is not offered the node —
+        // it runs on the coordinator or on an unreserved one, exactly as it would have before.
+        assert!(!serves_server(Some(7), None));
     }
 
     fn spec(job_id: u64) -> LinkJobSpec {

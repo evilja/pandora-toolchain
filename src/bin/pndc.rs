@@ -425,6 +425,21 @@ async fn handle_lsnode(ctx: &Context, command: &serenity::all::CommandInteractio
             held,
             if node.drain { " • draining" } else { "" },
         ));
+        // A reservation is invisible in every other symptom it produces — the node simply stops
+        // being offered work and looks idle — so it is named here, beside the machine it applies
+        // to, and marked when it belongs to a guild other than the one asking.
+        if let Some(reserved) = node.reserved_for {
+            let mine = command.guild_id.map(|guild| guild.get()) == Some(reserved);
+            lines.push(format!(
+                "🔒 `{}` — reserved for {}",
+                node.name,
+                if mine {
+                    "this server".to_string()
+                } else {
+                    format!("server `{}`", reserved)
+                }
+            ));
+        }
         // A node that could not run a migration still takes work and still looks healthy, so the
         // only place this surfaces at all is here. It is indented under its node rather than
         // collected at the bottom, because which machine failed is the whole of the information.
@@ -520,6 +535,72 @@ async fn handle_teenode(ctx: &Context, command: &serenity::all::CommandInteracti
             )
         }
         None => format!("`{}` is ungrouped: its work reports as `lnk-{}` again.", name, name),
+    };
+    command
+        .create_response(
+            ctx,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .embed(success_embed(command, COMMAND_UPDATED).description(description))
+                    .ephemeral(true),
+            ),
+        )
+        .await
+        .ok();
+}
+
+// `/limit` — a node that works for one guild and nobody else. A machine somebody contributed for
+// their own releases was, until now, part of one undifferentiated pool: the scheduler picked the
+// freest box for whatever came next, and the only ways to narrow that were `link_only_node`, which
+// is cluster-wide, and pinning, which is per job. Reserving lives on the coordinator's roster
+// rather than in the node's own config on purpose — a node cannot decide who it serves, or a box
+// could be redirected by editing a file on it.
+async fn handle_limit(ctx: &Context, command: &serenity::all::CommandInteraction) {
+    use pandora_toolchain::pnworker::link::board;
+
+    let Some(name) = option_trimmed(command, "name") else {
+        command_error(ctx, command, "Error: `name` is required.").await;
+        return;
+    };
+    let clear = command
+        .data
+        .options
+        .iter()
+        .find(|option| option.name == "clear")
+        .and_then(|option| option.value.as_bool())
+        .unwrap_or(false);
+    // The guild the command was used in is the reservation; there is no field for naming another,
+    // because an id typed by hand is one nobody can check and a node quietly reserved to the wrong
+    // guild simply stops taking work with no error anywhere.
+    let server = match (clear, command.guild_id) {
+        (true, _) => None,
+        (false, Some(guild)) => Some(guild.get()),
+        (false, None) => {
+            command_error(
+                ctx,
+                command,
+                "Error: use this in the server the node should work for, or pass `clear: true`.",
+            )
+            .await;
+            return;
+        }
+    };
+    let applied = match board::set_reserved(&name, server) {
+        Ok(applied) => applied,
+        Err(e) => {
+            command_error(ctx, command, format!("Error: {}", e)).await;
+            return;
+        }
+    };
+    let description = match applied {
+        Some(guild) => format!(
+            "`{}` now works for this server only (`{}`). Jobs from anywhere else will not be offered to it, and will run here or on another node exactly as they did before. This server keeps using every other free node as well — the reservation is one-way. Its running leases are unaffected.",
+            name, guild
+        ),
+        None => format!(
+            "`{}` is no longer reserved: it takes work from every server again.",
+            name
+        ),
     };
     command
         .create_response(
@@ -706,6 +787,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("drainnode", 4),
     ("rmnode", 4),
     ("teenode", 4),
+    ("limit", 4),
     ("touchworker", 4),
     ("lsworker", 4),
     ("rmworker", 4),
@@ -1144,6 +1226,13 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Show several Pandora Mini nodes under one worker name.",
             usage: "/teenode name:<node> [group:<name>]",
             details: "Groups a node under a shared display name: every job leased to a grouped node reports its worker as `lnk-<group>` instead of `lnk-<node>`, so a farm of interchangeable machines reads as one worker in the job embed and on the console. Nothing else merges — the nodes stay separate in the roster, hold their own leases, keep their own purposes and encoders, and are scheduled, drained and removed individually. Omit group, or pass `-`, to ungroup. Witch only."
+        },
+        HelpCommand {
+            section: "admin",
+            name: "limit",
+            summary: "Reserve a Pandora Mini node for one server.",
+            usage: "/limit name:<node> [clear:true]",
+            details: "Reserves a node for the server the command is used in: the scheduler offers it nothing from any other guild, and those jobs run on the coordinator or on another free node exactly as before. The reservation is one-way — this server still uses every other node it could use already. There is no field for naming a different guild, because a hand-typed id is one nobody can check and a node reserved to the wrong server simply stops taking work with no error to see. Pass `clear: true` to release it. Running leases are not interrupted, and the reservation survives the node re-registering and the coordinator restarting; `/lsnode` shows it. Witch only."
         },
         HelpCommand {
             section: "admin",
@@ -2315,6 +2404,9 @@ impl EventHandler for Handler {
                 "rmnode" => {
                     handle_rmnode(&ctx, &command).await;
                 }
+                "limit" => {
+                    handle_limit(&ctx, &command).await;
+                }
                 "lsworker" => {
                     handle_lsworker(&ctx, &command).await;
                 }
@@ -3259,6 +3351,16 @@ impl EventHandler for Handler {
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "group", "Shared worker name; omit or pass - to ungroup")
+                        .required(false)
+                ),
+            CreateCommand::new("limit")
+                .description("Reserve a Pandora Mini node for this server only")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "name", "Node name")
+                        .required(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Boolean, "clear", "Release the reservation instead")
                         .required(false)
                 ),
             CreateCommand::new("lsworker")

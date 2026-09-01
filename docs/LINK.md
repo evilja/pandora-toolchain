@@ -91,7 +91,8 @@ State:
   JSON array of `{ name, pandora_version, encoder_identity, ffmpeg_version, threads,
   max_jobs, encoders, build, migration_error, registered_at, last_seen, drain, group }`. The roster is
   advisory: a node re-registers within seconds of coming up. It is persisted for the two fields a
-  restart must not forget — an operator's drain flag and their `/teenode` grouping. `purpose` is
+  restart must not forget — an operator's drain flag, their `/teenode` grouping, and their `/limit`
+  reservation (`reserved_for`, the guild id a node works for and nothing else). `purpose` is
   deliberately *not* persisted: it belongs to the token, and a value carried across a restart would
   outlive the token that justified it.
 - `DB/config/global/environment/build.pandora` (both sides) — the build this machine is level with
@@ -416,6 +417,24 @@ Nodes are ranked most-idle first, then by thread count, so a cluster of unequal 
 biggest free box before its smallest. `link_only_node` limits offload to a single named node, which
 is how a node is trialled or a misbehaving one bypassed without deleting its token.
 
+### Reserving a node for one server
+
+`/limit name:<node>` reserves a node for the guild the command is used in: `pick_node` offers it
+nothing from any other server, and those jobs run on the coordinator or on another free node exactly
+as they would have. `/limit name:<node> clear:true` releases it.
+
+**The rule is one-way.** Reserving a node narrows who may use it and says nothing about which nodes
+that server uses — it keeps every other node it could already reach. A job carrying no guild at all
+is not offered a reserved node either: `None` is not the server it was kept for.
+
+The reservation lives on the coordinator's roster, not in the node's own config, because a node must
+not be able to decide who it serves — a contributed box could otherwise be redirected by editing a
+file on it. It is persisted for the same reason `drain` and `group` are, survives the node
+re-registering, and does not interrupt a lease the node is already running. There is no field for
+naming a different guild: a hand-typed id is one nobody can check, and a node reserved to the wrong
+server simply stops taking work with no error anywhere. `/lsnode` prints a `🔒` line under any
+reserved node, saying "this server" or naming the other guild's id.
+
 Leases are **targeted before the node polls**: `pn_worker` picks the node and creates the lease, and
 `GET /link/lease` hands over only what is waiting under that node's name. A second node polling can
 never take work meant for the first.
@@ -523,9 +542,10 @@ draining before a deploy does not mean until the next one. `/rmnode name:<node>`
 it re-registers on its next poll unless its token is revoked with `/rmtoken`, and any job it still
 holds is reclaimed when its lease expires. `/teenode name:<node> [group:<name>]` groups a node
 under a shared worker name (see [Grouping](#grouping)); `/lsnode` shows it as `→ lnk-<group>` beside
-the node's own name.
+the node's own name. `/limit name:<node> [clear:<bool>]` reserves a node for the server the command
+was used in (see [Reserving a node for one server](#reserving-a-node-for-one-server)).
 
-`GET /api/v1/workers` (privileged only) gains a `nodes` array — name, `/teenode` group, purpose,
+`GET /api/v1/workers` (privileged only) gains a `nodes` array — name, `/teenode` group, `/limit` reservation (`reserved_for`, a guild id as a string or null), purpose,
 thread count, `max_jobs`, measured encoders, drain state, seconds since last contact, the jobs it
 holds, its `encoder_identity`, the `build` it is level with, and any `migration_error`.
 Queue entries gain `link_node` and `link_attempts`. See [API.md](API.md#worker-snapshot).
