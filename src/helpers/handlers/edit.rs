@@ -92,7 +92,18 @@ pub async fn handle_edit_autocomplete(
     ctx: &Context,
     interaction: &serenity::all::CommandInteraction,
 ) {
+    // Returning without answering leaves Discord waiting the full three seconds and then telling
+    // the person their options could not be loaded — for what is only ever a shape this build did
+    // not expect. Say so, and still answer.
     let Some(focused) = interaction.data.autocomplete() else {
+        eprintln!("[edit] autocomplete arrived with no focused option; answering with nothing");
+        interaction
+            .create_response(
+                ctx,
+                CreateInteractionResponse::Autocomplete(CreateAutocompleteResponse::new()),
+            )
+            .await
+            .ok();
         return;
     };
     let partial = focused.value.to_string();
@@ -101,6 +112,15 @@ pub async fn handle_edit_autocomplete(
         return;
     }
     let mut response = CreateAutocompleteResponse::new();
+    // Nothing below matches an option this build does not know about, and the answer is then an
+    // empty list that Discord draws exactly like a failure. A slash command whose registered
+    // options have drifted from the code is precisely the case that produces it.
+    if !matches!(focused.name, "concat" | "preset") {
+        eprintln!(
+            "[edit] no autocomplete source for option `{}`; answering with nothing",
+            focused.name
+        );
+    }
     if focused.name == "concat" {
         let config = IntrosConfig::load();
         for (label, value) in filter_concat_choices(&config.groups, &partial) {
@@ -116,7 +136,12 @@ pub async fn handle_edit_autocomplete(
         .create_response(ctx, CreateInteractionResponse::Autocomplete(response))
         .await
     {
-        eprintln!("[edit] concat autocomplete response failed: {}", e);
+        eprintln!(
+            "[edit] autocomplete for `{}` could not be answered in channel {}: {}",
+            focused.name,
+            interaction.channel_id.get(),
+            e
+        );
     }
 }
 

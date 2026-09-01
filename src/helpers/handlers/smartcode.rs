@@ -15,7 +15,11 @@ pub async fn handle_smartcode(
 
     let _ = response_msg.edit(ctx, EditMessage::new().content("...")).await;
 
-    response_msg.react(ctx, '❌').await.ok();
+    if let Err(error) = response_msg.react(ctx, '❌').await {
+        // Not fatal — the job runs either way — but the ❌ is the only way to cancel it from
+        // Discord, so silently not having one is worth a line.
+        report_send_failure("cancel reaction", response_msg.channel_id.get(), &error);
+    }
 
     let final_msg = match command.get_response(&ctx.http).await {
         Ok(m) => m,
@@ -136,7 +140,11 @@ pub async fn handle_smartcode_preview(
     let _ = response_msg
         .edit(ctx, EditMessage::new().content("..."))
         .await;
-    response_msg.react(ctx, '❌').await.ok();
+    if let Err(error) = response_msg.react(ctx, '❌').await {
+        // Not fatal — the job runs either way — but the ❌ is the only way to cancel it from
+        // Discord, so silently not having one is worth a line.
+        report_send_failure("cancel reaction", response_msg.channel_id.get(), &error);
+    }
     let final_msg = match command.get_response(&ctx.http).await {
         Ok(m) => m,
         Err(_) => return None,

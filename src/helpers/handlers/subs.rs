@@ -70,7 +70,11 @@ pub async fn handle_subs(
     };
 
     let response_msg = working_response(ctx, command, "...").await?;
-    response_msg.react(ctx, '❌').await.ok();
+    if let Err(error) = response_msg.react(ctx, '❌').await {
+        // Not fatal — the job runs either way — but the ❌ is the only way to cancel it from
+        // Discord, so silently not having one is worth a line.
+        report_send_failure("cancel reaction", response_msg.channel_id.get(), &error);
+    }
 
     let mut job = Job::new(
         command.user.id.get(),

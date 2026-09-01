@@ -205,7 +205,9 @@ async fn handle_encode_command(
                 Some(message) => message,
                 None => return,
             };
-            response_msg.react(ctx, '❌').await.ok();
+            if let Err(error) = response_msg.react(ctx, '❌').await {
+                report_send_failure("cancel reaction", response_msg.channel_id.get(), &error);
+            }
             let mut job = Job::new(
                 command.user.id.get(),
                 command.channel_id.get(),
@@ -2589,6 +2591,16 @@ impl EventHandler for Handler {
             let allowed = is_authorized(command_name, autocomplete.user.id.get())
                 && (!requires_server_admin(command_name) || has_server_admin_access(&autocomplete));
             if !allowed {
+                // An empty choice list is the only refusal an autocomplete has: there is no way to
+                // put a reason in front of the person typing, and Discord draws it the same as a
+                // lookup that failed. So the reason goes here, where the command gate's own
+                // BLOCKED lines already are — otherwise the one visible symptom of a rank problem
+                // is an option list that looks broken.
+                println!(
+                    "[gate] BLOCKED_AUTOCOMPLETE user={} cmd={} (the empty option list is this, not a lookup failure)",
+                    autocomplete.user.id.get(),
+                    command_name,
+                );
                 autocomplete.create_response(
                     &ctx,
                     CreateInteractionResponse::Autocomplete(

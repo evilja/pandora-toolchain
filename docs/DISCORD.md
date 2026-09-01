@@ -16,6 +16,16 @@ The level hierarchy is `witch > upper > admin > fansubber > authorize` (rank 4/3
 
 Server-scoped configuration commands require both their normal Pandora rank and Discord's `Administrator` permission: `/configure`, `/edit`, `/touchwatermark`, `/readmebase`, `/font`, and `/cfont`. Witch-tier users bypass this additional Discord permission check. The same checks run before autocomplete results are returned.
 
+### What Pandora needs from Discord, and what it says when it does not get it
+
+Every refusal along the way looks the same to the person typing — an ephemeral notice from Discord, or an option list that will not load — so the reason is written to `pndc`'s log instead. There are three distinct causes and they print differently:
+
+- `[gate] BLOCKED user=… cmd=…` / `[gate] BLOCKED_NON_ADMIN` — the Pandora rank. The user is told plainly.
+- `[gate] BLOCKED_AUTOCOMPLETE user=… cmd=…` — the same gate, refusing an autocomplete. There is no way to put a reason in front of someone typing an option, so the refusal is an **empty choice list**, which Discord draws exactly like a lookup that failed. If someone reports that a command's options "could not be loaded", look for this line before looking anywhere else.
+- `[discord] … failed for /… in channel … (guild …)` — Discord refused the reply itself. On error `50013`/`50001` the log names the permissions and says to check the **channel's own overwrites**, because a bot role holding everything server-wide is still denied by one channel.
+
+Pandora needs **View Channel, Send Messages, Embed Links, Add Reactions** and **Read Message History** in any channel a job is started from (plus **Send Messages in Threads** in a thread). A job's message is the one deliberately public reply in the bot — it is the message the job lives in, edited into an embed and reacted to as it runs, so it cannot be ephemeral. Every other reply is ephemeral and sends without `Send Messages`, which is what makes the symptom confusing: `/help` and every error message answer normally in a channel where `/encode` cannot post at all.
+
 ## Discord commands
 
 - `/help [section]` — public, ephemeral command guide. Bare `/help` shows section overview; `section` choices are `encode`, `repo`, `workers`, `admin`, `publish`, `fonts`, and `misc`. Section and command menus are filtered to commands the caller can run.

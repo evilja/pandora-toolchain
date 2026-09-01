@@ -463,7 +463,9 @@ async fn queue_studio_job(
         }
     };
 
-    response.react(ctx, '❌').await.ok();
+    if let Err(error) = response.react(ctx, '❌').await {
+        report_send_failure("cancel reaction", response.channel_id.get(), &error);
+    }
     let job_type = if preview { JobType::StudioPreview } else { JobType::Studio };
     let mut job = Job::new(
         user_id,

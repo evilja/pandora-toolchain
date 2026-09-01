@@ -75,16 +75,92 @@ pub(super) fn option_attachment<'a>(
         .and_then(|id| command.data.resolved.attachments.get(&id))
 }
 
+// Every reply to an interaction ends in `.ok()`, which is right — there is nothing a handler can do
+// about a reply that will not send. What was missing is the record. Discord answers a rejected
+// callback by showing the person who typed the command its own notice, "Missing Permissions", and
+// that notice was the only evidence anywhere: nothing reached this process's log, so a channel
+// whose overwrites deny the bot read as the bot being broken.
+//
+// The permission hint is the point. `50013` names no permission and no channel, and the bot's
+// server-wide role can hold everything while one channel's overwrites deny it — which is not
+// somewhere an operator thinks to look unless told.
+pub(super) fn report_interaction_failure(
+    what: &str,
+    command: &serenity::all::CommandInteraction,
+    error: &serenity::Error,
+) {
+    let guild = command.guild_id.map(|id| id.get().to_string()).unwrap_or_else(|| "DM".to_string());
+    eprintln!(
+        "[discord] {what} failed for /{} in channel {} (guild {}): {error}",
+        command.data.name,
+        command.channel_id.get(),
+        guild,
+    );
+    for line in permission_hint(error, command) {
+        eprintln!("[discord] {line}");
+    }
+}
+
+// The same for a reply that is not answering a command — a reaction handler, a component.
+pub(super) fn report_send_failure(what: &str, channel_id: u64, error: &serenity::Error) {
+    eprintln!("[discord] {what} failed in channel {channel_id}: {error}");
+    for line in generic_permission_hint(error, channel_id) {
+        eprintln!("[discord] {line}");
+    }
+}
+
+// Discord's code for "you may not do that here". `50001` is Missing Access, which is the same
+// story told from one step further back: the bot cannot see the channel at all.
+fn discord_error_code(error: &serenity::Error) -> Option<isize> {
+    match error {
+        serenity::Error::Http(serenity::http::HttpError::UnsuccessfulRequest(response)) => {
+            Some(response.error.code)
+        }
+        _ => None,
+    }
+}
+
+fn permission_hint(
+    error: &serenity::Error,
+    command: &serenity::all::CommandInteraction,
+) -> Vec<String> {
+    let mut lines = generic_permission_hint(error, command.channel_id.get());
+    if !lines.is_empty() {
+        // Which reply it was matters: an ephemeral one sends without `Send Messages`, so a command
+        // that fails here while `/help` works in the same channel is that permission and not a rank.
+        lines.push(format!(
+            "a reply Discord refused is not an authorisation problem — /{} passed the rank gate to get this far",
+            command.data.name,
+        ));
+    }
+    lines
+}
+
+fn generic_permission_hint(error: &serenity::Error, channel_id: u64) -> Vec<String> {
+    match discord_error_code(error) {
+        Some(50013) | Some(50001) => vec![
+            format!(
+                "Discord refused this as a permission problem in channel {channel_id}. Check that channel's own overwrites, not just the bot's role: a role that holds everything server-wide is still denied by one channel."
+            ),
+            "Pandora needs View Channel, Send Messages, Embed Links, Add Reactions and Read Message History there — Send Messages in Threads too if the command is used in a thread. It posts a public message, reacts ❌ to it, and edits it into an embed as the job runs.".to_string(),
+            "Ephemeral replies send without Send Messages, so an operator command answering normally in the same channel while this one fails is exactly that permission.".to_string(),
+        ],
+        _ => Vec::new(),
+    }
+}
+
 pub(super) async fn command_error(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,
     content: impl Into<String>,
 ) {
-    command.create_response(ctx, CreateInteractionResponse::Message(
+    if let Err(error) = command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
             .content(content.into())
             .ephemeral(true)
-    )).await.ok();
+    )).await {
+        report_interaction_failure("error reply", command, &error);
+    }
 }
 
 pub(super) async fn command_server_id(
@@ -141,10 +217,24 @@ pub(super) async fn working_response(
     } else {
         content.to_string()
     };
-    command.create_response(ctx, CreateInteractionResponse::Message(
+    // The one reply in the whole bot that is deliberately public: it is the message the job then
+    // lives in, edited into an embed and reacted to as it runs, so it cannot be ephemeral. That
+    // also makes it the first thing a channel's permissions can refuse, and the failure used to be
+    // swallowed twice — here and on the fetch below — leaving the command doing nothing at all
+    // with not one line to say why.
+    if let Err(error) = command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new().content(content)
-    )).await.ok();
-    command.get_response(&ctx.http).await.ok()
+    )).await {
+        report_interaction_failure("job message", command, &error);
+        return None;
+    }
+    match command.get_response(&ctx.http).await {
+        Ok(message) => Some(message),
+        Err(error) => {
+            report_interaction_failure("job message read-back", command, &error);
+            None
+        }
+    }
 }
 
 pub(super) fn command_language(command: &serenity::all::CommandInteraction) -> String {

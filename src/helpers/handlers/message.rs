@@ -26,7 +26,9 @@ pub async fn handle_message(
         }
     };
 
-    response_msg.react(context, '❌').await.ok();
+    if let Err(error) = response_msg.react(context, '❌').await {
+        report_send_failure("cancel reaction", response_msg.channel_id.get(), &error);
+    }
 
     Some(Job::new(
         msg.author.id.get(),
