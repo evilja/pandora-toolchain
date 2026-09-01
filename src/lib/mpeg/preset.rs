@@ -627,6 +627,37 @@ pub fn video_codec_for(name: &str) -> Option<String> {
 // coordinator wants, since it decides which lane a job is dispatched to and never runs the encode
 // itself. An unknown name is not background work: it is about to be refused anyway, and the answer
 // that keeps it on the ordinary lane is the one that fails visibly.
+// Whether a preset of this name exists as a file, with no built-in behind it. This is what makes a
+// name selectable that the compiled-in table has never heard of: `resolve` already reads a file for
+// any name, and the only thing standing between an operator's file and a job asking for it is a
+// name table that could not know about it.
+pub fn file_preset_exists(name: &str) -> bool {
+    read_preset_file(name).is_some()
+}
+
+// Every preset an operator has put in `DB/config/global/presets/`, by name, sorted. Used to offer
+// them: a file that parses is a preset that can be selected, and one that does not is already
+// reported on stderr by `read_preset_file` rather than silently offered and then refused.
+pub fn file_preset_names() -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(PRESETS_DIR) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("toml"))
+        .filter_map(|path| {
+            path.file_stem()
+                .and_then(|value| value.to_str())
+                .map(str::to_string)
+        })
+        .filter(|name| file_preset_exists(name))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
 pub fn idle_encode_for(name: &str) -> bool {
     resolve(name).is_some_and(|preset| preset.wants_idle_encode())
 }

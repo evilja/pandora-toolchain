@@ -11,7 +11,7 @@ macro_rules! job_query {
         concat!(
             "SELECT job_id, author, channel_id, response_id, requested_at, ",
             "started_at, ended_at, cancel_reason, ",
-            "job_type, preset_type, candidates, link, directory, stage, archived, ",
+            "job_type, preset_type, preset_name, candidates, link, directory, stage, archived, ",
             "progress, uploaded_links, acix_pending, server_id, ",
             "COALESCE(worker, 'que-main') AS worker FROM jobs ",
             $tail
@@ -125,6 +125,12 @@ impl JobDb {
         self.add_column_if_missing(
             "ALTER TABLE jobs ADD COLUMN worker TEXT DEFAULT 'que-main'"
         ).await?;
+        // A preset that exists only as a file has no discriminant to be recognised by later, so
+        // the name is stored beside the type. Only `Preset::Named` needs it; it is written for
+        // every preset because a column that is populated sometimes is one nobody trusts.
+        self.add_column_if_missing(
+            "ALTER TABLE jobs ADD COLUMN preset_name TEXT"
+        ).await?;
         self.add_column_if_missing(
             "ALTER TABLE jobs ADD COLUMN started_at INTEGER"
         ).await?;
@@ -208,7 +214,12 @@ impl JobDb {
             Preset::Hd720(c)          => (6i64, candidates_to_db(c)),
             Preset::Sd480(c)          => (7i64, candidates_to_db(c)),
             Preset::Av1(c)            => (8i64, candidates_to_db(c)),
+            // Every discriminant above names a table compiled into the binary. This one does not,
+            // so the row carries the preset's name in `preset_name` and this number means only
+            // "look there".
+            Preset::Named(_, c)       => (9i64, candidates_to_db(c)),
         };
+        let preset_name = job.preset.name();
         let link = job
             .display_link
             .clone()
@@ -218,9 +229,9 @@ impl JobDb {
             r#"
             INSERT INTO jobs (
                 job_id, author, channel_id, response_id, requested_at,
-                job_type, preset_type, candidates, link, directory, stage, server_id, worker
+                job_type, preset_type, preset_name, candidates, link, directory, stage, server_id, worker
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(job_id) DO UPDATE SET
                 author = excluded.author,
                 channel_id = excluded.channel_id,
@@ -228,6 +239,7 @@ impl JobDb {
                 requested_at = excluded.requested_at,
                 job_type = excluded.job_type,
                 preset_type = excluded.preset_type,
+                preset_name = excluded.preset_name,
                 candidates = excluded.candidates,
                 link = excluded.link,
                 directory = excluded.directory,
@@ -247,6 +259,7 @@ impl JobDb {
         .bind(job.requested_at.as_secs() as i64)
         .bind(job.job_type as u16 as i64)
         .bind(preset_type)
+        .bind(&preset_name)
         .bind(candidates)
         .bind(link)
         .bind(job.directory.to_string_lossy().to_string())
@@ -485,6 +498,7 @@ pub struct JobRow {
     pub cancel_reason: Option<String>,
     pub job_type:     i64,
     pub preset_type:  i64,
+    pub preset_name:  Option<String>,
     pub candidates:   Option<String>,
     pub link:         String,
     pub directory:    String,
@@ -546,7 +560,7 @@ impl JobStatus {
             ended_at: row.ended_at.map(|value| value.max(0) as u64),
             cancel_reason: row.cancel_reason.clone(),
             job_type:   job_type_label(row.job_type).to_string(),
-            preset:     preset_label(row.preset_type).to_string(),
+            preset:     row.preset_display(),
             stage:      stage_label(row.stage).to_string(),
             worker:     row.worker.clone(),
             link:       row.link.clone(),
@@ -595,6 +609,22 @@ pub fn job_type_label(job_type: i64) -> &'static str {
         16 => "Batch",
         17 => "Subs",
         _ => "Unknown",
+    }
+}
+
+impl JobRow {
+    // What to show for this row's preset. Every compiled-in preset has a label of its own; a preset
+    // that only ever existed as a file is named by the name it was selected under, which is the
+    // only thing that identifies it.
+    pub fn preset_display(&self) -> String {
+        match preset_label(self.preset_type) {
+            "Unknown" => self
+                .preset_name
+                .clone()
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or_else(|| "Unknown".to_string()),
+            label => label.to_string(),
+        }
     }
 }
 

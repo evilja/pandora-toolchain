@@ -316,6 +316,7 @@ pub fn preset_name(preset: &Preset) -> String {
         Preset::Av1(_) => "av1",
         Preset::Hd720(_) => "720p",
         Preset::Sd480(_) => "480p",
+        Preset::Named(name, _) => return name.clone(),
         Preset::Copy => "copy",
     }
     .to_string()

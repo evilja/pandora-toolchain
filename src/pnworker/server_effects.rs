@@ -36,7 +36,16 @@ pub fn preset_from_name(name: &str, candidates: Option<String>) -> Option<Preset
         "veryslow" | "very_slow" => Preset::VerySlow(candidates),
         "720p" => Preset::Hd720(candidates),
         "480p" => Preset::Sd480(candidates),
-        _ => return None,
+        // Not a name this binary knows, but perhaps one an operator wrote. A preset file has always
+        // been able to *replace* a built-in; this is what lets one exist on its own, selected by
+        // the name of the file it lives in.
+        other => {
+            if crate::lib::mpeg::preset::file_preset_exists(other) {
+                Preset::Named(other.to_string(), candidates)
+            } else {
+                return None;
+            }
+        }
     })
 }
 
@@ -190,6 +199,35 @@ mod tests {
         assert!(matches!(preset_from_name("AV1", None), Some(Preset::Av1(None))));
         assert!(preset_from_name("1440p", None).is_none());
         assert!(preset_from_name("", None).is_none());
+    }
+
+    // A preset that exists only as a file is selectable by the name of that file. Nothing is
+    // compiled in for it, so the name table has to reach the disk to answer at all — and has to
+    // keep saying no for a name with no file behind it, or a typo becomes a job that resolves to
+    // nothing much later on.
+    #[test]
+    fn a_preset_file_is_selectable_under_its_own_name() {
+        let root = std::path::Path::new(crate::lib::env::standard::PRESETS_DIR);
+        let name = format!("pntest-{}", std::process::id());
+        let path = root.join(format!("{name}.toml"));
+        assert!(
+            preset_from_name(&name, None).is_none(),
+            "a name with no file must not resolve"
+        );
+
+        std::fs::create_dir_all(root).unwrap();
+        std::fs::write(&path, "[video]\ncodec = \"libx265\"\n").unwrap();
+        let resolved = preset_from_name(&name, Some("intro".to_string()));
+        std::fs::remove_file(&path).ok();
+
+        match resolved {
+            Some(Preset::Named(resolved_name, candidates)) => {
+                assert_eq!(resolved_name, name);
+                // The intro group belongs to the server, not to the preset, and travels either way.
+                assert_eq!(candidates.as_deref(), Some("intro"));
+            }
+            other => panic!("a preset file did not resolve to a named preset: {other:?}"),
+        }
     }
 
     #[test]

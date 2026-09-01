@@ -316,6 +316,11 @@ A leased Pancode carries its originating `probe_job_id` alongside the source lin
 probe job and will fail to adopt its saved `.torrent`; the link is what the download falls back to,
 and the file index selects the episode.
 
+A lease naming a preset that exists only as a file needs that file on the node too: the node resolves
+the spec's preset through its own `preset_from_name`, which reaches its own
+`DB/config/global/presets/`. Preset files are not part of the synced asset corpus, so a node without
+one declines the lease with `unsupported preset <name>` and the coordinator runs the job itself.
+
 ### Sending the `.torrent` itself
 
 A job whose only route to its input was the metainfo file its probe saved on the coordinator used to

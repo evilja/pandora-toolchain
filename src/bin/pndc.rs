@@ -3015,14 +3015,13 @@ impl EventHandler for Handler {
                         .add_string_choice("3", "3")
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "preset", "Default encoding preset for this server.")
+                    // Autocompleted rather than a fixed choice list, for the same reason `concat`
+                    // is: the set is not known when the command is registered. A preset file in
+                    // `DB/config/global/presets/` may carry a name this binary has no table for,
+                    // and a static list could only ever offer the compiled-in ones.
+                    CreateCommandOption::new(CommandOptionType::String, "preset", "Default encoding preset for this server; type to search.")
                         .required(false)
-                        .add_string_choice("Pseudo Lossless", "pseudolossless")
-                        .add_string_choice("Standard x264", "standard")
-                        .add_string_choice("Very Slow x264 (CRF 18)", "veryslow")
-                        .add_string_choice("GPU", "gpu")
-                        .add_string_choice("AV1 NVENC", "av1")
-                        .add_string_choice("DEV", "dummy")
+                        .set_autocomplete(true)
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "concat", "Type/search and select an intro group; choose Disable concat to clear.")

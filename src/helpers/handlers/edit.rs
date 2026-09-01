@@ -43,9 +43,51 @@ fn filter_concat_choices(
     choices
 }
 
+// The presets `/edit` offers, in the order an operator reads them: the compiled-in ones this build
+// knows, each under the label it has always had, then whatever an operator has put in
+// `DB/config/global/presets/` under a name of its own.
+//
+// `720p` and `480p` are omitted deliberately, as they always have been — they are the standard
+// preset with a frame-height cap, arrive from API payloads, and are not a server default anyone has
+// asked to set. A file that replaces a built-in appears once, under the built-in's label: it *is*
+// that preset now, and offering the name twice would suggest a choice that does not exist.
+const BUILTIN_PRESET_CHOICES: [(&str, &str); 6] = [
+    ("Pseudo Lossless", "pseudolossless"),
+    ("Standard x264", "standard"),
+    ("Very Slow x264 (CRF 18)", "veryslow"),
+    ("GPU", "gpu"),
+    ("AV1 NVENC", "av1"),
+    ("DEV", "dummy"),
+];
+
+fn filter_preset_choices(partial: &str) -> Vec<(String, String)> {
+    let partial = partial.to_lowercase();
+    let mut choices: Vec<(String, String)> = BUILTIN_PRESET_CHOICES
+        .iter()
+        .map(|(label, value)| (label.to_string(), value.to_string()))
+        .collect();
+    for name in pandora_toolchain::lib::mpeg::preset::file_preset_names() {
+        if choices.iter().any(|(_, value)| value == &name) {
+            continue;
+        }
+        // Named for the file it came from, because that name is the whole of what identifies it —
+        // there is no label anywhere for a preset this build has never heard of.
+        choices.push((format!("{name} (file)"), name));
+    }
+    choices.retain(|(label, value)| {
+        value.chars().count() <= MAX_CONCAT_CHOICE_CHARS
+            && label.chars().count() <= MAX_CONCAT_CHOICE_CHARS
+            && (partial.is_empty()
+                || value.to_lowercase().contains(&partial)
+                || label.to_lowercase().contains(&partial))
+    });
+    choices.truncate(MAX_CONCAT_CHOICES);
+    choices
+}
+
 // `/edit` autocompletes several unrelated options, so the focused option decides which directory is
-// searched: the local intro groups for `concat`, and the matching site's live fansub directory for
-// each per-site fansub selector.
+// searched: the local intro groups for `concat`, the presets this deployment holds for `preset`,
+// and the matching site's live fansub directory for each per-site fansub selector.
 pub async fn handle_edit_autocomplete(
     ctx: &Context,
     interaction: &serenity::all::CommandInteraction,
@@ -62,6 +104,11 @@ pub async fn handle_edit_autocomplete(
     if focused.name == "concat" {
         let config = IntrosConfig::load();
         for (label, value) in filter_concat_choices(&config.groups, &partial) {
+            response = response.add_string_choice(label, value);
+        }
+    }
+    if focused.name == "preset" {
+        for (label, value) in filter_preset_choices(&partial) {
             response = response.add_string_choice(label, value);
         }
     }
@@ -224,10 +271,28 @@ pub async fn handle_edit(
     };
     let preset = match option_str(command, "preset").map(str::trim) {
         None => existing_preset.to_string(),
-        Some("standard") | Some("veryslow") | Some("gpu") | Some("av1") | Some("pseudolossless") | Some("dummy") => option_str(command, "preset").unwrap().to_string(),
-        Some(other) => {
-            edit_error(ctx, command, deferred, format!("Error: preset `{}` is not standard, veryslow, gpu, av1, pseudolossless, or dummy", other)).await;
-            return;
+        Some(requested) => {
+            let canonical = requested.to_ascii_lowercase();
+            // Asked of the one name table rather than of a list written out here. This used to be a
+            // fourth copy of the built-in names, which could not know about a preset an operator
+            // had put in `DB/config/global/presets/` under a name of its own — and autocomplete
+            // offers a value rather than enforcing it, so this is where a typed name is refused.
+            if pandora_toolchain::pnworker::server_effects::preset_from_name(&canonical, None)
+                .is_none()
+            {
+                edit_error(
+                    ctx,
+                    command,
+                    deferred,
+                    format!(
+                        "Error: `{}` is not a preset this deployment has. Clear the field and type to see what it does.",
+                        requested
+                    ),
+                )
+                .await;
+                return;
+            }
+            canonical
         }
     };
     if let Err(reason) = validate_preset_delivery(&preset, drive_only, hls) {
@@ -371,7 +436,10 @@ async fn edit_error(
 
 #[cfg(test)]
 mod tests {
-    use super::{filter_concat_choices, CLEAR_SENTINEL, DISABLE_CONCAT_LABEL, MAX_CONCAT_CHOICES};
+    use super::{
+        filter_concat_choices, filter_preset_choices, BUILTIN_PRESET_CHOICES, CLEAR_SENTINEL,
+        DISABLE_CONCAT_LABEL, MAX_CONCAT_CHOICES,
+    };
     use std::collections::HashMap;
 
     fn groups(names: &[&str]) -> HashMap<String, String> {
@@ -446,5 +514,50 @@ mod tests {
             ]
         );
         assert_eq!(choices[0], (DISABLE_CONCAT_LABEL.to_string(), CLEAR_SENTINEL.to_string()));
+    }
+
+    // The compiled-in presets are always offered, and a file an operator added is offered beside
+    // them. Discord caps a choice list at 25, which is the only reason this truncates.
+    #[test]
+    fn preset_choices_offer_the_builtins_and_filter_by_what_was_typed() {
+        let all = filter_preset_choices("");
+        for (_, value) in BUILTIN_PRESET_CHOICES {
+            assert!(
+                all.iter().any(|(_, offered)| offered == value),
+                "{value} was not offered"
+            );
+        }
+        assert!(all.len() <= MAX_CONCAT_CHOICES);
+        // 720p and 480p are the standard preset with a height cap and have never been a server
+        // default anyone selects; they stay out of the list exactly as they always have.
+        assert!(!all.iter().any(|(_, value)| value == "720p"));
+
+        let typed = filter_preset_choices("very");
+        assert_eq!(typed.len(), 1);
+        assert_eq!(typed[0].1, "veryslow");
+        // Matching is on the label too, so "AV1 NVENC" is findable by the part a person remembers.
+        assert!(filter_preset_choices("nvenc").iter().any(|(_, v)| v == "av1"));
+        assert!(filter_preset_choices("no-such-preset").is_empty());
+    }
+
+    // A file that replaces a built-in is that preset now. Offering its name a second time would
+    // suggest there are two things to pick between.
+    #[test]
+    fn a_file_replacing_a_builtin_is_offered_once() {
+        let root = std::path::Path::new(
+            pandora_toolchain::lib::env::standard::PRESETS_DIR,
+        );
+        std::fs::create_dir_all(root).ok();
+        let path = root.join("standard.toml");
+        if path.exists() {
+            // Never disturb a real deployment's preset: the assertion below holds regardless.
+            return;
+        }
+        std::fs::write(&path, "[video]\ncodec = \"libx264\"\n").unwrap();
+        let offered = filter_preset_choices("standard");
+        std::fs::remove_file(&path).ok();
+
+        let standards = offered.iter().filter(|(_, value)| value == "standard").count();
+        assert_eq!(standards, 1, "standard was offered {standards} times");
     }
 }

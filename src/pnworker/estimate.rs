@@ -225,6 +225,9 @@ pub(crate) fn remaining_secs_queued(frames: Option<u64>, preset: &Preset) -> Opt
         // Fewer pixels per frame than the standard preset that is otherwise identical to them.
         Preset::Hd720(_) => 110.0,
         Preset::Sd480(_) => 200.0,
+        // A preset file's speed is whatever an operator configured, and this is a queue estimate
+        // rather than a measurement: the standard preset's rate is the least wrong guess.
+        Preset::Named(_, _) => 60.0,
         Preset::Copy => 300.0,
     };
     frames.map(|frames| (frames as f64 / fps).ceil() as u64)

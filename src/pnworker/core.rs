@@ -876,17 +876,7 @@ async fn dispatch_keycode_ready(
         return fail_keycode(db, job, "backup keywords require a subtitle").await;
     }
     let inputs = resolved.paths;
-    let intro_dir = match &job.preset {
-        Preset::PseudoLossless(intro_dir)
-        | Preset::Dummy(intro_dir)
-        | Preset::Standard(intro_dir)
-        | Preset::VerySlow(intro_dir)
-        | Preset::Hd720(intro_dir)
-        | Preset::Sd480(intro_dir)
-        | Preset::Gpu(intro_dir)
-        | Preset::Av1(intro_dir) => intro_dir.clone(),
-        Preset::Copy => None,
-    };
+    let intro_dir = job.preset.candidates().cloned();
     if inputs.is_empty() {
         return fail_keycode(db, job, "no usable keyword outputs").await;
     }
@@ -1034,6 +1024,7 @@ fn preset_without_intro(preset: &Preset) -> Preset {
         Preset::Av1(_) => Preset::Av1(None),
         Preset::Hd720(_) => Preset::Hd720(None),
         Preset::Sd480(_) => Preset::Sd480(None),
+        Preset::Named(name, _) => Preset::Named(name.clone(), None),
         Preset::Copy => Preset::Copy,
     }
 }
@@ -3095,7 +3086,7 @@ async fn do_job_progression_things(
                 let idle_encode = job
                     .preset
                     .name()
-                    .is_some_and(crate::lib::mpeg::preset::idle_encode_for);
+                    .is_some_and(|name| crate::lib::mpeg::preset::idle_encode_for(&name));
                 job.worker = if idle_encode {
                     IDLE_ENCODE_WORKER.to_string()
                 } else {
@@ -3370,6 +3361,12 @@ pub enum Preset {
     // Standard x264 settings at a capped frame height. API-only: no /edit choice offers them.
     Hd720(Option<String>),
     Sd480(Option<String>),
+    // A preset that exists only as a file in `DB/config/global/presets/`, named by its own file
+    // stem. Every variant above is a table compiled into the binary that a file of the same name
+    // may replace; this one is the case where there is no such table and the file is the whole
+    // preset. It carries its name because nothing else knows it — the name is what `resolve` looks
+    // the file up by, and what travels to a node.
+    Named(String, Option<String>),
     Copy,
 }
 
@@ -3377,18 +3374,35 @@ impl Preset {
     // The canonical preset name — the same one `preset_from_name` accepts, the file name under
     // `DB/config/global/presets/`, and what `pnmpeg --preset` is given. `Copy` has none: it is a
     // stream copy, not an encode, and there is no preset to look up for it.
-    pub fn name(&self) -> Option<&'static str> {
+    pub fn name(&self) -> Option<String> {
         Some(match self {
-            Preset::PseudoLossless(_) => "pseudolossless",
-            Preset::Dummy(_) => "dummy",
-            Preset::Standard(_) => "standard",
-            Preset::VerySlow(_) => "veryslow",
-            Preset::Gpu(_) => "gpu",
-            Preset::Av1(_) => "av1",
-            Preset::Hd720(_) => "720p",
-            Preset::Sd480(_) => "480p",
+            Preset::PseudoLossless(_) => "pseudolossless".to_string(),
+            Preset::Dummy(_) => "dummy".to_string(),
+            Preset::Standard(_) => "standard".to_string(),
+            Preset::VerySlow(_) => "veryslow".to_string(),
+            Preset::Gpu(_) => "gpu".to_string(),
+            Preset::Av1(_) => "av1".to_string(),
+            Preset::Hd720(_) => "720p".to_string(),
+            Preset::Sd480(_) => "480p".to_string(),
+            Preset::Named(name, _) => name.clone(),
             Preset::Copy => return None,
         })
+    }
+
+    // The intro/concat folder this preset carries, whichever variant it is.
+    pub fn candidates(&self) -> Option<&String> {
+        match self {
+            Preset::PseudoLossless(c)
+            | Preset::Dummy(c)
+            | Preset::Standard(c)
+            | Preset::VerySlow(c)
+            | Preset::Gpu(c)
+            | Preset::Av1(c)
+            | Preset::Hd720(c)
+            | Preset::Sd480(c)
+            | Preset::Named(_, c) => c.as_ref(),
+            Preset::Copy => None,
+        }
     }
 }
 
@@ -3400,7 +3414,7 @@ impl Preset {
 // turned encoding-ahead on got a coordinator that never started it, and one that turned it off got
 // a speculative encode nothing would adopt.
 pub fn download_aot_for(preset: &Preset) -> Option<DownloadAot> {
-    let resolved = crate::lib::mpeg::preset::resolve(preset.name()?)?;
+    let resolved = crate::lib::mpeg::preset::resolve(&preset.name()?)?;
     if resolved.wants_chunked_encode() {
         return Some(DownloadAot { preset: resolved.name, chunked: true });
     }
@@ -3856,17 +3870,9 @@ impl Job {
         let settings = load_server_settings(server_id);
         let preset = match job_type {
             JobType::Encode | JobType::Pancode | JobType::Batch => settings.preset.clone(),
-            JobType::Keycode => match settings.preset {
-                Preset::PseudoLossless(candidates)
-                | Preset::Dummy(candidates)
-                | Preset::Standard(candidates)
-                | Preset::VerySlow(candidates)
-                | Preset::Hd720(candidates)
-                | Preset::Sd480(candidates)
-                | Preset::Gpu(candidates) => Preset::Standard(candidates),
-                Preset::Av1(candidates) => Preset::Standard(candidates),
-                Preset::Copy => Preset::Standard(None),
-            },
+            // A keycode join is an x264 encode whatever the server encodes releases with; only the
+            // intro group carries over.
+            JobType::Keycode => Preset::Standard(settings.preset.candidates().cloned()),
             JobType::Studio => Preset::Copy,
             JobType::StudioPreview => Preset::Dummy(None),
             _ => Preset::Dummy(None),
@@ -3952,17 +3958,9 @@ impl Job {
         let settings = load_server_settings(server_id);
         let preset = match job_type {
             JobType::Encode | JobType::Pancode | JobType::Batch => settings.preset.clone(),
-            JobType::Keycode => match settings.preset {
-                Preset::PseudoLossless(candidates)
-                | Preset::Dummy(candidates)
-                | Preset::Standard(candidates)
-                | Preset::VerySlow(candidates)
-                | Preset::Hd720(candidates)
-                | Preset::Sd480(candidates)
-                | Preset::Gpu(candidates) => Preset::Standard(candidates),
-                Preset::Av1(candidates) => Preset::Standard(candidates),
-                Preset::Copy => Preset::Standard(None),
-            },
+            // A keycode join is an x264 encode whatever the server encodes releases with; only the
+            // intro group carries over.
+            JobType::Keycode => Preset::Standard(settings.preset.candidates().cloned()),
             JobType::Studio => Preset::Copy,
             JobType::StudioPreview => Preset::Dummy(None),
             _ => Preset::Dummy(None),
@@ -4084,7 +4082,7 @@ mod tests {
         ] {
             let name = preset.name().unwrap();
             assert!(
-                crate::lib::mpeg::preset::resolve(name).is_some(),
+                crate::lib::mpeg::preset::resolve(&name).is_some(),
                 "{name} does not resolve"
             );
         }

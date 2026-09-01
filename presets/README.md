@@ -14,6 +14,15 @@ binary, so an untouched deployment encodes exactly as it always has. A file repl
 of the same name entirely — there is no merging, which is what keeps an edited preset readable as
 the whole truth about that encode.
 
+**A file may also carry a name no built-in has.** `standard.toml` replaces the standard preset;
+`archive.toml` is a preset called `archive` that this binary knows nothing else about. It is
+selectable everywhere a preset can be named — `/edit` autocompletes it as `archive (file)`, an API
+payload may ask for it, and `meta.pandora` line 11 may hold it — because `preset_from_name` answers
+from this directory when the compiled-in list has no such name. Two consequences follow from the
+file being the whole preset: deleting it while a server names it drops that server back to
+`standard`, and a Pandora Mini node offered a job naming it must have the same file, or it declines
+the lease and the job comes back to run on the coordinator.
+
 Three behaviours can be declared. Two have defaults that follow from a preset's own settings; the
 third has no default to derive and is off until asked for:
 
@@ -75,8 +84,12 @@ copied across under the name of the built-in you want it to replace:
 
 ```sh
 cp presets/gpu-nvenc.toml DB/config/global/presets/gpu.toml       # NVIDIA H.264, in place of AMF
-cp presets/cpu-x265.toml  DB/config/global/presets/veryslow.toml  # 10-bit HEVC on the CPU
+cp presets/cpu-x265.toml  DB/config/global/presets/                # 10-bit HEVC, as its own name
 ```
+
+Copied under its own name, `cpu-x265.toml` is offered by `/edit` as `cpu-x265 (file)` and replaces
+nothing. Copy it over a built-in's name instead — `veryslow.toml`, say — only if you want that
+built-in to *become* this preset for every server that selects it.
 
 `cpu-x265.toml` is the only preset here that encodes to a bitrate rather than to a quality level:
 10-bit H.265 through libx265 at a 9000 kbit/s average with a 12000k ceiling, scaled to exactly

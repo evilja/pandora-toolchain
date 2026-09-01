@@ -14,7 +14,7 @@ use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, mpsc::Sender};
 
-use crate::pnworker::core::{HalfJob, Job, JobClass, JobType, KeepRequest, KeycodeRequest, Preset, SmartcodeDriveName, Stage};
+use crate::pnworker::core::{HalfJob, Job, JobClass, JobType, KeepRequest, KeycodeRequest, SmartcodeDriveName, Stage};
 use crate::pnworker::link::spec::NodePurpose;
 use crate::pnworker::server_effects::preset_from_name;
 use crate::pnworker::acix::confirm_acix;
@@ -893,17 +893,7 @@ async fn get_job(
 // rather than to the preset, so the override keeps it.
 fn apply_preset(job: &mut Job, requested: Option<&str>) -> Result<(), Response> {
     if let Some(name) = requested.map(str::trim).filter(|name| !name.is_empty()) {
-        let candidates = match &job.preset {
-            Preset::PseudoLossless(candidates)
-            | Preset::Dummy(candidates)
-            | Preset::Standard(candidates)
-            | Preset::VerySlow(candidates)
-            | Preset::Hd720(candidates)
-            | Preset::Sd480(candidates)
-            | Preset::Gpu(candidates)
-            | Preset::Av1(candidates) => candidates.clone(),
-            Preset::Copy => None,
-        };
+        let candidates = job.preset.candidates().cloned();
         job.preset = preset_from_name(name, candidates).ok_or_else(|| {
             (
                 StatusCode::BAD_REQUEST,
@@ -921,7 +911,7 @@ fn apply_preset(job: &mut Job, requested: Option<&str>) -> Result<(), Response> 
         })
         .unwrap_or_default();
     if let Err(reason) = crate::pnworker::server_config::validate_preset_delivery(
-        job.preset.name().unwrap_or("copy"),
+        &job.preset.name().unwrap_or_else(|| "copy".to_string()),
         crate::pnworker::server_config::drive_only_from_meta(&meta),
         crate::pnworker::server_config::hls_from_meta(&meta),
     ) {

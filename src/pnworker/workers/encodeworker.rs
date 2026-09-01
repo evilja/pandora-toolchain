@@ -146,7 +146,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             // one is supposed to step aside for.
             let idle_encode = preset
                 .name()
-                .is_some_and(crate::lib::mpeg::preset::idle_encode_for);
+                .is_some_and(|name| crate::lib::mpeg::preset::idle_encode_for(&name));
             let _foreground = (!idle_encode)
                 .then(|| ForegroundEncodeGuard::acquire(&directory, job_id));
             let mut resolution_probe = if cache_resolution {
@@ -165,19 +165,22 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             // before falling back to its built-in table, so a preset an operator edited applies
             // here without the worker knowing anything about it.
             let (intro_dir, insert) = match preset {
-                Preset::PseudoLossless(cc) => (cc, "pseudolossless"),
-                Preset::Gpu(cc)            => (cc, "gpu"),
-                Preset::Av1(cc)            => (cc, "av1"),
-                Preset::Standard(cc)       => (cc, "standard"),
-                Preset::VerySlow(cc)       => (cc, "veryslow"),
-                Preset::Dummy(cc)          => (cc, "dummy"),
-                Preset::Hd720(cc)          => (cc, "720p"),
-                Preset::Sd480(cc)          => (cc, "480p"),
-                Preset::Copy               => (None, "copy"),
+                Preset::PseudoLossless(cc) => (cc, "pseudolossless".to_string()),
+                Preset::Gpu(cc)            => (cc, "gpu".to_string()),
+                Preset::Av1(cc)            => (cc, "av1".to_string()),
+                Preset::Standard(cc)       => (cc, "standard".to_string()),
+                Preset::VerySlow(cc)       => (cc, "veryslow".to_string()),
+                Preset::Dummy(cc)          => (cc, "dummy".to_string()),
+                Preset::Hd720(cc)          => (cc, "720p".to_string()),
+                Preset::Sd480(cc)          => (cc, "480p".to_string()),
+                // A preset that is only a file is named by that file, which is the same name
+                // pnmpeg looks it up by. Nothing here needs to know anything else about it.
+                Preset::Named(name, cc)    => (cc, name),
+                Preset::Copy               => (None, "copy".to_string()),
             };
             // The release name is taken from the source height, which a downscaling preset is
             // about to undercut.
-            let height_cap = match insert {
+            let height_cap = match insert.as_str() {
                 "720p" => Some(720),
                 "480p" => Some(480),
                 _ => None,
@@ -233,7 +236,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     ("OUTPUT",     PathValue::from(path_to_ffmpeg(directory.join("work").join("output_noconcat.mp4").as_path()))),
                     ("ASS",        PathValue::from(path_to_ffmpeg(effects.subtitle.as_path()))),
                     ("FONTCONFIG", PathValue::from(path_to_ffmpeg(fontconfig_dir.as_path()))),
-                    ("PRESET",     PathValue::from(insert.to_string())),
+                    ("PRESET",     PathValue::from(insert.clone())),
                     ("NEGKEY",     PathValue::from("pn-encode-main".to_string())),
                     ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),
                     ("LOGFILE",    PathValue::from(directory.join("log").join(format!("PNmpeg_Encode{}.log", job_id)).display().to_string())),
@@ -324,7 +327,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                         ("INPUT",      PathValue::from(path_to_ffmpeg(directory.join("work").join("output_noconcat.mp4").as_path()))),
                         ("OUTPUT",     PathValue::from(path_to_ffmpeg(directory.join("work").join("output.mp4").as_path()))),
                         ("INTRO_DIR",  PathValue::from(path_to_ffmpeg(Path::new(intro_dir)))),
-                        ("PRESET",     PathValue::from(insert.to_string())),
+                        ("PRESET",     PathValue::from(insert.clone())),
                         ("NEGKEY",     PathValue::from("pn-encode-main".to_string())),
                         ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),
                         ("LOGFILE",    PathValue::from(directory.join("log").join(format!("PNmpeg_Concat{}.log", job_id)).display().to_string())),

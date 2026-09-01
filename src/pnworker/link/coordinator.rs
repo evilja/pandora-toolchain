@@ -141,15 +141,7 @@ pub fn build_spec(
 // The intro/concat folder a preset carries. Every encoding variant holds one; `Copy` never does.
 pub fn intro_candidates(preset: &Preset) -> Option<String> {
     match preset {
-        Preset::PseudoLossless(candidates)
-        | Preset::Dummy(candidates)
-        | Preset::Standard(candidates)
-        | Preset::VerySlow(candidates)
-        | Preset::Gpu(candidates)
-        | Preset::Av1(candidates)
-        | Preset::Hd720(candidates)
-        | Preset::Sd480(candidates) => candidates.clone(),
-        Preset::Copy => None,
+        preset => preset.candidates().cloned(),
     }
     .filter(|folder| !folder.trim().is_empty())
 }
