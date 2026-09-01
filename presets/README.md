@@ -70,25 +70,24 @@ settings. Its CQ is hardware/content calibration, not the H.264 QP scale. AV1 re
 use either `drive_only:true` for MP4 delivery or `hls:true` for fMP4/CMAF delivery; external
 streaming hosts remain disabled because they may transcode the release.
 
-`gpu-nvenc.toml` and `gpu-qsv-hevc.toml` are the two files here that mirror no built-in. There is
-no `nvenc` or `qsv` preset name a job can ask for, so each is copied across *as* `gpu.toml` to make
-the `gpu` preset encode with that machine's own encoder:
+`gpu-nvenc.toml` and `cpu-x265.toml` are the two files here that mirror no built-in, and each is
+copied across under the name of the built-in you want it to replace:
 
 ```sh
-cp presets/gpu-nvenc.toml    DB/config/global/presets/gpu.toml   # NVIDIA, H.264
-cp presets/gpu-qsv-hevc.toml DB/config/global/presets/gpu.toml   # Intel iGPU, H.265
+cp presets/gpu-nvenc.toml DB/config/global/presets/gpu.toml       # NVIDIA H.264, in place of AMF
+cp presets/cpu-x265.toml  DB/config/global/presets/veryslow.toml  # 10-bit HEVC on the CPU
 ```
 
-`gpu-qsv-hevc.toml` is the only preset here that encodes to a bitrate rather than to a quality
-level: 10-bit HEVC through Quick Sync at a 9000 kbit/s average with a 12000k ceiling, capped at
-1080p, carrying the source's global metadata and chapter list into the release. It is also the only
-one that declares `idle = true`, on the reasoning that an encode at these settings is an archive
-pass rather than something anyone is waiting on. It is the one place
-`extra_args` is load-bearing rather than decorative — `-b:v`, `-map_metadata` and `-map_chapters`
-have no fields of their own, because every built-in is constant-quality and none of them has ever
-kept chapters. Its pixel format is `p010le` rather than `yuv420p10le`: same 4:2:0 10-bit pixels, in
-the layout `hevc_qsv` accepts. HEVC releases publish through HLS as MPEG-TS segments, the same path
-H.264 takes; only AV1 switches to fMP4.
+`cpu-x265.toml` is the only preset here that encodes to a bitrate rather than to a quality level:
+10-bit H.265 through libx265 at a 9000 kbit/s average with a 12000k ceiling, capped at 1080p,
+carrying the source's global metadata and chapter list into the release. It is also the only one
+that declares `idle = true`, on the reasoning that an encode at these settings is an archive pass
+rather than something anyone is waiting on. It is the one place `extra_args` is load-bearing rather
+than decorative — `-b:v`, `-map_metadata` and `-map_chapters` have no fields of their own, because
+every built-in is constant-quality and none of them has ever kept chapters. `veryslow` is suggested
+as its name because that preset already means "however long it takes"; nothing stops it replacing
+another. HEVC releases publish through HLS as MPEG-TS segments, the same path H.264 takes; only AV1
+switches to fMP4.
 
 A unit test renders every file here against the built-in it mirrors and fails if the two disagree,
 so these stay honest as the built-ins change; every file is also parsed and checked to name an

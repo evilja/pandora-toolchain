@@ -1,0 +1,65 @@
+# libx265 on the CPU: 10-bit H.265 at a 9000 kbit/s average, capped at 1080p, carrying the source's
+# global metadata and chapter list into the release.
+#
+# This mirrors no built-in — there is no `x265` preset name a job can ask for — so copy it across
+# under whichever built-in name you want it to replace. `veryslow` is the natural one: it is already
+# the preset for "this will take as long as it takes", which is the promise `idle = true` below
+# makes formally.
+#
+#   cp presets/cpu-x265.toml DB/config/global/presets/veryslow.toml
+#
+# Background work. An encode at these settings is an archive pass, not something anyone is watching
+# a progress bar for, so it runs on its own lane and only while `enc-main` is empty. The moment an
+# ordinary encode is ordered it stops feeding its encoder and waits; when the machine is quiet again
+# the same x265 instance picks up where it left off, with its rate control and frame history intact.
+# Nothing is re-encoded across a pause, and nothing survives a pndc restart.
+#
+# `aot = true` is what a CPU preset of this shape would default to anyway were it not scaling; it is
+# declared because a scaling preset otherwise stays out of encoding ahead, on the reasoning that
+# those run as a second output beside a source-resolution one. A 1080p cap on 1080p sources is the
+# main output rather than a side one.
+#
+# Chunking is not available here whatever is declared: the chunk scheduler drives libx264 through
+# `pnx264` directly and applies a filter chain of its own, so neither an x265 preset nor a scaling
+# one can use it. `idle` would refuse it in any case.
+hardware = "cpu"
+aot = true
+idle = true
+# The average bitrate, and the source's global metadata and chapter list. None of the three has a
+# field of its own — the built-ins are all constant-quality and none of them has ever carried
+# chapters — so they come through the passthrough, which is appended verbatim and is read by the
+# ahead-of-time encoder along with everything else.
+#
+# `-map_metadata 0` / `-map_chapters 0` survive the ahead-of-time handoff without help: the prefix
+# run writes them into its intermediate, and the final mux copies chapters from the first input that
+# has any and global metadata from input 0, which is that intermediate. An intro concat is the case
+# where they do not survive, and should not — the episode no longer starts where its chapter marks
+# say it does.
+extra_args = ["-b:v", "9000k", "-map_metadata", "0", "-map_chapters", "0"]
+
+[video]
+codec = "libx265"
+# `min(1080,ih)` caps rather than forces the height, so a 720p source is not upscaled, and `-2`
+# keeps the width even; on 16:9 sources this is exactly 1920x1080. The scale runs before `ass` so
+# libass renders subtitles at the output size.
+#
+# `yuv420p10le` is x265's own spelling of 4:2:0 10-bit. It is set in the filter chain because that
+# is where every built-in names its pixel format and because `scale_height` and the ahead-of-time
+# compatibility check both read the chain back; `-pix_fmt` in `extra_args` would reach the encoder
+# just as well and would be the one part of this preset written somewhere else.
+filter = "scale=-2:'min(1080,ih)':flags=lanczos,ass=INPUTFILEASS,format=yuv420p10le"
+profile = "main10"
+# x265's own preset scale, which is not x264's: `slow` here is roughly where the returns stop being
+# worth the time on release content, and `veryslow`/`placebo` cost hours for changes a viewer does
+# not see. Note that the `chunked` default reads the *x264* preset names, so nothing about this one
+# turns chunking on by accident.
+preset = "slow"
+# The ceiling and buffer that make `-b:v 9000k` an average rather than a target the encoder is free
+# to overshoot indefinitely. With `-b:v` and no VBV, x265 runs unconstrained ABR; these two are what
+# give it a rate window to plan against.
+maxrate = "12000k"
+bufsize = "18000k"
+
+[audio]
+codec = "aac"
+bitrate = "192k"
