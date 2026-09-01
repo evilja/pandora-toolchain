@@ -1013,6 +1013,24 @@ async fn accept(
     job.server_id = spec.server_id.as_deref().and_then(|id| id.parse::<u64>().ok());
     job.link_drive_only = Some(spec.drive_only);
 
+    // A `.torrent` that travelled with the job, for a source no link on this machine could reach.
+    // It is written where the downloader already looks: `TorrentType::Link("")` with a
+    // `contents/fetch.torrent` present is the existing path for a torrent that is already local, so
+    // nothing downstream of this can tell a handed-over metainfo from a fetched one.
+    if let Some(encoded) = spec.torrent_b64.as_deref() {
+        let Some(bytes) = decode_base64(encoded) else {
+            return decline("torrent file is not valid base64".to_string());
+        };
+        if !bytes.is_empty() {
+            let contents = job.directory.join("contents");
+            if std::fs::create_dir_all(&contents).is_err()
+                || std::fs::write(contents.join("fetch.torrent"), &bytes).is_err()
+            {
+                return decline("this node could not store the torrent it was sent".to_string());
+            }
+        }
+    }
+
     if let Ok(mut set) = leased().lock() {
         set.insert(job_id);
     }
@@ -1124,8 +1142,8 @@ mod tests {
     fn only_self_sourced_job_types_are_leasable() {
         assert!(job_type_is_leasable(JobType::Encode));
         assert!(job_type_is_leasable(JobType::Pancode));
-        // A batch child is born already downloaded out of its parent's torrent, so it carries no
-        // source of its own and cannot be handed to a node that fetches its own input.
+        // A batch *parent* owns one download feeding many children that hard-link out of it. Its
+        // children travel as Pancodes, which are leasable — the parent itself never is.
         assert!(!job_type_is_leasable(JobType::Batch));
         assert!(!job_type_is_leasable(JobType::Studio));
         assert!(!job_type_is_leasable(JobType::Keycode));

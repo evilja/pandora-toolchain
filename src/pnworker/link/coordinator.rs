@@ -15,7 +15,11 @@ pub const LINK_MAX_ATTEMPTS: u32 = 2;
 
 // Which jobs can run on a node at all. The rule is simply "does it carry its own source": a node
 // fetches its own input, so anything whose input is already on this machine cannot be leased.
-pub fn is_eligible(job: &Job) -> bool {
+//
+// `has_source_file` is the caller's answer to "is there a `.torrent` on this machine we can send
+// with it". It is a parameter rather than a check here because this module is deliberately free of
+// I/O — every other question it answers is about the job struct alone.
+pub fn is_eligible(job: &Job, has_source_file: bool) -> bool {
     if !job_type_is_leasable(job.job_type) {
         return false;
     }
@@ -26,9 +30,15 @@ pub fn is_eligible(job: &Job) -> bool {
     if job.forward_parent.is_some() {
         return false;
     }
-    // A batch parent owns one torrent download feeding many children, and a child is born already
-    // downloaded out of it. Neither carries a source a node could fetch on its own.
-    if job.batch.is_some() || job.batch_parent.is_some() {
+    // A batch parent owns one torrent download feeding many children; leasing it would put the
+    // download on a node and the children that hard-link out of it on this machine.
+    //
+    // A *child* is a different matter. It is a Pancode carrying its parent's torrent and one file
+    // index, which is exactly the shape a leased Pancode already travels in, so a node can fetch
+    // that one episode itself. What it cannot do is be leased after the parent has already
+    // downloaded it — the coordinator offers children before that, and `spawn_batch_child` skips an
+    // entry that is already someone's.
+    if job.batch.is_some() {
         return false;
     }
     // A keep leaves its output on this machine for a later `/keycode` to join, and Keycode itself
@@ -37,10 +47,10 @@ pub fn is_eligible(job: &Job) -> bool {
     {
         return false;
     }
-    // A node fetches its own source, so there has to be one. A Pancode whose only route to its
-    // input is the `.torrent` its probe saved on this machine cannot be leased — the node has no
-    // probe job and nothing to adopt.
-    if job.torrent.get().trim().is_empty() {
+    // A node fetches its own source, so there has to be one — either a link it can resolve or a
+    // `.torrent` this machine can hand over with the job. A Pancode whose only route to its input
+    // was the file its probe saved here used to be refused for exactly this reason.
+    if job.torrent.get().trim().is_empty() && !has_source_file {
         return false;
     }
     // A GDrive or direct-HTTP source is a URL like any other and travels fine; a probe-derived
@@ -50,8 +60,8 @@ pub fn is_eligible(job: &Job) -> bool {
 
 // The node this job should go to, or None to keep it local. A pinned job is only ever offered to
 // the node it names — and waits for it, which is the whole point of pinning.
-pub fn choose_node(job: &Job) -> Option<String> {
-    if !is_eligible(job) {
+pub fn choose_node(job: &Job, has_source_file: bool) -> Option<String> {
+    if !is_eligible(job, has_source_file) {
         return None;
     }
     board::pick_node(&preset_name(&job.preset), job.link_pin.as_deref())
@@ -60,8 +70,28 @@ pub fn choose_node(job: &Job) -> Option<String> {
 // Everything the node needs, resolved. Nothing here is an id for the node to look up: the server's
 // preset, watermark and Drive folders were snapshotted onto the job when it was created, and this
 // is that same snapshot travelling one hop further.
+// What the node needs to find this job's input, when the job struct alone does not say it.
+//
+// A batch child is the case that needs both halves: its input is one index of its parent's torrent,
+// the probe that produced the file list belongs to the parent, and the metainfo may be a file on
+// this machine that no link reaches. Neither can be read off the child, because the child
+// deliberately holds no probe id of its own — the first one to finish would archive the probe out
+// from under its siblings.
+#[derive(Clone, Debug, Default)]
+pub struct LeaseSource {
+    pub torrent_file: Option<Vec<u8>>,
+    pub probe_job_id: Option<u64>,
+}
+
+impl LeaseSource {
+    pub fn has_file(&self) -> bool {
+        self.torrent_file.as_ref().is_some_and(|bytes| !bytes.is_empty())
+    }
+}
+
 pub fn build_spec(
     job: &Job,
+    source_extras: &LeaseSource,
     expires_at: u64,
     renew_secs: u64,
     return_output: bool,
@@ -80,7 +110,18 @@ pub fn build_spec(
         source,
         display_link: job.display_link.clone(),
         file_index: job.probe_file_index,
-        probe_job_id: job.probe_job_id.map(|id| id.to_string()),
+        // The child's own probe id is deliberately absent, so the parent's travels instead: without
+        // one the node's `queue_pancode_job` refuses the job outright, and adopting it over there
+        // simply fails and falls back to the source beside it.
+        probe_job_id: source_extras
+            .probe_job_id
+            .or(job.probe_job_id)
+            .map(|id| id.to_string()),
+        torrent_b64: source_extras
+            .torrent_file
+            .as_deref()
+            .filter(|bytes| !bytes.is_empty())
+            .map(encode_base64),
         subtitle_b64: encode_base64(&job.attachment),
         watermark_b64: job.server_watermark.as_deref().map(encode_base64),
         preset: preset_name(&job.preset),
@@ -150,25 +191,32 @@ mod tests {
 
     #[test]
     fn an_ordinary_encode_with_a_source_is_eligible() {
-        assert!(is_eligible(&job(JobType::Encode)));
+        assert!(is_eligible(&job(JobType::Encode), false));
     }
 
-    // A node fetches its own input. A job whose only route to its source is a file on this machine
-    // has nothing to give it.
+    // A node fetches its own input. A job with neither a source link nor a `.torrent` this machine
+    // can hand over has nothing to give it — and with the file, the same job travels fine.
     #[test]
-    fn a_job_with_no_source_link_is_not_eligible() {
+    fn a_job_with_no_source_link_needs_a_torrent_file_to_travel() {
         let mut job = job(JobType::Pancode);
         job.torrent = TorrentType::Link("   ".to_string());
-        assert!(!is_eligible(&job));
+        assert!(!is_eligible(&job, false));
+        assert!(is_eligible(&job, true));
     }
 
-    // A batch child is hard-linked out of its parent's single torrent download, so it carries no
-    // source at all; a parent is a download feeding children and encodes nothing itself.
+    // A parent is one download feeding children that hard-link out of it: leasing it would put the
+    // download on a node and the encodes here. A child carries its parent's torrent and one file
+    // index, which is a source a node can fetch on its own.
     #[test]
-    fn batch_parents_and_children_stay_local() {
-        let mut child = job(JobType::Encode);
+    fn batch_parents_stay_local_but_children_travel() {
+        let mut parent = job(JobType::Batch);
+        parent.batch = Some(crate::pnworker::batch::BatchRequest::new(Vec::new(), 1));
+        assert!(!is_eligible(&parent, true));
+
+        let mut child = job(JobType::Pancode);
         child.batch_parent = Some(42);
-        assert!(!is_eligible(&child));
+        child.probe_file_index = Some(3);
+        assert!(is_eligible(&child, false), "a child with a magnet needs no file");
     }
 
     // A keep leaves its output here for a later `/keycode` to join.
@@ -176,7 +224,7 @@ mod tests {
     fn a_keep_job_stays_local() {
         let mut job = job(JobType::Encode);
         job.keep = Some(KeepRequest::new(Some("kw".to_string())));
-        assert!(!is_eligible(&job));
+        assert!(!is_eligible(&job, false));
     }
 
     // A forwarded job runs nowhere — it mirrors another job's outcome.
@@ -184,7 +232,7 @@ mod tests {
     fn a_forwarded_job_is_never_leased() {
         let mut job = job(JobType::Encode);
         job.forward_parent = Some(7);
-        assert!(!is_eligible(&job));
+        assert!(!is_eligible(&job, false));
     }
 
     // A job that kills whatever runs it must stop touring the cluster and end where the stall
@@ -193,7 +241,7 @@ mod tests {
     fn a_job_out_of_attempts_stays_local() {
         let mut job = job(JobType::Encode);
         job.link_attempts = LINK_MAX_ATTEMPTS;
-        assert!(!is_eligible(&job));
+        assert!(!is_eligible(&job, false));
     }
 
     // The spec is the node's only source of truth, so what the coordinator snapshotted has to be
@@ -224,7 +272,7 @@ mod tests {
     // A node refuses a job whose corpus it cannot prove it holds, so the spec has to name one.
     #[test]
     fn the_spec_names_the_asset_revision_it_was_built_against() {
-        let spec = build_spec(&job(JobType::Encode), 100, 10, false, false);
+        let spec = build_spec(&job(JobType::Encode), &LeaseSource::default(), 100, 10, false, false);
         assert!(!spec.assets_revision.is_empty());
     }
 
@@ -234,11 +282,11 @@ mod tests {
     #[test]
     fn the_spec_carries_the_servers_upload_policy() {
         let source = job(JobType::Encode);
-        let plain = build_spec(&source, 100, 10, false, false);
+        let plain = build_spec(&source, &LeaseSource::default(), 100, 10, false, false);
         assert!(!plain.return_output);
         assert!(!plain.drive_only);
 
-        let restricted = build_spec(&source, 100, 10, true, true);
+        let restricted = build_spec(&source, &LeaseSource::default(), 100, 10, true, true);
         assert!(restricted.return_output);
         assert!(restricted.drive_only);
     }
@@ -252,7 +300,7 @@ mod tests {
         source.probe_job_id = Some(555);
         source.gdrive_folder_local = Some("folder".to_string());
 
-        let spec = build_spec(&source, 100, 10, false, false);
+        let spec = build_spec(&source, &LeaseSource::default(), 100, 10, false, false);
         assert_eq!(spec.job_id, source.job_id.to_string());
         assert_eq!(spec.job_type, "Pancode");
         assert_eq!(spec.source_kind, "magnet");
@@ -276,5 +324,36 @@ mod tests {
         let label = worker_label("mini-osaka");
         assert!(is_link_worker(&label));
         assert!(label.contains("mini-osaka"));
+    }
+
+    // A batch child holds no probe id of its own and its metainfo may be a file nobody else can
+    // reach. Both travel in the spec instead, or the node has no way to find the episode at all.
+    #[test]
+    fn a_lease_carries_the_torrent_and_probe_its_job_cannot_name() {
+        let mut child = job(JobType::Pancode);
+        child.torrent = TorrentType::Link(String::new());
+        child.batch_parent = Some(42);
+        child.probe_file_index = Some(3);
+        child.probe_job_id = None;
+
+        let extras = LeaseSource {
+            torrent_file: Some(b"d8:announce".to_vec()),
+            probe_job_id: Some(99),
+        };
+        assert!(extras.has_file());
+        let spec = build_spec(&child, &extras, 100, 10, false, false);
+
+        assert_eq!(spec.probe_job_id.as_deref(), Some("99"));
+        assert_eq!(spec.file_index, Some(3));
+        assert_eq!(
+            spec.torrent_b64.as_deref(),
+            Some(encode_base64(b"d8:announce")).as_deref()
+        );
+
+        // With nothing to send, the field stays absent rather than travelling as an empty string a
+        // node would have to decide the meaning of.
+        let plain = build_spec(&child, &LeaseSource::default(), 100, 10, false, false);
+        assert!(plain.torrent_b64.is_none());
+        assert!(!LeaseSource::default().has_file());
     }
 }

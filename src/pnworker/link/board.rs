@@ -709,6 +709,7 @@ mod tests {
             display_link: None,
             file_index: None,
             probe_job_id: None,
+            torrent_b64: None,
             subtitle_b64: String::new(),
             watermark_b64: None,
             preset: "standard".to_string(),

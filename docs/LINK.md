@@ -279,15 +279,57 @@ Pandora; a deployment that predates the ledger has no such guarantee and runs ev
 
 The rule is "does the job carry its own source", since a node fetches its own input:
 
-- **Leasable**: `Encode`, `Pancode`, `Backup`, `Probe`, provided `job.torrent` is a non-empty link.
+- **Leasable**: `Encode`, `Pancode`, `Backup`, `Probe`, and **batch children**, provided the job
+  carries a source the node can fetch — a non-empty link, or a `.torrent` the coordinator sends with
+  it (see below).
 - **Never leased**: forwarded jobs (they mirror another job's outcome and run nowhere); batch
-  parents and children (a parent is one torrent download feeding many children, and a child is
-  hard-linked out of it, so neither carries a source of its own); keeps, `Keycode`, `Preview` and
-  `Studio` (their inputs are files on the coordinator); and any job past `LINK_MAX_ATTEMPTS`.
+  *parents* (a parent is one torrent download feeding many children that hard-link out of it, so
+  leasing it would put the download on a node and the encodes here); keeps, `Keycode`, `Preview`
+  and `Studio` (their inputs are files on the coordinator); and any job past `LINK_MAX_ATTEMPTS`.
 
 A leased Pancode carries its originating `probe_job_id` alongside the source link. The node has no
 probe job and will fail to adopt its saved `.torrent`; the link is what the download falls back to,
 and the file index selects the episode.
+
+### Sending the `.torrent` itself
+
+A job whose only route to its input was the metainfo file its probe saved on the coordinator used to
+be refused a node for having no fetchable source. `LinkJobSpec.torrent_b64` carries those bytes, and
+the node writes them to its own `contents/fetch.torrent` before the job is queued. That is not a new
+download path: `TorrentType::Link("")` with a `fetch.torrent` present is the existing shape for a
+torrent that is already local, so nothing downstream can tell a metainfo that was handed over from
+one that was fetched. The bytes are sent only when the source link is empty — a link or a magnet is
+something the node resolves for itself, and metainfo can be hundreds of kilobytes of lease payload.
+
+### Batch split
+
+Batch episodes are offered to nodes **one file index at a time**, by `do_batch_lease_things` on
+every pass of the worker loop. A child is a Pancode carrying its parent's torrent and its own file
+index, which is the shape a leased Pancode already travelled in; the node fetches that one episode
+itself. The offer happens *before* the parent has downloaded that file, because that is the only
+moment leasing it is worth anything — afterwards the bytes are already here.
+
+**A leased episode is fetched twice.** The parent keeps its whole selection: `FileSelection` becomes
+a piece bitmap when the session opens and there is no way to narrow a running download, so the
+parent still pulls a file it will not use. This trades the coordinator's bandwidth for the cluster's
+encoders, on the reasoning that a batch is bounded by encoding rather than by a download it had to
+do anyway.
+
+Three things keep the two paths from colliding over one episode:
+
+- **`entry.job_id` is the claim.** Offering sets it, and `spawn_batch_child` returns early on a
+  claimed entry when the parent's own copy lands, so an episode is never encoded twice.
+- **`settle_download` counts only unclaimed entries** as never delivered, so a leased episode is not
+  also counted as a file the torrent failed to produce.
+- **A batch child never archives its parent's probe.** Every sibling still needs the `.torrent` it
+  saved. Local children avoid this by carrying no `probe_job_id`; a leased one must carry it (the
+  node's `queue_pancode_job` refuses a Pancode that names no probe, and a lost lease comes back
+  through that same path), so the refusal lives in `finish_link_job` and in the worker-message
+  archival instead.
+
+A lease that is lost or declined returns through `requeue_link_job` and the episode is encoded here.
+If the local path refuses it outright, the batch is told — otherwise a parent would wait forever for
+a child that no longer exists anywhere.
 
 ## Upload policy and returned output
 
@@ -466,7 +508,9 @@ node, matching the `[lumiere]` convention.
 - **Log proxying.** A node's tool logs stay on the node; `/catlogs` and `GET /jobs/:id/logs` answer
   only from the coordinator's own copy. Nodes are to push a bounded tail on renew and a bundle with
   the result.
-- **Batch split.** Batch children carry no source of their own. Assigning each an index of the same
-  torrent via `pnp2p --selects` keeps cluster-wide download at ≈1× the torrent, but needs the
-  parent's own selection narrowed and `BatchRequest::settle_download` taught that an episode can
-  complete without a local `TORRENT_FILE_DONE`.
+- **Batch split at ≈1× download.** Episodes are leased one index at a time (see
+  [Batch split](#batch-split)), but the parent still downloads the whole selection, so a leased
+  episode is fetched twice. Holding cluster-wide download to ≈1× needs the parent's own selection
+  narrowed, and `FileSelection` is turned into a piece bitmap when the session opens — narrowing it
+  means either deciding every lease before the parent's download starts, which can only use the
+  nodes that happen to be free at that instant, or a control channel into a running `pnp2p`.

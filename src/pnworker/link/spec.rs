@@ -151,6 +151,13 @@ pub struct LinkJobSpec {
     // failing is survivable, an absent probe id is not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub probe_job_id: Option<String>,
+    // The `.torrent` itself, for a source no link can reach: a batch whose metainfo arrived as an
+    // uploaded file lives only in the coordinator's work directory, and `adopt_probe_torrent` is
+    // exactly the step that cannot work on a machine with no probe job. The node writes these bytes
+    // where its own downloader already looks for them, so nothing downstream of that knows the
+    // difference between a torrent it fetched and one it was handed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub torrent_b64: Option<String>,
     #[serde(default)]
     pub subtitle_b64: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

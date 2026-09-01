@@ -193,7 +193,10 @@ pub async fn persist_batch_progress(db: &JobDb, job: &Job) {
 // Builds the encode job for one finished file. The download stays in the parent's torrent
 // directory and is hard-linked into the child, so an episode that is already on disk is never
 // copied twice and the parent can keep seeding the rest of its selection.
-pub async fn build_batch_child(parent: &Job, entry: &BatchEntry, source: &Path) -> Option<Job> {
+// Everything a batch child is, before anything touches the disk: the parent's settings, its own
+// episode, and the file index that tells whoever runs it which one that is. `child.torrent` comes
+// across with the clone, which is what makes a child describable to a node at all.
+fn base_batch_child(parent: &Job, entry: &BatchEntry) -> Job {
     let mut child = parent.clone();
     child.job_id = next_child_id();
     child.job_type = JobType::Pancode;
@@ -219,7 +222,6 @@ pub async fn build_batch_child(parent: &Job, entry: &BatchEntry, source: &Path) 
     child.response_id = 0;
     child.frontend = Frontend::None;
     child.worker = "enc-pending".to_string();
-    child.ready = Stage::Downloaded;
     child.display_link = Some(format!(
         "{} • {}",
         parent
@@ -233,6 +235,33 @@ pub async fn build_batch_child(parent: &Job, entry: &BatchEntry, source: &Path) 
         .join("DB")
         .join("work")
         .join(child.job_id.to_string());
+    child
+}
+
+// A child built to be handed to a node rather than encoded here: same episode, same settings, but
+// no local file behind it. Its input is one index of the parent's torrent, which is the shape a
+// leased Pancode already travels in, so it enters the queue at `Queued` and the node downloads that
+// one file itself.
+//
+// This does no I/O at all. The work directory and the subtitle are `prepare_queued_job`'s to make,
+// and it only runs once a node has actually been found — a child built for a cluster with nothing
+// free would otherwise leave a directory behind on every pass of the loop.
+pub fn leased_batch_child(parent: &Job, entry: &BatchEntry) -> Job {
+    let mut child = base_batch_child(parent, entry);
+    child.ready = Stage::Queued;
+    child.worker = "link-pending".to_string();
+    // A local child carries no probe id, so that the first one to finish cannot archive the probe
+    // out from under its siblings. A leased one has to: if the node loses it, it comes back through
+    // `queue_pancode_job`, which refuses a Pancode that names no probe, and the probe's saved
+    // `.torrent` is how it would then fetch its own episode. Ending the shared probe is instead
+    // refused where it would happen — a batch child never archives one, leased or not.
+    child.probe_job_id = parent.batch.as_ref().map(|batch| batch.probe_job_id);
+    child
+}
+
+pub async fn build_batch_child(parent: &Job, entry: &BatchEntry, source: &Path) -> Option<Job> {
+    let mut child = base_batch_child(parent, entry);
+    child.ready = Stage::Downloaded;
 
     for directory in crate::pnworker::core::STRUCT {
         if create_dir_all(child.directory.join(directory)).await.is_err() {
@@ -359,5 +388,37 @@ mod tests {
         assert!(!request.complete());
         request.failed = 1;
         assert!(request.complete());
+    }
+
+    // A leased child is the same episode as a local one, described so that a machine which has
+    // never seen this torrent can fetch exactly that file and nothing else.
+    #[test]
+    fn a_leased_child_carries_its_parents_source_and_its_own_index() {
+        let mut parent = Job::new_api(
+            0,
+            0,
+            JobType::Batch,
+            crate::lib::p2p::nyaaise::TorrentType::Magnet("magnet:?xt=urn:btih:abc".to_string()),
+            Vec::new(),
+            "en".to_string(),
+            None,
+        );
+        let mut only = entry(7, "Episode 07");
+        only.subtitle = b"subs".to_vec();
+        parent.batch = Some(BatchRequest::new(vec![only.clone()], 4242));
+
+        let child = leased_batch_child(&parent, &only);
+
+        assert_eq!(child.torrent.get(), parent.torrent.get(), "the source travels");
+        assert_eq!(child.probe_file_index, Some(7));
+        assert_eq!(child.batch_parent, Some(parent.job_id));
+        assert!(child.batch.is_none(), "a child is not itself a batch");
+        // Queued, not Downloaded: there is no local file behind it, which is the whole difference
+        // between this and the child the parent's own download produces.
+        assert_eq!(child.ready, Stage::Queued);
+        // Carried so a node's `queue_pancode_job` accepts it, and so a lost lease has somewhere to
+        // come back to. Nothing archives it: a batch child never ends its parent's probe.
+        assert_eq!(child.probe_job_id, Some(4242));
+        assert_eq!(child.attachment, b"subs".to_vec());
     }
 }

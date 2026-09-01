@@ -160,6 +160,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
             &mut encodes_since_batch,
         )
         .await;
+        do_batch_lease_things(&db, &mut queue).await;
         do_batch_parent_things(&db, &mut queue).await;
         if let Some(halfjob) = gitquery.take() {
             if encode_jobs_active(&queue) {
@@ -200,7 +201,13 @@ async fn do_queue_things(
                 }
                 return true;
             }
-            match try_link_offload(db, &mut job).await {
+            // A job whose only route to its input is the `.torrent` its probe saved here used to be
+            // refused a node for having no fetchable source. Reading it now is what lets it travel.
+            let source_extras = crate::pnworker::link::coordinator::LeaseSource {
+                torrent_file: read_job_torrent_file(&job).await,
+                probe_job_id: None,
+            };
+            match try_link_offload(db, &mut job, source_extras).await {
                 LinkOffload::Offered => {
                     if let Err(e) = db.insert_job(&job).await {
                         eprintln!("[Pandora] job {} insert failed: {}", job.job_id, e);
@@ -387,8 +394,14 @@ enum LinkOffload {
 // function does — preparing a work directory, dispatching a download — is what the node will do
 // instead. A job that finds no free node simply falls through and runs here, so the cluster being
 // full, drained, or absent is never a reason for work to wait.
-async fn try_link_offload(db: &JobDb, job: &mut Job) -> LinkOffload {
-    let Some(node) = crate::pnworker::link::coordinator::choose_node(job) else {
+async fn try_link_offload(
+    db: &JobDb,
+    job: &mut Job,
+    source_extras: crate::pnworker::link::coordinator::LeaseSource,
+) -> LinkOffload {
+    let Some(node) =
+        crate::pnworker::link::coordinator::choose_node(job, source_extras.has_file())
+    else {
         return LinkOffload::Local;
     };
     // An HLS-only release is served for twelve hours from the machine that published it, and a
@@ -410,6 +423,7 @@ async fn try_link_offload(db: &JobDb, job: &mut Job) -> LinkOffload {
     let settings = crate::pnworker::link::board::settings();
     let spec = crate::pnworker::link::coordinator::build_spec(
         job,
+        &source_extras,
         unix_now().as_secs() + settings.lease_timeout_secs,
         crate::pnworker::link::board::DEFAULT_RENEW_SECS,
         return_output,
@@ -600,6 +614,43 @@ async fn queue_probe_job(
 // selecting against a different one. Returns whether the copy landed — what a miss means is the
 // caller's to decide, since most can still fall back to refetching from the link and a backup,
 // whose link is not necessarily still a torrent, cannot.
+// The `.torrent` this job would download from, if it is a file on this machine rather than a link.
+// A job that has one can be leased even with an empty source link, because the bytes travel with it.
+async fn read_job_torrent_file(job: &Job) -> Option<Vec<u8>> {
+    // A link or a magnet is something the node can resolve for itself, and the metainfo can be
+    // hundreds of kilobytes of lease payload. Only a source with no route at all needs the bytes.
+    if !job.torrent.get().trim().is_empty() {
+        return None;
+    }
+    let candidates = [
+        job.directory.join("contents").join("fetch.torrent"),
+        // Before a Pancode is set up its own copy does not exist yet; the probe that produced its
+        // file list is holding the only one.
+        job.probe_job_id
+            .map(|probe_id| probe_work_dir(probe_id).join("contents").join("fetch.torrent"))
+            .unwrap_or_default(),
+    ];
+    for path in candidates {
+        if path.as_os_str().is_empty() {
+            continue;
+        }
+        if let Ok(bytes) = tokio::fs::read(&path).await {
+            if !bytes.is_empty() {
+                return Some(bytes);
+            }
+        }
+    }
+    None
+}
+
+fn probe_work_dir(probe_id: u64) -> PathBuf {
+    env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("DB")
+        .join("work")
+        .join(probe_id.to_string())
+}
+
 async fn adopt_probe_torrent(job: &Job, probe_id: u64) -> bool {
     let probe_dir = env::current_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
@@ -1954,7 +2005,12 @@ async fn finish_link_job(db: &JobDb, queue: &mut Vec<Job>, job_id: u64) {
     };
     let directory = queue[pos].directory.clone();
     let frontend = queue[pos].frontend.clone();
-    let probe_job_id = queue[pos].probe_job_id;
+    let batch_parent = queue[pos].batch_parent;
+    let final_stage = queue[pos].ready;
+    // A batch child shares its parent's probe with every sibling, so it is never the one to end it.
+    // A leased child carries that probe id precisely so it has somewhere to come back to if the
+    // node loses it, which makes this filter the thing that keeps the siblings' torrent alive.
+    let probe_job_id = queue[pos].probe_job_id.filter(|_| batch_parent.is_none());
     if let Some(probe_id) = probe_job_id {
         if let Some(probe_pos) = queue.iter().position(|job| job.job_id == probe_id) {
             let probe_directory = queue[probe_pos].directory.clone();
@@ -1974,6 +2030,12 @@ async fn finish_link_job(db: &JobDb, queue: &mut Vec<Job>, job_id: u64) {
     )
     .await;
     queue.retain(|job| job.job_id != job_id);
+    // A leased episode reports through the link rather than through the worker channel, so this is
+    // the one place its outcome reaches the batch it belongs to. Without it the parent counts a
+    // child that finished perfectly as still running, and the batch never ends.
+    if let Some(parent_id) = batch_parent {
+        update_batch_parent(db, queue, parent_id, job_id, final_stage).await;
+    }
     frontend.set_presence(presence_from_queue(queue)).await;
 }
 
@@ -2005,8 +2067,15 @@ async fn requeue_link_job(
     job.encode_last_frame_at = None;
     db.update_stage(job_id, Stage::Queued).await.ok();
     println!("[link] job {job_id} requeued locally (attempt {})", job.link_attempts);
+    let batch_parent = job.batch_parent;
     if !queue_new_job(db, queue, shrine, &mut job).await {
         queue.push(job);
+        return;
+    }
+    // The local path refused it outright, so nothing else will ever report this episode. A batch
+    // whose child vanished here would wait for it forever.
+    if let Some(parent_id) = batch_parent {
+        update_batch_parent(db, queue, parent_id, job_id, job.ready).await;
     }
 }
 
@@ -2266,7 +2335,10 @@ async fn do_worker_message_things(
             let finished = matches!(i.ready, Stage::Uploaded | Stage::Failed | Stage::Cancelled);
             if finished {
                 finished_fe = Some(i.frontend.clone());
-                finished_job = Some((i.job_id, i.probe_job_id, i.directory.clone()));
+                // A batch child never ends its parent's probe: every sibling still needs the
+                // `.torrent` it saved, and the first episode to finish would take it from them.
+                let probe = i.probe_job_id.filter(|_| i.batch_parent.is_none());
+                finished_job = Some((i.job_id, probe, i.directory.clone()));
             }
         }
 
@@ -2435,6 +2507,100 @@ async fn update_batch_parent(
     }
     persist_batch_progress(db, &queue[pos]).await;
     render_batch_parent(&mut queue[pos]).await;
+}
+
+// Offers batch episodes to nodes, one file index at a time, for as long as the cluster has room.
+//
+// A child is offered *before* the parent has downloaded its file, which is the only moment leasing
+// it is worth anything: after that the bytes are already here. The parent keeps its whole selection
+// — `FileSelection` is turned into a piece bitmap when the session opens and there is no way to
+// narrow a running download — so a leased episode is fetched twice, once by the node that encodes
+// it and once by a parent that will not use it. That is the trade this makes: the coordinator's
+// bandwidth for the cluster's encoders, on the reasoning that a batch is bounded by encoding rather
+// than by the download it already had to do.
+//
+// Claiming `entry.job_id` is what keeps the two paths from both taking an episode: `spawn_batch_child`
+// returns early on a claimed entry when the parent's own copy lands, and `settle_download` counts
+// only unclaimed entries as never delivered.
+async fn do_batch_lease_things(db: &JobDb, queue: &mut Vec<Job>) {
+    if !crate::pnworker::link::board::settings().enabled {
+        return;
+    }
+    let parents: Vec<u64> = queue
+        .iter()
+        .filter(|job| {
+            job.batch
+                .as_ref()
+                .is_some_and(|batch| batch.entries.iter().any(|entry| entry.job_id.is_none()))
+        })
+        .map(|job| job.job_id)
+        .collect();
+    for parent_id in parents {
+        loop {
+            let Some(pos) = queue.iter().position(|job| job.job_id == parent_id) else {
+                break;
+            };
+            let parent = queue[pos].clone();
+            let Some(batch) = parent.batch.clone() else {
+                break;
+            };
+            let Some(entry) = batch.entries.iter().find(|entry| entry.job_id.is_none()).cloned()
+            else {
+                break;
+            };
+            let mut child = crate::pnworker::batch::leased_batch_child(&parent, &entry);
+            // The parent holds both halves a child cannot: the probe that produced the file list,
+            // and the metainfo itself when it arrived as a file rather than a link.
+            let source_extras = crate::pnworker::link::coordinator::LeaseSource {
+                torrent_file: read_job_torrent_file(&parent).await,
+                probe_job_id: Some(batch.probe_job_id),
+            };
+            // Asked before anything is written, because the answer is usually "no node is free" and
+            // that has to cost nothing: this runs on every pass of the worker loop.
+            if crate::pnworker::link::coordinator::choose_node(&child, source_extras.has_file())
+                .is_none()
+            {
+                break;
+            }
+            let child_id = child.job_id;
+            match try_link_offload(db, &mut child, source_extras).await {
+                LinkOffload::Offered => {
+                    if let Err(e) = db.insert_job(&child).await {
+                        eprintln!("[Pandora Batch] leased child {child_id} insert failed: {e}");
+                        crate::pnworker::link::board::release(child_id);
+                        remove_dir_all(&child.directory).await.ok();
+                        break;
+                    }
+                    let Some(pos) = queue.iter().position(|job| job.job_id == parent_id) else {
+                        break;
+                    };
+                    if let Some(batch) = queue[pos].batch.as_mut() {
+                        if let Some(claimed) = batch
+                            .entries
+                            .iter_mut()
+                            .find(|candidate| candidate.file_index == entry.file_index)
+                        {
+                            claimed.job_id = Some(child_id);
+                        }
+                        batch.current = entry.file_label.clone();
+                    }
+                    persist_batch_progress(db, &queue[pos]).await;
+                    render_batch_parent(&mut queue[pos]).await;
+                    queue.push(child);
+                }
+                // Setup refused it — an unusable subtitle, which would refuse it locally too. The
+                // entry is left unclaimed so the parent's own copy still produces a child that
+                // fails with the same reason where the batch can see it.
+                LinkOffload::Declined => break,
+                // The node went away between the question and the offer. Nothing was claimed, so
+                // the ordinary path still owns this episode.
+                LinkOffload::Local => {
+                    remove_dir_all(&child.directory).await.ok();
+                    break;
+                }
+            }
+        }
+    }
 }
 
 // The parent outlives its download: it stays in the queue reporting the children until the last
