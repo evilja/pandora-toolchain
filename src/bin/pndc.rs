@@ -551,8 +551,8 @@ async fn handle_teenode(ctx: &Context, command: &serenity::all::CommandInteracti
 
 // `/limit` — a node that works for one guild and nobody else. A machine somebody contributed for
 // their own releases was, until now, part of one undifferentiated pool: the scheduler picked the
-// freest box for whatever came next, and the only ways to narrow that were `link_only_node`, which
-// is cluster-wide, and pinning, which is per job. Reserving lives on the coordinator's roster
+// freest box for whatever came next, and the only way to narrow that was `link_only_node`, which is
+// cluster-wide and stops every other node taking anything. Reserving lives on the coordinator's roster
 // rather than in the node's own config on purpose — a node cannot decide who it serves, or a box
 // could be redirected by editing a file on it.
 async fn handle_limit(ctx: &Context, command: &serenity::all::CommandInteraction) {

@@ -377,7 +377,7 @@ pub fn touch(node: &str) {
 
 // The node a job should be offered to, or None to keep it local. Called from `pn_worker`, which is
 // why it never blocks: a job that finds no free node runs here rather than waiting for one.
-pub fn pick_node(preset: &str, pin: Option<&str>, server: Option<u64>) -> Option<String> {
+pub fn pick_node(preset: &str, server: Option<u64>) -> Option<String> {
     let settings = settings();
     if !settings.enabled {
         return None;
@@ -398,12 +398,11 @@ pub fn pick_node(preset: &str, pin: Option<&str>, server: Option<u64>) -> Option
         .values()
         .filter(|node| !node.drain)
         .filter(|node| node.last_seen >= stale_before)
-        .filter(|node| match pin {
-            Some(pinned) => node.name == pinned,
-            None => settings
+        .filter(|node| {
+            settings
                 .only_node
                 .as_deref()
-                .is_none_or(|only| node.name == only),
+                .is_none_or(|only| node.name == only)
         })
         // A reserved node belongs to one guild. A job from anywhere else does not see it, and a
         // job with no guild at all — nothing on this machine submits one, but the field is an
@@ -786,8 +785,6 @@ mod tests {
             drive_only: false,
             intro_group: None,
             assets_revision: String::new(),
-            expires_at: 0,
-            renew_secs: DEFAULT_RENEW_SECS,
         }
     }
 

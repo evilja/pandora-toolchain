@@ -420,12 +420,9 @@ async fn try_link_offload(
         decline_job_setup(job, &reason).await;
         return LinkOffload::Declined;
     }
-    let settings = crate::pnworker::link::board::settings();
     let spec = crate::pnworker::link::coordinator::build_spec(
         job,
         &source_extras,
-        unix_now().as_secs() + settings.lease_timeout_secs,
-        crate::pnworker::link::board::DEFAULT_RENEW_SECS,
         return_output,
         drive_only,
     );
@@ -2097,7 +2094,6 @@ async fn requeue_link_job(
     }
     let mut job = queue.remove(pos);
     job.link_node = None;
-    job.link_pin = None;
     if spend_attempt {
         job.link_attempts = job.link_attempts.saturating_add(1);
     }
@@ -3881,8 +3877,6 @@ pub struct Job {
     // Nodes this job has already been lost on. A job that reliably kills whatever runs it must not
     // become an endless tour of the cluster, so past `LINK_MAX_ATTEMPTS` it stays local.
     pub link_attempts: u32,
-    // A node named on submit. The job waits for that node instead of running locally.
-    pub link_pin: Option<String>,
     // Somebody cancelled this job while a node was running it. The request rides the node's next
     // renew and the node normally reports back, so this is only ever read on the path where it
     // does not: a lease that expires instead. Without it the watchdog requeues the job and runs to
@@ -3988,7 +3982,6 @@ impl Job {
             batch_parent: None,
             link_node: None,
             link_attempts: 0,
-            link_pin: None,
             link_cancelled: false,
             link_return_output: false,
             link_drive_only: None,
@@ -4077,7 +4070,6 @@ impl Job {
             batch_parent: None,
             link_node: None,
             link_attempts: 0,
-            link_pin: None,
             link_cancelled: false,
             link_return_output: false,
             link_drive_only: None,

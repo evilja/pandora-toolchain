@@ -193,8 +193,6 @@ pub struct LinkJobSpec {
     // refuses the lease rather than encoding with whatever fonts it happens to hold.
     #[serde(default)]
     pub assets_revision: String,
-    pub expires_at: u64,
-    pub renew_secs: u64,
 }
 
 // Sent by the node roughly every `renew_secs`. It doubles as the liveness heartbeat and as the

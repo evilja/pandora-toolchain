@@ -267,7 +267,6 @@ mod tests {
             batch_parent: None,
             link_node: None,
             link_attempts: 0,
-            link_pin: None,
             link_cancelled: false,
             link_return_output: false,
             link_drive_only: None,

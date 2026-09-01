@@ -58,17 +58,13 @@ pub fn is_eligible(job: &Job, has_source_file: bool) -> bool {
     true
 }
 
-// The node this job should go to, or None to keep it local. A pinned job is only ever offered to
-// the node it names — and waits for it, which is the whole point of pinning.
+// The node this job should go to, or None to keep it local. `None` is never a wait: the caller runs
+// the job here, so a cluster that is full, drained or absent is not a reason for work to sit.
 pub fn choose_node(job: &Job, has_source_file: bool) -> Option<String> {
     if !is_eligible(job, has_source_file) {
         return None;
     }
-    board::pick_node(
-        &preset_name(&job.preset),
-        job.link_pin.as_deref(),
-        job.server_id,
-    )
+    board::pick_node(&preset_name(&job.preset), job.server_id)
 }
 
 // Everything the node needs, resolved. Nothing here is an id for the node to look up: the server's
@@ -96,8 +92,6 @@ impl LeaseSource {
 pub fn build_spec(
     job: &Job,
     source_extras: &LeaseSource,
-    expires_at: u64,
-    renew_secs: u64,
     return_output: bool,
     drive_only: bool,
 ) -> LinkJobSpec {
@@ -137,17 +131,15 @@ pub fn build_spec(
         drive_only,
         intro_group,
         assets_revision: crate::pnworker::link::assets::manifest().revision,
-        expires_at,
-        renew_secs,
     }
 }
 
 // The intro/concat folder a preset carries. Every encoding variant holds one; `Copy` never does.
 pub fn intro_candidates(preset: &Preset) -> Option<String> {
-    match preset {
-        preset => preset.candidates().cloned(),
-    }
-    .filter(|folder| !folder.trim().is_empty())
+    preset
+        .candidates()
+        .cloned()
+        .filter(|folder| !folder.trim().is_empty())
 }
 
 // The worker label a leased job wears. `/workers` and the job embed both render `Job.worker`
@@ -268,7 +260,7 @@ mod tests {
     // A node refuses a job whose corpus it cannot prove it holds, so the spec has to name one.
     #[test]
     fn the_spec_names_the_asset_revision_it_was_built_against() {
-        let spec = build_spec(&job(JobType::Encode), &LeaseSource::default(), 100, 10, false, false);
+        let spec = build_spec(&job(JobType::Encode), &LeaseSource::default(), false, false);
         assert!(!spec.assets_revision.is_empty());
     }
 
@@ -278,11 +270,11 @@ mod tests {
     #[test]
     fn the_spec_carries_the_servers_upload_policy() {
         let source = job(JobType::Encode);
-        let plain = build_spec(&source, &LeaseSource::default(), 100, 10, false, false);
+        let plain = build_spec(&source, &LeaseSource::default(), false, false);
         assert!(!plain.return_output);
         assert!(!plain.drive_only);
 
-        let restricted = build_spec(&source, &LeaseSource::default(), 100, 10, true, true);
+        let restricted = build_spec(&source, &LeaseSource::default(), true, true);
         assert!(restricted.return_output);
         assert!(restricted.drive_only);
     }
@@ -296,7 +288,7 @@ mod tests {
         source.probe_job_id = Some(555);
         source.gdrive_folder_local = Some("folder".to_string());
 
-        let spec = build_spec(&source, &LeaseSource::default(), 100, 10, false, false);
+        let spec = build_spec(&source, &LeaseSource::default(), false, false);
         assert_eq!(spec.job_id, source.job_id.to_string());
         assert_eq!(spec.job_type, "Pancode");
         assert_eq!(spec.source_kind, "magnet");
@@ -305,7 +297,6 @@ mod tests {
         assert_eq!(spec.gdrive_folder_local.as_deref(), Some("folder"));
         assert!(!spec.subtitle_b64.is_empty());
         assert!(spec.watermark_b64.is_some());
-        assert_eq!(spec.expires_at, 100);
     }
 
     #[test]
@@ -337,7 +328,7 @@ mod tests {
             probe_job_id: Some(99),
         };
         assert!(extras.has_file());
-        let spec = build_spec(&child, &extras, 100, 10, false, false);
+        let spec = build_spec(&child, &extras, false, false);
 
         assert_eq!(spec.probe_job_id.as_deref(), Some("99"));
         assert_eq!(spec.file_index, Some(3));
@@ -348,7 +339,7 @@ mod tests {
 
         // With nothing to send, the field stays absent rather than travelling as an empty string a
         // node would have to decide the meaning of.
-        let plain = build_spec(&child, &LeaseSource::default(), 100, 10, false, false);
+        let plain = build_spec(&child, &LeaseSource::default(), false, false);
         assert!(plain.torrent_b64.is_none());
         assert!(!LeaseSource::default().has_file());
     }

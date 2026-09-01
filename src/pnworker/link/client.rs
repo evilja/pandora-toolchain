@@ -403,7 +403,6 @@ async fn put_output(
         ))
         .bearer_auth(&config.token)
         .header(reqwest::header::CONTENT_LENGTH, length)
-        .header("x-pandora-node", &config.node)
         // Deliberately no timeout: this is a multi-gigabyte upload over whatever link the node has.
         .timeout(Duration::from_secs(u32::MAX as u64))
         .body(body)

@@ -590,6 +590,10 @@ recovery**, is the response to every node failure.
   same job.
 - **Requeue budget.** `LINK_MAX_ATTEMPTS` (2). Past it a job stays local, where the encode stall
   watchdog can end it properly, instead of touring the cluster forever.
+- **No job ever waits for a node.** `choose_node` returning `None` means the job runs here, so a
+  cluster that is full, drained, absent or reserved elsewhere never holds work up. `link_only_node`
+  is the one exception in effect: it stops every other node being offered anything, and those jobs
+  fall back to the coordinator rather than queueing for the named one.
 - **Declined.** A node that cannot run a job at all — a preset it does not have — reports `declined`
   and the job runs locally without spending a retry, since nothing was attempted.
 - **Cancel.** Cancelling a leased job sets a flag on the node's next renew; the node then takes its
