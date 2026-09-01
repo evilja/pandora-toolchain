@@ -38,6 +38,31 @@ A node keeps its own sqlite database because `pn_worker` needs one. It is scratc
 `fail_stale_active()` at startup means a restarted node never resumes a job, matching the
 deliberately non-resuming reboot policy in [WORKER.md](WORKER.md).
 
+### What the working directory has to be
+
+The process's current directory is the node's whole world, and three separate things read it. Two of
+them are silent when it is wrong.
+
+- **It holds `DB/`** — the config, the token, the scratch database, the synced fonts, and
+  `build.pandora`. All of those paths are relative.
+- **It must be a git checkout of this repository.** `release::repo_path()` is the process's cwd
+  unless `PANDORA_GITSYNC_REPO` says otherwise, so a node run from a bare directory pulls nothing
+  and logs `could not find repository at <cwd>` on every update attempt. It keeps taking work — see
+  [Staying level](#staying-level) — so this reads as a node that is merely stuck a build behind.
+  Point `PANDORA_GITSYNC_REPO` at a *separate* checkout rather than a working one if you split them:
+  the pull ends in a forced `checkout_head`, which discards uncommitted changes.
+- **It needs a restart loop around it.** There is no in-place upgrade — the binary that pulled the
+  source is the old one — so `restart_into_new_build` records the build, exits, and expects
+  something to rebuild and relaunch. `start.sh` is that loop for a coordinator; a node needs the
+  same shape around `pndc --mini`. Without one, a successful update stops the node.
+
+The loop is also where the **build environment** lives, and it is the one part of this that fails
+loudly. A node's `encoder_identity` is compared against the coordinator's and a mismatch is refused
+outright, so a rebuild that cannot find the forked libx264 — `PNX264_LIB_DIR`, `PNX264_INCLUDE_DIR`
+and `PNX264_STATIC`, read by `pnx264/build.rs` — links the distro's, comes back as `-stock`, and is
+turned away. Exporting those in the loop rather than in a shell profile is what makes an unattended
+restart reproduce the binary the node registered with.
+
 ## Configuration
 
 Node side:
