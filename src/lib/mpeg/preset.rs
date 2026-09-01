@@ -586,11 +586,15 @@ pub fn video_codec_for(name: &str) -> Option<String> {
 
 // Hardware backends worth proving at node registration. The probe is a real encode, not
 // `ffmpeg -encoders`: a compiled-in backend says nothing about the driver or GPU in this machine.
-pub const HARDWARE_ENCODER_CANDIDATES: [&str; 8] = [
+pub const HARDWARE_ENCODER_CANDIDATES: [&str; 12] = [
     "h264_amf",
     "h264_nvenc",
     "h264_qsv",
     "h264_vaapi",
+    "hevc_amf",
+    "hevc_nvenc",
+    "hevc_qsv",
+    "hevc_vaapi",
     "av1_amf",
     "av1_nvenc",
     "av1_qsv",

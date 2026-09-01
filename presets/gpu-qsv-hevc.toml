@@ -1,0 +1,41 @@
+# Intel iGPU (Quick Sync) H.265 at a 9000 kbit/s average, capped at 1080p. Like `gpu-nvenc.toml`
+# this mirrors no built-in — there is no `qsv` preset name a job can ask for — so copy it across
+# *as* `gpu.toml` on a machine whose encoder is an Intel iGPU and the `gpu` preset encodes with
+# QSV HEVC there:
+#
+#   cp presets/gpu-qsv-hevc.toml DB/config/global/presets/gpu.toml
+#
+# `aot = true` overrides two defaults at once, and both are worth stating. Encoding ahead of the
+# download is off by default for hardware presets because a discrete GPU is shared by the whole
+# node; Quick Sync is a fixed-function block the rest of the job never touches, so the overlap is
+# free. It is also off by default for a scaling preset, on the reasoning that those run as a second
+# output beside a source-resolution one — that is about 720p/480p ladders, and a 1080p cap on 1080p
+# sources is the main output rather than a side one.
+hardware = "gpu"
+aot = true
+# The average bitrate itself. `-b:v` has no field of its own — the built-ins are all
+# constant-quality — so it comes through the passthrough, which is appended verbatim and is read by
+# the ahead-of-time encoder along with everything else.
+extra_args = ["-b:v", "9000k"]
+
+[video]
+codec = "hevc_qsv"
+# `min(1080,ih)` caps rather than forces the height, so a 720p source is not upscaled, and `-2`
+# keeps the width even; on 16:9 sources this is exactly 1920x1080. The scale runs before `ass` so
+# libass renders subtitles at the output size, and `nv12` is what QSV uploads without a conversion
+# of its own — the x264 presets end in `yuv420p` for the same reason.
+filter = "scale=-2:'min(1080,ih)':flags=lanczos,ass=INPUTFILEASS,format=nv12"
+profile = "main"
+# `slow` is QSV's target-usage 2. Quick Sync's presets are cheap by libx264 standards; `slow` is
+# where it stops trading quality for speed a release would notice, and `veryslow` (TU1) is not
+# implemented on every generation and silently clamps where it is not.
+preset = "slow"
+# The ceiling and buffer that make `-b:v 9000k` an average rather than a target ffmpeg is free to
+# overshoot indefinitely. QSV picks VBR whenever `-maxrate` and `-b:v` disagree; equal values
+# would be CBR, and neither is what a release wants.
+maxrate = "12000k"
+bufsize = "18000k"
+
+[audio]
+codec = "aac"
+bitrate = "192k"

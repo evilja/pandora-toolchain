@@ -56,13 +56,20 @@ settings. Its CQ is hardware/content calibration, not the H.264 QP scale. AV1 re
 use either `drive_only:true` for MP4 delivery or `hls:true` for fMP4/CMAF delivery; external
 streaming hosts remain disabled because they may transcode the release.
 
-`gpu-nvenc.toml` is the one file here that mirrors no built-in. There is no `nvenc` preset name a
-job can ask for, so it is copied across *as* `gpu.toml` to make the `gpu` preset encode with NVENC
-on an NVIDIA machine:
+`gpu-nvenc.toml` and `gpu-qsv-hevc.toml` are the two files here that mirror no built-in. There is
+no `nvenc` or `qsv` preset name a job can ask for, so each is copied across *as* `gpu.toml` to make
+the `gpu` preset encode with that machine's own encoder:
 
 ```sh
-cp presets/gpu-nvenc.toml DB/config/global/presets/gpu.toml
+cp presets/gpu-nvenc.toml    DB/config/global/presets/gpu.toml   # NVIDIA, H.264
+cp presets/gpu-qsv-hevc.toml DB/config/global/presets/gpu.toml   # Intel iGPU, H.265
 ```
+
+`gpu-qsv-hevc.toml` is the only preset here that encodes to a bitrate rather than to a quality
+level: HEVC through Quick Sync at a 9000 kbit/s average with a 12000k ceiling, capped at 1080p. It
+is the one place `extra_args` is load-bearing rather than decorative — `-b:v` has no field of its
+own, because every built-in is constant-quality. HEVC releases publish through HLS as MPEG-TS
+segments, the same path H.264 takes; only AV1 switches to fMP4.
 
 A unit test renders every file here against the built-in it mirrors and fails if the two disagree,
 so these stay honest as the built-ins change; every file is also parsed and checked to name an
