@@ -180,6 +180,12 @@ pub const COMMAND_UPDATED: &str = "COMMAND_UPDATED";
 pub const COMMAND_LIST: &str = "COMMAND_LIST";
 pub const COMMAND_REPO_PRESERVED: &str = "COMMAND_REPO_PRESERVED";
 pub const LINK_DOWNLOAD: &str = "LINK_DOWNLOAD";
+// A leased job that ended without the node's own final payload arriving. `LINK_NODE_FAILED`
+// carries the reason the node gave; `LINK_RESULT_LOST` is the successful case, where the job was
+// published on the node and only the message saying so was lost — the links are in the logs the
+// node shipped, so the job is not re-run and is not reported as a failure.
+pub const LINK_NODE_FAILED: &str = "LINK_NODE_FAILED";
+pub const LINK_RESULT_LOST: &str = "LINK_RESULT_LOST";
 pub const CATLOGS_DESCRIPTION: &str = "CATLOGS_DESCRIPTION";
 pub const CATLOGS_NO_LOGS: &str = "CATLOGS_NO_LOGS";
 pub const CATLOGS_BUILD_FAIL: &str = "CATLOGS_BUILD_FAIL";

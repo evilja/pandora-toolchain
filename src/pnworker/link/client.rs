@@ -15,7 +15,7 @@ use crate::pnworker::core::{HalfJob, Job, JobClass, JobType, Stage};
 use crate::pnworker::frontend::Frontend;
 use crate::pnworker::link::assets::{self, AssetKind, AssetManifest};
 use crate::pnworker::link::spec::{
-    LeaseControl, LeaseRenew, LeaseResult, LinkJobSpec, LinkLogChunk, LinkOutcome, LinkPayload,
+    LeaseControl, LeaseRenew, LeaseResult, LinkJobSpec, LinkOutcome, LinkPayload,
     LinkReport, NodeRegister, NodeRegistered, ReleaseInfo, job_type_from_name, source_from_wire,
     stage_name,
 };
@@ -260,6 +260,58 @@ fn take_reports(job_id: u64) -> Drained {
     }
 }
 
+// How many consecutive passes a node keeps trying to hand one lease's terminal report — or its
+// returned output — to a coordinator it cannot reach. A `409` ends the retries immediately and is
+// what normally stops them; this is the bound for the case where nothing comes back at all, so a
+// coordinator that has gone away cannot hold one of this node's job slots for the life of the
+// process. By the time it runs out the lease has certainly expired and the job has been requeued.
+const MAX_DELIVERY_ATTEMPTS: u32 = 12;
+
+// True once this lease has spent its last attempt.
+fn spend_delivery_attempt(attempts: &mut HashMap<u64, u32>, job_id: u64) -> bool {
+    let spent = attempts.entry(job_id).or_insert(0);
+    *spent += 1;
+    *spent >= MAX_DELIVERY_ATTEMPTS
+}
+
+// Everything that ends this node's involvement with a lease. It is a free function rather than a
+// closure because the loop it serves goes on borrowing the same maps after calling it.
+fn retire_lease(
+    job_id: u64,
+    reason: &str,
+    log_offsets: &mut HashMap<u64, HashMap<String, u64>>,
+    delivery_attempts: &mut HashMap<u64, u32>,
+    finished: &mut Vec<u64>,
+) {
+    if !reason.is_empty() {
+        eprintln!("[link] job {job_id} {reason}");
+    }
+    forget(job_id);
+    log_offsets.remove(&job_id);
+    delivery_attempts.remove(&job_id);
+    finished.push(job_id);
+}
+
+// Puts back what a failed request was carrying. Draining is destructive, so without this a renew
+// or a result that did not land takes its payloads with it — and the terminal one is the message
+// carrying the release links or the failure reason. The coordinator reads a `Finished` with no
+// reports as "the node reported no outcome" and ends a published episode as a failure.
+//
+// They go back in front of whatever the worker has produced since, because they are older.
+fn restore_reports(job_id: u64, reports: Vec<LinkReport>) {
+    if reports.is_empty() {
+        return;
+    }
+    let Ok(mut map) = pending().lock() else {
+        return;
+    };
+    let Some(entry) = map.get_mut(&job_id) else {
+        return;
+    };
+    let produced_since = std::mem::replace(&mut entry.reports, reports);
+    entry.reports.extend(produced_since);
+}
+
 // Jobs whose output has been handed back to the coordinator. The node's worker loop holds such a
 // job at `Encoded` — its output is not this machine's to publish — and finishes it once this says
 // the file is gone. It is the same shape of back-channel as `leased`, and for the same reason:
@@ -294,22 +346,48 @@ fn forget(job_id: u64) {
 // Streams a finished encode back to the coordinator. This is the one large body the link carries,
 // and only for HLS-only servers, where the alternative is a playback URL on a machine with no
 // public hostname.
+// What the coordinator did with something this node handed it. `409` is not a transport fault:
+// the link routes answer it for a lease this node no longer holds, which is the coordinator saying
+// the job has already been taken back and given to somebody else. Retrying that is what used to
+// hold one of a node's `max_jobs` slots for the life of the process.
+enum Delivered {
+    Accepted,
+    LeaseGone,
+    Failed(String),
+}
+
+impl Delivered {
+    async fn of(response: reqwest::Response) -> Self {
+        if response.status().is_success() {
+            return Delivered::Accepted;
+        }
+        if response.status() == reqwest::StatusCode::CONFLICT {
+            return Delivered::LeaseGone;
+        }
+        Delivered::Failed(format!(
+            "coordinator answered {}: {}",
+            response.status(),
+            response.text().await.unwrap_or_default()
+        ))
+    }
+}
+
 async fn put_output(
     client: &reqwest::Client,
     config: &LinkConfig,
     job_id: u64,
     path: &std::path::Path,
-) -> Result<(), String> {
-    let file = tokio::fs::File::open(path)
-        .await
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    let length = file
-        .metadata()
-        .await
-        .map(|meta| meta.len())
-        .map_err(|e| e.to_string())?;
+) -> Delivered {
+    let file = match tokio::fs::File::open(path).await {
+        Ok(file) => file,
+        Err(e) => return Delivered::Failed(format!("{}: {e}", path.display())),
+    };
+    let length = match file.metadata().await {
+        Ok(meta) => meta.len(),
+        Err(e) => return Delivered::Failed(e.to_string()),
+    };
     if length == 0 {
-        return Err(format!("{} is empty", path.display()));
+        return Delivered::Failed(format!("{} is empty", path.display()));
     }
     let body = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::new(file));
     let response = client
@@ -324,16 +402,11 @@ async fn put_output(
         .timeout(Duration::from_secs(u32::MAX as u64))
         .body(body)
         .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "coordinator answered {}: {}",
-            response.status(),
-            response.text().await.unwrap_or_default()
-        ));
+        .await;
+    match response {
+        Ok(response) => Delivered::of(response).await,
+        Err(e) => Delivered::Failed(e.to_string()),
     }
-    Ok(())
 }
 
 async fn fetch_manifest(
@@ -500,6 +573,9 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
     // How much of each of a job's logs has been shipped. Advanced only once the renew carrying a
     // chunk succeeded, so a failed request costs a repeat rather than a hole in the transcript.
     let mut log_offsets: HashMap<u64, HashMap<String, u64>> = HashMap::new();
+    // Consecutive failures handing one lease its terminal report or its returned output. Cleared
+    // by anything that succeeds, so it only ever counts an unbroken run.
+    let mut delivery_attempts: HashMap<u64, u32> = HashMap::new();
     loop {
         let mut finished: Vec<u64> = Vec::new();
         for lease in active.clone() {
@@ -517,80 +593,122 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
                     Stage::Declined => LinkOutcome::Declined,
                     _ => LinkOutcome::Failed,
                 };
-                let result = LeaseResult {
+                let mut result = LeaseResult {
                     node: config.node.clone(),
                     outcome,
                     reason: None,
                     reports,
                     warnings: Vec::new(),
                 };
-                if let Err(e) = send_result(&client, &config, job_id, &result).await {
-                    // Keep the lease so the next pass tries again; the coordinator's watchdog is
-                    // the backstop if this node cannot reach it at all.
-                    eprintln!("[link] job {job_id} result could not be delivered: {e}");
-                    continue;
+                match send_result(&client, &config, job_id, &result).await {
+                    Delivered::Accepted => {
+                        println!("[link] job {job_id} finished as {:?}", outcome);
+                        retire_lease(job_id, "", &mut log_offsets, &mut delivery_attempts, &mut finished);
+                    }
+                    Delivered::LeaseGone => {
+                        retire_lease(job_id, "was already taken back; its result has nowhere to go", &mut log_offsets, &mut delivery_attempts, &mut finished)
+                    }
+                    Delivered::Failed(e) => {
+                        // Keep the lease so the next pass tries again — but give the reports back
+                        // first. Draining them is destructive, and the terminal one carries the
+                        // release links or the failure reason; a coordinator that receives a
+                        // result with no reports ends a published episode as a failure.
+                        eprintln!("[link] job {job_id} result could not be delivered: {e}");
+                        restore_reports(job_id, std::mem::take(&mut result.reports));
+                        if spend_delivery_attempt(&mut delivery_attempts, job_id) {
+                            retire_lease(job_id, "could not be reported at all; giving the lease up", &mut log_offsets, &mut delivery_attempts, &mut finished);
+                        }
+                    }
                 }
-                println!("[link] job {job_id} finished as {:?}", outcome);
-                forget(job_id);
-                log_offsets.remove(&job_id);
-                finished.push(job_id);
                 continue;
             }
             // An HLS-only job stops here: the encode is done and the output is the coordinator's
             // to publish. Send it, release the local job, then report — in that order, because a
             // report that never lands only costs a requeue, while a work directory wiped before
             // the file was sent costs the encode.
-            if lease.return_output && stage == Some(Stage::Encoded) && !output_returned(job_id) {
-                let path = std::env::current_dir()
-                    .unwrap_or_else(|_| PathBuf::from("."))
-                    .join("DB")
-                    .join("work")
-                    .join(job_id.to_string())
-                    .join("work")
-                    .join("output.mp4");
-                println!("[link] job {job_id} encoded; returning its output to the coordinator");
-                match put_output(&client, &config, job_id, &path).await {
-                    Ok(()) => {
-                        mark_returned(job_id);
-                        let result = LeaseResult {
-                            node: config.node.clone(),
-                            outcome: LinkOutcome::Returned,
-                            reason: None,
-                            reports,
-                            warnings: Vec::new(),
-                        };
-                        if let Err(e) = send_result(&client, &config, job_id, &result).await {
-                            eprintln!("[link] job {job_id} return could not be reported: {e}");
+            if lease.return_output && stage == Some(Stage::Encoded) {
+                if !output_returned(job_id) {
+                    let path = std::env::current_dir()
+                        .unwrap_or_else(|_| PathBuf::from("."))
+                        .join("DB")
+                        .join("work")
+                        .join(job_id.to_string())
+                        .join("work")
+                        .join("output.mp4");
+                    println!("[link] job {job_id} encoded; returning its output to the coordinator");
+                    match put_output(&client, &config, job_id, &path).await {
+                        Delivered::Accepted => mark_returned(job_id),
+                        Delivered::LeaseGone => {
+                            retire_lease(job_id, "output was not wanted; the lease is already gone", &mut log_offsets, &mut delivery_attempts, &mut finished);
+                            continue;
                         }
-                        println!("[link] job {job_id} output returned");
-                        forget(job_id);
-                        log_offsets.remove(&job_id);
-                        finished.push(job_id);
+                        Delivered::Failed(e) => {
+                            eprintln!("[link] job {job_id} output could not be returned: {e}");
+                            if spend_delivery_attempt(&mut delivery_attempts, job_id) {
+                                retire_lease(job_id, "output could not be returned at all; giving the lease up", &mut log_offsets, &mut delivery_attempts, &mut finished);
+                            }
+                            continue;
+                        }
                     }
-                    Err(e) => eprintln!("[link] job {job_id} output could not be returned: {e}"),
+                }
+                let mut result = LeaseResult {
+                    node: config.node.clone(),
+                    outcome: LinkOutcome::Returned,
+                    reason: None,
+                    reports,
+                    warnings: Vec::new(),
+                };
+                match send_result(&client, &config, job_id, &result).await {
+                    Delivered::Accepted => {
+                        println!("[link] job {job_id} output returned");
+                        retire_lease(job_id, "", &mut log_offsets, &mut delivery_attempts, &mut finished);
+                    }
+                    Delivered::LeaseGone => {
+                        retire_lease(job_id, "was already taken back after its output was sent", &mut log_offsets, &mut delivery_attempts, &mut finished)
+                    }
+                    Delivered::Failed(e) => {
+                        // The file is already there; only the word about it did not land. Retry on
+                        // the next pass rather than dropping the lease, which would have the
+                        // coordinator re-encode a job whose output is sitting in its own work
+                        // directory.
+                        eprintln!("[link] job {job_id} return could not be reported: {e}");
+                        restore_reports(job_id, std::mem::take(&mut result.reports));
+                        if spend_delivery_attempt(&mut delivery_attempts, job_id) {
+                            retire_lease(job_id, "return could not be reported at all; giving the lease up", &mut log_offsets, &mut delivery_attempts, &mut finished);
+                        }
+                    }
                 }
                 continue;
             }
             let offsets = log_offsets.entry(job_id).or_default();
             let (chunks, advanced) = crate::pnworker::link::logs::collect(job_id, offsets).await;
-            match send_renew(&client, &config, job_id, reports, worker, chunks).await {
+            let body = LeaseRenew {
+                node: config.node.clone(),
+                worker,
+                reports,
+                logs: chunks,
+            };
+            match send_renew(&client, &config, job_id, &body).await {
                 Ok(control) => {
                     *offsets = advanced;
+                    delivery_attempts.remove(&job_id);
                     draining = control.drain;
                     if !control.assets_revision.is_empty() {
                         wanted_revision = control.assets_revision.clone();
                     }
                     if control.abandon {
-                        eprintln!("[link] job {job_id} was reclaimed by the coordinator; dropping it");
                         cancel_locally(&tx, job_id).await;
-                        forget(job_id);
-                        log_offsets.remove(&job_id);
-                        finished.push(job_id);
+                        retire_lease(job_id, "was reclaimed by the coordinator; dropping it", &mut log_offsets, &mut delivery_attempts, &mut finished);
                     } else if control.cancel {
                         cancel_locally(&tx, job_id).await;
                     }
                 }
-                Err(e) => eprintln!("[link] job {job_id} renew failed: {e}"),
+                Err(e) => {
+                    eprintln!("[link] job {job_id} renew failed: {e}");
+                    // Same reason as above: a stage transition dropped here is one the job embed
+                    // never shows, and progress the console never draws.
+                    restore_reports(job_id, body.reports);
+                }
             }
         }
         active.retain(|lease| !finished.contains(&lease.job_id));
@@ -667,7 +785,13 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
                             reports: Vec::new(),
                             warnings: Vec::new(),
                         };
-                        send_result(&client, &config, job_id, &result).await.ok();
+                        if let Delivered::Failed(e) =
+                            send_result(&client, &config, job_id, &result).await
+                        {
+                            // The coordinator's watchdog reclaims it either way; saying so is
+                            // only what turns a lost minute into an immediate local run.
+                            eprintln!("[link] job {job_id} decline could not be delivered: {e}");
+                        }
                     }
                     }
                 }
@@ -826,20 +950,15 @@ async fn poll_lease(
         .map_err(|e| e.to_string())
 }
 
+// The body is the caller's rather than this function's, because a renew that fails has to give its
+// reports back — draining them is destructive, and a payload dropped here is one the coordinator
+// never sees.
 async fn send_renew(
     client: &reqwest::Client,
     config: &LinkConfig,
     job_id: u64,
-    reports: Vec<LinkReport>,
-    worker: String,
-    logs: Vec<LinkLogChunk>,
+    body: &LeaseRenew,
 ) -> Result<LeaseControl, String> {
-    let body = LeaseRenew {
-        node: config.node.clone(),
-        worker,
-        reports,
-        logs,
-    };
     let response = client
         .post(format!(
             "{}/api/v1/link/lease/{job_id}/renew",
@@ -847,7 +966,7 @@ async fn send_renew(
         ))
         .bearer_auth(&config.token)
         .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
-        .json(&body)
+        .json(body)
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -871,7 +990,13 @@ async fn flush_logs(
         if chunks.is_empty() {
             return;
         }
-        match send_renew(client, config, job_id, Vec::new(), String::new(), chunks).await {
+        let body = LeaseRenew {
+            node: config.node.clone(),
+            worker: String::new(),
+            reports: Vec::new(),
+            logs: chunks,
+        };
+        match send_renew(client, config, job_id, &body).await {
             Ok(_) => *offsets = advanced,
             Err(e) => {
                 eprintln!("[link] job {job_id} final logs could not be shipped: {e}");
@@ -886,7 +1011,7 @@ async fn send_result(
     config: &LinkConfig,
     job_id: u64,
     result: &LeaseResult,
-) -> Result<(), String> {
+) -> Delivered {
     let response = client
         .post(format!(
             "{}/api/v1/link/lease/{job_id}/result",
@@ -896,12 +1021,11 @@ async fn send_result(
         .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
         .json(result)
         .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    if !response.status().is_success() {
-        return Err(format!("coordinator answered {}", response.status()));
+        .await;
+    match response {
+        Ok(response) => Delivered::of(response).await,
+        Err(e) => Delivered::Failed(e.to_string()),
     }
-    Ok(())
 }
 
 // A cancel reaches the node as a flag on a renew response, and from there takes the ordinary local
@@ -1136,6 +1260,78 @@ mod tests {
     #[test]
     fn base64_rejects_input_that_is_not_base64() {
         assert!(decode_base64("not valid!").is_none());
+    }
+
+    fn seed_pending(job_id: u64, ids: &[&str]) {
+        let mut map = pending().lock().unwrap();
+        map.insert(
+            job_id,
+            Pending {
+                reports: ids
+                    .iter()
+                    .map(|id| LinkReport {
+                        payload: LinkPayload { id: (*id).to_string(), args: None },
+                        stage: None,
+                    })
+                    .collect(),
+                worker: "enc-main".to_string(),
+                stage: None,
+                terminal: None,
+            },
+        );
+    }
+
+    fn pending_ids(job_id: u64) -> Vec<String> {
+        pending()
+            .lock()
+            .unwrap()
+            .get(&job_id)
+            .map(|entry| entry.reports.iter().map(|r| r.payload.id.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    // Draining is destructive. A renew or a result that never landed used to take its payloads
+    // with it, and the terminal one carries the release links or the failure reason — which the
+    // coordinator then reads as "this node reported no outcome".
+    #[test]
+    fn a_failed_request_gives_its_reports_back() {
+        let job_id = 90_101;
+        seed_pending(job_id, &["QUEUED", "ENCODE_PROG"]);
+        let drained = take_reports(job_id);
+        assert_eq!(drained.reports.len(), 2);
+        assert!(pending_ids(job_id).is_empty(), "draining leaves the buffer empty");
+
+        restore_reports(job_id, drained.reports);
+        assert_eq!(pending_ids(job_id), ["QUEUED", "ENCODE_PROG"]);
+        pending().lock().unwrap().remove(&job_id);
+    }
+
+    // The worker does not stop while a request is in flight, so what comes back is older than
+    // whatever it produced meanwhile and has to go in front of it.
+    #[test]
+    fn restored_reports_precede_what_was_produced_since() {
+        let job_id = 90_102;
+        seed_pending(job_id, &["QUEUED"]);
+        let drained = take_reports(job_id);
+        seed_pending(job_id, &["ENCODE_PROG"]);
+
+        restore_reports(job_id, drained.reports);
+        assert_eq!(pending_ids(job_id), ["QUEUED", "ENCODE_PROG"]);
+        pending().lock().unwrap().remove(&job_id);
+    }
+
+    // A coordinator that answers nothing at all must not hold one of this node's job slots for
+    // the life of the process; a `409` ends it sooner, this is the backstop when there is no
+    // answer to read.
+    #[test]
+    fn delivery_attempts_run_out() {
+        let mut attempts = HashMap::new();
+        for _ in 1..MAX_DELIVERY_ATTEMPTS {
+            assert!(!spend_delivery_attempt(&mut attempts, 1));
+        }
+        assert!(spend_delivery_attempt(&mut attempts, 1));
+        // Another lease counts on its own.
+        assert!(!spend_delivery_attempt(&mut attempts, 2));
     }
 
     #[test]

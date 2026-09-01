@@ -693,3 +693,11 @@ args = 0
 [JOB_TYPE_SUBS]
 text = "💬 字幕抽出"
 args = 0
+
+[LINK_NODE_FAILED]
+text = "このジョブを実行したノードが失敗を報告しました: {}"
+args = 1
+
+[LINK_RESULT_LOST]
+text = "`{}` はこのジョブを完了しましたが、最終メッセージがコーディネーターに届きませんでした。リンクはこのジョブのログにあります。"
+args = 1

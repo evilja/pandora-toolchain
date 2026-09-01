@@ -1904,8 +1904,13 @@ async fn apply_link_reports(
     }
 }
 
-// A node reported a terminal outcome without a payload that carried it — it died mid-upload, or a
-// build skew meant its final message could not be rendered here. The job still has to end.
+// A node reported a terminal outcome without a payload that carried it — its result POST was
+// retried after the reports had already been drained, or a build skew meant its final message
+// could not be rendered here. The job still has to end, and it has to end as what the node said.
+//
+// The outcome is the node's own word and is believed. Collapsing everything but `Cancelled` into
+// `Failed` here is what used to report a published episode as a failed encode, with its links
+// nowhere: the release existed, and the only thing missing was the message announcing it.
 async fn settle_link_terminal(
     db: &JobDb,
     queue: &mut Vec<Job>,
@@ -1919,15 +1924,25 @@ async fn settle_link_terminal(
     let Some(pos) = link_job_position(queue, job_id, node) else {
         return;
     };
+    let worker = crate::pnworker::link::coordinator::worker_label(node);
     let (stage, payload) = match outcome {
         LinkOutcome::Cancelled => (
             Stage::Cancelled,
             MessagePayload::Static(crate::pnworker::messages::JOB_CANCELLED),
         ),
+        // The node published it. The links travelled in the payload that did not arrive, and the
+        // logs it shipped as it worked are where they can still be read.
+        LinkOutcome::Uploaded => (
+            Stage::Uploaded,
+            MessagePayload::Progress(
+                crate::pnworker::messages::LINK_RESULT_LOST,
+                vec![worker],
+            ),
+        ),
         _ => (
             Stage::Failed,
             MessagePayload::Progress(
-                crate::pnworker::messages::ENCODE_FAIL,
+                crate::pnworker::messages::LINK_NODE_FAILED,
                 vec![reason.unwrap_or_else(|| format!("node {node} reported no outcome"))],
             ),
         ),

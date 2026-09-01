@@ -693,3 +693,11 @@ args = 0
 [JOB_TYPE_SUBS]
 text = "💬 Subtitle extraction"
 args = 0
+
+[LINK_NODE_FAILED]
+text = "The node running this job reported a failure: {}"
+args = 1
+
+[LINK_RESULT_LOST]
+text = "`{}` finished this job, but its final message never reached the coordinator. The links are in this job's logs."
+args = 1
