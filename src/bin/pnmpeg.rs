@@ -287,9 +287,11 @@ fn handoff_frame_total(input: &str, parent: &Path) -> (Option<u64>, &'static str
     (recorded, "the download worker")
 }
 
-// How far the header estimate may sit from what the speculative encoder actually produced before
-// the exact count is worth a full demux. Container duration rounding is worth a frame either way; a
-// truncated encode — the thing being guarded against — is short by thousands.
+// How far a frame total may sit from what the speculative encoder actually produced: first for
+// deciding whether the exact count is worth a full demux, then for deciding whether that count
+// rejects the AOT. Container duration rounding is worth a frame either way, and so is the
+// difference between emitted frames and demuxed packets; a truncated encode — the thing being
+// guarded against — is short by thousands.
 const TOTAL_ESTIMATE_TOLERANCE: u64 = 2;
 
 // Where the download worker leaves the frame count of the file it just finished, beside the job's
@@ -721,15 +723,25 @@ fn finish_linear_aot(
         if total_is_estimate { estimate_source } else { "counted" },
         wait_started.elapsed().as_secs_f64()
     ));
-    // Only the exact count may reject a finished AOT: an estimate is a frame or two out by nature
-    // and would throw away a perfectly good encode.
-    if !total_is_estimate && total != 0 && completed.frames != total {
-        audio_child.kill().ok();
-        audio_child.wait().ok();
-        return Err(format!(
-            "linear AOT encoded {} of the {} frames ffprobe counted in {}",
+    // The two numbers count different things and are allowed to disagree slightly: the AOT counts
+    // what x264 emitted decoding a pipe through the filter graph, while the count is demuxed video
+    // packets in the finished file, and a CFR-normalising graph on a non-seekable input can emit a
+    // frame past the last packet. One job was thrown away for encoding 4496 of 4495 frames after
+    // running to completion. The truncated encode this guards against is short by thousands, which
+    // the tolerance still catches. When it does catch one, fall back to the linear encode instead
+    // of failing the job: an AOT whose length cannot be trusted is a reason to re-encode this one
+    // file, and that is the encode the job was going to do anyway.
+    if !total_is_estimate && total != 0 && completed.frames.abs_diff(total) > TOTAL_ESTIMATE_TOLERANCE {
+        log.line(&format!(
+            "linear AOT encoded {} of the {} frames ffprobe counted in {}; falling back to the linear encode",
             completed.frames, total, args.input
         ));
+        audio_child.kill().ok();
+        audio_child.wait().ok();
+        std::fs::remove_dir_all(&scratch).ok();
+        std::fs::remove_file(&state_path).ok();
+        std::fs::remove_file(&aot_video).ok();
+        return Ok(false);
     }
     if audio_retry {
         // The AOT is complete, so whatever was holding the input open has let go of it.

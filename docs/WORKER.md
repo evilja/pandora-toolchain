@@ -109,6 +109,15 @@ AOT produced disagree by more than `TOTAL_ESTIMATE_TOLERANCE` (2 frames) — the
 catch. In the ordinary case it never runs at all. Only an exact count may reject a finished AOT on a
 frame-count mismatch; an estimate is a frame or two out by nature and never fails a job on its own.
 
+The exact count is held to that same 2-frame tolerance, and a mismatch **falls back to the linear
+encode rather than failing the job**. The two numbers count different things: the AOT reports the
+frames x264 emitted decoding a pipe through the filter chain, while `-count_packets` reports demuxed
+video packets in the finished file, and a CFR-normalising chain on a non-seekable input can emit a
+frame past the last packet. Held to exact equality, that rejected a job which had run to completion
+and consumed every source byte for encoding 4496 of 4495 frames — and, alone among the handoff's
+bail-outs, it failed the job outright instead of re-encoding. A truncated AOT, the thing the check
+exists for, is short by thousands of frames and is still caught.
+
 The AAC pass is started when the handoff begins and is watched as it runs. It used to be waited on
 only after the video finished, so a handoff whose audio died in its first second still spent the whole
 encode before anyone looked — one production run burned eleven minutes and 34,911 successfully encoded
