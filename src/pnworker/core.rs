@@ -1264,12 +1264,21 @@ async fn handle_half_job(
                 // they are ordinary jobs by then and nothing else would stop them.
                 if queue[pos].batch.is_some() {
                     let parent_id = queue[pos].job_id;
-                    let children: Vec<PathBuf> = queue
+                    let children: Vec<(u64, PathBuf, Option<String>)> = queue
                         .iter()
                         .filter(|job| job.batch_parent == Some(parent_id))
-                        .map(|job| job.directory.clone())
+                        .map(|job| (job.job_id, job.directory.clone(), job.link_node.clone()))
                         .collect();
-                    for directory in children {
+                    for (child_id, directory, node) in children {
+                        // A leased episode is executing on a node. The marker file below would
+                        // land in this machine's unused copy of its work directory, where nothing
+                        // ever reads it, so the cancel has to ride that node's next renew exactly
+                        // as it does for a leased job cancelled on its own.
+                        if let Some(node) = node {
+                            if request_link_cancel(queue, child_id, &node) {
+                                continue;
+                            }
+                        }
                         File::create(directory.join("CANCEL")).await.ok();
                     }
                 }
@@ -1277,11 +1286,7 @@ async fn handle_half_job(
                 // next renew; the node then takes its own local cancel path and reports back, so
                 // the job ends through exactly the same events as any other remote transition.
                 if let Some(node) = queue[pos].link_node.clone() {
-                    if crate::pnworker::link::board::request_cancel(queue[pos].job_id) {
-                        println!(
-                            "[link] {node} | cancel requested for job {}",
-                            queue[pos].job_id
-                        );
+                    if request_link_cancel(queue, halfjob.job_id, &node) {
                         return;
                     }
                     // The lease is already gone; fall through and end it here.
@@ -1826,6 +1831,21 @@ async fn do_link_things(db: &JobDb, queue: &mut Vec<Job>, shrine: &mut TypedShri
     }
 }
 
+// Asks the node holding this job to stop, and records that somebody did. The flag is what stops
+// the watchdog from quietly restarting the work if the node never answers: a lease that expires is
+// otherwise indistinguishable from one that was lost, and `requeue_link_job` would run to
+// completion the very job that was asked to end.
+fn request_link_cancel(queue: &mut [Job], job_id: u64, node: &str) -> bool {
+    if !crate::pnworker::link::board::request_cancel(job_id) {
+        return false;
+    }
+    if let Some(job) = queue.iter_mut().find(|job| job.job_id == job_id) {
+        job.link_cancelled = true;
+    }
+    println!("[link] {node} | cancel requested for job {job_id}");
+    true
+}
+
 fn link_job_position(queue: &[Job], job_id: u64, node: &str) -> Option<usize> {
     queue
         .iter()
@@ -2060,6 +2080,21 @@ async fn requeue_link_job(
     else {
         return;
     };
+    // Somebody cancelled this while the node had it, and the node never came back to say so. The
+    // lease expiring is not a reason to start the work again — it is the same request, still
+    // outstanding, and requeueing would finish exactly what was asked to stop.
+    if queue[pos].link_cancelled {
+        queue[pos].ready = Stage::Cancelled;
+        db.update_stage(job_id, Stage::Cancelled).await.ok();
+        render(
+            &mut queue[pos],
+            MessagePayload::Static(crate::pnworker::messages::JOB_CANCELLED),
+        )
+        .await;
+        println!("[link] job {job_id} was cancelled before its node came back; ending it here");
+        finish_link_job(db, queue, job_id).await;
+        return;
+    }
     let mut job = queue.remove(pos);
     job.link_node = None;
     job.link_pin = None;
@@ -3848,6 +3883,11 @@ pub struct Job {
     pub link_attempts: u32,
     // A node named on submit. The job waits for that node instead of running locally.
     pub link_pin: Option<String>,
+    // Somebody cancelled this job while a node was running it. The request rides the node's next
+    // renew and the node normally reports back, so this is only ever read on the path where it
+    // does not: a lease that expires instead. Without it the watchdog requeues the job and runs to
+    // completion the very work that was asked to stop.
+    pub link_cancelled: bool,
     // Set on a leased job whose output belongs to the coordinator rather than to the node that
     // produced it: an HLS-only release is served for twelve hours from the machine that publishes
     // it, and a node has no public hostname to serve it from. The node encodes, holds at
@@ -3949,6 +3989,7 @@ impl Job {
             link_node: None,
             link_attempts: 0,
             link_pin: None,
+            link_cancelled: false,
             link_return_output: false,
             link_drive_only: None,
         }
@@ -4037,6 +4078,7 @@ impl Job {
             link_node: None,
             link_attempts: 0,
             link_pin: None,
+            link_cancelled: false,
             link_return_output: false,
             link_drive_only: None,
         }

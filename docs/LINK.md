@@ -559,7 +559,15 @@ recovery**, is the response to every node failure.
   and the job runs locally without spending a retry, since nothing was attempted.
 - **Cancel.** Cancelling a leased job sets a flag on the node's next renew; the node then takes its
   own ordinary local cancel path and reports back, so the job ends through the same events as any
-  other remote transition. A cancel that cannot be delivered is satisfied by the lease expiring.
+  other remote transition. The cancellation is also recorded on the coordinator's own copy of the
+  job, and that is what a node which never answers runs into: the lease expires and looks exactly
+  like one that was lost, so without it the watchdog requeues the job and runs to completion the
+  very work somebody asked to stop. A cancelled job whose lease expires ends as cancelled.
+
+  **A batch cancels its leased episodes the same way.** Cancelling a batch parent writes a `CANCEL`
+  marker into each child's work directory, which is the right thing for a child encoding here and
+  meaningless for one that is not: a leased child's directory on this machine is empty, and the
+  file lands where nothing ever reads it. Leased children take the renew path instead.
 - **A leased job is never a duplicate source.** Its input was downloaded on the node, so this
   machine's copy of its work directory is empty; advertising it would hand another job a path with
   no video behind it.
