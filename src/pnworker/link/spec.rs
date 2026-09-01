@@ -67,6 +67,11 @@ pub struct NodeRegistered {
     // has just come up is told before it polls for its first job rather than after.
     #[serde(default)]
     pub release: ReleaseInfo,
+    // Whether this node is drained. It rides the renew answer as well, but a renew is a thing only
+    // a working node sends: an idle one would never hear that it had been let back in, and the
+    // flag on its side latched at whatever the last job it held was told.
+    #[serde(default)]
+    pub drain: bool,
 }
 
 // What the coordinator is running, and what a node compares itself against.

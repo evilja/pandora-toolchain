@@ -632,7 +632,7 @@ async fn handle_rmnode(ctx: &Context, command: &serenity::all::CommandInteractio
             CreateInteractionResponse::Message(
                 CreateInteractionResponseMessage::new()
                     .embed(success_embed(command, COMMAND_UPDATED).description(format!(
-                        "Removed `{}` from the roster. It re-registers on its next poll unless its token is revoked with `/rmtoken`; any job it still holds is reclaimed when its lease expires.",
+                        "Removed `{}` from the roster. It registers again within half a minute unless its token is revoked with `/rmtoken`, which is the point — this clears a stale entry, it does not turn a node off. Use `/drainnode` for that. Any job it still holds is reclaimed when its lease expires.",
                         name
                     )))
                     .ephemeral(true),
@@ -1036,7 +1036,7 @@ fn help_catalog() -> &'static [HelpCommand] {
             name: "rmnode",
             summary: "Remove a Pandora Mini node from the roster.",
             usage: "/rmnode name:<node>",
-            details: "Forgets a node. It re-registers on its next poll unless its token is revoked with /rmtoken, and any job it still holds is reclaimed when its lease expires. Rank 4 only.",
+            details: "Forgets a node, along with its drain flag, its /teenode group and its /limit reservation. It registers again within half a minute unless its token is revoked with /rmtoken — this clears a stale roster entry, it does not turn a node off; /drainnode does that. Any job it still holds is reclaimed when its lease expires. Rank 4 only.",
         },
         HelpCommand {
             section: "workers",

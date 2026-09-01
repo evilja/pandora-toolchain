@@ -282,6 +282,9 @@ pub fn register(
             // A refused node is still told where the cluster is. Its refusal may well be that it
             // is running the wrong build, and the answer to that is on this line.
             release,
+            // A refused node takes nothing anyway; it is told what the roster holds so the answer
+            // means the same thing whether or not the registration was accepted.
+            drain: state.nodes.get(&request.node).map(|node| node.drain).unwrap_or(false),
         };
     }
     let existing = state.nodes.get(&request.node);
@@ -321,6 +324,7 @@ pub fn register(
         assets_revision: crate::pnworker::link::assets::manifest().revision,
         purpose,
         release,
+        drain,
     }
 }
 
@@ -956,6 +960,75 @@ mod tests {
         // A node that never registered cannot be grouped either.
         assert!(set_group("tee-absent", Some("farm")).is_err());
         remove_node("tee-strict");
+    }
+
+    // The renew answer carries `drain` too, but only a node that is working sends renews. An idle
+    // node's only channel is the register, so un-draining one has to reach it here or the node
+    // never starts polling again and every job offered to it expires uncollected.
+    #[test]
+    fn the_register_answer_carries_the_drain_flag() {
+        let request = || NodeRegister {
+            node: "drain-answer".to_string(),
+            pandora_version: "test".to_string(),
+            encoder_identity: "x264-drain-test".to_string(),
+            ffmpeg_version: String::new(),
+            threads: 1,
+            max_jobs: 1,
+            encoders: Vec::new(),
+            build: 0,
+            migration_error: None,
+        };
+        assert!(!register(request(), "x264-drain-test", NodePurpose::Cpu).drain);
+        assert!(set_drain("drain-answer", true));
+        assert!(register(request(), "x264-drain-test", NodePurpose::Cpu).drain);
+        assert!(set_drain("drain-answer", false));
+        assert!(!register(request(), "x264-drain-test", NodePurpose::Cpu).drain);
+        remove_node("drain-answer");
+    }
+
+    // The purpose is not persisted, so a coordinator restart reloads every node as `cpu` — which
+    // is only ever correct because the node says otherwise again a moment later.
+    #[test]
+    fn a_re_register_reasserts_a_purpose_the_roster_did_not_keep() {
+        let request = || NodeRegister {
+            node: "purpose-again".to_string(),
+            pandora_version: "test".to_string(),
+            encoder_identity: "x264-purpose-test".to_string(),
+            ffmpeg_version: String::new(),
+            threads: 1,
+            max_jobs: 1,
+            encoders: vec!["h264_nvenc".to_string()],
+            build: 0,
+            migration_error: None,
+        };
+        register(request(), "x264-purpose-test", NodePurpose::Gpu);
+        let gpu = roster()
+            .into_iter()
+            .find(|(node, _)| node.name == "purpose-again")
+            .map(|(node, _)| node.purpose);
+        assert_eq!(gpu, Some(NodePurpose::Gpu));
+
+        // What a restart leaves behind: everything else survives, the purpose does not.
+        let serialised = serde_json::to_string(&roster()
+            .into_iter()
+            .find(|(node, _)| node.name == "purpose-again")
+            .map(|(node, _)| node)
+            .unwrap())
+            .unwrap();
+        let reloaded: NodeState = serde_json::from_str(&serialised).unwrap();
+        assert_eq!(reloaded.purpose, NodePurpose::Cpu);
+        assert_eq!(reloaded.encoders, ["h264_nvenc"]);
+
+        // And what the node saying hello again puts back.
+        register(request(), "x264-purpose-test", NodePurpose::Gpu);
+        assert_eq!(
+            roster()
+                .into_iter()
+                .find(|(node, _)| node.name == "purpose-again")
+                .map(|(node, _)| node.purpose),
+            Some(NodePurpose::Gpu)
+        );
+        remove_node("purpose-again");
     }
 
     #[test]

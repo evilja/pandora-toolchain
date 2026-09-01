@@ -32,6 +32,12 @@ use crate::pnworker::server_effects::preset_from_name;
 const LEASE_POLL_TIMEOUT_SECS: u64 = 45;
 const REQUEST_TIMEOUT_SECS: u64 = 30;
 const REGISTER_RETRY_SECS: u64 = 15;
+// How often an already-registered node says hello again. It is the only call an *idle* node makes
+// that carries anything back about itself, so it is what tells a node it has been un-drained, what
+// re-asserts a purpose the coordinator did not persist, and what puts a node back on a roster
+// `/rmnode` cleared. Half a minute is under the offer pickup window, so a node let back in is
+// polling again before the first job offered to it can expire.
+const REGISTER_REFRESH_SECS: u64 = 30;
 // How long a node that could not reach the coordinator's commit waits before trying again. It is
 // long on purpose: the failure is a repository problem — a diverged branch, a credential that
 // stopped working — and none of those resolve in seconds. Retrying tightly would turn one broken
@@ -506,8 +512,10 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
         config.node, config.coordinator, config.max_jobs
     );
 
-    let renew_secs;
+    let mut renew_secs;
     let registered_revision;
+    let mut purpose;
+    let mut draining;
     let mut encoders = Vec::new();
     let mut probed_hardware = false;
     loop {
@@ -530,6 +538,8 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
                     continue;
                 }
                 renew_secs = registered.renew_secs.max(1);
+                purpose = registered.purpose;
+                draining = registered.drain;
                 // Remembered so a sync that fails here is retried between polls. Without it a node
                 // whose first sync failed would sit unsynced until a job happened to arrive, and
                 // then decline it — correct, but it would never recover on its own.
@@ -560,8 +570,21 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
         tokio::time::sleep(Duration::from_secs(REGISTER_RETRY_SECS)).await;
     }
 
+    if draining {
+        println!("[link] node {} is drained; it will take no work", config.node);
+    }
     let mut active: Vec<ActiveLease> = Vec::new();
-    let mut draining = false;
+    // Why the coordinator last turned this node away. It behaves like a drain — finish what is
+    // held, take nothing new — and is cleared by the first register that is accepted.
+    let mut refused: Option<String> = None;
+    // When to say hello again. A node used to register exactly once, at startup, which left the
+    // coordinator with no way to correct anything it had inferred: `purpose` is deliberately not
+    // persisted, so after a coordinator restart every node reloaded from the roster as `cpu` —
+    // a box marked `gpu` started being offered the general encoding it was marked to keep off,
+    // and never saw GPU work again. `/rmnode` had the same shape: the node was gone until
+    // somebody restarted it, whatever the command's own message said.
+    let mut next_register =
+        tokio::time::Instant::now() + Duration::from_secs(REGISTER_REFRESH_SECS);
     // Set when the coordinator is on a revision this node is not. It behaves exactly like a drain
     // — finish what is held, take nothing new — because an update ends in a restart, and a restart
     // during an encode throws away the whole encode.
@@ -758,6 +781,75 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
             }
         }
 
+        // Saying hello again. A renew carries the same answers, but only a node that is working
+        // sends one — an idle node has no other way to hear that it has been let back in, that its
+        // purpose was re-minted, or that the coordinator restarted and no longer knows what it is.
+        if tokio::time::Instant::now() >= next_register {
+            next_register =
+                tokio::time::Instant::now() + Duration::from_secs(REGISTER_REFRESH_SECS);
+            match register(&client, &config, &encoders).await {
+                Ok(answer) if answer.accepted => {
+                    if let Some(reason) = refused.take() {
+                        println!("[link] node {} is registered again (was refused: {reason})", config.node);
+                    }
+                    renew_secs = answer.renew_secs.max(1);
+                    if !answer.assets_revision.is_empty() {
+                        wanted_revision = answer.assets_revision.clone();
+                    }
+                    if answer.drain != draining {
+                        println!(
+                            "[link] node {} is {}",
+                            config.node,
+                            if answer.drain { "draining" } else { "taking work again" }
+                        );
+                    }
+                    draining = answer.drain;
+                    if answer.purpose != purpose {
+                        println!(
+                            "[link] node {} is now a {} node (was {})",
+                            config.node,
+                            answer.purpose.label(),
+                            purpose.label()
+                        );
+                        purpose = answer.purpose;
+                    }
+                    // A token re-minted from `cpu` to `gpu` without restarting the node: the
+                    // encoders were never measured, and an empty list grants no GPU capability at
+                    // all, so the box would sit marked for work it could never be offered.
+                    if !probed_hardware
+                        && matches!(
+                            purpose,
+                            crate::pnworker::link::spec::NodePurpose::Gpu
+                                | crate::pnworker::link::spec::NodePurpose::Both
+                        )
+                    {
+                        encoders = tokio::task::spawn_blocking(probe_hardware_encoders)
+                            .await
+                            .unwrap_or_default();
+                        probed_hardware = true;
+                        println!(
+                            "[link] node {} proved hardware encoder(s): {}",
+                            config.node,
+                            if encoders.is_empty() { "none".to_string() } else { encoders.join(", ") }
+                        );
+                        // Report the measured list before the coordinator can offer anything on
+                        // the strength of the purpose alone.
+                        next_register = tokio::time::Instant::now();
+                    }
+                }
+                Ok(answer) => {
+                    let reason = answer.reason.unwrap_or_else(|| "no reason given".to_string());
+                    if refused.as_deref() != Some(reason.as_str()) {
+                        eprintln!("[link] coordinator refused this node: {reason}");
+                    }
+                    refused = Some(reason);
+                }
+                // Left alone on a transport fault: a coordinator that cannot be reached has not
+                // said anything about this node, and guessing would drain a cluster over a blip.
+                Err(e) => eprintln!("[link] re-registration failed: {e}"),
+            }
+        }
+
         // A font added on the coordinator reaches a working node here, between jobs, rather than
         // waiting for it to restart. Syncing before the poll is what keeps the refusal below rare.
         if !wanted_revision.is_empty() && assets::local_revision().as_deref() != Some(&wanted_revision)
@@ -767,7 +859,7 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
             }
         }
 
-        if !draining && !updating && (active.len() as u32) < config.max_jobs {
+        if !draining && !updating && refused.is_none() && (active.len() as u32) < config.max_jobs {
             match poll_lease(&client, &config).await {
                 Ok(Some(spec)) => {
                     let return_output = spec.return_output;

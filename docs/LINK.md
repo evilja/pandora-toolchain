@@ -90,9 +90,9 @@ State:
 - `DB/config/global/environment/link_nodes.json` (coordinator, mode `0600`) — the node roster as a
   JSON array of `{ name, pandora_version, encoder_identity, ffmpeg_version, threads,
   max_jobs, encoders, build, migration_error, registered_at, last_seen, drain, group }`. The roster is
-  advisory: a node re-registers within seconds of coming up. It is persisted for the two fields a
-  restart must not forget — an operator's drain flag, their `/teenode` grouping, and their `/limit`
-  reservation (`reserved_for`, the guild id a node works for and nothing else). `purpose` is
+  advisory: a node registers on startup and again every thirty seconds. It is persisted for the three
+  things a restart must not forget — an operator's drain flag, their `/teenode` grouping, and their
+  `/limit` reservation (`reserved_for`, the guild id a node works for and nothing else). `purpose` is
   deliberately *not* persisted: it belongs to the token, and a value carried across a restart would
   outlive the token that justified it.
 - `DB/config/global/environment/build.pandora` (both sides) — the build this machine is level with
@@ -112,7 +112,10 @@ field means `cpu`; the `1788177600-link-token-purpose` migration fills it in fro
 label, which is where operators used to write it by hand.
 
 A link token opens **only** the `/api/v1/link/*` routes and nothing else — it cannot submit jobs,
-read logs, or reach git. Every link route additionally checks that the node named in the request
+read logs, or reach git. Logs and git are refused by `require_privileged` and `require_local`, which
+a node token satisfies neither of; submission is refused in `submit_with_progress`, the one function
+every submit route funnels through — without that a node token would have reached `Reach::Own` like
+any plain one, and `effective_server_id` would have honoured whichever `server_id` the body named. Every link route additionally checks that the node named in the request
 body matches the node the token is bound to, so one node cannot renew or finish another's lease.
 Link traffic is exempt from the API write rate limit: a node renews every lease every ten seconds
 for as long as it works, which is a heartbeat on a fixed cadence rather than user traffic.
@@ -124,7 +127,9 @@ All under `/api/v1/link/`, all requiring a link token.
 - `POST /link/register` — the node announces itself (name, version, `encoder_identity`, thread
   count, `max_jobs`, hardware `encoders` proved by real test encodes, the `build` it is level with,
   and any `migration_error`). Returns
-  `{ accepted, reason?, renew_secs, lease_timeout_secs, assets_revision, purpose, release }`.
+  `{ accepted, reason?, renew_secs, lease_timeout_secs, assets_revision, purpose, release, drain }`.
+  A node repeats it every thirty seconds for as long as it runs — see [Saying hello
+  again](#saying-hello-again).
 - `GET /link/lease?node=<name>` — **long poll**, up to 30s. Returns a job spec, or `204` when there
   is nothing waiting. This is the only dispatch mechanism.
 - `POST /link/lease/:id/renew` — heartbeat plus the node's worker output. Returns
@@ -139,6 +144,35 @@ All under `/api/v1/link/`, all requiring a link token.
   polls it once per loop pass. See [Staying level](#staying-level).
 - `GET /link/assets/manifest` — the font and intro corpus, with its revision. See [Assets](#assets).
 - `GET /link/assets/:hash` — one asset, addressed by content hash.
+
+## Saying hello again
+
+A node registers on startup and then **every thirty seconds**, whether or not it is working. The
+register answer is the only channel an *idle* node has: `GET /link/lease` long-polls and returns a
+bare `204`, and the `drain` and `assets_revision` on a renew answer only reach a node that is
+holding a lease.
+
+Three things depend on the repeat, and all three were silently wrong when registration happened
+once:
+
+- **`purpose` is not persisted.** It belongs to the token, so the roster deliberately does not keep
+  it across a restart — which means a restarted coordinator reloads every node as `cpu`. Because
+  the lease long-poll refreshes `last_seen`, such a node looks perfectly healthy while a box marked
+  `gpu` is offered the general encoding it was marked to keep off, and is never offered GPU work
+  again however long its proved `encoders` list is.
+- **Un-draining an idle node.** `/drainnode name:<node> drain:false` puts the node back in
+  `pick_node`, and the coordinator starts offering it work; without the register the node's own
+  copy of the flag stays latched at whatever the last lease it held was told, so it never polls,
+  every offer expires uncollected after sixty seconds, and each expiry spends one of the job's
+  `LINK_MAX_ATTEMPTS`. The refresh interval is under that pickup window on purpose.
+- **`/rmnode`.** It clears a roster entry; the node puts itself back within half a minute. That is
+  what the command is for — it forgets stale state, including a drain flag, a `/teenode` group and
+  a `/limit` reservation. It is not how a node is turned off; `/drainnode` is, and revoking the
+  token with `/rmtoken` is how one is removed for good.
+
+A refused registration is treated as a drain: the node finishes what it holds, takes nothing new,
+and keeps saying hello until it is accepted. A register that fails to *reach* the coordinator
+changes nothing — a blip is not an instruction, and guessing would drain a cluster over one.
 
 ## Encoder parity
 
