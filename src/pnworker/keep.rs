@@ -55,6 +55,16 @@ pub(crate) struct KeepMeta {
     pub failed: bool,
     #[serde(default)]
     pub job_id: u64,
+    // The Pandora Mini node holding the file, when it is not this machine.
+    //
+    // A keep is the one thing in this system that deliberately outlives the job that made it, so a
+    // leased keep cannot simply travel back: it exists so a *later* command can join it, and
+    // returning multi-gigabyte episodes to a coordinator that leases its encodes precisely to avoid
+    // holding them would defeat the arrangement. The file stays where it was produced, this record
+    // says where that is, and `/keycode` is offered to that node. `None` means the ordinary case —
+    // the file is beside this record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
 }
 
 pub(crate) struct PreparedKeep {
@@ -64,7 +74,11 @@ pub(crate) struct PreparedKeep {
 
 pub struct ResolvedKeywords {
     pub kind: KeepKind,
+    // Paths on this machine. Empty when `node` is set — the files are over there.
     pub paths: Vec<PathBuf>,
+    // The one node holding every keyword, when they are not here. The job is offered to that node,
+    // which resolves the same keywords against its own store and finds them local.
+    pub node: Option<String>,
 }
 
 pub enum KeywordResolve {
@@ -203,6 +217,7 @@ pub(crate) async fn store_output(
         fps,
         sample_rate,
         ready: true,
+        node: None,
         failed: false,
         job_id,
     };
@@ -244,6 +259,7 @@ pub(crate) async fn reserve_output(
         sample_rate: None,
         ready: false,
         failed: false,
+        node: None,
         job_id,
     };
     let raw = serde_json::to_vec_pretty(&meta).map_err(|e| e.to_string())?;
@@ -293,7 +309,14 @@ pub(crate) async fn resolve_keywords_for_keycode(
         if meta.failed {
             return Err(format!("keyword `{}` failed", keyword));
         }
-        if !meta.ready || !output_path(&meta).exists() {
+        // A keep held by a node has no file here, and asking whether one exists would leave the
+        // keyword waiting for ever on a machine that is never going to write it. What the node
+        // said is the answer: it reported the job as finished, and that is what set `ready`.
+        let missing = match meta.node {
+            Some(_) => !meta.ready,
+            None => !meta.ready || !output_path(&meta).exists(),
+        };
+        if missing {
             waiting.push(keyword);
         }
         metas.push(meta);
@@ -308,8 +331,70 @@ pub(crate) async fn resolve_keywords_for_keycode(
     if !waiting.is_empty() {
         return Ok(KeywordResolve::Waiting(waiting));
     }
-    let paths = metas.iter().map(output_path).collect::<Vec<_>>();
-    Ok(KeywordResolve::Ready(ResolvedKeywords { kind, paths }))
+    // Every keyword has to be in one place, because joining them is one ffmpeg run over one set of
+    // files. A set spread across two nodes is not a job that can be dispatched anywhere, and saying
+    // so — with the keyword and the machine — is the only thing that lets somebody act on it. The
+    // alternative was a keycode that resolved to paths this machine does not have and failed inside
+    // ffmpeg with a missing file.
+    let node = holding_node(&metas)?;
+    let paths = if node.is_some() {
+        Vec::new()
+    } else {
+        metas.iter().map(output_path).collect::<Vec<_>>()
+    };
+    Ok(KeywordResolve::Ready(ResolvedKeywords { kind, paths, node }))
+}
+
+// The single machine holding all of these, or an error naming the split.
+fn holding_node(metas: &[KeepMeta]) -> Result<Option<String>, String> {
+    let mut places = metas
+        .iter()
+        .map(|meta| (meta.keyword.as_str(), meta.node.as_deref()))
+        .collect::<Vec<_>>();
+    places.dedup_by_key(|(_, node)| *node);
+    let first = metas.first().and_then(|meta| meta.node.clone());
+    for meta in metas {
+        if meta.node.as_deref() != first.as_deref() {
+            let where_is = |meta: &KeepMeta| match meta.node.as_deref() {
+                Some(node) => format!("`{}` is on node `{}`", meta.keyword, node),
+                None => format!("`{}` is on the coordinator", meta.keyword),
+            };
+            return Err(format!(
+                "these keywords are not on one machine — {}, while {}. Joining them needs one machine holding all of them.",
+                where_is(&metas[0]),
+                where_is(meta),
+            ));
+        }
+    }
+    Ok(first)
+}
+
+// Marks a reserved keep as held by a node rather than by this machine.
+//
+// The coordinator allocated the keyword and reserved the record before the job left; the node wrote
+// the file. This is the half that says so, and it is what makes the keyword usable by a later
+// `/keycode` — without it the record stays `ready: false` for ever and the keyword reads as a keep
+// whose encode never finished.
+pub(crate) async fn mark_output_remote(
+    server_scope: &str,
+    keep: &KeepRequest,
+    node: &str,
+) -> Result<(), String> {
+    let keyword = keep
+        .output_keyword
+        .as_deref()
+        .and_then(sanitize_keyword)
+        .ok_or_else(|| "keep output keyword was not prepared".to_string())?;
+    let Some(mut meta) = read_meta(server_scope, &keyword).await? else {
+        return Err(format!("keyword `{keyword}` was never reserved"));
+    };
+    meta.ready = true;
+    meta.failed = false;
+    meta.node = Some(node.to_string());
+    let raw = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
+    write(meta_path(server_scope, &meta.keyword), raw)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 pub async fn resolve_studio_keywords(
@@ -338,6 +423,15 @@ pub async fn resolve_studio_keywords(
         if meta.failed {
             return Err(format!("keyword `{}` failed", keyword));
         }
+        // Studio streams byte ranges of these files to a browser over this machine's hostname, so
+        // "somewhere else" is not a location it can work from. Named rather than folded into "not
+        // ready", because the two need different things done about them.
+        if let Some(node) = meta.node.as_deref() {
+            return Err(format!(
+                "keyword `{}` was produced on node `{}` and its file is there, not here. Studio edits media this machine holds.",
+                keyword, node
+            ));
+        }
         if !meta.ready || !output_path(&meta).exists() {
             return Err(format!("keyword `{}` is not ready", keyword));
         }
@@ -350,7 +444,69 @@ pub async fn resolve_studio_keywords(
     Ok(ResolvedKeywords {
         kind,
         paths: metas.iter().map(output_path).collect(),
+        node: None,
     })
+}
+
+// The node holding a keyword, if it is not this machine. `Ok(None)` covers both "here" and "no
+// such keyword"; the caller that cares about the difference reads the meta itself.
+pub(crate) async fn keyword_node(server_scope: &str, keyword: &str) -> Option<String> {
+    let keyword = sanitize_keyword(keyword)?;
+    read_meta(server_scope, &keyword).await.ok()??.node
+}
+
+// Whether a keyword is one this machine holds the file for. Used to keep a keep *chain* together:
+// every part of one has to end up on the same machine, or the `/keycode` joining them has nowhere
+// to run.
+pub(crate) async fn keyword_is_local(server_scope: &str, keyword: &str) -> bool {
+    let Some(keyword) = sanitize_keyword(keyword) else {
+        return false;
+    };
+    matches!(read_meta(server_scope, &keyword).await, Ok(Some(meta)) if meta.node.is_none())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn meta(keyword: &str, node: Option<&str>) -> KeepMeta {
+        KeepMeta {
+            keyword: keyword.to_string(),
+            parent_keyword: keyword.to_string(),
+            kind: KeepKind::Encode,
+            server_scope: "global".to_string(),
+            output: "output.mp4".to_string(),
+            expires_at: now_secs() + 3600,
+            preset: None,
+            fps: None,
+            sample_rate: None,
+            ready: true,
+            failed: false,
+            job_id: 1,
+            node: node.map(str::to_string),
+        }
+    }
+
+    // Joining keywords is one ffmpeg run over one set of files. A set split across two machines is
+    // not a job that can be dispatched anywhere, and the failure has to name the split rather than
+    // arriving later as a missing file inside the encoder.
+    #[test]
+    fn keywords_have_to_be_on_one_machine_to_be_joined() {
+        assert_eq!(holding_node(&[meta("a", None), meta("b", None)]).unwrap(), None);
+        assert_eq!(
+            holding_node(&[meta("a", Some("osaka")), meta("b", Some("osaka"))]).unwrap(),
+            Some("osaka".to_string()),
+        );
+
+        let split = holding_node(&[meta("a", Some("osaka")), meta("b", Some("kyoto"))])
+            .expect_err("two nodes cannot be joined");
+        assert!(split.contains("osaka") && split.contains("kyoto"), "{split}");
+
+        // The half-and-half case reads the same way and is just as unjoinable.
+        let mixed = holding_node(&[meta("a", Some("osaka")), meta("b", None)])
+            .expect_err("a node and the coordinator cannot be joined");
+        assert!(mixed.contains("coordinator"), "{mixed}");
+    }
 }
 
 async fn read_meta(server_scope: &str, keyword: &str) -> Result<Option<KeepMeta>, String> {

@@ -1279,6 +1279,27 @@ async fn accept(
     job.gdrive_folder_global = spec.gdrive_folder_global.clone();
     job.gdrive_folder_local = spec.gdrive_folder_local.clone();
     job.link_return_output = spec.return_output;
+    // The keyword this output is kept under was allocated on the coordinator, because that is the
+    // namespace a person types into `/keycode` later. Carrying it through means this node's
+    // `prepare_keep_job` finds the work already done and stores the file under the name the
+    // coordinator is expecting rather than picking its own out of the same pool.
+    if let Some(keep) = spec.keep.as_ref() {
+        job.keep = Some(crate::pnworker::core::KeepRequest {
+            keyword: keep.keyword.clone(),
+            parent_keyword: Some(keep.parent_keyword.clone()),
+            output_keyword: Some(keep.output_keyword.clone()),
+        });
+    }
+    // A `/keycode` resolves these against this node's own keep store, which is only correct because
+    // the coordinator offered it here for exactly that reason.
+    if let Some(keycode) = spec.keycode.as_ref() {
+        if keycode.keywords.is_empty() {
+            return decline("a keycode with no keywords".to_string());
+        }
+        job.keycode = Some(crate::pnworker::core::KeycodeRequest {
+            keywords: keycode.keywords.clone(),
+        });
+    }
     // A `/preview` carries a shot list and, usually, a watermark font. The font arrives as a name
     // and is resolved here over the same two synced buckets the coordinator resolved it over, so
     // either this node holds the identical file or it says so: a preview rendered in a substituted
@@ -1423,6 +1444,9 @@ pub fn job_type_is_leasable(job_type: JobType) -> bool {
             | JobType::BackupAll
             | JobType::Subs
             | JobType::Preview
+            // The exception to "carries its own source": a `/keycode` carries keywords, and the
+            // coordinator offers it only to the node whose keep store those keywords are in.
+            | JobType::Keycode
     )
 }
 
@@ -1528,6 +1552,9 @@ mod tests {
         // children travel as Pancodes, which are leasable — the parent itself never is.
         assert!(!job_type_is_leasable(JobType::Batch));
         assert!(!job_type_is_leasable(JobType::Studio));
-        assert!(!job_type_is_leasable(JobType::Keycode));
+        // A `/keycode` is the exception the name of this test does not cover: it carries no source
+        // at all, and travels only because the coordinator sends it to the machine whose keep store
+        // already holds every keyword it joins.
+        assert!(job_type_is_leasable(JobType::Keycode));
     }
 }

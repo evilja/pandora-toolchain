@@ -197,6 +197,38 @@ pub struct LinkJobSpec {
     // one hangs off it, so it travels as its own object rather than as six more flat fields.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<PreviewSpec>,
+    // The keyword this job's output is kept under, and the one it continues. Allocated by the
+    // coordinator before the job leaves — the keyword namespace is the coordinator's, since it is
+    // what a person types into `/keycode` later — and honoured verbatim by the node, which stores
+    // the file in its own keep directory under that name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep: Option<KeepSpec>,
+    // The keywords a `/keycode` joins. It carries no source of its own: its inputs are whatever
+    // those keywords resolve to on the machine holding them, which is the machine this job was
+    // deliberately offered to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keycode: Option<KeycodeSpec>,
+}
+
+// A kept output, as the coordinator prepared it.
+//
+// The node must not allocate its own: a keyword is the name a person will type into `/keycode`, and
+// two machines picking freely out of the same pool would hand out the same word twice and describe
+// keeps nobody asked for. So the coordinator allocates, reserves the record, and sends the answer.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KeepSpec {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keyword: Option<String>,
+    pub parent_keyword: String,
+    pub output_keyword: String,
+}
+
+// What a `/keycode` joins. The node resolves these against its own keep store, where the files are
+// — which is only correct because the coordinator offered this job to the node that holds them.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KeycodeSpec {
+    pub keywords: Vec<String>,
 }
 
 // What a `/preview` needs beyond a source and a subtitle.

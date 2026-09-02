@@ -436,15 +436,59 @@ async fn try_link_offload(
     job: &mut Job,
     source_extras: crate::pnworker::link::coordinator::LeaseSource,
 ) -> LinkOffload {
-    let node = match crate::pnworker::link::coordinator::choose_node(job, source_extras.has_file())
-    {
+    try_link_offload_to(db, job, source_extras, None).await
+}
+
+// The same thing with the node already decided. Only a `/keycode` uses it: its inputs are keywords
+// and a keyword is a file on the machine that produced it, so a free node is no use — this is the
+// one lease that is not a scheduling choice.
+async fn try_link_offload_to(
+    db: &JobDb,
+    job: &mut Job,
+    source_extras: crate::pnworker::link::coordinator::LeaseSource,
+    pin: Option<&str>,
+) -> LinkOffload {
+    // Where a keep chain already lives, when this job is continuing one.
+    let placement = match pin {
+        Some(node) => KeepPlacement::Pinned(node.to_string()),
+        None => keep_placement(job).await,
+    };
+    // A job pinned to one machine must never quietly run somewhere else, whatever this coordinator
+    // would otherwise do with it: that is the whole of what the pin is for.
+    let pinned = matches!(placement, KeepPlacement::Pinned(_));
+    let chosen = match placement {
+        // Every part of a keep chain has to end up on one machine, or the `/keycode` that joins
+        // them has nowhere to run — and the failure would land on the person running the join,
+        // hours after the encode that caused it. A part whose parent is here stays here.
+        KeepPlacement::Local => {
+            if crate::pnworker::link::coordinator::is_orchestrator() {
+                // The chain was started on this machine, which no longer encodes. Continuing it is
+                // impossible rather than merely slow, so it is said now instead of after a wait
+                // that could never end.
+                decline_job_setup(
+                    job,
+                    "the keyword this continues was kept on the coordinator, which now runs no encodes",
+                )
+                .await;
+                return LinkOffload::Declined;
+            }
+            return LinkOffload::Local;
+        }
+        KeepPlacement::Pinned(node) => Ok(node),
+        KeepPlacement::Free => {
+            crate::pnworker::link::coordinator::choose_node(job, source_extras.has_file())
+        }
+    };
+    let must_offload =
+        pinned || crate::pnworker::link::coordinator::must_offload(job, source_extras.has_file());
+    let node = match chosen {
         Ok(node) => node,
         Err(reason) => {
             // On an ordinary coordinator this is the whole answer: no node, so it runs here. An
             // orchestrator has no local encoder to fall back to, so the job is held instead — with
             // the reason attached, because a job that sits still and says nothing is the one
             // failure mode this mode could introduce.
-            if crate::pnworker::link::coordinator::must_offload(job, source_extras.has_file()) {
+            if must_offload {
                 return hold_for_node(db, job, reason.describe()).await;
             }
             return LinkOffload::Local;
@@ -466,6 +510,18 @@ async fn try_link_offload(
         decline_job_setup(job, &reason).await;
         return LinkOffload::Declined;
     }
+    // The keyword a kept output will be stored under is allocated here, before the spec is built,
+    // because the pool is one namespace and this machine is the one that hands out of it: two
+    // machines choosing freely would give the same word to two keeps and describe one nobody asked
+    // for. It also reserves the record, which is what a later `/keycode` reads to find out the
+    // keep exists and, once the node reports, which machine is holding it.
+    if job.keep.is_some() {
+        let kind = crate::pnworker::link::coordinator::keep_kind_for(job);
+        if !prepare_keep_job(job, kind).await {
+            decline_job_setup(job, "the keyword for this keep could not be reserved").await;
+            return LinkOffload::Declined;
+        }
+    }
     let spec = crate::pnworker::link::coordinator::build_spec(
         job,
         &source_extras,
@@ -474,9 +530,9 @@ async fn try_link_offload(
     );
     if !crate::pnworker::link::board::offer(&node, spec) {
         // The node stopped being a candidate between the choice and the offer. Somewhere else has
-        // to own the job, and on an orchestrator that is the waiting pool rather than this
-        // machine's encoders.
-        if crate::pnworker::link::coordinator::must_offload(job, source_extras.has_file()) {
+        // to own the job — the waiting pool, for an orchestrator or for anything pinned to one
+        // machine, and this machine's own encoders otherwise.
+        if must_offload {
             return hold_for_node(db, job, format!("`{node}` stopped taking work")).await;
         }
         return LinkOffload::Local;
@@ -495,6 +551,36 @@ async fn try_link_offload(
         if return_output { " (output returns here for HLS publication)" } else { "" }
     );
     LinkOffload::Offered
+}
+
+// Where a job that continues an existing keep has to run.
+//
+// A keep exists so a later `/keycode` can join it, and a join is one ffmpeg run over one set of
+// files: parts of a chain scattered over two machines are parts that can never be joined. The
+// parent keyword's own record is what says where the chain is, so every part after the first
+// follows it — and a chain that started here stays here, which is the behaviour a deployment with
+// no nodes always had.
+enum KeepPlacement {
+    Free,
+    Local,
+    Pinned(String),
+}
+
+async fn keep_placement(job: &Job) -> KeepPlacement {
+    let Some(parent) = job.keep.as_ref().and_then(|keep| keep.keyword.clone()) else {
+        // A keep that starts a chain can begin anywhere; everything after it follows.
+        return KeepPlacement::Free;
+    };
+    let scope = scope(job.server_id);
+    if let Some(node) = crate::pnworker::keep::keyword_node(&scope, &parent).await {
+        return KeepPlacement::Pinned(node);
+    }
+    if crate::pnworker::keep::keyword_is_local(&scope, &parent).await {
+        return KeepPlacement::Local;
+    }
+    // No such keyword. Preparation refuses it in a moment with a message naming it, which is a
+    // better place for that answer than here.
+    KeepPlacement::Free
 }
 
 // The worker label a job held for a node wears. It is deliberately not `lnk-…`: nothing is running
@@ -974,6 +1060,12 @@ async fn dispatch_keycode_ready(
     if resolved.kind == KeepKind::Backup && job.attachment.is_empty() {
         return fail_keycode(db, job, "backup keywords require a subtitle").await;
     }
+    // Every keyword lives on one Pandora Mini node, so the join runs there. This is the one lease
+    // that is not a scheduling decision: the files are where they are, and a free node with an
+    // empty keep store cannot do the work however idle it is.
+    if let Some(node) = crate::pnworker::link::coordinator::keycode_node(&resolved) {
+        return lease_keycode_to(db, job, &node).await;
+    }
     let inputs = resolved.paths;
     let intro_dir = job.preset.candidates().cloned();
     if inputs.is_empty() {
@@ -1007,6 +1099,27 @@ async fn dispatch_keycode_ready(
         shrine.reboot_epoch(&Worker::Encode),
     );
     KeycodeDispatch::Dispatched
+}
+
+// Hands a `/keycode` to the node holding its keeps.
+//
+// A failed offer is not a failed job: the node is very likely restarting, and the keeps are still
+// on its disk. The job goes back to waiting and is offered again on a later pass — and if the node
+// never returns, the keeps expire and `resolve_keywords_for_keycode` ends the job with the reason,
+// which is a better answer than failing it the moment a machine reboots.
+async fn lease_keycode_to(db: &JobDb, job: &mut Job, node: &str) -> KeycodeDispatch {
+    let source = crate::pnworker::link::coordinator::LeaseSource::default();
+    match try_link_offload_to(db, job, source, Some(node)).await {
+        LinkOffload::Offered => KeycodeDispatch::Dispatched,
+        LinkOffload::Declined => KeycodeDispatch::Failed,
+        LinkOffload::Local | LinkOffload::Waiting => {
+            eprintln!(
+                "[link] job {} could not be offered to `{node}`, which holds its keywords; waiting",
+                job.job_id
+            );
+            KeycodeDispatch::Waiting
+        }
+    }
 }
 
 async fn fail_keycode(db: &JobDb, job: &mut Job, reason: &str) -> KeycodeDispatch {
@@ -1058,6 +1171,13 @@ async fn prepare_keep_job(job: &mut Job, kind: KeepKind) -> bool {
     let Some(mut keep) = job.keep.clone() else {
         return true;
     };
+    // Already allocated, and not here. A leased keep is prepared on the coordinator before the job
+    // leaves — the keyword pool is one namespace and one machine hands out of it — and the reserved
+    // record is the coordinator's too. Running any of this again would allocate a second keyword,
+    // store the file under a name nothing looks for, and leave the name that was promised empty.
+    if keep.output_keyword.is_some() {
+        return true;
+    }
     let prepared = match prepare_keep(&scope(job.server_id), kind, &keep).await {
         Ok(prepared) => prepared,
         Err(e) => {
@@ -2039,16 +2159,17 @@ async fn render_link_waiting(job: &mut Job) {
 // that a node an operator has just fixed is back in rotation without anybody restarting anything.
 const LINK_AVOID_FORGIVENESS: Duration = Duration::from_secs(5 * 60);
 
-// Jobs an orchestrator is holding for a node, offered the moment one is free.
+// Jobs being held for a node, offered the moment one is free.
 //
-// This is the counterpart of the fallback an ordinary coordinator has: there, `choose_node`
-// answering `None` means the job runs here and the question is never asked again. Here the question
-// is asked on every pass, which is why `pick_node` is a pure lookup over an in-memory roster and
-// why the reason it gives is only rendered when it changes.
+// A job reaches the pool only when it must not run here: on an orchestrator, which runs nothing, or
+// because it is pinned to the machine holding the keep chain it continues. Either way this machine
+// is not an answer, which is why `LinkOffload::Local` below is a failure rather than a fallback.
+//
+// This is the counterpart of the fallback an ordinary coordinator has for everything else: there,
+// `choose_node` answering with a reason means the job runs here and the question is never asked
+// again. Here the question is asked on every pass, which is why `pick_node` is a pure lookup over
+// an in-memory roster and why the reason it gives is only rendered when it changes.
 async fn do_link_waiting_things(db: &JobDb, queue: &mut Vec<Job>) {
-    if !crate::pnworker::link::coordinator::is_orchestrator() {
-        return;
-    }
     let waiting: Vec<u64> = queue
         .iter()
         // `Stage::Queued` is what a waiting job is; anything else means something else has already
@@ -2128,12 +2249,13 @@ async fn do_link_waiting_things(db: &JobDb, queue: &mut Vec<Job>) {
                 db.update_stage(job_id, job.ready).await.ok();
                 queue.push(job);
             }
-            // `must_offload` was true when this job was held and false now, which can only mean it
-            // stopped being leasable under us. Nothing here can run it, so it is failed rather
-            // than silently dispatched to encoders this mode says are off.
+            // The job was held because it must not run here, and now it says it can. That can only
+            // mean it stopped being leasable under us, and running it anyway is the one thing the
+            // hold existed to prevent — an orchestrator encoding, or a keep chain splitting across
+            // two machines. It is failed instead, where somebody can see it.
             LinkOffload::Local => {
                 eprintln!(
-                    "[link] job {job_id} can no longer be leased and this coordinator runs no encodes"
+                    "[link] job {job_id} can no longer be leased and must not run on this machine"
                 );
                 job.link_waiting = false;
                 queue.push(job);
@@ -2268,6 +2390,26 @@ async fn apply_link_reports(
                 job.ready = stage;
                 db.update_stage(job_id, stage).await.ok();
             }
+            // The coordinator reserved this keyword and the node wrote the file. Recording where
+            // it went is what makes the keyword usable: without it the reservation stays "not
+            // ready" for ever and reads as a keep whose encode never finished, while the episode
+            // sits on a node nobody can be told about.
+            if let Some(keep) = job.keep.clone() {
+                match stage {
+                    Some(Stage::Uploaded) => {
+                        if let Err(e) =
+                            crate::pnworker::keep::mark_output_remote(&scope(job.server_id), &keep, node)
+                                .await
+                        {
+                            eprintln!("[link] {node} | job {job_id} keep could not be recorded: {e}");
+                        }
+                    }
+                    Some(Stage::Failed) | Some(Stage::Cancelled) | Some(Stage::Declined) => {
+                        mark_output_failed(&scope(job.server_id), &keep).await.ok();
+                    }
+                    _ => {}
+                }
+            }
             if stage == Some(Stage::Uploaded) {
                 if let Some(acix) = job.acix.clone() {
                     if let Some(drive) = drive_link_from_payload(&payload) {
@@ -2346,6 +2488,19 @@ async fn settle_link_terminal(
     };
     queue[pos].ready = stage;
     db.update_stage(job_id, stage).await.ok();
+    // The node's own final payload never arrived, so the branch in `apply_link_reports` that
+    // records a keep did not run. A keyword left reserved and never resolved is one an operator
+    // waits on for ever; a keyword recorded as held by a node that has just failed the job is
+    // worse. Both cases here are "it did not land", so the reservation is released.
+    if let Some(keep) = queue[pos].keep.clone() {
+        if stage != Stage::Uploaded {
+            mark_output_failed(&scope(queue[pos].server_id), &keep).await.ok();
+        } else if let Err(e) =
+            crate::pnworker::keep::mark_output_remote(&scope(queue[pos].server_id), &keep, node).await
+        {
+            eprintln!("[link] {node} | job {job_id} keep could not be recorded: {e}");
+        }
+    }
     render(&mut queue[pos], payload).await;
     finish_link_job(db, queue, job_id).await;
 }

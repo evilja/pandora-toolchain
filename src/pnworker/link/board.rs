@@ -1088,11 +1088,22 @@ mod tests {
             intro_group: None,
             assets_revision: String::new(),
             preview: None,
+            keep: None,
+            keycode: None,
         }
     }
 
     // The board is one process-wide structure, exactly as it is in production, so each test uses
     // node names of its own rather than racing its neighbours for the same roster entry.
+    //
+    // Names are not enough for the ones that expire leases: `expire_leases` sweeps the whole board,
+    // so a test that ages one of its own leases and calls it can carry off a lease another test was
+    // about to assert on. They take this in turn instead. Poisoning is recovered from, so a test
+    // that fails inside the guard does not take every later one with it.
+    fn exclusive() -> std::sync::MutexGuard<'static, ()> {
+        static ORDER: OnceLock<Mutex<()>> = OnceLock::new();
+        lock(ORDER.get_or_init(|| Mutex::new(())))
+    }
 
     // A node the scheduler will actually accept. `offer` re-checks the roster, so a test that
     // skips this is testing a machine the coordinator has never heard of.
@@ -1118,6 +1129,7 @@ mod tests {
     // who simply omitted the field, which is not a property worth having.
     #[test]
     fn a_node_reporting_no_encoder_identity_is_refused() {
+        let _order = exclusive();
         let request = NodeRegister {
             node: "identity-none".to_string(),
             pandora_version: "test".to_string(),
@@ -1141,6 +1153,7 @@ mod tests {
     // name both sides or nobody can act on it.
     #[test]
     fn a_different_encoder_is_refused_and_both_sides_are_named() {
+        let _order = exclusive();
         let request = NodeRegister {
             node: "identity-other".to_string(),
             pandora_version: "test".to_string(),
@@ -1164,6 +1177,7 @@ mod tests {
     // exists to prevent.
     #[test]
     fn a_claim_only_returns_that_nodes_own_offer() {
+        let _order = exclusive();
         release(9001);
         register_test_node("claim-a");
         register_test_node("claim-b");
@@ -1181,6 +1195,7 @@ mod tests {
     // finishes work a second machine is already doing.
     #[test]
     fn renewing_a_reclaimed_lease_is_told_to_abandon() {
+        let _order = exclusive();
         release(9002);
         register_test_node("reclaim-a");
         offer("reclaim-a", spec(9002));
@@ -1202,6 +1217,7 @@ mod tests {
     // A renew from the wrong node must not keep somebody else's lease alive.
     #[test]
     fn a_renew_from_another_node_does_not_hold_the_lease() {
+        let _order = exclusive();
         release(9003);
         register_test_node("stranger-a");
         offer("stranger-a", spec(9003));
@@ -1225,6 +1241,7 @@ mod tests {
     // and look at.
     #[test]
     fn a_group_renames_the_work_and_leaves_the_nodes_apart() {
+        let _order = exclusive();
         let request = |name: &str| NodeRegister {
             node: name.to_string(),
             pandora_version: "test".to_string(),
@@ -1269,6 +1286,7 @@ mod tests {
     // `|` or a newline in it would be a label nothing can read back.
     #[test]
     fn an_unusable_group_name_is_refused_rather_than_sanitised() {
+        let _order = exclusive();
         let request = NodeRegister {
             node: "tee-strict".to_string(),
             pandora_version: "test".to_string(),
@@ -1295,6 +1313,7 @@ mod tests {
     // never starts polling again and every job offered to it expires uncollected.
     #[test]
     fn the_register_answer_carries_the_drain_flag() {
+        let _order = exclusive();
         let request = || NodeRegister {
             node: "drain-answer".to_string(),
             pandora_version: "test".to_string(),
@@ -1318,6 +1337,7 @@ mod tests {
     // is only ever correct because the node says otherwise again a moment later.
     #[test]
     fn a_re_register_reasserts_a_purpose_the_roster_did_not_keep() {
+        let _order = exclusive();
         let request = || NodeRegister {
             node: "purpose-again".to_string(),
             pandora_version: "test".to_string(),
@@ -1361,6 +1381,7 @@ mod tests {
 
     #[test]
     fn an_offer_nobody_collects_expires_and_is_reported_lost() {
+        let _order = exclusive();
         release(9004);
         register_test_node("expiry-a");
         offer("expiry-a", spec(9004));
@@ -1384,6 +1405,7 @@ mod tests {
     // sixty seconds later, and looks from the outside like a job that simply did not start.
     #[test]
     fn an_offer_to_a_node_that_stopped_taking_work_is_refused_at_once() {
+        let _order = exclusive();
         register_test_node("offer-gone");
         assert!(offer("offer-gone", spec(9005)));
         release(9005);
@@ -1401,6 +1423,7 @@ mod tests {
     // scheduler keeps choosing it, and it never collects a thing. Each round costs a job a minute.
     #[test]
     fn a_node_that_never_collects_its_offers_is_drained_with_a_reason() {
+        let _order = exclusive();
         register_test_node("blackhole");
         for job_id in 9100..9100 + MAX_MISSED_PICKUPS as u64 {
             assert!(offer("blackhole", spec(job_id)), "job {job_id} should have been offered");
@@ -1553,6 +1576,7 @@ mod tests {
     // coordinator hand it every job in the queue and then wait for all of them.
     #[test]
     fn a_nodes_job_limit_is_clamped_rather_than_believed() {
+        let _order = exclusive();
         let request = |max_jobs: u32| NodeRegister {
             node: "limits".to_string(),
             pandora_version: "test".to_string(),

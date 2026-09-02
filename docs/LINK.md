@@ -92,20 +92,18 @@ mean nothing runs at all, with no error and no node to look at.
   is exactly "leasable", so there is no second rule to keep in step with the first. A probe waits
   with the rest — an orchestrator fetches not even the metainfo — which means `/job` shows "waiting
   for a node" before it shows a file list.
-- **Refused at submission**, with the reason, because their input is a file that only exists on
-  this machine and no job spec can carry it: keeps (a kept encode leaves its output here for a
-  later `/keycode` to join), `/keycode` itself, and Studio, whose manifest names media uploaded to
-  this process and streamed back to a browser from it. The alternative to refusing is a job that is
-  accepted, renders a queue position, and then either sits forever or quietly does the thing the
-  deployment exists not to do.
+  Kept encodes and the `/keycode` that joins them travel too, and stay together: the keep lives on
+  the node that produced it and the join is offered to that same machine. See
+  [Keeps and `/keycode`](#keeps-and-keycode).
+- **Refused at submission**, with the reason: Studio, and only Studio. It edits media uploaded to
+  this process and streamed back to a browser from it, over a hostname a node deliberately does not
+  have — see [Why Studio stays here](#why-studio-stays-here). The alternative to refusing is a job
+  that is accepted, renders a queue position, and then either sits forever or quietly does the thing
+  the deployment exists not to do.
 - **Neither.** Cancels, `/workers`, `/lsnode`, the git commands, the publish commands and every
   config command are unchanged: none of them touches a video.
 
-Making keeps, `/keycode` and Studio work here is not a matter of another job type travelling. A
-keep exists precisely so a file *stays* on one machine between two commands, and Studio serves byte
-ranges of an upload to a browser over a hostname nodes deliberately do not have. Both would need a
-node to hold state across leases and be addressable — a different shape from a lease, not a bigger
-one.
+
 
 ### A batch parent stops downloading
 
@@ -471,15 +469,18 @@ The rule is "does the job carry its own source", since a node fetches its own in
 
 - **Leasable**: `Encode`, `Pancode`, `Backup`, `BackupAll`, `Probe`, `Subs`, `Preview`, and
   **batch children**, provided the job carries a source the node can fetch — a non-empty link, or a
-  `.torrent` the coordinator sends with it (see below).
+  `.torrent` the coordinator sends with it (see below). A kept encode travels too; see
+  [Keeps and `/keycode`](#keeps-and-keycode).
+- **Leased only to one named node**: `Keycode`. It carries no source at all — its inputs are
+  keywords — so it is never offered to whichever node is free; it goes to the machine holding the
+  keeps, or nowhere.
 - **Never leased**: forwarded jobs (they mirror another job's outcome and run nowhere); batch
   *parents* (a parent is one torrent download feeding many children that hard-link out of it, so
-  leasing it would put the download on a node and the encodes here); keeps, `Keycode` and `Studio`
-  (their inputs are files on the coordinator); and any job past `LINK_MAX_ATTEMPTS`.
+  leasing it would put the download on a node and the encodes here); `Studio` (see
+  [Why Studio stays here](#why-studio-stays-here)); and any job past `LINK_MAX_ATTEMPTS`.
 
 `Subs` and `Preview` are leasable despite ending in a file, because the file is small and comes
-back — see [Returned artifacts](#returned-artifacts). What keeps `Keycode` and Studio here is the
-opposite: their *inputs* are files this machine holds, and no spec can carry a kept episode.
+back — see [Returned artifacts](#returned-artifacts).
 
 A leased Pancode carries its originating `probe_job_id` alongside the source link. The node has no
 probe job and will fail to adopt its saved `.torrent`; the link is what the download falls back to,
@@ -531,6 +532,53 @@ Three things keep the two paths from colliding over one episode:
 A lease that is lost or declined returns through `requeue_link_job` and the episode is encoded here.
 If the local path refuses it outright, the batch is told — otherwise a parent would wait forever for
 a child that no longer exists anywhere.
+
+## Keeps and `/keycode`
+
+A keep is the one thing here that deliberately outlives the job that made it: `/encode keep:` leaves
+its output on disk so a later `/keycode` can join several of them into one release. That is why a
+kept encode cannot simply hand its output back — returning multi-gigabyte episodes to a coordinator
+that leases its encodes precisely so it does not hold them would defeat the whole arrangement.
+
+So **the file stays where it was produced, and the coordinator records where that is.**
+
+- **The keyword is allocated here, always.** It is the name a person types into `/keycode` later,
+  the pool is one namespace, and two machines drawing from it freely would hand out the same word
+  twice. The coordinator allocates it, reserves the record, and sends the answer in the spec; the
+  node stores its file under that name and never picks one of its own.
+- **`KeepMeta.node` is where the file is.** Absent means beside the record, which is every keep on a
+  coordinator that encodes. Set, it names the machine, and the record here is what makes the keyword
+  resolvable at all — without it a leased keep would read for ever as an encode that never finished.
+- **A `/keycode` goes to the node holding its keywords**, bypassing `pick_node` entirely. This is
+  the one lease that is not a scheduling decision: a free node with an empty keep store cannot do
+  the work however idle it is. If the node cannot take it right now the job goes back to waiting and
+  is offered again — a reboot should not fail a join whose files are still on that disk.
+- **Keywords spread over two machines cannot be joined**, and the refusal names the split. Joining
+  is one ffmpeg run over one set of files; the alternative was a keycode that resolved to paths this
+  machine does not have and died inside the encoder on a missing file.
+- **A keep chain follows its parent.** `/encode keep:<existing>` runs wherever that keyword already
+  is — pinned to its node, or kept local when the chain started here — and a pinned part is never
+  quietly run somewhere else, whatever the coordinator would otherwise do with it. Splitting a chain
+  produces a failure hours later, on the person running the join, about an encode they did not do.
+
+A keep's record and its file expire on the same five-hour clock on both machines, and a node that
+never comes back takes its keeps with it: the keywords then expire and the waiting `/keycode` ends
+with the reason.
+
+### Why Studio stays here
+
+Studio's sources *are* keeps — `resolve_studio_keywords` turns keywords into paths, and the console
+streams byte ranges of those files to a browser. A keep on a node is therefore not a keep Studio can
+open, and it says so by name rather than as "not ready", because the two need different things done
+about them.
+
+Proxying is what it would take, and it is a different shape from a lease rather than a bigger one. A
+node has **no inbound surface** — the property the whole link is built on — so the coordinator cannot
+fetch a range from one. It would need a reverse request channel: range requests queued here,
+long-polled by the node, bytes PUT back, correlated per request, several in flight at once because
+that is how a video element scrubs. And it would put every byte a person scrubs through the
+coordinator, which is most of what an orchestrator exists not to do. Studio is refused there
+instead, with the reason.
 
 ## Upload policy and returned output
 

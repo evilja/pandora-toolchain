@@ -8,7 +8,7 @@ use crate::pnworker::link::board;
 use crate::pnworker::link::board::NoNode;
 use crate::pnworker::link::client::{encode_base64, job_type_is_leasable};
 use crate::pnworker::link::spec::{
-    LinkJobSpec, PreviewSpec, job_type_name, preset_name, source_to_wire,
+    KeepSpec, KeycodeSpec, LinkJobSpec, PreviewSpec, job_type_name, preset_name, source_to_wire,
 };
 
 // The coordinator's side of deciding what leaves this machine. Everything here is a pure question
@@ -51,18 +51,25 @@ pub fn has_leasable_shape(job: &Job, has_source_file: bool) -> bool {
     if job.batch.is_some() {
         return false;
     }
-    // A keep leaves its output on this machine for a later `/keycode` to join, and Keycode itself
-    // reads those local files. Studio renders a manifest that names files uploaded here.
-    //
-    // A `/preview` used to be in this list and is not: it fetches its own source exactly as an
-    // encode does, and the only thing tying it here was the PNG it ends with — which now comes
-    // back as a returned artifact. See `spec::attachment_arg`.
-    if job.keep.is_some() || job.keycode.is_some() || job.studio.is_some() {
+    // Studio renders a manifest naming media uploaded to this process and streamed back to a
+    // browser from it, over a hostname a node does not have.
+    if job.studio.is_some() {
+        return false;
+    }
+    // A `/keycode` carries no source at all: its inputs are keywords, and it goes to the machine
+    // already holding them rather than to whichever node happens to be free. It is never offered
+    // through this path — `keycode_node` decides where it goes, and the offer is made directly —
+    // so answering "leasable" here would put it on a node with an empty keep store.
+    if job.job_type == JobType::Keycode {
         return false;
     }
     // A node fetches its own source, so there has to be one — either a link it can resolve or a
     // `.torrent` this machine can hand over with the job. A Pancode whose only route to its input
     // was the file its probe saved here used to be refused for exactly this reason.
+    //
+    // A keep is no longer refused here. Its output stays on whichever machine produced it — the
+    // point of a keep is that it outlives its job — and the coordinator records which node that
+    // was, so the `/keycode` joining it is offered to the same machine.
     if job.torrent.get().trim().is_empty() && !has_source_file {
         return false;
     }
@@ -99,20 +106,15 @@ pub fn is_orchestrator() -> bool {
 // renders a queue position and then either sits forever or quietly does the thing the deployment
 // exists not to do.
 //
-// What is left is the jobs whose input is a file that only exists on this machine, which is the one
-// thing a spec cannot carry: a keep leaves its output here for a later `/keycode` to join,
-// `/keycode` joins those files, and Studio renders a manifest naming media uploaded to this
-// process and streamed back to a browser from it. Everything that merely *fetches* a video is
-// leased instead — see `leasable_job_types`.
+// What is left is Studio, and only Studio: it renders a manifest naming media uploaded to this
+// process and streamed back to a browser from it, over a hostname a node deliberately does not
+// have. Everything else travels — what fetches a video is leased (see `leasable_job_types`), and a
+// keep and the `/keycode` that joins it are leased *together*, to the machine holding the files.
 pub fn orchestrator_refusal(job: &Job) -> Option<&'static str> {
     if !is_orchestrator() {
         return None;
     }
-    if job.keep.is_some() {
-        return Some("a kept encode leaves its output on the coordinator for /keycode to join, and this coordinator runs no encodes");
-    }
     match job.job_type {
-        JobType::Keycode => Some("/keycode joins files held on the coordinator, and this coordinator runs no encodes"),
         JobType::Studio | JobType::StudioPreview => {
             Some("Studio works on media uploaded to the coordinator and streamed back from it, and this coordinator runs no encodes")
         }
@@ -211,6 +213,21 @@ pub fn build_spec(
         assets_revision: crate::pnworker::link::assets::manifest().revision,
         // The font travels as its name, not as this machine's path to it: both sides resolve it
         // over the same synced buckets, so the node finds the same file or declines the job.
+        keep: job.keep.as_ref().and_then(|keep| {
+            Some(KeepSpec {
+                kind: keep_kind_for(job).label().to_string(),
+                keyword: keep.keyword.clone(),
+                // Absent means the coordinator did not prepare it, which is a bug rather than a
+                // shape to send: a node that allocated its own keyword would name a keep nobody
+                // can reach.
+                parent_keyword: keep.parent_keyword.clone()?,
+                output_keyword: keep.output_keyword.clone()?,
+            })
+        }),
+        keycode: job
+            .keycode
+            .as_ref()
+            .map(|keycode| KeycodeSpec { keywords: keycode.keywords.clone() }),
         preview: job.preview.as_ref().map(|preview| PreviewSpec {
             shots: preview.shots.clone(),
             watermark_font: preview
@@ -220,6 +237,16 @@ pub fn build_spec(
                 .map(|name| name.to_string_lossy().to_string()),
             ranking_log: preview.ranking_log.clone(),
         }),
+    }
+}
+
+// Which kind of keep a job's output is. A `/backup` keeps its downloaded input; everything else
+// keeps what it encoded, and the two are stored and resolved separately.
+pub fn keep_kind_for(job: &Job) -> crate::pnworker::core::KeepKind {
+    if job.job_type == JobType::Backup {
+        crate::pnworker::core::KeepKind::Backup
+    } else {
+        crate::pnworker::core::KeepKind::Encode
     }
 }
 
@@ -244,7 +271,7 @@ pub fn is_link_worker(worker: &str) -> bool {
     worker.starts_with("lnk-")
 }
 
-pub fn leasable_job_types() -> [JobType; 7] {
+pub fn leasable_job_types() -> [JobType; 8] {
     [
         JobType::Encode,
         JobType::Pancode,
@@ -256,14 +283,25 @@ pub fn leasable_job_types() -> [JobType; 7] {
         JobType::BackupAll,
         JobType::Subs,
         JobType::Preview,
+        // Not because it carries a source — it carries none — but because its inputs are keywords,
+        // and a keyword resolves to a file on whichever machine produced it. It is offered to that
+        // machine and to no other; see `keycode_node`.
+        JobType::Keycode,
     ]
+}
+
+// The node a `/keycode` has to run on, if it is not this machine: the one holding every keyword it
+// joins. Unlike every other lease this is not a choice — a free node is no use without the files —
+// so it bypasses `pick_node` entirely and is offered to that node or to nobody.
+pub fn keycode_node(resolved: &crate::pnworker::keep::ResolvedKeywords) -> Option<String> {
+    resolved.node.clone()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::lib::p2p::nyaaise::TorrentType;
-    use crate::pnworker::core::{Job, KeepRequest};
+    use crate::pnworker::core::{Job, KeepRequest, KeycodeRequest};
 
     fn job(job_type: JobType) -> Job {
         Job::new_api(
@@ -307,12 +345,69 @@ mod tests {
         assert!(is_eligible(&child, false), "a child with a magnet needs no file");
     }
 
-    // A keep leaves its output here for a later `/keycode` to join.
+    // A keep travels, and the thing that makes that safe is that its output does not come back:
+    // the file stays on the node, the coordinator records which one, and the `/keycode` joining it
+    // is sent to the same machine.
     #[test]
-    fn a_keep_job_stays_local() {
-        let mut job = job(JobType::Encode);
-        job.keep = Some(KeepRequest::new(Some("kw".to_string())));
-        assert!(!is_eligible(&job, false));
+    fn a_keep_travels_with_the_keyword_the_coordinator_allocated() {
+        let mut source = job(JobType::Encode);
+        source.keep = Some(KeepRequest {
+            keyword: Some("aqua".to_string()),
+            parent_keyword: Some("aqua".to_string()),
+            output_keyword: Some("bell".to_string()),
+        });
+        assert!(is_eligible(&source, false));
+
+        let keep = build_spec(&source, &LeaseSource::default(), false, false)
+            .keep
+            .expect("a kept job has to name its keyword");
+        assert_eq!(keep.output_keyword, "bell");
+        assert_eq!(keep.parent_keyword, "aqua");
+        assert_eq!(keep.kind, "encode");
+
+        // A `/backup` keeps what it downloaded rather than what it encoded, and the two are stored
+        // and resolved apart.
+        let mut backup = job(JobType::Backup);
+        backup.keep = source.keep.clone();
+        assert_eq!(
+            build_spec(&backup, &LeaseSource::default(), false, false).keep.unwrap().kind,
+            "backup",
+        );
+
+        // A keyword the coordinator never allocated must not travel: a node that filled the gap
+        // from its own pool would store the file under a name nothing on the coordinator looks for.
+        let mut unprepared = job(JobType::Encode);
+        unprepared.keep = Some(KeepRequest::new(Some("aqua".to_string())));
+        assert!(build_spec(&unprepared, &LeaseSource::default(), false, false).keep.is_none());
+    }
+
+    // A `/keycode` is leasable and is still never offered through the ordinary path: it carries no
+    // source, and where it goes is decided by which node holds its keywords.
+    #[test]
+    fn a_keycode_is_never_offered_to_whichever_node_is_free() {
+        let mut keycode = job(JobType::Keycode);
+        keycode.keycode = Some(KeycodeRequest { keywords: vec!["aqua".to_string()] });
+        assert!(job_type_is_leasable(JobType::Keycode));
+        assert!(!has_leasable_shape(&keycode, true), "a free node has none of its files");
+        assert!(!must_offload(&keycode, true));
+
+        // The keywords do travel, for the node that is chosen by holding them.
+        let spec = build_spec(&keycode, &LeaseSource::default(), false, false);
+        assert_eq!(spec.keycode.expect("keywords have to travel").keywords, ["aqua"]);
+
+        // And that node is whatever the keep store says, never a scheduling answer.
+        let resolved = crate::pnworker::keep::ResolvedKeywords {
+            kind: crate::pnworker::core::KeepKind::Encode,
+            paths: Vec::new(),
+            node: Some("mini-osaka".to_string()),
+        };
+        assert_eq!(keycode_node(&resolved).as_deref(), Some("mini-osaka"));
+        assert!(keycode_node(&crate::pnworker::keep::ResolvedKeywords {
+            kind: crate::pnworker::core::KeepKind::Encode,
+            paths: vec![std::path::PathBuf::from("DB/cache/keeps/global/aqua/output.mp4")],
+            node: None,
+        })
+        .is_none());
     }
 
     // A forwarded job runs nowhere — it mirrors another job's outcome.
@@ -362,6 +457,12 @@ mod tests {
     #[test]
     fn every_leasable_job_is_held_for_a_node() {
         for job_type in leasable_job_types() {
+            // `/keycode` is the one leasable type an orchestrator does not *hold*: it waits for its
+            // keywords through `KeycodeDispatch::Waiting` and is then offered to the machine that
+            // has them, which is a different question from "is a node free".
+            if job_type == JobType::Keycode {
+                continue;
+            }
             let mut job = job(job_type);
             job.torrent = TorrentType::Magnet("magnet:?xt=urn:btih:abc".to_string());
             assert!(
@@ -391,29 +492,28 @@ mod tests {
                 "{job_type:?} would be refused *and* offered",
             );
         }
-        for job_type in [
-            JobType::Keycode,
-            JobType::Studio,
-            JobType::StudioPreview,
-        ] {
+        for job_type in [JobType::Studio, JobType::StudioPreview] {
             assert!(
                 !job_type_is_leasable(job_type),
                 "{job_type:?} is refused on an orchestrator, so it had better not be leasable",
             );
         }
 
-        // A keep is an ordinary Encode that leaves its output here for `/keycode` to join, so it
-        // is refused by what the job carries rather than by its type.
-        let mut kept = job(JobType::Encode);
-        kept.keep = Some(KeepRequest::new(Some("kw".to_string())));
-        assert!(!is_eligible(&kept, false));
-
-        // And the three that stopped being refused: each fetches its own source, so each is a job
-        // a node can take rather than one this machine has to run.
-        for job_type in [JobType::Subs, JobType::Preview, JobType::BackupAll] {
+        // Everything that stopped being refused. Each either fetches its own source, or — for a
+        // `/keycode` — is sent to the machine that already holds what it needs.
+        for job_type in [
+            JobType::Subs,
+            JobType::Preview,
+            JobType::BackupAll,
+            JobType::Keycode,
+        ] {
             assert!(job_type_is_leasable(job_type), "{job_type:?} should now travel");
             assert!(orchestrator_refusal(&job(job_type)).is_none());
         }
+        // A keep is an ordinary Encode carrying a keyword, and it travels with it.
+        let mut kept = job(JobType::Encode);
+        kept.keep = Some(KeepRequest::new(Some("kw".to_string())));
+        assert!(orchestrator_refusal(&kept).is_none());
     }
 
     // The spec is the node's only source of truth, so what the coordinator snapshotted has to be
