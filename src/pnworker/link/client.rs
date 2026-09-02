@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -16,8 +17,8 @@ use crate::pnworker::frontend::Frontend;
 use crate::pnworker::link::assets::{self, AssetKind, AssetManifest};
 use crate::pnworker::link::spec::{
     LeaseControl, LeaseRenew, LeaseResult, LinkJobSpec, LinkOutcome, LinkPayload,
-    LinkReport, NodeRegister, NodeRegistered, ReleaseInfo, job_type_from_name, source_from_wire,
-    stage_name,
+    LinkReport, NodeRegister, NodeRegistered, ReleaseInfo, attachment_arg, job_type_from_name,
+    source_from_wire, stage_name,
 };
 use crate::pnworker::messages::MessagePayload;
 use crate::pnworker::server_effects::preset_from_name;
@@ -335,6 +336,55 @@ fn forget(job_id: u64) {
     lock(returned()).remove(&job_id);
 }
 
+// Sends every file a terminal payload attaches, and rewrites each payload to name it by file name
+// alone. Both halves are here rather than at the call site because they must not come apart: a
+// rewritten name whose file was never sent is an attachment the coordinator cannot find, and a
+// sent file whose name was not rewritten is one it never looks for.
+async fn return_attachments(
+    client: &reqwest::Client,
+    config: &LinkConfig,
+    job_id: u64,
+    reports: &mut [LinkReport],
+) {
+    for report in reports {
+        let Some(args) = report.payload.args.as_mut() else {
+            continue;
+        };
+        let Some(index) = attachment_arg(&report.payload.id, args) else {
+            continue;
+        };
+        let Some(path) = args.get(index).map(PathBuf::from) else {
+            continue;
+        };
+        let Some(name) = path.file_name().map(|name| name.to_string_lossy().to_string()) else {
+            continue;
+        };
+        // Already a bare name, so this payload has been through here before: the result it was
+        // attached to failed to deliver and was restored for another try. The file is on the
+        // coordinator; sending it again would look up a relative path that does not exist here and
+        // log a failure for work that succeeded.
+        if path.parent().is_none_or(|parent| parent.as_os_str().is_empty()) {
+            continue;
+        }
+        if !crate::pnworker::link::spec::is_plain_name(&name) {
+            eprintln!("[link] job {job_id} produced {name:?}, which is not a name that can travel");
+            continue;
+        }
+        match put_output(client, config, job_id, &path, Some(&name)).await {
+            Delivered::Accepted => {
+                println!("[link] job {job_id} returned {name}");
+                args[index] = name;
+            }
+            // The lease is gone, so nothing is waiting for this file. Leave the payload alone; the
+            // result POST that follows will be told the same thing and stop.
+            Delivered::LeaseGone => return,
+            Delivered::Failed(e) => {
+                eprintln!("[link] job {job_id} could not return {name}: {e}");
+            }
+        }
+    }
+}
+
 // Streams a finished encode back to the coordinator. This is the one large body the link carries,
 // and only for HLS-only servers, where the alternative is a playback URL on a machine with no
 // public hostname.
@@ -364,11 +414,14 @@ impl Delivered {
     }
 }
 
+// `name` is the file this is, under the job's work directory on the coordinator. `None` is the
+// encode itself, which is what this carried before a `/subs` bundle or a `/preview` image did.
 async fn put_output(
     client: &reqwest::Client,
     config: &LinkConfig,
     job_id: u64,
     path: &std::path::Path,
+    name: Option<&str>,
 ) -> Delivered {
     let file = match tokio::fs::File::open(path).await {
         Ok(file) => file,
@@ -382,9 +435,13 @@ async fn put_output(
         return Delivered::Failed(format!("{} is empty", path.display()));
     }
     let body = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::new(file));
+    let query = match name {
+        Some(name) => format!("?name={name}"),
+        None => String::new(),
+    };
     let response = client
         .put(format!(
-            "{}/api/v1/link/lease/{job_id}/output",
+            "{}/api/v1/link/lease/{job_id}/output{query}",
             config.coordinator
         ))
         .bearer_auth(&config.token)
@@ -604,6 +661,14 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
                 // Whatever the tools wrote in their last seconds is exactly the part worth reading.
                 let offsets = log_offsets.entry(job_id).or_default();
                 flush_logs(&client, &config, job_id, offsets).await;
+                // `/subs` and `/preview` end in a file the job's message attaches, and the payload
+                // that ends them names it by a path on this machine. The file goes first and the
+                // payload is rewritten to a bare name, so the coordinator attaches its own copy
+                // instead of a path that means nothing there. A file that cannot be sent leaves
+                // the payload naming the path, which the coordinator logs as a failed attach —
+                // the message itself, with everything else it says, still arrives.
+                let mut reports = reports;
+                return_attachments(&client, &config, job_id, &mut reports).await;
                 let outcome = match stage {
                     Stage::Uploaded => LinkOutcome::Uploaded,
                     Stage::Probed => LinkOutcome::Probed,
@@ -650,7 +715,7 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
                         .join("work")
                         .join("output.mp4");
                     println!("[link] job {job_id} encoded; returning its output to the coordinator");
-                    match put_output(&client, &config, job_id, &path).await {
+                    match put_output(&client, &config, job_id, &path, None).await {
                         Delivered::Accepted => mark_returned(job_id),
                         Delivered::LeaseGone => {
                             retire_lease(job_id, "output was not wanted; the lease is already gone", &mut log_offsets, &mut delivery_attempts, &mut finished);
@@ -1214,6 +1279,25 @@ async fn accept(
     job.gdrive_folder_global = spec.gdrive_folder_global.clone();
     job.gdrive_folder_local = spec.gdrive_folder_local.clone();
     job.link_return_output = spec.return_output;
+    // A `/preview` carries a shot list and, usually, a watermark font. The font arrives as a name
+    // and is resolved here over the same two synced buckets the coordinator resolved it over, so
+    // either this node holds the identical file or it says so: a preview rendered in a substituted
+    // typeface is the same quiet wrongness a substituted subtitle font is, and this is the moment
+    // it is still cheap to refuse.
+    if let Some(preview) = spec.preview.as_ref() {
+        let watermark_font = match preview.watermark_font.as_deref() {
+            None => None,
+            Some(name) => match find_preview_font(name, spec.server_id.as_deref()) {
+                Some(path) => Some(path),
+                None => return decline(format!("watermark font {name} is not on this node")),
+            },
+        };
+        job.preview = Some(crate::pnworker::core::PreviewRequest {
+            shots: preview.shots.clone(),
+            watermark_font,
+            ranking_log: preview.ranking_log.clone(),
+        });
+    }
     // The originating guild, so Drive uploads land under its Lumiere profile — and its upload
     // policy, which travels with the job because this machine holds no `meta.pandora` for it.
     job.server_id = spec.server_id.as_deref().and_then(|id| id.parse::<u64>().ok());
@@ -1243,6 +1327,20 @@ async fn accept(
         return decline("this node's worker queue is closed".to_string());
     }
     Ok(job_id)
+}
+
+// The same lookup `helpers::handlers::cfont::resolve_preview_watermark_font_path` runs on the
+// coordinator, over the same two roots — which are ordinary buckets of the synced asset corpus, so
+// a node on the job's `assets_revision` is looking at byte-identical files.
+fn find_preview_font(name: &str, server_id: Option<&str>) -> Option<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(server) = server_id.filter(|value| !value.is_empty()) {
+        roots.push(PathBuf::from(assets::FONT_ROOT).join(server));
+    }
+    roots.push(PathBuf::from(assets::FONT_ROOT).join("global"));
+    crate::libkagami::core::find_fonts_with_roots(&[name.to_string()], &roots)
+        .into_iter()
+        .next()
 }
 
 fn decode_base64(encoded: &str) -> Option<Vec<u8>> {
@@ -1314,7 +1412,17 @@ pub fn source_kind_of(torrent: &TorrentType) -> String {
 pub fn job_type_is_leasable(job_type: JobType) -> bool {
     matches!(
         job_type,
-        JobType::Encode | JobType::Pancode | JobType::Backup | JobType::Probe
+        JobType::Encode
+            | JobType::Pancode
+            | JobType::Backup
+            | JobType::Probe
+            // Each fetches its own source and needs nothing that is already on the coordinator.
+            // `/backupall` downloads a release and uploads it, which is `/backup` over the whole
+            // selection; `/subs` and `/preview` download one and end with a single small file the
+            // job's message attaches, which travels back through `spec::attachment_arg`.
+            | JobType::BackupAll
+            | JobType::Subs
+            | JobType::Preview
     )
 }
 

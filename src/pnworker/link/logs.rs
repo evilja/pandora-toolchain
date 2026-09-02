@@ -3,7 +3,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 
 use crate::lib::joblog::find_job_logs;
-use crate::pnworker::link::spec::LinkLogChunk;
+use crate::pnworker::link::spec::{LinkLogChunk, is_plain_name};
 
 // Tool logs are written on whichever machine ran the tool, and for a leased job that is not the one
 // anybody reads them from. A node ships each log forward as it grows, so `/catlogs` and
@@ -172,20 +172,6 @@ fn floor_char_boundary(text: &str, mut index: usize) -> usize {
         index -= 1;
     }
     index
-}
-
-fn is_plain_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 255
-        && !name.contains('/')
-        && !name.contains('\\')
-        && !name.contains('\0')
-        // `Path::join("C:x")` on Windows is drive-relative and does not stay inside the directory
-        // it is joined to. Nothing legitimate names a log file with a colon on either platform.
-        && !name.contains(':')
-        && name != "."
-        && name != ".."
-        && !name.starts_with('.')
 }
 
 #[cfg(test)]

@@ -33,6 +33,20 @@ pub(super) struct NodeQuery {
     node: String,
 }
 
+// Which file of a finished job is coming back. Absent means the encode itself, which is what this
+// route carried before anything else did.
+#[derive(Deserialize)]
+pub(super) struct OutputQuery {
+    #[serde(default)]
+    name: Option<String>,
+}
+
+// A returned artifact is a subtitle track, a bundle of them, or a preview image — kilobytes to a
+// few megabytes. The encode itself is deliberately unbounded, because it is an episode; everything
+// else is bounded, because a node is authenticated and not trusted with the disk.
+const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
+const DEFAULT_OUTPUT_NAME: &str = "output.mp4";
+
 pub(super) async fn register(
     Extension(auth): Extension<ApiAuth>,
     Json(body): Json<NodeRegister>,
@@ -207,12 +221,19 @@ pub(super) async fn asset(
 pub(super) async fn output(
     Extension(auth): Extension<ApiAuth>,
     Path(job_id): Path<u64>,
+    Query(query): Query<OutputQuery>,
     body: Body,
 ) -> Response {
     let node = match require_link(&auth) {
         Ok(node) => node,
         Err(response) => return response,
     };
+    // The name arrives off the wire and becomes a path component under this job's work directory.
+    let name = query.name.unwrap_or_else(|| DEFAULT_OUTPUT_NAME.to_string());
+    if !crate::pnworker::link::spec::is_plain_name(&name) {
+        return (StatusCode::BAD_REQUEST, "not a plain file name").into_response();
+    }
+    let limit = (name != DEFAULT_OUTPUT_NAME).then_some(MAX_ARTIFACT_BYTES);
     // A node may only deliver against a lease it actually holds. Without this, any link token
     // could write into any job's work directory.
     if board::node_for_job(job_id).as_deref() != Some(node.as_str()) {
@@ -226,8 +247,8 @@ pub(super) async fn output(
     }
     // Written beside and renamed, so a transfer that dies halfway can never be mistaken for a
     // finished encode by the upload worker that is about to look for exactly this name.
-    let target = directory.join("output.mp4");
-    let temporary = directory.join("output.mp4.link-part");
+    let target = directory.join(&name);
+    let temporary = directory.join(format!("{name}.link-part"));
     let file = match tokio::fs::File::create(&temporary).await {
         Ok(file) => file,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -249,6 +270,14 @@ pub(super) async fn output(
             return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
         written += chunk.len() as u64;
+        if limit.is_some_and(|limit| written > limit) {
+            tokio::fs::remove_file(&temporary).await.ok();
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!("{name} is larger than a returned artifact may be"),
+            )
+                .into_response();
+        }
     }
     if let Err(e) = writer.flush().await {
         tokio::fs::remove_file(&temporary).await.ok();
@@ -263,7 +292,7 @@ pub(super) async fn output(
         tokio::fs::remove_file(&temporary).await.ok();
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
-    println!("[link] {node} | job {job_id} output received ({written} bytes)");
+    println!("[link] {node} | job {job_id} returned {name} ({written} bytes)");
     StatusCode::ACCEPTED.into_response()
 }
 

@@ -2194,6 +2194,35 @@ fn request_link_cancel(queue: &mut [Job], job_id: u64, node: &str) -> bool {
     true
 }
 
+// A node's payload, with any file it attaches pointed at this machine's copy.
+//
+// `/subs` and `/preview` end in a message carrying one file, and the payload names it by the path
+// it had on whichever machine produced it. The node uploads the file and rewrites that argument to
+// a bare name; this puts the name back together with the directory the file actually landed in. A
+// path that survived the trip unrewritten — an upload that failed — is left alone, so the renderer
+// reports a missing attachment rather than this silently inventing one.
+fn link_payload_with_local_attachment(
+    job_id: u64,
+    wire: &crate::pnworker::link::spec::LinkPayload,
+) -> Option<MessagePayload> {
+    use crate::pnworker::link::spec::{attachment_arg, is_plain_name};
+
+    let payload = wire.to_payload()?;
+    let MessagePayload::Progress(id, mut args) = payload else {
+        return Some(payload);
+    };
+    if let Some(index) = attachment_arg(id, &args) {
+        if args.get(index).is_some_and(|name| is_plain_name(name)) {
+            args[index] = crate::pnworker::util::job_work_dir(job_id)
+                .join("work")
+                .join(&args[index])
+                .display()
+                .to_string();
+        }
+    }
+    Some(MessagePayload::Progress(id, args))
+}
+
 fn link_job_position(queue: &[Job], job_id: u64, node: &str) -> Option<usize> {
     queue
         .iter()
@@ -2218,7 +2247,7 @@ async fn apply_link_reports(
         let Some(pos) = link_job_position(queue, job_id, node) else {
             return;
         };
-        let Some(payload) = report.payload.to_payload() else {
+        let Some(payload) = link_payload_with_local_attachment(job_id, &report.payload) else {
             eprintln!(
                 "[link] {node} | job {job_id} sent message id {} this build cannot render",
                 report.payload.id

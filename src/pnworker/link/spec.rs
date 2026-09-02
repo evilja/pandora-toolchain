@@ -193,6 +193,27 @@ pub struct LinkJobSpec {
     // refuses the lease rather than encoding with whatever fonts it happens to hold.
     #[serde(default)]
     pub assets_revision: String,
+    // A `/preview` job's shot list. Everything else a job needs is a field of `Job` itself; this
+    // one hangs off it, so it travels as its own object rather than as six more flat fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<PreviewSpec>,
+}
+
+// What a `/preview` needs beyond a source and a subtitle.
+//
+// `watermark_font` is a font *name*, never the coordinator's path to it. The coordinator resolves
+// it through `find_fonts_with_roots` over `DB/fontconfig/<server>` and `DB/fontconfig/global`, both
+// of which are buckets of the synced corpus, so the node runs the identical lookup over identical
+// files and either finds the same font or declines the job. A path would have named a file that
+// happens not to exist on the other machine, and a preview rendered in a substituted typeface is
+// the same class of quiet wrongness a missing subtitle font is.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PreviewSpec {
+    pub shots: Vec<(u64, String)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watermark_font: Option<String>,
+    #[serde(default)]
+    pub ranking_log: String,
 }
 
 // Sent by the node roughly every `renew_secs`. It doubles as the liveness heartbeat and as the
@@ -366,6 +387,44 @@ pub struct LinkPayload {
     pub args: Option<Vec<String>>,
 }
 
+// Which argument of a payload is a path to a file the finished message attaches, if any.
+//
+// These are the three payloads `frontend::preview_done_edit` turns into a Discord attachment, and
+// the path in them is a path on the machine that produced the file. That is fine while that is the
+// same machine, and is the whole of what stops a node from running these jobs: the coordinator
+// would attach a file that only exists somewhere else. The node uploads the artifact and rewrites
+// the argument to a bare file name; the coordinator rewrites it back to a path of its own.
+//
+// The table mirrors `is_attachment_done` exactly, including `STUDIO_PREVIEW_DONE`, whose job is not
+// leasable today — a table that covered only what happens to be leased now is one that goes quietly
+// wrong the day something else is.
+pub fn attachment_arg(id: &str, args: &[String]) -> Option<usize> {
+    match id {
+        "SUBS_DONE" => Some(1),
+        "STUDIO_PREVIEW_DONE" => Some(0),
+        // Two shapes: `[count, merged]` attaches, and `[count, label, path, …]` is the fallback the
+        // renderer leaves as text when the merge failed. Only the first is an attachment.
+        "PREVIEW_DONE" if args.len() == 2 => Some(1),
+        _ => None,
+    }
+}
+
+// A name that arrives off the wire and becomes a path component. Shared by the log shipper and by
+// returned artifacts, because they are the same question asked about the same kind of value.
+pub fn is_plain_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 255
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains('\0')
+        // `Path::join("C:x")` on Windows is drive-relative and does not stay inside the directory
+        // it is joined to. Nothing legitimate names a file with a colon on either platform.
+        && !name.contains(':')
+        && name != "."
+        && name != ".."
+        && !name.starts_with('.')
+}
+
 impl LinkPayload {
     pub fn from_payload(payload: &MessagePayload) -> Self {
         match payload {
@@ -391,6 +450,45 @@ impl LinkPayload {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The table has to agree with `frontend::preview_done_edit`, which reads exactly these
+    // arguments. Disagreeing in either direction is silent: name the wrong index and the node
+    // uploads a label instead of a file, name none and the coordinator attaches a path belonging
+    // to another machine.
+    #[test]
+    fn the_attachment_argument_is_the_one_the_renderer_reads() {
+        let two = ["1".to_string(), "/n/work/subs-1.zip".to_string()];
+        assert_eq!(attachment_arg("SUBS_DONE", &two), Some(1));
+        assert_eq!(attachment_arg("PREVIEW_DONE", &two), Some(1));
+        assert_eq!(
+            attachment_arg("STUDIO_PREVIEW_DONE", &["/n/work/p.mp4".to_string()]),
+            Some(0)
+        );
+
+        // A preview whose merge failed lists its shots as label/path pairs, which the renderer
+        // leaves as text. There is no single attachment to return, and claiming one would rewrite
+        // a label into a file name.
+        let many = ["2".to_string(), "a".to_string(), "/n/a.png".to_string()];
+        assert_eq!(attachment_arg("PREVIEW_DONE", &many), None);
+
+        // Everything else is a message with no file behind it.
+        assert_eq!(attachment_arg("ENCODE_PROG", &two), None);
+        assert_eq!(attachment_arg("UPLOAD_DONE", &two), None);
+    }
+
+    // The name becomes a path component under a job's work directory on the coordinator, and it
+    // arrives off the wire from the node.
+    #[test]
+    fn a_returned_artifact_cannot_name_another_directory() {
+        assert!(is_plain_name("subs-4242.zip"));
+        assert!(is_plain_name("output.mp4"));
+        assert!(!is_plain_name("../../etc/passwd"));
+        assert!(!is_plain_name("work/output.mp4"));
+        assert!(!is_plain_name(".."));
+        assert!(!is_plain_name("C:escaped.mp4"));
+        assert!(!is_plain_name(".hidden"));
+        assert!(!is_plain_name(""));
+    }
 
     // The scheduler's whole CPU/GPU rule. A `gpu` preset reaching a CPU node does not fail
     // cleanly — ffmpeg either refuses the encoder or falls back to a software one and ships a

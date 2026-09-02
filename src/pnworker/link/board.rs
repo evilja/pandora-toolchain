@@ -1087,6 +1087,7 @@ mod tests {
             drive_only: false,
             intro_group: None,
             assets_revision: String::new(),
+            preview: None,
         }
     }
 

@@ -88,21 +88,24 @@ mean nothing runs at all, with no error and no node to look at.
 ### What waits, and what is refused
 
 - **Held for a node.** Everything in [What can be leased](#what-can-be-leased): `Encode`,
-  `Pancode`, `Backup`, `Probe`, and batch children. `must_offload` is exactly "leasable", so there
-  is no second rule to keep in step with the first. A probe waits with the rest — an orchestrator
-  fetches not even the metainfo — which means `/job` shows "waiting for a node" before it shows a
-  file list.
-- **Refused at submission**, with the reason, because there is no node to send them to and nothing
-  here that may run them:
-  - *Their input is a file that only exists here.* Keeps (a kept encode leaves its output for a
-    later `/keycode` to join), `/keycode` itself, `/preview`, and Studio.
-  - *They download the release themselves.* `/backupall`, and `/subs` — extracting a subtitle track
-    means fetching the video it is in.
-
-  The alternative to refusing is a job that is accepted, renders a queue position, and then either
-  sits forever or quietly does the thing the deployment exists not to do.
+  `Pancode`, `Backup`, `BackupAll`, `Probe`, `Subs`, `Preview`, and batch children. `must_offload`
+  is exactly "leasable", so there is no second rule to keep in step with the first. A probe waits
+  with the rest — an orchestrator fetches not even the metainfo — which means `/job` shows "waiting
+  for a node" before it shows a file list.
+- **Refused at submission**, with the reason, because their input is a file that only exists on
+  this machine and no job spec can carry it: keeps (a kept encode leaves its output here for a
+  later `/keycode` to join), `/keycode` itself, and Studio, whose manifest names media uploaded to
+  this process and streamed back to a browser from it. The alternative to refusing is a job that is
+  accepted, renders a queue position, and then either sits forever or quietly does the thing the
+  deployment exists not to do.
 - **Neither.** Cancels, `/workers`, `/lsnode`, the git commands, the publish commands and every
   config command are unchanged: none of them touches a video.
+
+Making keeps, `/keycode` and Studio work here is not a matter of another job type travelling. A
+keep exists precisely so a file *stays* on one machine between two commands, and Studio serves byte
+ranges of an upload to a browser over a hostname nodes deliberately do not have. Both would need a
+node to hold state across leases and be addressable — a different shape from a lease, not a bigger
+one.
 
 ### A batch parent stops downloading
 
@@ -227,9 +230,11 @@ All under `/api/v1/link/`, all requiring a link token.
 - `POST /link/lease/:id/result` — the terminal report. `409` when the lease is already gone or
   belongs to another node, which tells the node to stop retrying without looking like a transport
   fault.
-- `PUT /link/lease/:id/output` — a finished encode coming back for local publication. Streamed
-  straight to disk and accepted only from the node that holds the lease. See
-  [HLS and returned output](#hls-and-returned-output).
+- `PUT /link/lease/:id/output` — a finished encode coming back for local publication, or, with
+  `?name=<file>`, a small artifact the job's message attaches. Streamed straight to disk and
+  accepted only from the node that holds the lease. See
+  [HLS and returned output](#hls-and-returned-output) and
+  [Returned artifacts](#returned-artifacts).
 - `GET /link/release` — what the coordinator is running: `{ version, build, commit, reset }`. A node
   polls it once per loop pass. See [Staying level](#staying-level).
 - `GET /link/assets/manifest` — the font and intro corpus, with its revision. See [Assets](#assets).
@@ -464,13 +469,17 @@ along with everything else, since they were derived from a set that has just cha
 
 The rule is "does the job carry its own source", since a node fetches its own input:
 
-- **Leasable**: `Encode`, `Pancode`, `Backup`, `Probe`, and **batch children**, provided the job
-  carries a source the node can fetch — a non-empty link, or a `.torrent` the coordinator sends with
-  it (see below).
+- **Leasable**: `Encode`, `Pancode`, `Backup`, `BackupAll`, `Probe`, `Subs`, `Preview`, and
+  **batch children**, provided the job carries a source the node can fetch — a non-empty link, or a
+  `.torrent` the coordinator sends with it (see below).
 - **Never leased**: forwarded jobs (they mirror another job's outcome and run nowhere); batch
   *parents* (a parent is one torrent download feeding many children that hard-link out of it, so
-  leasing it would put the download on a node and the encodes here); keeps, `Keycode`, `Preview`
-  and `Studio` (their inputs are files on the coordinator); and any job past `LINK_MAX_ATTEMPTS`.
+  leasing it would put the download on a node and the encodes here); keeps, `Keycode` and `Studio`
+  (their inputs are files on the coordinator); and any job past `LINK_MAX_ATTEMPTS`.
+
+`Subs` and `Preview` are leasable despite ending in a file, because the file is small and comes
+back — see [Returned artifacts](#returned-artifacts). What keeps `Keycode` and Studio here is the
+opposite: their *inputs* are files this machine holds, and no spec can carry a kept episode.
 
 A leased Pancode carries its originating `probe_job_id` alongside the source link. The node has no
 probe job and will fail to adopt its saved `.torrent`; the link is what the download falls back to,
@@ -571,6 +580,35 @@ than requeueing — the machine that just failed to deliver is not worth a secon
 This is the only large body the link carries. It is streamed to disk on arrival rather than
 buffered, written beside its target and renamed, and accepted only from the node that holds the
 lease.
+
+### Returned artifacts
+
+`/subs` ends in a subtitle track (or a zip of them) and `/preview` in a PNG, and in both cases the
+payload that ends the job names that file *by the path it had on the machine that made it*. That is
+fine while that is the same machine, and it is the whole of what used to keep these two jobs local:
+the coordinator would have attached a file that only exists somewhere else.
+
+So the node sends the file first — the same `PUT /link/lease/:id/output` the encode uses, with
+`?name=<file>` — and rewrites the payload to name it by file name alone. The coordinator puts that
+name back together with the job's own work directory before it renders. `spec::attachment_arg` is
+the one table saying which argument of which message is a file, and it mirrors the renderer's own
+list exactly: naming the wrong argument would upload a label, and naming none would attach another
+machine's path.
+
+- **The file goes before the report**, for the same reason a returned encode does.
+- **A file that cannot be sent leaves the payload naming its original path.** The renderer then
+  logs a failed attach, and the message — with the track list, the skipped tracks and everything
+  else it says — still arrives. Silently inventing a local path for a file that never came would
+  be the worse failure.
+- **A result that is retried does not re-send.** The restored payload already names the file
+  plainly, which is how the retry knows the upload succeeded.
+- Named artifacts are capped at 64 MiB. The encode itself is deliberately not: it is an episode.
+
+A `/preview` also carries its shot list and its watermark font, and the font travels as a **name**.
+Both sides resolve it through `find_fonts_with_roots` over `DB/fontconfig/<server>` and
+`DB/fontconfig/global`, which are ordinary buckets of the [synced corpus](#assets) — so a node on
+the job's `assets_revision` opens a byte-identical file, and one that cannot find it declines rather
+than rendering in a substituted typeface.
 
 ## Scheduling
 

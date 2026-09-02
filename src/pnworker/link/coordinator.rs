@@ -8,7 +8,7 @@ use crate::pnworker::link::board;
 use crate::pnworker::link::board::NoNode;
 use crate::pnworker::link::client::{encode_base64, job_type_is_leasable};
 use crate::pnworker::link::spec::{
-    LinkJobSpec, job_type_name, preset_name, source_to_wire,
+    LinkJobSpec, PreviewSpec, job_type_name, preset_name, source_to_wire,
 };
 
 // The coordinator's side of deciding what leaves this machine. Everything here is a pure question
@@ -52,9 +52,12 @@ pub fn has_leasable_shape(job: &Job, has_source_file: bool) -> bool {
         return false;
     }
     // A keep leaves its output on this machine for a later `/keycode` to join, and Keycode itself
-    // reads those local files. Preview and Studio are the same shape.
-    if job.keep.is_some() || job.keycode.is_some() || job.preview.is_some() || job.studio.is_some()
-    {
+    // reads those local files. Studio renders a manifest that names files uploaded here.
+    //
+    // A `/preview` used to be in this list and is not: it fetches its own source exactly as an
+    // encode does, and the only thing tying it here was the PNG it ends with — which now comes
+    // back as a returned artifact. See `spec::attachment_arg`.
+    if job.keep.is_some() || job.keycode.is_some() || job.studio.is_some() {
         return false;
     }
     // A node fetches its own source, so there has to be one — either a link it can resolve or a
@@ -96,11 +99,11 @@ pub fn is_orchestrator() -> bool {
 // renders a queue position and then either sits forever or quietly does the thing the deployment
 // exists not to do.
 //
-// The refusals fall into two groups. **Its input is a file that only exists here** — a keep leaves
-// its output for a later `/keycode` to join, `/keycode` joins those files, and Preview and Studio
-// work on an upload handed to this process — so there is no node to send it to. **It downloads the
-// video itself** — a backup fetches a release to re-upload it, `/subs` fetches one to pull the
-// subtitle track out — and a node cannot be sent something the coordinator is the one downloading.
+// What is left is the jobs whose input is a file that only exists on this machine, which is the one
+// thing a spec cannot carry: a keep leaves its output here for a later `/keycode` to join,
+// `/keycode` joins those files, and Studio renders a manifest naming media uploaded to this
+// process and streamed back to a browser from it. Everything that merely *fetches* a video is
+// leased instead — see `leasable_job_types`.
 pub fn orchestrator_refusal(job: &Job) -> Option<&'static str> {
     if !is_orchestrator() {
         return None;
@@ -110,14 +113,9 @@ pub fn orchestrator_refusal(job: &Job) -> Option<&'static str> {
     }
     match job.job_type {
         JobType::Keycode => Some("/keycode joins files held on the coordinator, and this coordinator runs no encodes"),
-        JobType::Preview | JobType::Studio | JobType::StudioPreview => {
-            Some("this works on a file uploaded to the coordinator, and this coordinator runs no encodes")
+        JobType::Studio | JobType::StudioPreview => {
+            Some("Studio works on media uploaded to the coordinator and streamed back from it, and this coordinator runs no encodes")
         }
-        // Both download a whole release onto whichever machine runs them, and neither can be
-        // leased: a backup's input is the keyword's own stored output, and `/subs` extracts from
-        // the file it fetched. This coordinator downloads no video.
-        JobType::BackupAll => Some("backing up every release would download all of them here, and this coordinator downloads no video"),
-        JobType::Subs => Some("extracting subtitles downloads the release first, and this coordinator downloads no video"),
         _ => None,
     }
 }
@@ -211,6 +209,17 @@ pub fn build_spec(
         drive_only,
         intro_group,
         assets_revision: crate::pnworker::link::assets::manifest().revision,
+        // The font travels as its name, not as this machine's path to it: both sides resolve it
+        // over the same synced buckets, so the node finds the same file or declines the job.
+        preview: job.preview.as_ref().map(|preview| PreviewSpec {
+            shots: preview.shots.clone(),
+            watermark_font: preview
+                .watermark_font
+                .as_ref()
+                .and_then(|path| path.file_name())
+                .map(|name| name.to_string_lossy().to_string()),
+            ranking_log: preview.ranking_log.clone(),
+        }),
     }
 }
 
@@ -235,8 +244,19 @@ pub fn is_link_worker(worker: &str) -> bool {
     worker.starts_with("lnk-")
 }
 
-pub fn leasable_job_types() -> [JobType; 4] {
-    [JobType::Encode, JobType::Pancode, JobType::Backup, JobType::Probe]
+pub fn leasable_job_types() -> [JobType; 7] {
+    [
+        JobType::Encode,
+        JobType::Pancode,
+        JobType::Backup,
+        JobType::Probe,
+        // All three fetch their own source and hand back something small: `/backupall` uploads its
+        // own release exactly as `/backup` does, and `/subs` and `/preview` end in one file the
+        // message attaches, which travels back as a returned artifact.
+        JobType::BackupAll,
+        JobType::Subs,
+        JobType::Preview,
+    ]
 }
 
 #[cfg(test)]
@@ -373,11 +393,8 @@ mod tests {
         }
         for job_type in [
             JobType::Keycode,
-            JobType::Preview,
             JobType::Studio,
             JobType::StudioPreview,
-            JobType::BackupAll,
-            JobType::Subs,
         ] {
             assert!(
                 !job_type_is_leasable(job_type),
@@ -390,6 +407,13 @@ mod tests {
         let mut kept = job(JobType::Encode);
         kept.keep = Some(KeepRequest::new(Some("kw".to_string())));
         assert!(!is_eligible(&kept, false));
+
+        // And the three that stopped being refused: each fetches its own source, so each is a job
+        // a node can take rather than one this machine has to run.
+        for job_type in [JobType::Subs, JobType::Preview, JobType::BackupAll] {
+            assert!(job_type_is_leasable(job_type), "{job_type:?} should now travel");
+            assert!(orchestrator_refusal(&job(job_type)).is_none());
+        }
     }
 
     // The spec is the node's only source of truth, so what the coordinator snapshotted has to be
@@ -437,6 +461,39 @@ mod tests {
         let restricted = build_spec(&source, &LeaseSource::default(), true, true);
         assert!(restricted.return_output);
         assert!(restricted.drive_only);
+    }
+
+    // A `/preview` used to be pinned here by nothing but the PNG it ends with. What has to travel
+    // is the shot list and the watermark font — and the font as a *name*, because the coordinator's
+    // path to it is a path the node does not have, while the file itself is one both machines
+    // synced.
+    #[test]
+    fn a_preview_travels_with_its_shots_and_its_font_by_name() {
+        let mut source = job(JobType::Preview);
+        source.preview = Some(crate::pnworker::core::PreviewRequest {
+            shots: vec![(90, "cold open".to_string()), (600, "eyecatch".to_string())],
+            watermark_font: Some(
+                std::path::PathBuf::from("DB/fontconfig/global/Inter-Bold.ttf"),
+            ),
+            ranking_log: "ranked".to_string(),
+        });
+        assert!(is_eligible(&source, false), "a preview fetches its own source");
+
+        let spec = build_spec(&source, &LeaseSource::default(), false, false);
+        let preview = spec.preview.expect("the shot list has to travel");
+        assert_eq!(preview.shots.len(), 2);
+        assert_eq!(preview.shots[1], (600, "eyecatch".to_string()));
+        assert_eq!(preview.ranking_log, "ranked");
+        assert_eq!(
+            preview.watermark_font.as_deref(),
+            Some("Inter-Bold.ttf"),
+            "the font is named, never pathed: the coordinator's path means nothing on a node",
+        );
+
+        // A job that is not a preview carries no shot list to misread.
+        assert!(build_spec(&job(JobType::Encode), &LeaseSource::default(), false, false)
+            .preview
+            .is_none());
     }
 
     #[test]
