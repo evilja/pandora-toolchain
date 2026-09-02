@@ -839,6 +839,23 @@ async fn queue_batch_job(
     }
 
     store_batch_token(&batch.token, job.job_id).await;
+    // A batch parent's whole job is one download feeding children that hard-link out of it, and a
+    // coordinator that downloads no video cannot be the one doing it. Every episode is leased
+    // instead — `do_batch_lease_things` claims each entry into a child a node fetches for itself —
+    // so the parent is only bookkeeping: it holds the metainfo the children travel with, and it
+    // waits for them.
+    //
+    // Leaving it at `Queued` is what stops the download and everything downstream of it. The stage
+    // is not a lie about a torrent that is running, `settle_download` never fires (there is no
+    // delivery that could come up short), and `do_batch_parent_things` still ends the batch when
+    // the last episode is terminal.
+    if crate::pnworker::link::coordinator::is_orchestrator() {
+        job.ready = Stage::Queued;
+        job.worker = LINK_WAITING_WORKER.to_string();
+        db.update_worker(job.job_id, &job.worker).await.ok();
+        render_batch_parent(job).await;
+        return false;
+    }
     queue_download_job(db, queue, shrine, job, batch.file_indices(), true).await
 }
 
@@ -2441,6 +2458,8 @@ async fn requeue_link_job(
     job.encode_dispatch_order = None;
     job.encode_dispatched_at = None;
     job.encode_last_frame_at = None;
+    // A retried probe answers again from scratch, so its selection window starts again with it.
+    job.probed_at = None;
     db.update_stage(job_id, Stage::Queued).await.ok();
     // A coordinator that runs no encodes has nowhere to requeue *to*. The job goes back into the
     // waiting pool instead, which `do_link_waiting_things` owns on the very next pass — including
@@ -2473,14 +2492,34 @@ async fn requeue_link_job(
     }
 }
 
+// How long a file list stays on screen waiting for somebody to pick an episode out of it.
+const PROBE_SELECTION_TIMEOUT: Duration = Duration::from_secs(180);
+
 async fn do_probe_timeout_things(db: &JobDb, queue: &mut Vec<Job>) {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::from_secs(0));
+    // The window runs from when the file list appeared, not from when the job was submitted.
+    // Measured from `requested_at`, a probe that took longer than the window to *answer* had its
+    // answer deleted the instant it arrived — the message a person was waiting for, gone before
+    // they could read it, with nothing anywhere saying why. That was always reachable behind a
+    // long queue; on a coordinator that leases its probes it is ordinary, because the job spends
+    // the wait held for a node.
+    //
+    // Stamped here rather than at each transition into `Probed`, because this pass already runs
+    // twenty times a second and is the only thing that reads it: there is no second place to keep
+    // in step.
+    for job in queue.iter_mut() {
+        if job.ready == Stage::Probed && job.probed_at.is_none() {
+            job.probed_at = Some(now);
+        }
+    }
     let timed_out: Vec<u64> = queue
         .iter()
         .filter(|j| j.ready == Stage::Probed)
-        .filter(|j| now.saturating_sub(j.requested_at) > Duration::from_secs(180))
+        .filter(|j| {
+            now.saturating_sub(j.probed_at.unwrap_or(j.requested_at)) > PROBE_SELECTION_TIMEOUT
+        })
         .map(|j| j.job_id)
         .collect();
     for id in timed_out {
@@ -3081,7 +3120,11 @@ async fn do_batch_parent_things(db: &JobDb, queue: &mut Vec<Job>) {
             job.batch
                 .as_ref()
                 .is_some_and(|batch| batch.complete() && !batch.entries.is_empty())
-                && matches!(job.ready, Stage::Downloaded | Stage::Downloading)
+                // `Queued` is a parent whose download was never dispatched: an orchestrator's,
+                // which leases every episode instead of fetching them. A parent that merely has
+                // not started downloading yet cannot reach here, because nothing has finished for
+                // it and `complete()` is false while `finished + failed` is zero.
+                && matches!(job.ready, Stage::Queued | Stage::Downloaded | Stage::Downloading)
         })
         .map(|job| job.job_id)
         .collect();
@@ -4293,6 +4336,10 @@ pub struct Job {
     // become an endless tour of the cluster, so past `LINK_MAX_ATTEMPTS` it stays local — or, on a
     // coordinator that runs no encodes, fails where somebody can see it.
     pub link_attempts: u32,
+    // When this job's file list appeared, for a probe. The selection window is measured from here
+    // rather than from `requested_at`, so a probe that spent a while waiting its turn — or waiting
+    // for a node — does not have its answer archived the moment it arrives.
+    pub probed_at: Option<Duration>,
     // Set on an orchestrator: this job is held for a node and is dispatched to nothing here. It is
     // the waiting counterpart of `link_node` and is skipped by exactly the same local paths, so a
     // job cannot be both waiting for a node and being encoded by this machine.
@@ -4417,6 +4464,7 @@ impl Job {
             batch_parent: None,
             link_node: None,
             link_attempts: 0,
+            probed_at: None,
             link_waiting: false,
             link_wait_reason: None,
             link_avoid_nodes: Vec::new(),
@@ -4509,6 +4557,7 @@ impl Job {
             batch_parent: None,
             link_node: None,
             link_attempts: 0,
+            probed_at: None,
             link_waiting: false,
             link_wait_reason: None,
             link_avoid_nodes: Vec::new(),

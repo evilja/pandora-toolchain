@@ -386,7 +386,7 @@ async fn handle_lsnode(ctx: &Context, command: &serenity::all::CommandInteractio
         // The single most important thing on this screen for such a deployment: on an ordinary
         // coordinator an empty or drained roster costs throughput, and here it stops everything.
         lines.push(
-            "🎛️ Orchestrator mode — every leasable job waits for a node; nothing is encoded here."
+            "🎛️ Orchestrator mode — this coordinator downloads no video and runs no encodes; every job waits for a node."
                 .to_string(),
         );
     }
@@ -3886,7 +3886,7 @@ async fn main() {
         // Said out loud because every other symptom of this mode is a job that does not start on
         // this machine, which is indistinguishable from a queue that is merely stuck.
         println!(
-            "[Pandora] starting as an orchestrator: every leasable job waits for a Pandora Mini node and nothing is encoded here"
+            "[Pandora] starting as an orchestrator: this machine downloads no video and runs no encodes; every job that can be leased waits for a Pandora Mini node"
         );
         if !env
             .get(LINK_ENABLED)

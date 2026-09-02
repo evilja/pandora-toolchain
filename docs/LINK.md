@@ -75,31 +75,47 @@ restart reproduce the binary the node registered with.
 pndc --orchestrator     # or `pandora_mode|pntools|orchestrator` in env.pandora
 ```
 
-A coordinator that hands out every encode and runs none. It is an ordinary coordinator in every
-other respect — the Discord client, the HTTP API, the queue, the roster, the publish commands and
-the archived logs are all exactly as they are without the flag — and it differs in one rule: **a job
-that can be leased is held for a node rather than run here.**
+A coordinator that **downloads no video and runs no encoder**. It is an ordinary coordinator in
+every other respect — the Discord client, the HTTP API, the queue, the roster, the publish commands,
+the Drive capabilities and the archived logs are all exactly as they are without the flag — and it
+differs in one rule: **every job a node can run is held for a node, and nothing that would fetch or
+encode a release here is accepted at all.**
 
 `--mini` and `--orchestrator` are opposites and `pndc` refuses to start with both. The mode implies
 `link_enabled`: everywhere else that key being off means "run everything locally", and here it would
 mean nothing runs at all, with no error and no node to look at.
 
-### What waits, what still runs, and what is refused
+### What waits, and what is refused
 
-The line is drawn at *encoding*, not at leasing:
+- **Held for a node.** Everything in [What can be leased](#what-can-be-leased): `Encode`,
+  `Pancode`, `Backup`, `Probe`, and batch children. `must_offload` is exactly "leasable", so there
+  is no second rule to keep in step with the first. A probe waits with the rest — an orchestrator
+  fetches not even the metainfo — which means `/job` shows "waiting for a node" before it shows a
+  file list.
+- **Refused at submission**, with the reason, because there is no node to send them to and nothing
+  here that may run them:
+  - *Their input is a file that only exists here.* Keeps (a kept encode leaves its output for a
+    later `/keycode` to join), `/keycode` itself, `/preview`, and Studio.
+  - *They download the release themselves.* `/backupall`, and `/subs` — extracting a subtitle track
+    means fetching the video it is in.
 
-- **Held for a node.** `Encode` and `Pancode`, including batch children. These are the jobs that run
-  an encoder, and they wait — with a reason — until a node takes one.
-- **Still run here.** `Probe` and `Backup` are leasable and are still offered to a node first, but
-  they fall back to this machine when the cluster is full: a probe opens a torrent and reads its
-  file list, a backup downloads and re-uploads, and neither is an encode. Holding a probe would
-  stall the `/job` flow that is waiting to show somebody a file list, in the name of an encoder that
-  was never going to run. `Subs`, a batch parent's download, and everything git- or
-  config-shaped are local for the same reason.
-- **Refused at submission.** Keeps, `/keycode`, `/preview` and Studio. Each runs an encoder on the
-  machine it was submitted to and can never be leased, because its input is a file that only exists
-  here. There is no node to send them to and no local encoder to run them on, so they are declined
-  with the reason rather than accepted into a queue they would never leave.
+  The alternative to refusing is a job that is accepted, renders a queue position, and then either
+  sits forever or quietly does the thing the deployment exists not to do.
+- **Neither.** Cancels, `/workers`, `/lsnode`, the git commands, the publish commands and every
+  config command are unchanged: none of them touches a video.
+
+### A batch parent stops downloading
+
+A batch parent's whole job is normally one download feeding children that hard-link out of it, and
+on an orchestrator it does not run at all. Instead **every entry is claimed into a leased child as
+soon as the file list exists** — not only when a node happens to be free — and each node fetches its
+own episode. The parent stays at `Queued`, holds the metainfo its children travel with, and ends
+when the last episode does.
+
+This also retires the cost described under [Batch split](#batch-split): with no parent download
+there is no episode fetched twice, and cluster-wide download is 1×. `settle_download` never fires,
+which is right — there is no delivery here that could come up short. An episode that can never be
+placed at all is counted against the batch rather than left to block every episode behind it.
 
 ### Waiting
 
@@ -483,7 +499,9 @@ index, which is the shape a leased Pancode already travelled in; the node fetche
 itself. The offer happens *before* the parent has downloaded that file, because that is the only
 moment leasing it is worth anything — afterwards the bytes are already here.
 
-**A leased episode is fetched twice.** The parent keeps its whole selection: `FileSelection` becomes
+**A leased episode is fetched twice** — unless this coordinator is an
+[orchestrator](#orchestrator-mode), where the parent does not download at all and every episode is
+leased. Otherwise the parent keeps its whole selection: `FileSelection` becomes
 a piece bitmap when the session opens and there is no way to narrow a running download, so the
 parent still pulls a file it will not use. This trades the coordinator's bandwidth for the cluster's
 encoders, on the reasoning that a batch is bounded by encoding rather than by a download it had to
@@ -532,7 +550,13 @@ gone, and the client reports `returned`.
 A probe is the other outcome that does not end its job. `Probed` is where a probe stops locally
 too — it then waits for a file to be selected, and the probe timeout archives it — so the node
 reports `probed`, the coordinator releases the lease and clears `link_node`, and the job stays in
-the queue exactly where a local probe would leave it. Without that the lease would simply expire
+the queue exactly where a local probe would leave it.
+
+That selection window runs from when the file list *appeared*, not from when the job was submitted.
+Measured from the submission, a probe that took longer than the window to answer had its answer
+deleted the instant it arrived — the message somebody was waiting for, gone before they could read
+it, with nothing anywhere saying why. That was always reachable behind a long queue; on an
+[orchestrator](#orchestrator-mode), where a probe spends the wait held for a node, it is ordinary. Without that the lease would simply expire
 and the coordinator would re-run a probe that had already answered.
 
 `returned` is not a terminal outcome. The coordinator clears `link_node`, leaves the job at
@@ -766,9 +790,11 @@ node, matching the `[lumiere]` convention.
 - **Log proxying.** A node's tool logs stay on the node; `/catlogs` and `GET /jobs/:id/logs` answer
   only from the coordinator's own copy. Nodes are to push a bounded tail on renew and a bundle with
   the result.
-- **Batch split at ≈1× download.** Episodes are leased one index at a time (see
-  [Batch split](#batch-split)), but the parent still downloads the whole selection, so a leased
-  episode is fetched twice. Holding cluster-wide download to ≈1× needs the parent's own selection
-  narrowed, and `FileSelection` is turned into a piece bitmap when the session opens — narrowing it
-  means either deciding every lease before the parent's download starts, which can only use the
-  nodes that happen to be free at that instant, or a control channel into a running `pnp2p`.
+- **Batch split at ≈1× download**, on a coordinator that also encodes. Episodes are leased one
+  index at a time (see [Batch split](#batch-split)), but the parent still downloads the whole
+  selection, so a leased episode is fetched twice. Holding cluster-wide download to ≈1× needs the
+  parent's own selection narrowed, and `FileSelection` is turned into a piece bitmap when the
+  session opens — narrowing it means either deciding every lease before the parent's download
+  starts, which can only use the nodes that happen to be free at that instant, or a control channel
+  into a running `pnp2p`. [Orchestrator mode](#orchestrator-mode) sidesteps it rather than solving
+  it: there the parent downloads nothing, so there is nothing to narrow.

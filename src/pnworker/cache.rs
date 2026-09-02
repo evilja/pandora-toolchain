@@ -321,6 +321,7 @@ mod tests {
             batch_parent: None,
             link_node: None,
             link_attempts: 0,
+            probed_at: None,
             link_waiting: false,
             link_wait_reason: None,
             link_avoid_nodes: Vec::new(),

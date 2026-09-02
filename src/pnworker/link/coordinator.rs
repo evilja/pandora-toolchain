@@ -90,12 +90,17 @@ pub fn is_orchestrator() -> bool {
 
 // Why an orchestrator cannot accept a job at all, when it cannot.
 //
-// These are the job types that run an encoder on the machine they were submitted to and can never
-// be leased, because their input is a file that only exists here: a keep leaves its output for a
-// later `/keycode` to join, `/keycode` joins those files, and Preview and Studio work on an upload
-// that was handed to this process. There is no node to send them to and no local encoder to run
-// them on, so they are refused at submission with the reason — the alternative is a job that is
-// accepted, renders a queue position, and then sits forever.
+// An orchestrator pulls no video and runs no encoder; it holds the queue and hands the work out.
+// Every job below breaks one of those two rules and cannot be leased to a machine that would not,
+// so it is refused at submission with the reason. The alternative is a job that is accepted,
+// renders a queue position and then either sits forever or quietly does the thing the deployment
+// exists not to do.
+//
+// The refusals fall into two groups. **Its input is a file that only exists here** — a keep leaves
+// its output for a later `/keycode` to join, `/keycode` joins those files, and Preview and Studio
+// work on an upload handed to this process — so there is no node to send it to. **It downloads the
+// video itself** — a backup fetches a release to re-upload it, `/subs` fetches one to pull the
+// subtitle track out — and a node cannot be sent something the coordinator is the one downloading.
 pub fn orchestrator_refusal(job: &Job) -> Option<&'static str> {
     if !is_orchestrator() {
         return None;
@@ -108,30 +113,25 @@ pub fn orchestrator_refusal(job: &Job) -> Option<&'static str> {
         JobType::Preview | JobType::Studio | JobType::StudioPreview => {
             Some("this works on a file uploaded to the coordinator, and this coordinator runs no encodes")
         }
+        // Both download a whole release onto whichever machine runs them, and neither can be
+        // leased: a backup's input is the keyword's own stored output, and `/subs` extracts from
+        // the file it fetched. This coordinator downloads no video.
+        JobType::BackupAll => Some("backing up every release would download all of them here, and this coordinator downloads no video"),
+        JobType::Subs => Some("extracting subtitles downloads the release first, and this coordinator downloads no video"),
         _ => None,
     }
 }
 
-// The two leasable job types that actually run an encoder. The other two do not: a `Probe` opens a
-// torrent and reads its file list, and a `Backup` downloads and re-uploads. Both are still offered
-// to a node first, exactly as they always were — but an orchestrator falls back to running them
-// here when the cluster is full, because "this coordinator does not encode" is a statement about
-// encoding, and holding a probe would stall the `/job` flow that is waiting to show somebody a
-// file list.
-fn is_encoding_job_type(job_type: JobType) -> bool {
-    matches!(job_type, JobType::Encode | JobType::Pancode)
-}
-
 // Whether this job must go to a node or wait for one, rather than falling back to the local
-// pipeline. False on an ordinary coordinator, and false here for anything a node could never take
-// — a batch parent's download and a subtitle extraction still happen on this machine, because
-// neither is an encode.
+// pipeline. False on an ordinary coordinator; here it is true for every job a node can run, which
+// is the whole of what this machine does with a job. What is left over is either refused — see
+// `orchestrator_refusal` — or is not a job that touches a video at all.
 pub fn must_offload(job: &Job, has_source_file: bool) -> bool {
     // The attempt budget is deliberately not consulted: a job that has spent it is exactly the
     // case an orchestrator must not read as "run it here". It has nowhere left to go, and the
-    // caller fails it with the nodes it was lost on rather than encoding it on a machine whose
-    // whole configuration says it does not encode.
-    is_orchestrator() && is_encoding_job_type(job.job_type) && has_leasable_shape(job, has_source_file)
+    // caller fails it with the nodes it was lost on rather than running it on a machine whose
+    // whole configuration says it runs nothing.
+    is_orchestrator() && has_leasable_shape(job, has_source_file)
 }
 
 // The node this job should go to, or why none can take it.
@@ -336,29 +336,26 @@ mod tests {
         }
     }
 
-    // The line an orchestrator draws. Every job type it holds has to be one that encodes; every
-    // other leasable type keeps its local fallback, because refusing to probe would stall the flow
-    // that is waiting to show somebody a file list and would do it in the name of an encoder that
-    // was never going to run.
+    // The line an orchestrator draws: every job a node can run is held for one, and nothing that
+    // fetches or encodes a video is left to this machine. `must_offload` is therefore exactly
+    // "leasable", with no second rule to keep in step with the first.
     #[test]
-    fn only_the_job_types_that_encode_are_held_for_a_node() {
+    fn every_leasable_job_is_held_for_a_node() {
         for job_type in leasable_job_types() {
-            let encodes = is_encoding_job_type(job_type);
-            assert_eq!(
-                encodes,
-                matches!(job_type, JobType::Encode | JobType::Pancode),
-                "{job_type:?} is on the wrong side of the line",
+            let mut job = job(job_type);
+            job.torrent = TorrentType::Magnet("magnet:?xt=urn:btih:abc".to_string());
+            assert!(
+                has_leasable_shape(&job, false),
+                "{job_type:?} is leasable, so an orchestrator has to hold it",
             );
         }
-        // A batch parent is not leasable at all, so it is never held either — its download feeds
-        // children that are.
-        assert!(!is_encoding_job_type(JobType::Batch) || !job_type_is_leasable(JobType::Batch));
         // And with the mode off, nothing is held whatever it is.
         assert!(!must_offload(&job(JobType::Encode), false));
     }
 
     // The refusal is only ever reached on an orchestrator, so what is testable here is which job
-    // it names — a keep and the three file-bound job types, and nothing that a node could take.
+    // it names: everything that would fetch or encode a video on this machine, and nothing a node
+    // could have taken instead.
     #[test]
     fn the_refusal_covers_exactly_what_encodes_here_and_cannot_travel() {
         // Off by default, which is what makes an ordinary coordinator behave as it always has.
@@ -379,6 +376,8 @@ mod tests {
             JobType::Preview,
             JobType::Studio,
             JobType::StudioPreview,
+            JobType::BackupAll,
+            JobType::Subs,
         ] {
             assert!(
                 !job_type_is_leasable(job_type),

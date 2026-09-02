@@ -65,10 +65,11 @@ pub const PRESETS_DIR: &str = "DB/config/global/presets";
 // coordinator with no registered nodes behaves exactly as it did before the link existed.
 //
 // Set to `orchestrator` (equivalently `pndc --orchestrator`) it runs the coordinator side and
-// nothing else: the Discord client, the API and the queue, with every encode held for a node
-// rather than dispatched here. The two values are opposites — a node takes work, an orchestrator
-// only hands it out — and `pndc` refuses to start with both. Orchestrator mode implies
-// `LINK_ENABLED`, because a machine with no local pipeline and no offload runs nothing at all.
+// nothing else: the Discord client, the API and the queue, downloading no video and running no
+// encoder. Every job a node can take is held for one; everything that would fetch or encode a
+// release here is refused at submission. The two values are opposites — a node takes work, an
+// orchestrator only hands it out — and `pndc` refuses to start with both. Orchestrator mode
+// implies `LINK_ENABLED`, because a machine with no local pipeline and no offload runs nothing.
 pub const PANDORA_MODE: &str = "pandora_mode";
 pub const LINK_COORDINATOR_URL: &str = "link_coordinator_url";
 pub const LINK_NODE_TOKEN: &str = "link_node_token";
