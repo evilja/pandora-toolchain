@@ -701,3 +701,11 @@ args = 1
 [LINK_RESULT_LOST]
 text = "`{}` finished this job, but its final message never reached the coordinator. The links are in this job's logs."
 args = 1
+
+[LINK_WAITING]
+text = "⏳ Waiting for a Pandora Mini node: {}"
+args = 1
+
+[LINK_NO_NODE_LEFT]
+text = "No Pandora Mini node could run this job after {} attempt(s), and this coordinator runs no encodes of its own. Nodes tried: {}"
+args = 2

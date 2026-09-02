@@ -207,6 +207,11 @@ fn job_view(job: &Job, now: u64) -> Value {
         "forward_parent": job.forward_parent.map(|id| id.to_string()),
         "link_node": job.link_node,
         "link_attempts": job.link_attempts,
+        // A job an orchestrator is holding for a node. It is `Queued` with a worker nothing is
+        // running, which on any other deployment would mean it is simply next in line — so the
+        // console has to be able to tell the two apart, and to say what the cluster answered.
+        "link_waiting": job.link_waiting,
+        "link_wait_reason": job.link_wait_reason,
         "batch_parent": job.batch_parent.map(|id| id.to_string()),
         "waiting_on_cache": job.duplicate_source.is_some(),
         "encode_dispatched": job.encode_dispatched,

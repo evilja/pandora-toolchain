@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -11,6 +10,7 @@ use crate::lib::env::standard::{
     PANDORA_MODE,
 };
 use crate::lib::p2p::nyaaise::TorrentType;
+use crate::lib::sync::lock;
 use crate::pnworker::core::{HalfJob, Job, JobClass, JobType, Stage};
 use crate::pnworker::frontend::Frontend;
 use crate::pnworker::link::assets::{self, AssetKind, AssetManifest};
@@ -201,13 +201,11 @@ pub fn report(job_id: u64, payload: &MessagePayload, stage: Stage, worker: &str)
     if !is_mini() {
         return;
     }
-    if !leased().lock().is_ok_and(|set| set.contains(&job_id)) {
+    if !lock(leased()).contains(&job_id) {
         return;
     }
     let wire = LinkPayload::from_payload(payload);
-    let Ok(mut map) = pending().lock() else {
-        return;
-    };
+    let mut map = lock(pending());
     let entry = map.entry(job_id).or_insert_with(|| Pending {
         reports: Vec::new(),
         worker: String::new(),
@@ -252,9 +250,7 @@ struct Drained {
 }
 
 fn take_reports(job_id: u64) -> Drained {
-    let Ok(mut map) = pending().lock() else {
-        return Drained { reports: Vec::new(), worker: String::new(), stage: None, terminal: None };
-    };
+    let mut map = lock(pending());
     let Some(entry) = map.get_mut(&job_id) else {
         return Drained { reports: Vec::new(), worker: String::new(), stage: None, terminal: None };
     };
@@ -308,9 +304,7 @@ fn restore_reports(job_id: u64, reports: Vec<LinkReport>) {
     if reports.is_empty() {
         return;
     }
-    let Ok(mut map) = pending().lock() else {
-        return;
-    };
+    let mut map = lock(pending());
     let Some(entry) = map.get_mut(&job_id) else {
         return;
     };
@@ -328,25 +322,17 @@ fn returned() -> &'static Mutex<std::collections::HashSet<u64>> {
 }
 
 pub fn output_returned(job_id: u64) -> bool {
-    returned().lock().is_ok_and(|set| set.contains(&job_id))
+    lock(returned()).contains(&job_id)
 }
 
 fn mark_returned(job_id: u64) {
-    if let Ok(mut set) = returned().lock() {
-        set.insert(job_id);
-    }
+    lock(returned()).insert(job_id);
 }
 
 fn forget(job_id: u64) {
-    if let Ok(mut map) = pending().lock() {
-        map.remove(&job_id);
-    }
-    if let Ok(mut set) = leased().lock() {
-        set.remove(&job_id);
-    }
-    if let Ok(mut set) = returned().lock() {
-        set.remove(&job_id);
-    }
+    lock(pending()).remove(&job_id);
+    lock(leased()).remove(&job_id);
+    lock(returned()).remove(&job_id);
 }
 
 // Streams a finished encode back to the coordinator. This is the one large body the link carries,
@@ -660,11 +646,7 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
             // the file was sent costs the encode.
             if lease.return_output && stage == Some(Stage::Encoded) {
                 if !output_returned(job_id) {
-                    let path = std::env::current_dir()
-                        .unwrap_or_else(|_| PathBuf::from("."))
-                        .join("DB")
-                        .join("work")
-                        .join(job_id.to_string())
+                    let path = crate::pnworker::util::job_work_dir(job_id)
                         .join("work")
                         .join("output.mp4");
                     println!("[link] job {job_id} encoded; returning its output to the coordinator");
@@ -1219,11 +1201,7 @@ async fn accept(
     // The coordinator's id is reused verbatim so the node's logs, this process's work directory and
     // the row the operator is watching all carry the same number.
     job.job_id = job_id;
-    job.directory = std::env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("DB")
-        .join("work")
-        .join(job_id.to_string());
+    job.directory = crate::pnworker::util::job_work_dir(job_id);
     job.preset = preset;
     job.server_watermark = watermark;
     job.frontend = Frontend::None;
@@ -1259,9 +1237,7 @@ async fn accept(
         }
     }
 
-    if let Ok(mut set) = leased().lock() {
-        set.insert(job_id);
-    }
+    lock(leased()).insert(job_id);
     if tx.send(JobClass::Job(job)).await.is_err() {
         forget(job_id);
         return decline("this node's worker queue is closed".to_string());
@@ -1367,7 +1343,7 @@ mod tests {
     }
 
     fn seed_pending(job_id: u64, ids: &[&str]) {
-        let mut map = pending().lock().unwrap();
+        let mut map = lock(pending());
         map.insert(
             job_id,
             Pending {
@@ -1386,9 +1362,7 @@ mod tests {
     }
 
     fn pending_ids(job_id: u64) -> Vec<String> {
-        pending()
-            .lock()
-            .unwrap()
+        lock(pending())
             .get(&job_id)
             .map(|entry| entry.reports.iter().map(|r| r.payload.id.clone()).collect())
             .unwrap_or_default()
@@ -1407,7 +1381,7 @@ mod tests {
 
         restore_reports(job_id, drained.reports);
         assert_eq!(pending_ids(job_id), ["QUEUED", "ENCODE_PROG"]);
-        pending().lock().unwrap().remove(&job_id);
+        lock(pending()).remove(&job_id);
     }
 
     // The worker does not stop while a request is in flight, so what comes back is older than
@@ -1421,7 +1395,7 @@ mod tests {
 
         restore_reports(job_id, drained.reports);
         assert_eq!(pending_ids(job_id), ["QUEUED", "ENCODE_PROG"]);
-        pending().lock().unwrap().remove(&job_id);
+        lock(pending()).remove(&job_id);
     }
 
     // A coordinator that answers nothing at all must not hold one of this node's job slots for

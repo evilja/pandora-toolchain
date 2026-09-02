@@ -701,3 +701,11 @@ args = 1
 [LINK_RESULT_LOST]
 text = "`{}` bu işi tamamladı ancak son mesajı koordinatöre ulaşmadı. Bağlantılar bu işin kayıtlarında."
 args = 1
+
+[LINK_WAITING]
+text = "⏳ Bir Pandora Mini düğümü bekleniyor: {}"
+args = 1
+
+[LINK_NO_NODE_LEFT]
+text = "{} denemeden sonra hiçbir Pandora Mini düğümü bu işi çalıştıramadı ve bu koordinatör kendisi kodlama yapmıyor. Denenen düğümler: {}"
+args = 2

@@ -118,6 +118,10 @@ pub fn worker_waiting(worker: &str) -> bool {
             | "enc-forward"
             | "dwl-forward"
             | "upl-forward"
+            // Held for a Pandora Mini node that has not been chosen yet. A leased job (`lnk-<node>`)
+            // is deliberately *not* here — it is running, just not on this machine — but a waiting
+            // one is running nowhere and must not read as an occupied worker.
+            | "lnk-wait"
     ) || worker.starts_with("key-")
 }
 

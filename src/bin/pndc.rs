@@ -28,7 +28,7 @@ use pandora_toolchain::pnworker::keep::{
 use pandora_toolchain::pnworker::worker_slots::{
     add_worker_slot, load_worker_slots, normalize_name, remove_worker_slot, WorkerSlotKind,
 };
-use pandora_toolchain::lib::env::standard::{PNASS, ANISUB, API_PORT};
+use pandora_toolchain::lib::env::standard::{PNASS, ANISUB, API_PORT, LINK_ENABLED};
 use pandora_toolchain::libkagami::core::{SubstationAlpha, find_fonts_with_roots};
 use pandora_toolchain::lib::protocol::core::Protocol;
 use pandora_toolchain::lib::subs::{ensure_ass, is_subtitle_name};
@@ -382,6 +382,14 @@ async fn handle_lsnode(ctx: &Context, command: &serenity::all::CommandInteractio
     let settings = board::settings();
     let roster = board::roster();
     let mut lines = Vec::new();
+    if settings.orchestrator {
+        // The single most important thing on this screen for such a deployment: on an ordinary
+        // coordinator an empty or drained roster costs throughput, and here it stops everything.
+        lines.push(
+            "🎛️ Orchestrator mode — every leasable job waits for a node; nothing is encoded here."
+                .to_string(),
+        );
+    }
     if !settings.enabled {
         lines.push("⚠️ `link_enabled` is off — nothing is offloaded.".to_string());
     }
@@ -389,7 +397,11 @@ async fn handle_lsnode(ctx: &Context, command: &serenity::all::CommandInteractio
         lines.push(format!("⚠️ Offload is limited to `{}`.", only));
     }
     if roster.is_empty() {
-        lines.push("No nodes have registered.".to_string());
+        lines.push(if settings.orchestrator {
+            "❗ No nodes have registered, so nothing can run at all.".to_string()
+        } else {
+            "No nodes have registered.".to_string()
+        });
     }
     for (node, jobs) in roster {
         let alive = board::is_alive(&node, settings.lease_timeout_secs);
@@ -441,6 +453,12 @@ async fn handle_lsnode(ctx: &Context, command: &serenity::all::CommandInteractio
                     format!("server `{}`", reserved)
                 }
             ));
+        }
+        // A drain the coordinator decided on rather than an operator. Without the reason beside
+        // it, a node that took itself out of rotation reads exactly like one somebody drained
+        // before a deploy and forgot about — and the fix for the two is not the same.
+        if let Some(reason) = &node.drain_reason {
+            lines.push(format!("🚫 `{}` — {}", node.name, reason));
         }
         // A node that could not run a migration still takes work and still looks healthy, so the
         // only place this surfaces at all is here. It is indented under its node rather than
@@ -3816,8 +3834,35 @@ async fn main() {
         Err(e) => eprintln!("[fonts] persisted font install failed: {}", e),
     }
     let env = get_pandora_env();
+    // Two modes that mean opposite things about the same process: `--mini` takes work from a
+    // coordinator, `--orchestrator` gives it away and runs none. A machine told to do both would
+    // pick whichever check ran first, which is not a thing to decide by reading order.
+    if pandora_toolchain::pnworker::link::client::is_mini()
+        && pandora_toolchain::pnworker::link::coordinator::is_orchestrator()
+    {
+        eprintln!(
+            "[Pandora] --mini and --orchestrator are opposites: a node takes work, an orchestrator only hands it out. Pick one."
+        );
+        std::process::exit(78);
+    }
     let (tx, rx): (Sender<JobClass>, Receiver<JobClass>) = channel(5);
-    tokio::spawn(pn_worker(rx));
+    // The worker loop is where every job lives. Nothing else notices if it stops: Discord keeps
+    // answering, the API keeps accepting submissions, and each one lands in a channel that is
+    // never read again — a bot that looks completely healthy and encodes nothing, with no error
+    // anywhere to say why. So the task is watched, and its ending is turned into an exit the
+    // restart loop can act on.
+    let worker = tokio::spawn(pn_worker(rx));
+    tokio::spawn(async move {
+        match worker.await {
+            Ok(()) => eprintln!("[Pandora] the worker loop returned; nothing would run any more"),
+            Err(error) if error.is_panic() => {
+                eprintln!("[Pandora] the worker loop panicked: {error}")
+            }
+            Err(error) => eprintln!("[Pandora] the worker loop stopped: {error}"),
+        }
+        eprintln!("[Pandora] exiting so the restart loop can bring the queue back");
+        std::process::exit(70);
+    });
     // A node has no inbound surface by design, and its `env.pandora` is very often a copy of the
     // coordinator's with the link keys added — which used to mean it quietly served the whole API
     // on whatever `api_port` it inherited. Nothing on a node needs it: the consoles, the job
@@ -3836,6 +3881,23 @@ async fn main() {
         });
     }
     pandora_toolchain::pnworker::messages::init_language_files();
+
+    if pandora_toolchain::pnworker::link::coordinator::is_orchestrator() {
+        // Said out loud because every other symptom of this mode is a job that does not start on
+        // this machine, which is indistinguishable from a queue that is merely stuck.
+        println!(
+            "[Pandora] starting as an orchestrator: every leasable job waits for a Pandora Mini node and nothing is encoded here"
+        );
+        if !env
+            .get(LINK_ENABLED)
+            .is_some_and(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes" | "on"))
+        {
+            // The mode implies it, so this is a note rather than a refusal — but an operator
+            // reading `link_enabled|pntools|false` in their config deserves to know it is not the
+            // switch that is in charge here.
+            println!("[Pandora] orchestrator mode implies link_enabled; the key is ignored");
+        }
+    }
 
     // Pandora Mini. Everything above this line is the runtime a node needs — the worker loop, the
     // tool binaries, the fonts, the localisation — and everything below it is Discord. A node runs

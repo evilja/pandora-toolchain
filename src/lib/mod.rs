@@ -17,4 +17,5 @@ pub mod release;
 pub mod secret;
 pub mod setup;
 pub mod subs;
+pub mod sync;
 pub mod torrent;

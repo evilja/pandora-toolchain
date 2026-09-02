@@ -6,6 +6,7 @@ use std::time::{Duration, Instant, SystemTime};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::lib::sync::lock;
 use crate::pnworker::util::IntrosConfig;
 
 // Fonts and intro videos are the two things a node needs that do not travel in a job spec, and a
@@ -76,18 +77,14 @@ pub fn hash_file(path: &Path) -> Option<(String, u64)> {
     }
     let len = metadata.len();
     let mtime = metadata.modified().ok()?;
-    if let Ok(cache) = hash_cache().lock() {
-        if let Some((cached_mtime, cached_len, hash)) = cache.get(path) {
-            if *cached_mtime == mtime && *cached_len == len {
-                return Some((hash.clone(), len));
-            }
+    if let Some((cached_mtime, cached_len, hash)) = lock(hash_cache()).get(path) {
+        if *cached_mtime == mtime && *cached_len == len {
+            return Some((hash.clone(), len));
         }
     }
     let bytes = std::fs::read(path).ok()?;
     let hash = format!("{:x}", Sha256::digest(&bytes));
-    if let Ok(mut cache) = hash_cache().lock() {
-        cache.insert(path.to_path_buf(), (mtime, len, hash.clone()));
-    }
+    lock(hash_cache()).insert(path.to_path_buf(), (mtime, len, hash.clone()));
     Some((hash, len))
 }
 
@@ -195,18 +192,42 @@ fn push_entry(entries: &mut Vec<AssetEntry>, kind: AssetKind, group: &str, file:
 pub fn manifest() -> AssetManifest {
     static CACHE: OnceLock<Mutex<Option<(Instant, AssetManifest)>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(None));
-    if let Ok(guard) = cache.lock() {
-        if let Some((built_at, cached)) = guard.as_ref() {
-            if built_at.elapsed() < Duration::from_secs(60) {
-                return cached.clone();
-            }
+    if let Some((built_at, cached)) = lock(cache).as_ref() {
+        if built_at.elapsed() < Duration::from_secs(60) {
+            return cached.clone();
         }
     }
     let fresh = build_manifest();
-    if let Ok(mut guard) = cache.lock() {
-        *guard = Some((Instant::now(), fresh.clone()));
-    }
+    *lock(cache) = Some((Instant::now(), fresh.clone()));
     fresh
+}
+
+// Keeps the manifest cache warm off the runtime.
+//
+// `manifest()` is read from two places that must never block: the axum link routes, and — through
+// `build_spec` — `pn_worker`'s loop, which is the single thread every job on this machine passes
+// through. A cold cache there means walking every font bucket and intro folder and hashing
+// anything whose mtime moved, with the whole queue stopped behind it. It is not a failure anything
+// reports; it is a coordinator that pauses for a second every minute, and on a large corpus for
+// rather longer than that.
+//
+// So the walk is done here instead, on a blocking thread, just often enough that the cache the
+// loop reads is always one somebody else built. Coordinator-side only: a node's corpus is the one
+// it syncs from the coordinator, and building a manifest of it would answer a question nobody asks.
+pub fn spawn_manifest_refresher() {
+    // Under the 60-second cache lifetime, so the entry a caller finds has always been replaced
+    // rather than expired.
+    const REFRESH_SECS: u64 = 30;
+    tokio::spawn(async {
+        loop {
+            tokio::task::spawn_blocking(|| {
+                let _ = manifest();
+            })
+            .await
+            .ok();
+            tokio::time::sleep(std::time::Duration::from_secs(REFRESH_SECS)).await;
+        }
+    });
 }
 
 // Serving strictly by hash, and only for a hash the current manifest lists, is what keeps this

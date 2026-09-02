@@ -69,6 +69,73 @@ and `PNX264_STATIC`, read by `pnx264/build.rs` — links the distro's, comes bac
 turned away. Exporting those in the loop rather than in a shell profile is what makes an unattended
 restart reproduce the binary the node registered with.
 
+## Orchestrator mode
+
+```bash
+pndc --orchestrator     # or `pandora_mode|pntools|orchestrator` in env.pandora
+```
+
+A coordinator that hands out every encode and runs none. It is an ordinary coordinator in every
+other respect — the Discord client, the HTTP API, the queue, the roster, the publish commands and
+the archived logs are all exactly as they are without the flag — and it differs in one rule: **a job
+that can be leased is held for a node rather than run here.**
+
+`--mini` and `--orchestrator` are opposites and `pndc` refuses to start with both. The mode implies
+`link_enabled`: everywhere else that key being off means "run everything locally", and here it would
+mean nothing runs at all, with no error and no node to look at.
+
+### What waits, what still runs, and what is refused
+
+The line is drawn at *encoding*, not at leasing:
+
+- **Held for a node.** `Encode` and `Pancode`, including batch children. These are the jobs that run
+  an encoder, and they wait — with a reason — until a node takes one.
+- **Still run here.** `Probe` and `Backup` are leasable and are still offered to a node first, but
+  they fall back to this machine when the cluster is full: a probe opens a torrent and reads its
+  file list, a backup downloads and re-uploads, and neither is an encode. Holding a probe would
+  stall the `/job` flow that is waiting to show somebody a file list, in the name of an encoder that
+  was never going to run. `Subs`, a batch parent's download, and everything git- or
+  config-shaped are local for the same reason.
+- **Refused at submission.** Keeps, `/keycode`, `/preview` and Studio. Each runs an encoder on the
+  machine it was submitted to and can never be leased, because its input is a file that only exists
+  here. There is no node to send them to and no local encoder to run them on, so they are declined
+  with the reason rather than accepted into a queue they would never leave.
+
+### Waiting
+
+A held job is `Queued`, wears the worker `lnk-wait`, and is skipped by every local dispatch exactly
+as a leased job is. `/workers` counts it as waiting rather than active, because nothing is running
+it anywhere.
+
+**It waits with a reason.** `pick_node` records which filter emptied the candidate list — every node
+is draining, no node is marked for GPU work, no node has proved the encoder this preset needs, every
+free node is reserved for another server — and the job's message and the worker snapshot
+(`link_wait_reason`) carry it. This is the one failure mode the flag could introduce that the
+ordinary coordinator does not have: a job that simply does not start. The reason is what makes it a
+thing somebody can act on, and it is re-rendered when it changes rather than on every pass.
+
+Offers are retried on every loop pass, and the question is a lookup over the in-memory roster: no
+job waiting for a node reads a disk until a node is actually free for it.
+
+**A node this job has already been turned away from is stepped over.** Both a decline and a lost
+lease put the node on that list, because handing the job straight back to the machine that just
+failed it is how one unhealthy box becomes a job that never runs anywhere. The exclusion expires
+after five minutes — everything that puts a node on the list is something that gets fixed, and an
+operator who fixes a node should not also have to resubmit what met it while it was broken.
+
+### When it ends
+
+`LINK_MAX_ATTEMPTS` still bounds the tour, and past it there is nowhere to fall back to, so the job
+**fails** naming the attempts and the nodes it was lost on. A queue entry that never moves would be
+the worse outcome: this way the failure is visible, in the job's own message, where the person who
+submitted it is looking.
+
+A batch behaves the same way per episode. Every entry is claimed into a waiting child as soon as the
+parent has its file list — not only when a node happens to be free, which is what stops
+`settle_download` from counting a still-unclaimed episode as one the torrent never delivered — and
+an episode that can never be placed is counted against the batch rather than left to block every
+episode behind it.
+
 ## Configuration
 
 Node side:
@@ -90,6 +157,7 @@ Coordinator side:
 | `link_only_node` | limit all offload to one named node |
 | `link_lease_timeout_secs` | how long a silent lease is kept, default `90` |
 | `link_allow_build_mismatch` | permit a node whose pnmpeg differs from the coordinator's |
+| `pandora_mode` | `orchestrator` holds every encode for a node and runs none here (equivalently `--orchestrator`). See [Orchestrator mode](#orchestrator-mode) |
 
 State:
 
@@ -486,7 +554,8 @@ Offload is automatic and non-blocking. A job is offered to a node when one is re
 undrained, under its `max_jobs`, marked for the hardware the job's preset needs (see
 [Purpose](#purpose)), and, for GPU work, advertising the encoder codec the preset names; otherwise the job runs locally exactly as
 before. **A job never waits for a node** — the cluster being full, drained or absent is
-never a reason for work to sit still.
+never a reason for work to sit still. [Orchestrator mode](#orchestrator-mode) is the one deployment
+where it is, and it is a flag precisely because that is the opposite trade.
 
 Nodes are ranked most-idle first, then by thread count, so a cluster of unequal machines fills its
 biggest free box before its smallest. `link_only_node` limits offload to a single named node, which
@@ -590,18 +659,38 @@ recovery**, is the response to every node failure.
 
 - **Lease expiry.** No renew for `link_lease_timeout_secs` (default 90) and the coordinator reclaims
   the job, returning it to the queue as an ordinary local candidate. An offered lease nobody
-  collects is given a shorter rope — 60 seconds — because nothing has started.
+  collects is given a shorter rope — 60 seconds — because nothing has started, and for the same
+  reason it **spends no attempt**: nothing ran it, which is the answer a decline already gets.
+- **An offer is re-checked before it is made.** `pick_node` answers several awaits before the lease
+  is created — the server's upload policy and the work directory are resolved in between, and every
+  link route writes the board meanwhile — so the node is asked about again inside the lock that
+  creates the lease. A node that has since drained, filled up or been removed takes nothing; the job
+  runs here at once (or is offered elsewhere) instead of losing a minute to a pickup window nobody
+  was going to answer.
+- **A node that never collects is drained.** Three offers in a row that expire uncollected and the
+  coordinator drains the node itself, recording why. This is the worst shape of node failure there
+  is: it registers on time, so every liveness check passes and `pick_node` keeps choosing it, and
+  each job it is handed loses a minute before going somewhere else. `/lsnode` and the worker
+  snapshot's `drain_reason` name it; `/drainnode name:<node> drain:false` puts it back and clears
+  the count.
+- **`max_jobs` is clamped, not believed.** It is the node's own answer about itself, arriving off
+  the wire; one mistyped digit would have the coordinator hand it the whole queue and then wait for
+  all of it.
 - **Abandon.** A node that renews a lease the coordinator has already reclaimed is told
   `abandon: true` and drops the work. This is the only thing that stops two machines finishing the
   same job.
 - **Requeue budget.** `LINK_MAX_ATTEMPTS` (2). Past it a job stays local, where the encode stall
   watchdog can end it properly, instead of touring the cluster forever.
-- **No job ever waits for a node.** `choose_node` returning `None` means the job runs here, so a
+- **No job ever waits for a node** — except on an [orchestrator](#orchestrator-mode), which is the
+  whole of what that mode changes. `choose_node` returning an error means the job runs here, so a
   cluster that is full, drained, absent or reserved elsewhere never holds work up. `link_only_node`
   is the one exception in effect: it stops every other node being offered anything, and those jobs
   fall back to the coordinator rather than queueing for the named one.
 - **Declined.** A node that cannot run a job at all — a preset it does not have — reports `declined`
-  and the job runs locally without spending a retry, since nothing was attempted.
+  and the job runs locally without spending a retry, since nothing was attempted. The node is also
+  remembered against that job. On a coordinator that encodes nothing ever reads that, because the
+  job has already gone local; on an [orchestrator](#orchestrator-mode) it is what stops the job
+  being offered straight back to the node that just refused it.
 - **Cancel.** Cancelling a leased job sets a flag on the node's next renew; the node then takes its
   own ordinary local cancel path and reports back, so the job ends through the same events as any
   other remote transition. The cancellation is also recorded on the coordinator's own copy of the
@@ -615,15 +704,45 @@ recovery**, is the response to every node failure.
   file lands where nothing ever reads it. Leased children take the renew path instead.
 - **A leased job is never a duplicate source.** Its input was downloaded on the node, so this
   machine's copy of its work directory is empty; advertising it would hand another job a path with
-  no video behind it.
+  no video behind it. A job merely waiting for a node has downloaded nothing anywhere and is
+  excluded for the same reason.
+
+### Failures that used to be silent
+
+Three things in this path could stop the cluster without saying anything, and none of them would
+have named itself in a log:
+
+- **A poisoned mutex.** The link board, a node's pending-report buffer and the asset hash cache are
+  all plain maps behind a `Mutex`, and one panic while a lock was held turned every later
+  acquisition into a panic of its own — naming the lock rather than the fault. On the coordinator
+  that is `pn_worker` dying and the whole queue stopping; on a node it is a machine that encodes
+  and reports nothing. Poisoning is recovered from (`lib::sync::lock`) rather than propagated: the
+  first panic still reaches the log where it happened, and nothing after it is turned into a
+  second, less informative failure.
+- **The worker loop ending.** `pn_worker` is a spawned task and nothing noticed if it stopped —
+  Discord kept answering, the API kept accepting submissions, and each one landed in a channel
+  nobody read again. It is watched now, and its ending exits the process so the restart loop can
+  bring the queue back.
+- **Blocking work on the async runtime.** Building the asset manifest walks and hashes the whole
+  font and intro corpus; a node's log chunks are appended file by file. Both ran inline — the first
+  inside `pn_worker`'s loop and inside the board's own lock, the second on the thread serving the
+  API — so a large corpus or a busy cluster showed up as leases timing out and a coordinator that
+  paused, neither of which anything reported. The manifest is now kept warm off the runtime and
+  every remaining walk and append runs on a blocking thread.
+
+An unreadable `link_nodes.json` is also set aside as `link_nodes.json.unreadable` rather than
+overwritten by the first save that follows it, so a roster the coordinator could not parse does not
+silently take every drain flag, `/teenode` group and `/limit` reservation with it.
 
 ## Observability
 
 `/lsnode` (rank 4) lists the roster: every node, what it is for, its thread count, how many jobs it
 may hold, the build it is level with, how long ago it was heard from, and what it is running — plus
-the coordinator's own build to compare against, and a warning line under any node whose last
-migration failed — and warns when `link_enabled` is off or
-`link_only_node` is pinning offload. `/drainnode name:<node> [drain:<bool>]` stops offering work to
+the coordinator's own build to compare against, a warning line under any node whose last
+migration failed, and the reason under any node the coordinator drained itself — and warns when
+`link_enabled` is off, when `link_only_node` is pinning offload, and when this coordinator is an
+[orchestrator](#orchestrator-mode), where an empty roster stops everything rather than merely
+costing throughput. `/drainnode name:<node> [drain:<bool>]` stops offering work to
 a node (it finishes what it holds) or puts it back in rotation; the flag is persisted, since
 draining before a deploy does not mean until the next one. `/rmnode name:<node>` forgets a node —
 it re-registers on its next poll unless its token is revoked with `/rmtoken`, and any job it still
@@ -633,9 +752,11 @@ the node's own name. `/limit name:<node> [clear:<bool>]` reserves a node for the
 was used in (see [Reserving a node for one server](#reserving-a-node-for-one-server)).
 
 `GET /api/v1/workers` (privileged only) gains a `nodes` array — name, `/teenode` group, `/limit` reservation (`reserved_for`, a guild id as a string or null), purpose,
-thread count, `max_jobs`, measured encoders, drain state, seconds since last contact, the jobs it
-holds, its `encoder_identity`, the `build` it is level with, and any `migration_error`.
-Queue entries gain `link_node` and `link_attempts`. See [API.md](API.md#worker-snapshot).
+thread count, `max_jobs`, measured encoders, drain state and `drain_reason`, seconds since last
+contact, the jobs it holds, its `encoder_identity`, the `build` it is level with, and any
+`migration_error`.
+Queue entries gain `link_node`, `link_attempts`, `link_waiting` and `link_wait_reason`.
+See [API.md](API.md#worker-snapshot).
 
 Link activity prints as `[link] <node> | <message>` on the coordinator and `[link] <message>` on a
 node, matching the `[lumiere]` convention.

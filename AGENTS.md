@@ -9,7 +9,7 @@ Guidance for coding agents working in this repository.
 - **docs/TOOLS.md** — `pncurl`, `pnass`, libkagami parsing, and ASS line-length checks.
 - **docs/LUMIERE_BROKER.md** — Cloudflare Worker deployment, Drive profiles, secret migration, and VDS upload data flow.
 - **docs/LOCALIZATION.md** — message IDs, TOML translation files, and how to add new strings.
-- **docs/LINK.md** — Pandora Mini: linked nodes, the lease protocol, offload rules, and failure handling.
+- **docs/LINK.md** — Pandora Mini: linked nodes, orchestrator mode, the lease protocol, offload rules, and failure handling.
 - **docs/SETUP.md** — first-run configuration: what triggers it, what it asks, and the no-TTY path.
 
 ## `lumiere-internal/` — never commit this

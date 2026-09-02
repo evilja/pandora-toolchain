@@ -186,6 +186,13 @@ pub const LINK_DOWNLOAD: &str = "LINK_DOWNLOAD";
 // node shipped, so the job is not re-run and is not reported as a failure.
 pub const LINK_NODE_FAILED: &str = "LINK_NODE_FAILED";
 pub const LINK_RESULT_LOST: &str = "LINK_RESULT_LOST";
+// A coordinator that only orchestrates. `LINK_WAITING` is what a job says while it is held for a
+// node — the reason matters, because on this deployment a job that is not moving is not a job that
+// is merely behind others in a queue. `LINK_NO_NODE_LEFT` is where such a job ends when every node
+// allowed to try it has lost it: there is no local encoder to fall back to, so it fails saying so
+// rather than sitting in the queue for good.
+pub const LINK_WAITING: &str = "LINK_WAITING";
+pub const LINK_NO_NODE_LEFT: &str = "LINK_NO_NODE_LEFT";
 pub const CATLOGS_DESCRIPTION: &str = "CATLOGS_DESCRIPTION";
 pub const CATLOGS_NO_LOGS: &str = "CATLOGS_NO_LOGS";
 pub const CATLOGS_BUILD_FAIL: &str = "CATLOGS_BUILD_FAIL";
@@ -753,6 +760,10 @@ mod tests {
             batch_parent: None,
             link_node: None,
             link_attempts: 0,
+            link_waiting: false,
+            link_wait_reason: None,
+            link_avoid_nodes: Vec::new(),
+            link_avoid_since: None,
             link_cancelled: false,
             link_return_output: false,
             link_drive_only: None,

@@ -55,7 +55,7 @@ use serenity::all::{Context, CreateEmbed, Message};
 use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::fs::{File, create_dir_all, remove_dir_all, rename, write};
 use tokio::sync::mpsc::Receiver;
 use tokio::time::Duration;
@@ -109,6 +109,14 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
     let mut next_cache_cleanup = tokio::time::Instant::now() + Duration::from_secs(1);
     let mut next_studio_cleanup = tokio::time::Instant::now() + Duration::from_secs(60);
     let mut next_snapshot = tokio::time::Instant::now();
+    // The asset manifest is read from this loop, through `build_spec`, on every job that is
+    // offered to a node. Building it walks and hashes the whole font and intro corpus, so a cold
+    // cache here is the entire queue stopped behind a directory scan — which is a coordinator that
+    // pauses, not one that fails, and so is not a thing anything reports. Keeping it warm off the
+    // runtime means this loop only ever reads it.
+    if !crate::pnworker::link::client::is_mini() {
+        crate::pnworker::link::assets::spawn_manifest_refresher();
+    }
 
     loop {
         sleep(Duration::from_millis(50)).await;
@@ -139,6 +147,9 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
             continue;
         }
         do_link_things(&db, &mut queue, &mut shrine).await;
+        // After `do_link_things`, so a job a node just gave back is offered again on the same pass
+        // rather than waiting for the next one.
+        do_link_waiting_things(&db, &mut queue).await;
         do_probe_timeout_things(&db, &mut queue).await;
         do_encode_stall_things(&db, &mut queue, &mut shrine).await;
         check_encode_reboot_epoch(&shrine, &mut encode_reboot_epoch, &mut queue);
@@ -201,6 +212,17 @@ async fn do_queue_things(
                 }
                 return true;
             }
+            // A coordinator that only orchestrates has no encoder to fall back to, so a job no
+            // node could ever take is refused here rather than accepted into a queue it would
+            // never leave. The reason names the mode, since nothing else about the deployment
+            // would explain why a command that works everywhere else does not work here.
+            if let Some(refusal) = crate::pnworker::link::coordinator::orchestrator_refusal(&job) {
+                decline_job_setup(&mut job, refusal).await;
+                if matches!(job.job_type, JobType::Studio | JobType::StudioPreview) {
+                    remove_dir_all(&job.directory).await.ok();
+                }
+                return true;
+            }
             // A job whose only route to its input is the `.torrent` its probe saved here used to be
             // refused a node for having no fetchable source. Reading it now is what lets it travel.
             let source_extras = crate::pnworker::link::coordinator::LeaseSource {
@@ -215,6 +237,18 @@ async fn do_queue_things(
                         crate::pnworker::link::board::release(job.job_id);
                         return true;
                     }
+                    queue.push(job);
+                    return true;
+                }
+                // Held for a node. The row and the message are this machine's exactly as a leased
+                // job's are; only the dispatch is somewhere that does not exist yet.
+                LinkOffload::Waiting => {
+                    if let Err(e) = db.insert_job(&job).await {
+                        eprintln!("[Pandora] job {} insert failed: {}", job.job_id, e);
+                        decline_job_setup(&mut job, "internal error").await;
+                        return true;
+                    }
+                    render_link_waiting(&mut job).await;
                     queue.push(job);
                     return true;
                 }
@@ -386,6 +420,9 @@ enum LinkOffload {
     Offered,
     // Keep it on this machine, exactly as before the link existed.
     Local,
+    // Held for a node. Only an orchestrator produces this: the job is queued and rendered but
+    // dispatched to nothing here, and `do_link_waiting_things` offers it as soon as a node is free.
+    Waiting,
     // Setup refused the job outright (an unusable subtitle); it is already finished.
     Declined,
 }
@@ -399,10 +436,19 @@ async fn try_link_offload(
     job: &mut Job,
     source_extras: crate::pnworker::link::coordinator::LeaseSource,
 ) -> LinkOffload {
-    let Some(node) =
-        crate::pnworker::link::coordinator::choose_node(job, source_extras.has_file())
-    else {
-        return LinkOffload::Local;
+    let node = match crate::pnworker::link::coordinator::choose_node(job, source_extras.has_file())
+    {
+        Ok(node) => node,
+        Err(reason) => {
+            // On an ordinary coordinator this is the whole answer: no node, so it runs here. An
+            // orchestrator has no local encoder to fall back to, so the job is held instead — with
+            // the reason attached, because a job that sits still and says nothing is the one
+            // failure mode this mode could introduce.
+            if crate::pnworker::link::coordinator::must_offload(job, source_extras.has_file()) {
+                return hold_for_node(db, job, reason.describe()).await;
+            }
+            return LinkOffload::Local;
+        }
     };
     // An HLS-only release is served for twelve hours from the machine that published it, and a
     // node has no public hostname to serve it from. Such a job is still encoded remotely; the node
@@ -427,8 +473,16 @@ async fn try_link_offload(
         drive_only,
     );
     if !crate::pnworker::link::board::offer(&node, spec) {
+        // The node stopped being a candidate between the choice and the offer. Somewhere else has
+        // to own the job, and on an orchestrator that is the waiting pool rather than this
+        // machine's encoders.
+        if crate::pnworker::link::coordinator::must_offload(job, source_extras.has_file()) {
+            return hold_for_node(db, job, format!("`{node}` stopped taking work")).await;
+        }
         return LinkOffload::Local;
     }
+    job.link_waiting = false;
+    job.link_wait_reason = None;
     job.link_node = Some(node.clone());
     job.link_return_output = return_output;
     job.worker = label;
@@ -441,6 +495,35 @@ async fn try_link_offload(
         if return_output { " (output returns here for HLS publication)" } else { "" }
     );
     LinkOffload::Offered
+}
+
+// The worker label a job held for a node wears. It is deliberately not `lnk-…`: nothing is running
+// it, and `/workers` reading it as a leased job would show a machine that has never seen it.
+const LINK_WAITING_WORKER: &str = "lnk-wait";
+
+// Holds a job for a node instead of running it here. Only ever reached on an orchestrator.
+//
+// The job is prepared exactly as an offered one is — that is where an unusable subtitle is refused
+// with its own message — so the difference between waiting and leased is one flag and a reason,
+// and the moment a node frees, `do_link_waiting_things` offers it with nothing left to do first.
+async fn hold_for_node(db: &JobDb, job: &mut Job, reason: String) -> LinkOffload {
+    if !job.link_waiting {
+        // The same preparation an offered job gets, and for the same reason: a subtitle that
+        // cannot be used is refused here rather than after an unbounded wait for a node.
+        if let Err(refusal) = prepare_queued_job(job, LINK_WAITING_WORKER, true).await {
+            decline_job_setup(job, &refusal).await;
+            return LinkOffload::Declined;
+        }
+        job.link_waiting = true;
+        job.ready = Stage::Queued;
+        job.worker = LINK_WAITING_WORKER.to_string();
+        db.update_worker(job.job_id, &job.worker).await.ok();
+    }
+    if job.link_wait_reason.as_deref() != Some(reason.as_str()) {
+        println!("[link] job {} is waiting for a node: {reason}", job.job_id);
+        job.link_wait_reason = Some(reason);
+    }
+    LinkOffload::Waiting
 }
 
 async fn queue_new_job(
@@ -1263,12 +1346,19 @@ async fn handle_half_job(
                 // they are ordinary jobs by then and nothing else would stop them.
                 if queue[pos].batch.is_some() {
                     let parent_id = queue[pos].job_id;
-                    let children: Vec<(u64, PathBuf, Option<String>)> = queue
+                    let children: Vec<(u64, PathBuf, Option<String>, bool)> = queue
                         .iter()
                         .filter(|job| job.batch_parent == Some(parent_id))
-                        .map(|job| (job.job_id, job.directory.clone(), job.link_node.clone()))
+                        .map(|job| {
+                            (
+                                job.job_id,
+                                job.directory.clone(),
+                                job.link_node.clone(),
+                                job.link_waiting,
+                            )
+                        })
                         .collect();
-                    for (child_id, directory, node) in children {
+                    for (child_id, directory, node, waiting) in children {
                         // A leased episode is executing on a node. The marker file below would
                         // land in this machine's unused copy of its work directory, where nothing
                         // ever reads it, so the cancel has to ride that node's next renew exactly
@@ -1277,6 +1367,19 @@ async fn handle_half_job(
                             if request_link_cancel(queue, child_id, &node) {
                                 continue;
                             }
+                        }
+                        // An episode held for a node is the same problem read forwards: the marker
+                        // is only ever read by the worker that runs the encode, and on an
+                        // orchestrator no worker here ever will. Left alone it would be offered to
+                        // a node minutes after the batch it belongs to was cancelled.
+                        if waiting {
+                            if let Some(child_pos) =
+                                queue.iter().position(|job| job.job_id == child_id)
+                            {
+                                queue[child_pos].link_waiting = false;
+                                finalize_cancelled_job(db, queue, child_pos).await;
+                            }
+                            continue;
                         }
                         File::create(directory.join("CANCEL")).await.ok();
                     }
@@ -1764,9 +1867,26 @@ async fn do_link_things(db: &JobDb, queue: &mut Vec<Job>, shrine: &mut TypedShri
     let mut events = board::drain_events();
     // A node that has gone quiet takes the same path out as one that reported failure, so that
     // losing a machine and a machine losing a job are one code path and not two.
-    for (job_id, node) in board::expire_leases(settings.lease_timeout_secs) {
-        eprintln!("[link] {node} | job {job_id} lease expired; taking it back");
-        events.push(LinkEvent::Lost { job_id, node });
+    for lease in board::expire_leases(settings.lease_timeout_secs) {
+        if lease.was_running {
+            eprintln!(
+                "[link] {} | job {} lease expired; taking it back",
+                lease.node, lease.job_id
+            );
+        } else {
+            // Nothing was attempted, so this costs the job no attempt — the same reasoning a
+            // decline is given. What it does cost the node is one of its missed pickups, and
+            // `expire_leases` has already drained it if it has run out of those.
+            eprintln!(
+                "[link] {} | job {} was never collected; offering it elsewhere",
+                lease.node, lease.job_id
+            );
+        }
+        events.push(LinkEvent::Lost {
+            job_id: lease.job_id,
+            node: lease.node,
+            was_running: lease.was_running,
+        });
     }
 
     for event in events {
@@ -1796,9 +1916,23 @@ async fn do_link_things(db: &JobDb, queue: &mut Vec<Job>, shrine: &mut TypedShri
                     // it cannot resolve. Nothing was attempted, so it costs no retry.
                     LinkOutcome::Declined => {
                         eprintln!(
-                            "[link] {node} | job {job_id} declined ({}); running it here",
-                            reason.unwrap_or_else(|| "no reason given".to_string())
+                            "[link] {node} | job {job_id} declined ({}); {}",
+                            reason.unwrap_or_else(|| "no reason given".to_string()),
+                            if crate::pnworker::link::coordinator::is_orchestrator() {
+                                "offering it to another node"
+                            } else {
+                                "running it here"
+                            }
                         );
+                        // Remembered so the same node is not handed the same job again on the next
+                        // pass. On a coordinator that encodes, the job goes local and nothing ever
+                        // reads this; on an orchestrator it is what stops a two-machine loop.
+                        if let Some(pos) = link_job_position(queue, job_id, &node) {
+                            if !queue[pos].link_avoid_nodes.contains(&node) {
+                                queue[pos].link_avoid_nodes.push(node.clone());
+                            }
+                            queue[pos].link_avoid_since = Some(Instant::now());
+                        }
                         requeue_link_job(db, queue, shrine, job_id, false).await;
                     }
                     // The node encoded and handed its output back. This is not a terminal state:
@@ -1822,12 +1956,210 @@ async fn do_link_things(db: &JobDb, queue: &mut Vec<Job>, shrine: &mut TypedShri
                     }
                 }
             }
-            LinkEvent::Lost { job_id, node } => {
-                requeue_link_job(db, queue, shrine, job_id, true).await;
-                let _ = node;
+            LinkEvent::Lost { job_id, node, was_running } => {
+                // The node that just lost this job is stepped over while another one is free, for
+                // the same reason a node that declined it is: on an orchestrator the alternative
+                // is handing it straight back to the machine that is currently down, spending the
+                // job's second and last attempt on it, and failing a job the rest of the cluster
+                // could have run. The exclusion is forgiven on a timer.
+                if let Some(pos) = link_job_position(queue, job_id, &node) {
+                    if !queue[pos].link_avoid_nodes.contains(&node) {
+                        queue[pos].link_avoid_nodes.push(node.clone());
+                    }
+                    queue[pos].link_avoid_since = Some(Instant::now());
+                }
+                requeue_link_job(db, queue, shrine, job_id, was_running).await;
             }
         }
     }
+}
+
+// The `.torrent` this machine can hand to a node with a job, if it has one.
+//
+// A batch child never has its own: its input is one index of the parent's download, and the
+// metainfo lives in the parent's work directory when the source arrived as an uploaded file rather
+// than a link. Reading it off the child would answer "no source" for exactly the episodes that do
+// have one.
+async fn link_source_file(queue: &[Job], pos: usize) -> Option<Vec<u8>> {
+    let holder = match queue[pos].batch_parent {
+        Some(parent_id) => queue.iter().find(|job| job.job_id == parent_id)?,
+        None => &queue[pos],
+    };
+    read_job_torrent_file(holder).await.filter(|bytes| !bytes.is_empty())
+}
+
+// The probe a leased batch child has to name. It belongs to the parent — a child carries none of
+// its own, so the first one to finish cannot archive the probe out from under its siblings.
+fn batch_probe_id(queue: &[Job], pos: usize) -> Option<u64> {
+    let parent_id = queue[pos].batch_parent?;
+    queue
+        .iter()
+        .find(|job| job.job_id == parent_id)?
+        .batch
+        .as_ref()
+        .map(|batch| batch.probe_job_id)
+}
+
+// What a waiting job says while it waits. It is rendered on the transitions worth a message edit —
+// when the job starts waiting and when the reason changes — and not on the pass that merely finds
+// the same cluster still full, because a job embed rewritten twenty times a second is a job embed
+// nobody can read.
+async fn render_link_waiting(job: &mut Job) {
+    let reason = job
+        .link_wait_reason
+        .clone()
+        .unwrap_or_else(|| "no node is free".to_string());
+    render(
+        job,
+        MessagePayload::Progress(crate::pnworker::messages::LINK_WAITING, vec![reason]),
+    )
+    .await;
+}
+
+// How long a node this job was turned away from stays stepped over. Long enough that a node in the
+// state that turned it away — an asset corpus it could not sync, a preset file nobody copied over,
+// a reboot it was in the middle of — is not asked again while it is still in it, and short enough
+// that a node an operator has just fixed is back in rotation without anybody restarting anything.
+const LINK_AVOID_FORGIVENESS: Duration = Duration::from_secs(5 * 60);
+
+// Jobs an orchestrator is holding for a node, offered the moment one is free.
+//
+// This is the counterpart of the fallback an ordinary coordinator has: there, `choose_node`
+// answering `None` means the job runs here and the question is never asked again. Here the question
+// is asked on every pass, which is why `pick_node` is a pure lookup over an in-memory roster and
+// why the reason it gives is only rendered when it changes.
+async fn do_link_waiting_things(db: &JobDb, queue: &mut Vec<Job>) {
+    if !crate::pnworker::link::coordinator::is_orchestrator() {
+        return;
+    }
+    let waiting: Vec<u64> = queue
+        .iter()
+        // `Stage::Queued` is what a waiting job is; anything else means something else has already
+        // taken it — a cancel finalising it, most of all — and offering it now would put a node on
+        // a job that has ended.
+        .filter(|job| job.link_waiting && job.link_node.is_none() && job.ready == Stage::Queued)
+        .map(|job| job.job_id)
+        .collect();
+    for job_id in waiting {
+        let Some(pos) = queue.iter().position(|job| job.job_id == job_id) else {
+            continue;
+        };
+        // Nodes this job has already been turned away from are stepped over. The exclusion expires,
+        // because everything that puts a node on that list — a corpus it could not sync, a reboot
+        // it was in the middle of — is something that gets fixed, and a job that refused to go
+        // back to a machine that is now healthy would be waiting for nothing.
+        if !queue[pos].link_avoid_nodes.is_empty()
+            && queue[pos]
+                .link_avoid_since
+                .is_some_and(|at| at.elapsed() >= LINK_AVOID_FORGIVENESS)
+        {
+            let cleared = std::mem::take(&mut queue[pos].link_avoid_nodes);
+            queue[pos].link_avoid_since = None;
+            println!(
+                "[link] job {job_id} may be offered to {} again",
+                cleared.join(", ")
+            );
+        }
+        // Out of attempts. There is no local pipeline to fall back to, so it ends here rather than
+        // touring a cluster that has already lost it twice — and it ends *said*, with the nodes it
+        // was lost on, which is the whole difference between this and a job that never moves.
+        if queue[pos].link_attempts >= crate::pnworker::link::coordinator::LINK_MAX_ATTEMPTS {
+            fail_link_exhausted(db, queue, job_id).await;
+            continue;
+        }
+        // Asked before anything is read, because the answer is usually "no node is free" and this
+        // runs twenty times a second for as long as a job waits. `pick_node` is a lookup over an
+        // in-memory roster; everything below it touches a disk.
+        //
+        // `true` is the optimistic answer to "could a source travel with it": the job was held
+        // because it *is* leasable, and the real file is read once a node is actually waiting for
+        // it. A batch child answers `true` legitimately — its parent holds the metainfo.
+        match crate::pnworker::link::coordinator::choose_node(&queue[pos], true) {
+            Err(reason) => {
+                let reason = reason.describe();
+                if queue[pos].link_wait_reason.as_deref() != Some(reason.as_str()) {
+                    println!("[link] job {job_id} is waiting for a node: {reason}");
+                    queue[pos].link_wait_reason = Some(reason);
+                    render_link_waiting(&mut queue[pos]).await;
+                }
+                continue;
+            }
+            Ok(_) => {}
+        }
+        // A batch child holds neither half of its own source: the metainfo may be a file only the
+        // parent has, and the probe that produced the file list belongs to the parent too. A child
+        // whose parent has gone is failed rather than left waiting — nothing would ever report it.
+        if queue[pos]
+            .batch_parent
+            .is_some_and(|parent| !queue.iter().any(|job| job.job_id == parent))
+        {
+            eprintln!("[link] job {job_id} lost the batch parent holding its source");
+            fail_link_exhausted(db, queue, job_id).await;
+            continue;
+        }
+        let source_extras = crate::pnworker::link::coordinator::LeaseSource {
+            torrent_file: link_source_file(queue, pos).await,
+            probe_job_id: batch_probe_id(queue, pos),
+        };
+        let mut job = queue.remove(pos);
+        // Compared after the offer, so the embed is rewritten when the cluster's answer changes
+        // and not on every one of the passes that find the same answer.
+        let was = job.link_wait_reason.clone();
+        let outcome = try_link_offload(db, &mut job, source_extras).await;
+        match outcome {
+            LinkOffload::Offered => {
+                db.update_stage(job_id, job.ready).await.ok();
+                queue.push(job);
+            }
+            // `must_offload` was true when this job was held and false now, which can only mean it
+            // stopped being leasable under us. Nothing here can run it, so it is failed rather
+            // than silently dispatched to encoders this mode says are off.
+            LinkOffload::Local => {
+                eprintln!(
+                    "[link] job {job_id} can no longer be leased and this coordinator runs no encodes"
+                );
+                job.link_waiting = false;
+                queue.push(job);
+                fail_link_exhausted(db, queue, job_id).await;
+            }
+            LinkOffload::Waiting => {
+                if job.link_wait_reason != was {
+                    render_link_waiting(&mut job).await;
+                }
+                queue.push(job);
+            }
+            // Setup refused it outright and it is already finished; it must not go back in.
+            LinkOffload::Declined => {
+                if let Some(parent_id) = job.batch_parent {
+                    update_batch_parent(db, queue, parent_id, job_id, job.ready).await;
+                }
+            }
+        }
+    }
+}
+
+// A job an orchestrator has lost on every node it was allowed to try. On a coordinator that
+// encodes, this is where the job stops travelling and runs here; here there is nowhere else, so it
+// ends as a failure that names the machines rather than as a queue entry that never moves.
+async fn fail_link_exhausted(db: &JobDb, queue: &mut Vec<Job>, job_id: u64) {
+    let Some(pos) = queue.iter().position(|job| job.job_id == job_id) else {
+        return;
+    };
+    let attempts = queue[pos].link_attempts;
+    let nodes = if queue[pos].link_avoid_nodes.is_empty() {
+        "none reached it".to_string()
+    } else {
+        queue[pos].link_avoid_nodes.join(", ")
+    };
+    queue[pos].link_waiting = false;
+    queue[pos].ready = Stage::Failed;
+    db.update_stage(job_id, Stage::Failed).await.ok();
+    let payload = MessagePayload::Progress(
+        crate::pnworker::messages::LINK_NO_NODE_LEFT,
+        vec![attempts.to_string(), nodes],
+    );
+    render(&mut queue[pos], payload).await;
+    finish_link_job(db, queue, job_id).await;
 }
 
 // Asks the node holding this job to stop, and records that somebody did. The flag is what stops
@@ -2079,6 +2411,11 @@ async fn requeue_link_job(
     else {
         return;
     };
+    // `must_offload` asks about the job's shape, and a `.torrent` this machine can hand over is
+    // part of that shape. It is read here, once, rather than inside the branch below, because the
+    // job is about to be moved out of the queue.
+    let has_source_file = crate::pnworker::link::coordinator::is_orchestrator()
+        && link_source_file(queue, pos).await.is_some();
     // Somebody cancelled this while the node had it, and the node never came back to say so. The
     // lease expiring is not a reason to start the work again — it is the same request, still
     // outstanding, and requeueing would finish exactly what was asked to stop.
@@ -2105,7 +2442,25 @@ async fn requeue_link_job(
     job.encode_dispatched_at = None;
     job.encode_last_frame_at = None;
     db.update_stage(job_id, Stage::Queued).await.ok();
+    // A coordinator that runs no encodes has nowhere to requeue *to*. The job goes back into the
+    // waiting pool instead, which `do_link_waiting_things` owns on the very next pass — including
+    // the decision to fail it if this was the attempt that spent its budget. Running it here
+    // because a node lost it would be the one thing this mode exists to prevent, and it would
+    // happen exactly when the cluster is already unhealthy.
+    if crate::pnworker::link::coordinator::must_offload(&job, has_source_file) {
+        println!(
+            "[link] job {job_id} is waiting for another node (attempt {})",
+            job.link_attempts
+        );
+        job.link_waiting = true;
+        job.worker = LINK_WAITING_WORKER.to_string();
+        db.update_worker(job_id, &job.worker).await.ok();
+        queue.push(job);
+        return;
+    }
     println!("[link] job {job_id} requeued locally (attempt {})", job.link_attempts);
+    job.link_waiting = false;
+    job.link_wait_reason = None;
     let batch_parent = job.batch_parent;
     if !queue_new_job(db, queue, shrine, &mut job).await {
         queue.push(job);
@@ -2445,6 +2800,15 @@ async fn spawn_batch_child(
     if entry.job_id.is_some() {
         return;
     }
+    // A local child encodes the file the parent just downloaded, which is the one thing a
+    // coordinator that runs no encodes cannot do. `do_batch_lease_things` claims every entry on an
+    // orchestrator whether or not a node is free, so this only ever runs for an episode that is
+    // already somebody's — and if it somehow is not, leaving it unclaimed here is right: the
+    // leasing pass owns it, and building a child that can never be dispatched would hold the batch
+    // open on a job nothing would ever move.
+    if crate::pnworker::link::coordinator::is_orchestrator() {
+        return;
+    }
     let source = parent
         .directory
         .join("contents")
@@ -2596,7 +2960,14 @@ async fn do_batch_lease_things(db: &JobDb, queue: &mut Vec<Job>) {
             // `true` here is the optimistic answer to "could a source travel with it": if there
             // turns out to be no file and the child has no link either, `try_link_offload` finds
             // that out below and keeps the episode local, which is where it was going anyway.
-            if crate::pnworker::link::coordinator::choose_node(&child, true).is_none() {
+            //
+            // An orchestrator does not stop at a full cluster. There is no local path for an
+            // episode to fall back to, so every entry is claimed into a waiting child now and
+            // offered as nodes free — which is also what keeps `settle_download` from counting a
+            // still-unclaimed episode as one the torrent never delivered.
+            let orchestrator = crate::pnworker::link::coordinator::is_orchestrator();
+            if !orchestrator && crate::pnworker::link::coordinator::choose_node(&child, true).is_err()
+            {
                 break;
             }
             // The parent holds both halves a child cannot: the probe that produced the file list,
@@ -2606,13 +2977,17 @@ async fn do_batch_lease_things(db: &JobDb, queue: &mut Vec<Job>) {
                 probe_job_id: Some(batch.probe_job_id),
             };
             let child_id = child.job_id;
-            match try_link_offload(db, &mut child, source_extras).await {
-                LinkOffload::Offered => {
+            let outcome = try_link_offload(db, &mut child, source_extras).await;
+            match outcome {
+                LinkOffload::Offered | LinkOffload::Waiting => {
                     if let Err(e) = db.insert_job(&child).await {
                         eprintln!("[Pandora Batch] leased child {child_id} insert failed: {e}");
                         crate::pnworker::link::board::release(child_id);
                         remove_dir_all(&child.directory).await.ok();
                         break;
+                    }
+                    if matches!(outcome, LinkOffload::Waiting) {
+                        render_link_waiting(&mut child).await;
                     }
                     let Some(pos) = queue.iter().position(|job| job.job_id == parent_id) else {
                         break;
@@ -2631,15 +3006,43 @@ async fn do_batch_lease_things(db: &JobDb, queue: &mut Vec<Job>) {
                     render_batch_parent(&mut queue[pos]).await;
                     queue.push(child);
                 }
-                // Setup refused it — an unusable subtitle, which would refuse it locally too. The
-                // entry is left unclaimed so the parent's own copy still produces a child that
-                // fails with the same reason where the batch can see it.
-                LinkOffload::Declined => break,
-                // The node went away between the question and the offer. Nothing was claimed, so
-                // the ordinary path still owns this episode.
-                LinkOffload::Local => {
+                // Two ways an episode does not leave: setup refused it — an unusable subtitle,
+                // which would refuse it locally too — or it has no source a node could fetch. Both
+                // leave the entry unclaimed on an ordinary coordinator, on purpose: the parent's
+                // own download still produces a child that reports the same thing where the batch
+                // can see it.
+                //
+                // On an orchestrator there is no such child — `spawn_batch_child` never builds
+                // one — so an unclaimed entry is one this loop meets again on the next pass,
+                // refuses again, and `break`s on again, holding every later episode of the batch
+                // behind it for as long as the batch lives. The refusal is claimed and counted
+                // against the batch instead, which is exactly where the parent's own child would
+                // have reported it, and the loop moves on to the next episode.
+                LinkOffload::Declined | LinkOffload::Local => {
                     remove_dir_all(&child.directory).await.ok();
-                    break;
+                    if !orchestrator {
+                        break;
+                    }
+                    if matches!(outcome, LinkOffload::Local) {
+                        eprintln!(
+                            "[Pandora Batch] episode {} carries no source a node could fetch, and this coordinator runs no encodes",
+                            entry.file_label
+                        );
+                    }
+                    let Some(pos) = queue.iter().position(|job| job.job_id == parent_id) else {
+                        break;
+                    };
+                    if let Some(batch) = queue[pos].batch.as_mut() {
+                        if let Some(claimed) = batch
+                            .entries
+                            .iter_mut()
+                            .find(|candidate| candidate.file_index == entry.file_index)
+                        {
+                            claimed.job_id = Some(child_id);
+                        }
+                    }
+                    update_batch_parent(db, queue, parent_id, child_id, Stage::Declined).await;
+                    continue;
                 }
             }
         }
@@ -2873,8 +3276,10 @@ async fn do_job_progression_things(
             j.forward_parent.is_none()
                 // A leased job's input was downloaded on the node, so this machine's copy of its
                 // work directory is empty. Offering it as a duplicate source would hand another
-                // job a path with no video behind it.
+                // job a path with no video behind it — and a job merely *waiting* for a node has
+                // not downloaded anything anywhere yet, so it is emptier still.
                 && j.link_node.is_none()
+                && !j.link_waiting
                 && j.job_type != JobType::Preview
                 && (j.ready == Stage::Encoding
                     || (j.ready == Stage::Downloaded && j.encode_dispatched))
@@ -2915,7 +3320,11 @@ async fn do_job_progression_things(
         }
         // A leased job is executing on another machine. Every stage it reaches arrives through
         // `do_link_things`; dispatching anything for it here would put two encoders on one job.
-        if job.link_node.is_some() {
+        //
+        // A waiting job is the same rule read forwards: it is held for a machine that has not been
+        // chosen yet, and dispatching it here is precisely what an orchestrator must never do.
+        // `do_link_waiting_things` is the only thing that moves it.
+        if job.link_node.is_some() || job.link_waiting {
             continue;
         }
         // A batch parent never encodes anything itself; its download feeds the child jobs and
@@ -3881,8 +4290,28 @@ pub struct Job {
     // and progresses solely through `do_link_things`.
     pub link_node: Option<String>,
     // Nodes this job has already been lost on. A job that reliably kills whatever runs it must not
-    // become an endless tour of the cluster, so past `LINK_MAX_ATTEMPTS` it stays local.
+    // become an endless tour of the cluster, so past `LINK_MAX_ATTEMPTS` it stays local — or, on a
+    // coordinator that runs no encodes, fails where somebody can see it.
     pub link_attempts: u32,
+    // Set on an orchestrator: this job is held for a node and is dispatched to nothing here. It is
+    // the waiting counterpart of `link_node` and is skipped by exactly the same local paths, so a
+    // job cannot be both waiting for a node and being encoded by this machine.
+    pub link_waiting: bool,
+    // Why no node has taken it yet, as `board::NoNode` described it. Kept so the reason is only
+    // logged and rendered when it changes: a job waiting twenty times a second is not twenty
+    // events, and a job whose reason moved from "every node is busy" to "every node is draining"
+    // is the one worth saying out loud.
+    pub link_wait_reason: Option<String>,
+    // Nodes this job has already been turned away from: one that declined it outright — a preset
+    // it does not have, a corpus it could not sync — and one that took it and then lost it.
+    // Offering it straight back to either is what turns one unhealthy machine into a job that
+    // never runs, so they are stepped over while another node is free.
+    pub link_avoid_nodes: Vec<String>,
+    // When that list was last added to. Every reason a node lands on it is one that gets fixed —
+    // a corpus that would not sync, a box that was rebooting — so it is forgiven on a timer rather
+    // than held for the life of the job, and an operator who fixes a node does not also have to
+    // resubmit everything that met it while it was broken.
+    pub link_avoid_since: Option<Instant>,
     // Somebody cancelled this job while a node was running it. The request rides the node's next
     // renew and the node normally reports back, so this is only ever read on the path where it
     // does not: a lease that expires instead. Without it the watchdog requeues the job and runs to
@@ -3988,6 +4417,10 @@ impl Job {
             batch_parent: None,
             link_node: None,
             link_attempts: 0,
+            link_waiting: false,
+            link_wait_reason: None,
+            link_avoid_nodes: Vec::new(),
+            link_avoid_since: None,
             link_cancelled: false,
             link_return_output: false,
             link_drive_only: None,
@@ -4076,6 +4509,10 @@ impl Job {
             batch_parent: None,
             link_node: None,
             link_attempts: 0,
+            link_waiting: false,
+            link_wait_reason: None,
+            link_avoid_nodes: Vec::new(),
+            link_avoid_since: None,
             link_cancelled: false,
             link_return_output: false,
             link_drive_only: None,

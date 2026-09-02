@@ -104,8 +104,17 @@ pub(super) async fn renew(
     let control = board::renew(job_id, body);
     // Only a node that still holds the lease may write into this job's log directory, and a node
     // being told to abandon has already had its job given away.
+    //
+    // Off the runtime: this opens and appends to a file per log, up to a quarter of a megabyte
+    // each, and every node in the cluster renews every ten seconds. Doing it inline made the
+    // thread serving the whole API wait on a disk — which shows up as leases timing out for
+    // reasons nothing in the link itself explains.
     if !control.abandon {
-        crate::pnworker::link::logs::apply(job_id, &logs);
+        tokio::task::spawn_blocking(move || {
+            crate::pnworker::link::logs::apply(job_id, &logs);
+        })
+        .await
+        .ok();
     }
     Json(control).into_response()
 }
@@ -149,7 +158,17 @@ pub(super) async fn assets_manifest(Extension(auth): Extension<ApiAuth>) -> Resp
     if let Err(response) = require_link(&auth) {
         return response;
     }
-    Json(assets::manifest()).into_response()
+    // Off the runtime for the same reason `asset` is: a cold cache means walking every font bucket
+    // and intro folder and hashing anything whose mtime moved, which is not work to do on the
+    // thread answering the rest of the API.
+    match tokio::task::spawn_blocking(assets::manifest).await {
+        Ok(manifest) => Json(manifest).into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("the asset manifest could not be built: {error}"),
+        )
+            .into_response(),
+    }
 }
 
 pub(super) async fn asset(
@@ -199,12 +218,9 @@ pub(super) async fn output(
     if board::node_for_job(job_id).as_deref() != Some(node.as_str()) {
         return (StatusCode::CONFLICT, "no such lease for this node").into_response();
     }
-    let directory = std::env::current_dir()
-        .unwrap_or_else(|_| std::path::PathBuf::from("."))
-        .join("DB")
-        .join("work")
-        .join(job_id.to_string())
-        .join("work");
+    // The same resolution the job's own directory was built from, so the file lands where the
+    // upload worker is about to look for it rather than beside it.
+    let directory = crate::pnworker::util::job_work_dir(job_id).join("work");
     if let Err(e) = tokio::fs::create_dir_all(&directory).await {
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }

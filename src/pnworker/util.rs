@@ -8,6 +8,32 @@ use tokio::process::Command;
 
 pub const OUTPUT_RESOLUTION_FILE: &str = "output_resolution.pandora";
 
+// Where one job's work directory lives, absolute.
+//
+// Everything under `DB/` is addressed relatively, and `std::env::current_dir()` is how the absolute
+// forms of those paths were being built — separately, at each call site, each with its own
+// `unwrap_or(".")`. That is fine while the call always succeeds and a silent disagreement the
+// moment it does not: a node writing its encode to one path and a link route looking for it at
+// another produces "the node reported a returned output that is not on disk", which names neither
+// the cause nor the directory. Resolving it once means every caller is wrong together or right
+// together, and a process whose own working directory it cannot read says so at the first call
+// rather than quietly relocating half of `DB/`.
+pub fn job_work_dir(job_id: u64) -> PathBuf {
+    static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| match std::env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(error) => {
+            eprintln!(
+                "[Pandora] this process cannot read its own working directory ({error}); DB paths will be relative to wherever it was started"
+            );
+            PathBuf::new()
+        }
+    })
+    .join("DB")
+    .join("work")
+    .join(job_id.to_string())
+}
+
 #[derive(Debug)]
 pub enum CliParam {
     Literal(&'static str),

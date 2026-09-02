@@ -1,6 +1,11 @@
+use std::sync::OnceLock;
+
+use crate::lib::env::core::get_pandora_env;
+use crate::lib::env::standard::PANDORA_MODE;
 use crate::pnworker::core::{Job, JobType, Preset};
 use crate::pnworker::util::IntrosConfig;
 use crate::pnworker::link::board;
+use crate::pnworker::link::board::NoNode;
 use crate::pnworker::link::client::{encode_base64, job_type_is_leasable};
 use crate::pnworker::link::spec::{
     LinkJobSpec, job_type_name, preset_name, source_to_wire,
@@ -20,10 +25,15 @@ pub const LINK_MAX_ATTEMPTS: u32 = 2;
 // with it". It is a parameter rather than a check here because this module is deliberately free of
 // I/O — every other question it answers is about the job struct alone.
 pub fn is_eligible(job: &Job, has_source_file: bool) -> bool {
+    job.link_attempts < LINK_MAX_ATTEMPTS && has_leasable_shape(job, has_source_file)
+}
+
+// The same question with the retry budget left out: is this the *kind* of job a node can run at
+// all. It is separate because the two answers diverge exactly once — a job that has spent its
+// attempts is still a job only a node could ever have run, which is why an orchestrator fails it
+// rather than reading the refusal as "then run it here".
+pub fn has_leasable_shape(job: &Job, has_source_file: bool) -> bool {
     if !job_type_is_leasable(job.job_type) {
-        return false;
-    }
-    if job.link_attempts >= LINK_MAX_ATTEMPTS {
         return false;
     }
     // A forwarded job runs nowhere — it mirrors another job's outcome.
@@ -58,13 +68,83 @@ pub fn is_eligible(job: &Job, has_source_file: bool) -> bool {
     true
 }
 
-// The node this job should go to, or None to keep it local. `None` is never a wait: the caller runs
-// the job here, so a cluster that is full, drained or absent is not a reason for work to sit.
-pub fn choose_node(job: &Job, has_source_file: bool) -> Option<String> {
-    if !is_eligible(job, has_source_file) {
+// Whether this machine only orchestrates. An orchestrator runs the Discord client, the API, the
+// queue and every node's link exactly as any coordinator does — and dispatches nothing to its own
+// encoders. A job that can be leased waits for a node instead of falling back here.
+//
+// It is read once, like `--mini`, because it decides what the queue is allowed to do: a value that
+// could change under a running queue would leave jobs held for a cluster this process had stopped
+// believing in.
+pub fn is_orchestrator() -> bool {
+    static ORCHESTRATOR: OnceLock<bool> = OnceLock::new();
+    *ORCHESTRATOR.get_or_init(|| {
+        if std::env::args().any(|arg| arg == "--orchestrator") {
+            return true;
+        }
+        get_pandora_env()
+            .get(PANDORA_MODE)
+            .map(|value| value.trim().eq_ignore_ascii_case("orchestrator"))
+            .unwrap_or(false)
+    })
+}
+
+// Why an orchestrator cannot accept a job at all, when it cannot.
+//
+// These are the job types that run an encoder on the machine they were submitted to and can never
+// be leased, because their input is a file that only exists here: a keep leaves its output for a
+// later `/keycode` to join, `/keycode` joins those files, and Preview and Studio work on an upload
+// that was handed to this process. There is no node to send them to and no local encoder to run
+// them on, so they are refused at submission with the reason — the alternative is a job that is
+// accepted, renders a queue position, and then sits forever.
+pub fn orchestrator_refusal(job: &Job) -> Option<&'static str> {
+    if !is_orchestrator() {
         return None;
     }
-    board::pick_node(&preset_name(&job.preset), job.server_id)
+    if job.keep.is_some() {
+        return Some("a kept encode leaves its output on the coordinator for /keycode to join, and this coordinator runs no encodes");
+    }
+    match job.job_type {
+        JobType::Keycode => Some("/keycode joins files held on the coordinator, and this coordinator runs no encodes"),
+        JobType::Preview | JobType::Studio | JobType::StudioPreview => {
+            Some("this works on a file uploaded to the coordinator, and this coordinator runs no encodes")
+        }
+        _ => None,
+    }
+}
+
+// The two leasable job types that actually run an encoder. The other two do not: a `Probe` opens a
+// torrent and reads its file list, and a `Backup` downloads and re-uploads. Both are still offered
+// to a node first, exactly as they always were — but an orchestrator falls back to running them
+// here when the cluster is full, because "this coordinator does not encode" is a statement about
+// encoding, and holding a probe would stall the `/job` flow that is waiting to show somebody a
+// file list.
+fn is_encoding_job_type(job_type: JobType) -> bool {
+    matches!(job_type, JobType::Encode | JobType::Pancode)
+}
+
+// Whether this job must go to a node or wait for one, rather than falling back to the local
+// pipeline. False on an ordinary coordinator, and false here for anything a node could never take
+// — a batch parent's download and a subtitle extraction still happen on this machine, because
+// neither is an encode.
+pub fn must_offload(job: &Job, has_source_file: bool) -> bool {
+    // The attempt budget is deliberately not consulted: a job that has spent it is exactly the
+    // case an orchestrator must not read as "run it here". It has nowhere left to go, and the
+    // caller fails it with the nodes it was lost on rather than encoding it on a machine whose
+    // whole configuration says it does not encode.
+    is_orchestrator() && is_encoding_job_type(job.job_type) && has_leasable_shape(job, has_source_file)
+}
+
+// The node this job should go to, or why none can take it.
+//
+// On an ordinary coordinator every `Err` is the same answer — run it here — so a cluster that is
+// full, drained or absent is never a reason for work to sit. An orchestrator has no such fallback,
+// which is the whole reason the refusal carries a reason at all: a job waiting with `every node is
+// draining` written against it is a job somebody can do something about.
+pub fn choose_node(job: &Job, has_source_file: bool) -> Result<String, NoNode> {
+    if !is_eligible(job, has_source_file) {
+        return Err(NoNode::NotLeasable);
+    }
+    board::pick_node(&preset_name(&job.preset), job.server_id, &job.link_avoid_nodes)
 }
 
 // Everything the node needs, resolved. Nothing here is an id for the node to look up: the server's
@@ -230,6 +310,87 @@ mod tests {
         let mut job = job(JobType::Encode);
         job.link_attempts = LINK_MAX_ATTEMPTS;
         assert!(!is_eligible(&job, false));
+        // But it is still a job only a node could ever have run. A coordinator that encodes reads
+        // the refusal as "then run it here"; one that does not must not, or the mode is a
+        // suggestion that stops applying exactly when the cluster is already unhealthy.
+        assert!(has_leasable_shape(&job, false));
+    }
+
+    // The shape question and the budget question are the same everywhere except for a job that has
+    // spent its attempts, which is the one case they must not agree on.
+    #[test]
+    fn the_shape_question_and_the_budget_question_agree_except_on_attempts() {
+        for (job_type, has_file) in [
+            (JobType::Encode, false),
+            (JobType::Pancode, false),
+            (JobType::Studio, false),
+            (JobType::Keycode, true),
+            (JobType::Subs, true),
+        ] {
+            let job = job(job_type);
+            assert_eq!(
+                is_eligible(&job, has_file),
+                has_leasable_shape(&job, has_file),
+                "{job_type:?} should answer the same with attempts unspent",
+            );
+        }
+    }
+
+    // The line an orchestrator draws. Every job type it holds has to be one that encodes; every
+    // other leasable type keeps its local fallback, because refusing to probe would stall the flow
+    // that is waiting to show somebody a file list and would do it in the name of an encoder that
+    // was never going to run.
+    #[test]
+    fn only_the_job_types_that_encode_are_held_for_a_node() {
+        for job_type in leasable_job_types() {
+            let encodes = is_encoding_job_type(job_type);
+            assert_eq!(
+                encodes,
+                matches!(job_type, JobType::Encode | JobType::Pancode),
+                "{job_type:?} is on the wrong side of the line",
+            );
+        }
+        // A batch parent is not leasable at all, so it is never held either — its download feeds
+        // children that are.
+        assert!(!is_encoding_job_type(JobType::Batch) || !job_type_is_leasable(JobType::Batch));
+        // And with the mode off, nothing is held whatever it is.
+        assert!(!must_offload(&job(JobType::Encode), false));
+    }
+
+    // The refusal is only ever reached on an orchestrator, so what is testable here is which job
+    // it names — a keep and the three file-bound job types, and nothing that a node could take.
+    #[test]
+    fn the_refusal_covers_exactly_what_encodes_here_and_cannot_travel() {
+        // Off by default, which is what makes an ordinary coordinator behave as it always has.
+        assert!(!is_orchestrator());
+        assert!(orchestrator_refusal(&job(JobType::Studio)).is_none());
+
+        // Every job type the refusal would name is one no node can take, and every job type a node
+        // can take is one it must not name — otherwise the mode would refuse the work it exists
+        // to distribute.
+        for job_type in leasable_job_types() {
+            assert!(
+                job_type_is_leasable(job_type),
+                "{job_type:?} would be refused *and* offered",
+            );
+        }
+        for job_type in [
+            JobType::Keycode,
+            JobType::Preview,
+            JobType::Studio,
+            JobType::StudioPreview,
+        ] {
+            assert!(
+                !job_type_is_leasable(job_type),
+                "{job_type:?} is refused on an orchestrator, so it had better not be leasable",
+            );
+        }
+
+        // A keep is an ordinary Encode that leaves its output here for `/keycode` to join, so it
+        // is refused by what the job carries rather than by its type.
+        let mut kept = job(JobType::Encode);
+        kept.keep = Some(KeepRequest::new(Some("kw".to_string())));
+        assert!(!is_eligible(&kept, false));
     }
 
     // The spec is the node's only source of truth, so what the coordinator snapshotted has to be

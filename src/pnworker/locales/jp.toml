@@ -701,3 +701,11 @@ args = 1
 [LINK_RESULT_LOST]
 text = "`{}` はこのジョブを完了しましたが、最終メッセージがコーディネーターに届きませんでした。リンクはこのジョブのログにあります。"
 args = 1
+
+[LINK_WAITING]
+text = "⏳ Pandora Mini ノードを待機中: {}"
+args = 1
+
+[LINK_NO_NODE_LEFT]
+text = "{} 回試みましたが、どの Pandora Mini ノードもこのジョブを実行できませんでした。このコーディネーターは自身でエンコードを行いません。試行したノード: {}"
+args = 2

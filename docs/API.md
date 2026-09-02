@@ -154,8 +154,15 @@ jobs report as (`lnk-<group>` rather than `lnk-<node>`) and the only field here 
 choice rather than a fact about the machine — both are carried so a stall still names one box;
 `build` is the release it last recorded itself level with, so a number
 that has stopped moving is a node failing to update; `migration_error` is a migration it could not
-run, which is otherwise invisible because such a node still takes work and still looks healthy. Queue entries carry `link_node` and `link_attempts` — a job
-with `link_node` set is executing on that node and progresses only through the link.
+run, which is otherwise invisible because such a node still takes work and still looks healthy;
+`drain_reason` is set only when the coordinator drained the node itself rather than an operator, so
+a machine that took itself out of rotation does not read as one somebody drained before a deploy and
+forgot. Queue entries carry `link_node` and `link_attempts` — a job
+with `link_node` set is executing on that node and progresses only through the link — and
+`link_waiting` with `link_wait_reason`, which an [orchestrator](LINK.md#orchestrator-mode) sets on a
+job it is holding for a node. Such a job is `Queued` with a worker nothing is running, which on any
+other deployment would mean it is simply next in line, so the reason the cluster gave is carried
+beside it.
 
 ```json
 {
@@ -163,7 +170,7 @@ with `link_node` set is executing on that node and progresses only through the l
   "hearts": [{ "worker": "Encode", "alive": true, "last_beat_secs": 3, "reboot_count": 0 }],
   "nodes": [{
     "node": "mini-osaka", "group": null, "threads": 16, "max_jobs": 1,
-    "encoders": ["h264_nvenc", "av1_nvenc"], "drain": false,
+    "encoders": ["h264_nvenc", "av1_nvenc"], "drain": false, "drain_reason": null,
     "last_seen_secs": 4, "jobs": ["4242"], "pandora_version": "3.5.0-lumiere",
     "encoder_identity": "x264-165-0.165.x-pandora", "purpose": "gpu", "build": 41,
     "migration_error": null
@@ -171,6 +178,7 @@ with `link_node` set is executing on that node and progresses only through the l
   "queue": [{
     "job_id": "4242", "job_type": "Encode", "stage": "Downloaded", "worker": "lnk-mini-osaka",
     "server_id": null, "forward_parent": null, "link_node": "mini-osaka", "link_attempts": 0,
+    "link_waiting": false, "link_wait_reason": null,
     "batch_parent": null, "waiting_on_cache": false,
     "encode_dispatched": true, "encode_dispatch_order": 1, "encode_dispatch_epoch": 3,
     "secs_since_dispatch": 91, "secs_since_frame": null, "secs_since_request": 140,
