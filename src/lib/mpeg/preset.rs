@@ -662,6 +662,17 @@ pub fn idle_encode_for(name: &str) -> bool {
     resolve(name).is_some_and(|preset| preset.wants_idle_encode())
 }
 
+// Whether a job on this preset can be made background work it never asked for — an encode gated on
+// the foreground marker because it overtook a job whose input is still downloading.
+//
+// The gate drives one linear encoder through a feeder it can stop, so a preset that chunks cannot
+// have it: the parallel scheduler is not one encoder and has nothing to pause. Running such a
+// preset linearly to make it preemptible would cost more encode time than stepping aside ever
+// saves, so those keep the foreground lane and the ordering they have always had.
+pub fn gateable_encode_for(name: &str) -> bool {
+    resolve(name).is_some_and(|preset| !preset.wants_chunked_encode())
+}
+
 // Hardware backends worth proving at node registration. The probe is a real encode, not
 // `ffmpeg -encoders`: a compiled-in backend says nothing about the driver or GPU in this machine.
 pub const HARDWARE_ENCODER_CANDIDATES: [&str; 12] = [
@@ -933,6 +944,19 @@ mod tests {
         // never resolves an encode of its own.
         assert!(!idle_encode_for("standard"));
         assert!(!idle_encode_for("no-such-preset"));
+    }
+
+    // Which presets a job may be gated on without being asked: the ones the gate can actually
+    // stop, which is one linear encoder and not a fan-out of chunk workers.
+    #[test]
+    fn a_chunking_preset_is_never_gated_behind_an_earlier_job() {
+        assert!(gateable_encode_for("standard"));
+        assert!(gateable_encode_for("gpu"));
+        assert!(gateable_encode_for("dummy"));
+        assert!(!gateable_encode_for("veryslow"));
+        // Copy has no preset at all, so there is nothing to encode gated with.
+        assert!(!gateable_encode_for("copy"));
+        assert!(!gateable_encode_for("no-such-preset"));
     }
 
     // A preset that forces a height rather than capping one is still a scaling preset. Reading it

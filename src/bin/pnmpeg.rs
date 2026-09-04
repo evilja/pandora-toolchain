@@ -249,12 +249,13 @@ fn encodes_in_chunks(preset: Option<&ResolvedPreset>) -> bool {
 // Whether this run is a background encode: one that only runs while no ordinary encode does, and
 // stops for as long as one is.
 //
-// It takes both a preset that asks for it and the marker files to gate on. The encode worker passes
-// those two only for a preset that declared itself background work, so their absence is not a
-// half-configured idle encode — it is every other encode there has ever been, and the check is
-// written to say that rather than to guess.
+// It takes both a preset to encode with and the marker files to gate on, and the marker files are
+// the whole of the answer. Which jobs are background work is the encode worker's decision, not this
+// process's: a preset that declared itself so, or an encode that overtook a job whose input has
+// not arrived yet — a queue this side of the run knows nothing about. Their absence is therefore
+// not a half-configured idle encode, it is every other encode there has ever been.
 fn runs_idle_gated(preset: Option<&ResolvedPreset>, args: &Args) -> bool {
-    preset.is_some_and(ResolvedPreset::wants_idle_encode) && args.aot_busyfile.is_some()
+    preset.is_some() && args.aot_busyfile.is_some()
 }
 
 // The gated encode this process runs itself, for a background preset with no speculative prefix to

@@ -15,10 +15,12 @@ use std::collections::HashMap;
 use crate::pnworker::core::{KeepKind, Preset, Stage, WorkerMsg};
 use crate::pnworker::util::PathValue;
 use crate::pnworker::core::CommData;
-// The trailing flags are `cache_resolution` and `hls_only`: whether the job's output height is
-// worth recording for the release name, and whether this server publishes the release as HLS and
-// nothing else — in which case the encode writes that layout itself instead of an MP4.
-pub type EncodeData = (PathBuf, Preset, u64, Option<u64>, Option<Vec<u8>>, bool, bool);
+// The trailing flags are `cache_resolution`, `hls_only` and `gated`: whether the job's output
+// height is worth recording for the release name, whether this server publishes the release as HLS
+// and nothing else — in which case the encode writes that layout itself instead of an MP4 — and
+// whether this encode is background work that steps aside for `enc-main`. The coordinator decides
+// the last one, because it depends on the rest of the queue as well as on the preset.
+pub type EncodeData = (PathBuf, Preset, u64, Option<u64>, Option<Vec<u8>>, bool, bool, bool);
 pub type StudioData = (PathBuf, PathBuf, u64);
 pub type KeycodeData = (PathBuf, Vec<PathBuf>, Option<String>, KeepKind, u64, Option<u64>);
 
@@ -137,16 +139,13 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 }
                 continue 'll;
             }
-            let WorkerMsg::Encode((directory, preset, job_id, server_id, watermark, cache_resolution, hls_only)) = msg else {
+            let WorkerMsg::Encode((directory, preset, job_id, server_id, watermark, cache_resolution, hls_only, idle_encode)) = msg else {
                 continue 'll;
             };
             // A background encode does not take the foreground marker: the marker is what every
             // idle encoder waits on, and one that published it would be telling itself the machine
             // is busy. Not holding it is also what leaves `enc-main` free to start the encode this
             // one is supposed to step aside for.
-            let idle_encode = preset
-                .name()
-                .is_some_and(|name| crate::lib::mpeg::preset::idle_encode_for(&name));
             let _foreground = (!idle_encode)
                 .then(|| ForegroundEncodeGuard::acquire(&directory, job_id));
             let mut resolution_probe = if cache_resolution {

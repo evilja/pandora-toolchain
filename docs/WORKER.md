@@ -70,11 +70,14 @@ Standard, Dummy, and PseudoLossless still encode ahead while downloading, but do
 
 ### Background encodes
 
-A preset may declare `idle = true`, which makes its jobs background work. Such a job is dispatched
-to a **second encode lane** — `Worker::IdleEncode`, `enc-idle` — rather than to `enc-main`, and
-`pnmpeg` runs its encode through the same gate the speculative planners use: the encode worker
-passes `--aot-busyfile`/`--aot-lockfile` only for an idle preset, and their presence is the whole of
-how pnmpeg is told which kind of encode this is.
+A job becomes background work in one of two ways: its preset declares `idle = true`, or it
+**overtook** a job that was asked for before it (see below). Such a job is dispatched to a **second
+encode lane** — `Worker::IdleEncode`, `enc-idle` — rather than to `enc-main`, and `pnmpeg` runs its
+encode through the same gate the speculative planners use: the encode worker passes
+`--aot-busyfile`/`--aot-lockfile` only for a job the coordinator marked background, and their
+presence is the whole of how pnmpeg is told which kind of encode this is (`runs_idle_gated`). Which
+jobs those are is decided in `do_job_progression_things` and travels as the last flag of
+`WorkerMsg::Encode`, because it depends on the rest of the queue and not only on the preset.
 
 The second lane is not an optimisation, it is what makes the feature possible. `Worker::Encode`
 serves its jobs one at a time, so an idle encode dispatched there would be waiting for a quiet
@@ -105,6 +108,33 @@ multi-hour encode under `start.sh`'s restart loop is a real cost. And an idle jo
 job as far as `/gitsync` is concerned, so a pending gitsync waits for it and declines encodes
 meanwhile — it resolves itself, since declining everything else is exactly the quiet the idle job
 needs, but it resolves slowly.
+
+### Opportunistic encodes
+
+Two encodes ordered a minute apart do not download at the same speed, and the second one's input
+often lands first. Handing it `enc-main` there makes the job that was asked for first wait out an
+entire encode the moment its own download finishes; leaving the encoder alone until then wastes the
+head start. So it takes neither: an encode dispatched while a job **ahead of it in the queue** is
+still fetching its input (`awaits_its_input` — a `JobType::Encode`/`Pancode` at `Queued` or
+`Downloading` that is not leased, forwarded or a batch parent) is dispatched to `enc-idle` with the
+gate flags and `Job.opportunistic_encode` set. It encodes while the machine is otherwise quiet, and
+stops within about a second of media when the job it overtook lands and takes `.foreground-encode`.
+Nothing is re-encoded: the pause is the same feeder gate a background preset uses.
+
+**A preset that chunks is never made opportunistic** (`preset::gateable_encode_for`). The gate
+drives one linear encoder through a feeder it can stop; the parallel VerySlow scheduler is not one
+encoder and has nothing to pause, and running it linearly to make it preemptible would cost more
+encode time than stepping aside could ever save. Those keep `enc-main` and the ordering they have
+always had. `Copy` resolves to no preset at all and is excluded by the same call.
+
+**The last few minutes are waited out rather than stopped.** An opportunistic encode whose
+remaining frames divided by its current fps come to under three minutes
+(`nearly_finished_encode`, `OPPORTUNISTIC_FINISH_ETA`) holds `enc-main` closed for that long: the
+job it overtook waits instead of parking a nearly-finished encode — its work directory, its message
+and its queue slot — behind however long its own encode runs. The reading is in time rather than in
+frames because ninety percent of a six-hour encode is still most of an hour. A reading older than
+`OPPORTUNISTIC_PROGRESS_FRESH` is ignored, and a paused encode reports 0 fps, so neither a wedged
+nor an already-stopped job can hold the encoder closed.
 
 **Which presets encode ahead is decided by the preset, not by the CLI flag it was reached by and not by a table anywhere else** (`ResolvedPreset::wants_linear_aot`). That is what makes the rule survive a preset arriving as `--preset <name>` rather than as `--x264`, and what extends it to preset files.
 

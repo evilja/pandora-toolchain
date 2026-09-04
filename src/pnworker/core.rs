@@ -384,8 +384,60 @@ fn reset_encode_dispatches_after_reboot(queue: &mut [Job], epoch: u32, idle_lane
             job.encode_dispatched = false;
             job.encode_dispatch_order = None;
             job.encode_dispatched_at = None;
+            job.opportunistic_encode = false;
         }
     }
+}
+
+// An encode-class job that will need `enc-main` and is still waiting on its input. A job that is
+// ready to encode while one of these sits ahead of it in the queue only got there first because
+// its download was quicker, and taking the encoder would make the job that was asked for first
+// wait out this whole encode once its own input lands.
+fn awaits_its_input(job: &Job) -> bool {
+    matches!(job.job_type, JobType::Encode | JobType::Pancode)
+        && job.forward_parent.is_none()
+        && job.link_node.is_none()
+        && !job.link_waiting
+        && !job.encode_dispatched
+        && matches!(job.ready, Stage::Queued | Stage::Downloading)
+}
+
+// How close to done an overtaken job lets an opportunistic encode get before it stops waiting for
+// it. A pause costs nothing, but one taken a minute from the end parks a finished-but-for-the-tail
+// encode — its work directory, its message, its queue slot — behind however long the encode that
+// displaced it runs, which for a feature-length source is hours. The last few minutes are worth
+// waiting out; anything longer is not.
+const OPPORTUNISTIC_FINISH_ETA: Duration = Duration::from_secs(3 * 60);
+// A progress reading older than this is not a slow encode, it is one that has stopped saying
+// anything — paused on the marker, or wedged — and neither is worth holding the encoder for.
+const OPPORTUNISTIC_PROGRESS_FRESH: Duration = Duration::from_secs(30);
+
+// Whether an opportunistic encode is close enough to the end that the job it overtook should let
+// it finish instead of stopping it. Measured in time rather than in frames: ninety percent of a
+// six-hour encode is still most of an hour, and the question being asked is how long the waiting
+// job would have to wait.
+fn nearly_finished_encode(job: &Job, now: Duration) -> bool {
+    if !job.opportunistic_encode
+        || !job.encode_dispatched
+        || !matches!(job.ready, Stage::Downloaded | Stage::Encoding)
+    {
+        return false;
+    }
+    let (Some(frame), Some(total), Some(fps)) =
+        (job.encode_frame, job.encode_total, job.encode_fps)
+    else {
+        return false;
+    };
+    if total == 0 || fps <= 0.0 {
+        return false;
+    }
+    if !job
+        .encode_last_frame_at
+        .is_some_and(|at| now.saturating_sub(at) <= OPPORTUNISTIC_PROGRESS_FRESH)
+    {
+        return false;
+    }
+    total.saturating_sub(frame) as f64 / fps <= OPPORTUNISTIC_FINISH_ETA.as_secs_f64()
 }
 
 fn check_encode_reboot_epoch(
@@ -2642,6 +2694,7 @@ async fn requeue_link_job(
     job.encode_dispatch_order = None;
     job.encode_dispatched_at = None;
     job.encode_last_frame_at = None;
+    job.opportunistic_encode = false;
     // A retried probe answers again from scratch, so its selection window starts again with it.
     job.probed_at = None;
     db.update_stage(job_id, Stage::Queued).await.ok();
@@ -2779,6 +2832,7 @@ async fn do_encode_stall_things(
         queue[pos].ready = Stage::Failed;
         queue[pos].encode_dispatched = false;
         queue[pos].encode_dispatch_order = None;
+        queue[pos].opportunistic_encode = false;
         db.update_stage(job_id, Stage::Failed).await.ok();
         if let Some(keep) = &queue[pos].keep {
             mark_output_failed(&scope(queue[pos].server_id), keep).await.ok();
@@ -2910,6 +2964,7 @@ async fn do_worker_message_things(
                 } else {
                     i.encode_dispatched = false;
                     i.encode_dispatch_order = None;
+                    i.opportunistic_encode = false;
                 }
                 if a == Stage::Uploaded && previous_ready != Stage::Uploaded {
                     i.frontend.ghost_ping(i.author).await;
@@ -3494,6 +3549,21 @@ async fn do_job_progression_things(
             && (job.ready == Stage::Downloaded
                 || (job.job_type == JobType::Keycode && job.ready == Stage::Queued))
     });
+    let now = unix_now();
+    // The jobs whose input has not arrived yet, by queue position. An encode further down the
+    // queue that is ready now overtook every one of these, and runs gated rather than taking the
+    // encoder away from them.
+    let awaiting_input: Vec<usize> = queue
+        .iter()
+        .enumerate()
+        .filter(|(_, job)| awaits_its_input(job))
+        .map(|(idx, _)| idx)
+        .collect();
+    // An opportunistic encode this close to done is finished rather than stopped, so nothing is
+    // dispatched to `enc-main` for the couple of minutes it has left.
+    let hold_for_opportunistic = queue
+        .iter()
+        .any(|job| nearly_finished_encode(job, now));
     let mut dead: Vec<u64> = vec![];
     let mut forwarded_state_updates: Vec<(u64, Stage, String)> = vec![];
     let mut active_encode_sources: HashMap<String, PathBuf> = HashMap::new();
@@ -3563,6 +3633,9 @@ async fn do_job_progression_things(
             continue;
         }
         if job.job_type == JobType::Keycode && job.ready == Stage::Queued && !job.encode_dispatched {
+            if hold_for_opportunistic {
+                continue;
+            }
             match try_dispatch_keycode(db, shrine, job, next_encode_dispatch_order).await {
                 KeycodeDispatch::Waiting => continue,
                 KeycodeDispatch::Dispatched => {
@@ -3771,16 +3844,33 @@ async fn do_job_progression_things(
                 // than kept in a table beside it: a preset file that declares itself background
                 // work has to reach the coordinator, which never runs an encode itself and would
                 // otherwise have no way to know.
-                let idle_encode = job
+                let idle_preset = job
                     .preset
                     .name()
                     .is_some_and(|name| crate::lib::mpeg::preset::idle_encode_for(&name));
-                job.worker = if idle_encode {
+                // The other way into the idle lane: this job's input arrived while a job asked for
+                // before it is still fetching its own. Taking `enc-main` now would make that
+                // earlier job wait out this entire encode the moment its download lands, and
+                // leaving the encoder alone until then would waste the head start. So it runs on
+                // the same gate a background preset uses — it encodes while nothing else does, and
+                // stops when the job it overtook takes the marker.
+                let overtakes = awaiting_input.iter().any(|&ahead| ahead < idx)
+                    && job
+                        .preset
+                        .name()
+                        .is_some_and(|name| crate::lib::mpeg::preset::gateable_encode_for(&name));
+                let gated = idle_preset || overtakes;
+                // Nothing takes the foreground while an opportunistic encode is finishing.
+                if !gated && hold_for_opportunistic {
+                    continue;
+                }
+                job.opportunistic_encode = overtakes && !idle_preset;
+                job.worker = if gated {
                     IDLE_ENCODE_WORKER.to_string()
                 } else {
                     FOREGROUND_ENCODE_WORKER.to_string()
                 };
-                let lane = if idle_encode {
+                let lane = if gated {
                     Worker::IdleEncode
                 } else {
                     Worker::Encode
@@ -3803,6 +3893,7 @@ async fn do_job_progression_things(
                             && !matches!(job.preset, Preset::Dummy(_))
                             && crate::pnworker::server_config::server_hls_enabled(job.server_id)
                                 .await,
+                        gated,
                     )),
                     job,
                     db,
@@ -4504,6 +4595,10 @@ pub struct Job {
     pub encode_frame: Option<u64>,
     pub encode_total: Option<u64>,
     pub encode_fps: Option<f64>,
+    // Set on an encode that was dispatched while a job asked for before it was still fetching its
+    // own input. It runs in the idle lane, gated on the foreground marker, so the job it overtook
+    // takes the encoder back the moment its download lands — see `do_job_progression_things`.
+    pub opportunistic_encode: bool,
     pub keep: Option<KeepRequest>,
     pub keycode: Option<KeycodeRequest>,
     pub preview: Option<PreviewRequest>,
@@ -4640,6 +4735,7 @@ impl Job {
             encode_frame: None,
             encode_total: None,
             encode_fps: None,
+            opportunistic_encode: false,
             keep: None,
             keycode: None,
             preview: None,
@@ -4733,6 +4829,7 @@ impl Job {
             encode_frame: None,
             encode_total: None,
             encode_fps: None,
+            opportunistic_encode: false,
             keep: None,
             keycode: None,
             preview: None,
@@ -4981,5 +5078,72 @@ mod tests {
             "the idle lane rebooting must not re-send an enc-main job"
         );
         assert!(!queue[1].encode_dispatched, "the idle lane's own job must be re-sent");
+    }
+
+    // What makes a job worth stepping aside for: it is going to want `enc-main`, and it has not
+    // got its input yet. Everything that is waiting for something other than a download of its own
+    // is already accounted for somewhere else in the loop, and holding the encoder for it would
+    // stop an encode that could be running.
+    #[test]
+    fn only_a_job_still_fetching_its_own_input_is_overtaken() {
+        let mut downloading = dispatched_encode(Duration::from_secs(0));
+        downloading.ready = Stage::Downloading;
+        downloading.encode_dispatched = false;
+        assert!(awaits_its_input(&downloading));
+
+        let mut queued = downloading.clone();
+        queued.ready = Stage::Queued;
+        assert!(awaits_its_input(&queued));
+
+        // Already encoding, or waiting on a node rather than on a download.
+        let mut encoding = downloading.clone();
+        encoding.ready = Stage::Encoding;
+        assert!(!awaits_its_input(&encoding));
+
+        let mut leased = downloading.clone();
+        leased.link_node = Some("kagami".to_string());
+        assert!(!awaits_its_input(&leased));
+
+        let mut waiting_for_a_node = downloading.clone();
+        waiting_for_a_node.link_waiting = true;
+        assert!(!awaits_its_input(&waiting_for_a_node));
+
+        // A batch parent downloads a whole season; its children are born downloaded and are
+        // deprioritized by rules of their own, so it is not something to hold the encoder for.
+        let mut parent = downloading.clone();
+        parent.job_type = JobType::Batch;
+        assert!(!awaits_its_input(&parent));
+    }
+
+    // The question the overtaken job asks before it stops an opportunistic encode, which is about
+    // time rather than about frames: how long it would have to wait for it to finish.
+    #[test]
+    fn an_opportunistic_encode_is_waited_out_only_when_it_is_minutes_from_done() {
+        let now = Duration::from_secs(10_000);
+        let mut job = dispatched_encode(now);
+        job.ready = Stage::Encoding;
+        job.opportunistic_encode = true;
+        job.encode_last_frame_at = Some(now);
+        job.encode_total = Some(100_000);
+        job.encode_fps = Some(100.0);
+
+        job.encode_frame = Some(40_000);
+        assert!(!nearly_finished_encode(&job, now), "60_000 frames is ten minutes of waiting");
+        job.encode_frame = Some(99_000);
+        assert!(nearly_finished_encode(&job, now));
+
+        // A paused encode reports no rate at all, and one that has stopped reporting is not slow,
+        // it is silent. Neither is worth holding the encoder for.
+        let mut paused = job.clone();
+        paused.encode_fps = Some(0.0);
+        assert!(!nearly_finished_encode(&paused, now));
+        let mut silent = job.clone();
+        silent.encode_last_frame_at = Some(now - OPPORTUNISTIC_PROGRESS_FRESH - Duration::from_secs(1));
+        assert!(!nearly_finished_encode(&silent, now));
+
+        // An ordinary foreground encode is never waited out; it already holds the encoder.
+        let mut foreground = job.clone();
+        foreground.opportunistic_encode = false;
+        assert!(!nearly_finished_encode(&foreground, now));
     }
 }

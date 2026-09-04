@@ -259,6 +259,7 @@ mod tests {
             encode_frame: None,
             encode_total: None,
             encode_fps: None,
+            opportunistic_encode: false,
             keep: None,
             keycode: None,
             preview: None,
