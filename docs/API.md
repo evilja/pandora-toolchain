@@ -139,6 +139,16 @@ in the jobs table: shrine heartbeats and the in-memory queue. This is what tells
 never blocks the loop. `503 worker has not published a snapshot yet` means the API is up but the
 worker loop is not — `serve` is its own task, so that is a real and distinguishable state.
 
+The snapshot also carries a `boot` array: one entry per node with a boot profile bound to it,
+`{ node, profile, profile_revision, purpose, expected_encoders, image_revision, proven_encoders,
+proven_image_revision, status, blocked }`. It is separate from `nodes` because the interesting entry
+is one that has never registered — a machine that was rented and never arrived exists in no roster.
+`status` is the newest attempt's outcome and `blocked` the reason it will not boot, both from the
+same predicate the scheduler uses. It is refreshed by the boot manager on its own five-second
+cadence rather than built by `pn_worker`, since building it opens the token file and every bound
+profile — so it can lag the rest of the snapshot by a few seconds, and it is an empty array until
+the manager has published once. See [LINK.md](LINK.md#boot-profiles).
+
 `GET /api/v1/workers/summary` is the any-token counterpart. It returns only aggregate
 `workers_online`, `workers_total`, `nodes_online`, `nodes_total`, `queue_len`, and a
 `capacity: [{ purpose, online, total }]` breakdown. It contains no node names, versions, encoder

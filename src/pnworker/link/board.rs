@@ -370,8 +370,23 @@ pub fn register(
         group,
         reserved_for,
     };
+    // Copied out before the insert takes ownership: the boot records below are updated after this
+    // lock is released, and they need the name and the measured encoder list.
+    let name = request.node.clone();
+    let proved = node.encoders.clone();
     state.nodes.insert(request.node, node);
     save_roster(&state);
+    // Dropped explicitly rather than left to the end of the function. The boot records have mutexes
+    // of their own, and taking one of those while holding the board — the lock every link route and
+    // every scheduling decision goes through — is how two locks acquire an order nobody wrote down.
+    drop(state);
+
+    // A machine the coordinator rented is only *booted* once it says hello and is accepted; a
+    // provider answering 200 never was. This is where that becomes true, and where a box that came
+    // up without the encoders it was rented for stops being rented again for the same work.
+    crate::pnworker::boot::attempt::note_registration(&name);
+    crate::pnworker::boot::binding::record_registration(&name, &proved);
+
     NodeRegistered {
         accepted: true,
         reason: None,

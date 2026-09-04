@@ -1,8 +1,73 @@
 use super::*;
+use pandora_toolchain::pnworker::boot::binding::{self, BootBinding};
+use pandora_toolchain::pnworker::boot::profile;
 use pandora_toolchain::pnworker::link::spec::NodePurpose;
+use serenity::builder::CreateAutocompleteResponse;
 use tokio::io::AsyncWriteExt;
 
 const TOKENS_PATH: &str = pandora_toolchain::lib::env::standard::API_TOKENS_PATH;
+// Discord's own ceiling on an autocomplete response.
+const MAX_BOOT_CHOICES: usize = 25;
+
+// The boot profiles `/gentoken boot:` offers. Read off local storage every time — a profile is a
+// file an operator edits, and a cached list would offer one they just deleted — and never anything
+// that talks to a provider: an autocomplete fires on every keystroke, and a rental API is not a
+// thing to call while somebody is still deciding what to type.
+pub async fn handle_gentoken_autocomplete(
+    ctx: &Context,
+    interaction: &serenity::all::CommandInteraction,
+) {
+    let mut response = CreateAutocompleteResponse::new();
+    let focused = interaction.data.autocomplete();
+    let partial = focused
+        .filter(|option| option.name == "boot")
+        .map(|option| option.value.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    let mut offered = 0usize;
+    for loaded in profile::load_all() {
+        if offered >= MAX_BOOT_CHOICES {
+            break;
+        }
+        // A profile that does not parse is skipped rather than offered: binding a token to it would
+        // create a binding that can never run. It is not silent — `/lsnode` names it — and the
+        // alternative is a choice list that hands an operator a broken profile to select.
+        let Ok(loaded) = loaded else { continue };
+        if !loaded.file.enabled {
+            continue;
+        }
+        let name = loaded.display_name().to_string();
+        if !partial.is_empty()
+            && !loaded.id.to_ascii_lowercase().contains(&partial)
+            && !name.to_ascii_lowercase().contains(&partial)
+        {
+            continue;
+        }
+        // The label is what a human recognises, the value is the stable id a binding stores. They
+        // are deliberately different: renaming a profile must not orphan the tokens minted for it.
+        let label = if name == loaded.id {
+            loaded.id.clone()
+        } else {
+            format!("{name} ({})", loaded.id)
+        };
+        response = response.add_string_choice(inline(&label), loaded.id.clone());
+        offered += 1;
+    }
+    interaction
+        .create_response(ctx, CreateInteractionResponse::Autocomplete(response))
+        .await
+        .ok();
+}
+
+// Discord refuses a choice label over 100 characters, and a profile's display name comes out of a
+// file somebody typed.
+fn inline(text: &str) -> String {
+    let flat = text.replace(['\n', '\r'], " ");
+    if flat.chars().count() > 100 {
+        flat.chars().take(99).collect::<String>() + "…"
+    } else {
+        flat
+    }
+}
 
 pub async fn handle_gentoken(
     ctx: &Context,
@@ -49,6 +114,39 @@ pub async fn handle_gentoken(
             return;
         }
     }
+    // Re-read and re-validated here rather than trusted from the autocomplete: the choice list is a
+    // convenience, and the value that arrives is whatever the client sent. A profile deleted or
+    // disabled between the keystroke and the submit must not become a binding.
+    let boot_profile = option_trimmed(command, "boot");
+    if boot_profile.is_some() && link_node.is_none() {
+        command_error(
+            ctx,
+            command,
+            "Error: `boot` starts a Pandora Mini node, so it needs `link`.",
+        )
+        .await;
+        return;
+    }
+    let boot_loaded = match &boot_profile {
+        Some(id) => match profile::load(id) {
+            Ok(loaded) if loaded.file.enabled => Some(loaded),
+            Ok(_) => {
+                command_error(
+                    ctx,
+                    command,
+                    format!("Error: boot profile `{}` is disabled.", id),
+                )
+                .await;
+                return;
+            }
+            Err(e) => {
+                command_error(ctx, command, format!("Error: {}", e)).await;
+                return;
+            }
+        },
+        None => None,
+    };
+
     let local_server_id = if local {
         match command_server_id(ctx, command, "/gentoken local").await {
             Some(id) => Some(id),
@@ -92,6 +190,33 @@ pub async fn handle_gentoken(
         (None, None) => token.clone(),
     };
 
+    // The binding is written before the token line, and the order is the whole of the recovery
+    // story. A binding with no token is inert — nothing authorises booting that node, and the next
+    // mint overwrites it — while a token with no binding is a node that silently never boots and
+    // nothing anywhere says why. So the harmless half goes first, and a failure in either half is
+    // reported as a failure rather than as a token that half works.
+    if let (Some(loaded), Some(node)) = (&boot_loaded, link_node.as_deref()) {
+        let binding = BootBinding {
+            node: node.to_string(),
+            profile: loaded.id.clone(),
+            profile_revision: loaded.revision,
+            purpose: node_purpose,
+            expected_encoders: loaded.file.capabilities.encoders.clone(),
+            image_revision: loaded.file.capabilities.image_revision.clone(),
+            proven_encoders: Vec::new(),
+            proven_image_revision: String::new(),
+            capability_mismatch: None,
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        };
+        if let Err(e) = binding::bind(binding) {
+            command_error(ctx, command, format!("Error: {} No token was created.", e)).await;
+            return;
+        }
+    }
+
     if let Err(e) = append_token_line(&label, &line).await {
         command_error(ctx, command, e).await;
         return;
@@ -103,13 +228,31 @@ pub async fn handle_gentoken(
         (None, Some(node)) => format!(" It's a Pandora Mini node token for `{}`, marked `{}`: it opens the link routes and nothing else — it cannot submit jobs, read logs, or reach git, and it is only ever offered presets its mark allows. Set it as `link_node_token` on that node, with `link_node_name|pntools|{}`.", node, node_purpose.label(), node),
         (None, None) => " It sees the jobs it submits itself. For a server's whole queue use `local:true`; for the entire deployment use `/genwitchtoken`.".to_string(),
     };
-    let embed = success_embed(command, COMMAND_UPDATED)
+    let mut embed = success_embed(command, COMMAND_UPDATED)
         .description(format!(
             "Created an API bearer token{}.{} It is stored in `{}` and shown only here.",
             labelled, scope, TOKENS_PATH
         ))
         .field("Bearer token", format!("```\n{}\n```", token), false)
         .field("Usage", "`Authorization: Bearer <token>`", false);
+    if let Some(loaded) = &boot_loaded {
+        // Said plainly because the trigger surprises people: binding a profile does not start
+        // anything, and an offline node is not a reason to start anything either. Work waiting for
+        // this node is.
+        let expected = if loaded.file.capabilities.encoders.is_empty() {
+            "no encoders declared".to_string()
+        } else {
+            format!("expecting `{}`", loaded.file.capabilities.encoders.join(", "))
+        };
+        embed = embed.field(
+            "Boot profile",
+            format!(
+                "`{}` ({}). It runs when a job is waiting for this node and no other node can take it — not when the node merely goes offline, and there is no command that boots it by hand. `/lsnode` shows its status.",
+                loaded.id, expected
+            ),
+            false,
+        );
+    }
     command.create_response(ctx, CreateInteractionResponse::Message(
         CreateInteractionResponseMessage::new()
             .embed(embed)

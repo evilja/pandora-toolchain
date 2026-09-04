@@ -124,6 +124,11 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
         // Once a second is plenty for something a human is reading, and keeps the loop's own cost flat.
         if tokio::time::Instant::now() >= next_snapshot {
             crate::pnworker::snapshot::publish(&shrine, &queue, gitquery.is_some());
+            // The boot manager's whole input. Published from here rather than read from there
+            // because the queue is this loop's to own: a task reaching into it would need a lock
+            // around the hottest structure in the process to answer a question that changes when
+            // somebody submits a job.
+            publish_boot_demand(&queue);
             next_snapshot = tokio::time::Instant::now() + Duration::from_secs(1);
         }
 
@@ -2210,6 +2215,28 @@ async fn render_link_waiting(job: &mut Job) {
 // a reboot it was in the middle of — is not asked again while it is still in it, and short enough
 // that a node an operator has just fixed is back in rotation without anybody restarting anything.
 const LINK_AVOID_FORGIVENESS: Duration = Duration::from_secs(5 * 60);
+
+// The jobs a boot could help: the ones held for a node right now. A job that ran here, or that is
+// on a node already, is not demand — and neither is a node that went offline with nothing waiting
+// for it, which is the whole reason this reads the queue rather than the roster.
+//
+// On a coordinator that encodes this is always empty, because such a job runs locally instead of
+// waiting. That is deliberate: the local fallback stays exactly as it was, and boot profiles change
+// what happens only where a job would otherwise sit.
+fn publish_boot_demand(queue: &[Job]) {
+    use crate::pnworker::boot::manager::Demand;
+
+    let demand = queue
+        .iter()
+        .filter(|job| job.link_waiting && job.link_node.is_none() && job.ready == Stage::Queued)
+        .map(|job| Demand {
+            job_id: job.job_id,
+            preset: crate::pnworker::link::spec::preset_name(&job.preset),
+            server: job.server_id,
+        })
+        .collect();
+    crate::pnworker::boot::manager::publish_demand(demand);
+}
 
 // Jobs being held for a node, offered the moment one is free.
 //

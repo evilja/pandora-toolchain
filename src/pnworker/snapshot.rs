@@ -58,6 +58,10 @@ pub fn publish(shrine: &TypedShrine<WorkerMsg>, queue: &[Job], gitquery_pending:
         // The cluster is nowhere in the jobs table either, for the same reason the queue is not:
         // a node's liveness is in-memory state that a restart forgets.
         "nodes": nodes,
+        // Machines that have a boot profile bound to them, registered or not. They are a separate
+        // array rather than fields on `nodes` because the interesting one has never registered:
+        // a node that was rented and never arrived exists in no roster.
+        "boot": crate::pnworker::boot::manager::boot_view(),
         "queue": jobs,
     });
     if let Ok(mut guard) = cell().write() {

@@ -174,6 +174,8 @@ Coordinator side:
 | `link_only_node` | limit all offload to one named node |
 | `link_lease_timeout_secs` | how long a silent lease is kept, default `90` |
 | `link_allow_build_mismatch` | permit a node whose pnmpeg differs from the coordinator's |
+| `link_boot_enabled` | master switch for [boot profiles](#boot-profiles), default off |
+| `link_boot_max_concurrent` | boots in flight at once, default `1` |
 | `pandora_mode` | `orchestrator` holds every encode for a node and runs none here (equivalently `--orchestrator`). See [Orchestrator mode](#orchestrator-mode) |
 
 State:
@@ -190,6 +192,9 @@ State:
   and the commit it was recorded for. See [Staying level](#staying-level).
 - `DB/config/global/environment/migration.pandora` (both sides) — the highest migration id that has
   run here, and the one that stopped the last run if any. See [Migrations](#migrations).
+- `DB/config/global/boot-profiles/<id>.toml`, `DB/config/global/environment/link_boot_bindings.json`
+  (mode `0600`), `DB/config/global/environment/boot-secrets.toml` and
+  `DB/config/global/environment/link_boot_attempts.json` — see [Boot profiles](#boot-profiles).
 
 ## Tokens
 
@@ -336,6 +341,174 @@ re-registers only the encoders that produced output. The coordinator resolves th
 codec and requires it in that list. `ffmpeg -encoders` is deliberately not used: it reports what
 the binary was built with, not what this card and driver can open. An empty list grants no GPU
 capability, so an older node cannot accept AV1 merely because its token says `gpu`.
+
+## Boot profiles
+
+A **boot profile** is an ordered list of HTTP requests that starts a machine which is not running
+yet — a stopped VM, or an instance rented from a GPU provider. It is bound to a node identity when
+that node's token is minted, and it runs when work is waiting that nothing else can take.
+
+Off unless `link_boot_enabled` is on. A deployment that has never written a profile gains no
+outbound request path by upgrading.
+
+### What triggers a boot
+
+**Unmet queued demand, and nothing else.** A node going offline is not a trigger: a cluster that
+re-rents a box every time one reboots is a bill, not a feature. There is no command that boots a
+node by hand, either — the trigger is a job that is waiting.
+
+Concretely, the coordinator publishes the jobs that are *held for a node right now* (`link_waiting`,
+unleased, still `Queued`) once a second, and the boot manager reconciles that list against capacity
+every five seconds. On a coordinator that also encodes this list is always empty, because such a job
+runs locally instead of waiting — the local fallback is unchanged, and profiles only alter what
+happens where a job would otherwise sit. In practice that means boot profiles are an
+[orchestrator](#orchestrator-mode) feature.
+
+A machine part-way through its own boot counts as capacity that exists. Ten waiting episodes do not
+become ten rented machines: one booting node covers every waiting job it could serve, and
+`link_boot_max_concurrent` (default `1`) caps what may be in flight regardless.
+
+**A provider answering `200` is not a node.** The attempt stays at `waiting for registration` until
+the machine registers and is accepted; only then is it `ready` and only then can the scheduler use
+it.
+
+### Profile files
+
+`DB/config/global/boot-profiles/<id>.toml`. The file name is the profile id — letters, digits, `-`
+and `_` — and it is what a binding stores, so renaming the *display* name does not orphan tokens.
+
+```toml
+version = 1
+name = "GPU worker"
+enabled = true
+boot_timeout_secs = 300      # ceiling for the whole sequence
+cooldown_secs = 900          # wait after a failure
+max_attempts = 3             # consecutive failures before the binding is held
+
+# What a machine started by this profile is expected to be able to do. This is what makes an
+# offline node schedulable: the roster only holds machines that have registered.
+[capabilities]
+encoders = ["h264_nvenc"]
+image_revision = "gpu-image-v1"
+
+[[steps]]
+id = "start"
+method = "POST"
+url = "https://provider.example/instances/worker-1/start"
+json = { action = "start", name = "${node.name}" }
+timeout_secs = 15
+capture = { op = "/operation/id" }
+provider_operation = "op"
+
+[steps.headers]
+Authorization = "Bearer ${secret.gpu_api_key}"
+
+[[steps]]
+id = "await-running"
+url = "https://provider.example/operations/${var.op}"
+timeout_secs = 15
+
+[steps.headers]
+Authorization = "Bearer ${secret.gpu_api_key}"
+
+[steps.poll]
+interval_secs = 5
+max_attempts = 30
+pointer = "/state"
+equals = ["RUNNING"]
+fails = ["ERROR", "CANCELLED"]
+```
+
+Per step: `method` (GET/POST/PUT/PATCH/DELETE/HEAD), `url`, `timeout_secs`, `delay_secs`, `headers`,
+`query`, `json` **or** `form` (never both), `basic_auth`, `accept` (explicit status list; empty means
+any 2xx), `capture`, `provider_operation` and `poll`. There is no shell, no command field and no
+file path: a profile issues requests and extracts values, and a provider needing request signing
+gets a Rust adapter rather than a wider file format.
+
+`poll` repeats the step's own request until the JSON Pointer at `pointer` equals one of `equals`, or
+matches `fails`, or `max_attempts` runs out. There is no unbounded form.
+
+### Substitution
+
+`${secret.<name>}` reads `DB/config/global/environment/boot-secrets.toml` (a flat
+`name = "value"` table, read fresh on every attempt so a rotated key takes effect at once).
+`${var.<name>}` reads a `capture` from an **earlier** step — a profile referring to a later one is
+refused at parse time. Pandora also supplies `${node.name}`, `${node.token}`, `${node.purpose}`,
+`${node.coordinator_url}`, `${attempt.id}` and `${attempt.idempotency_key}`.
+
+A missing variable or secret **fails the attempt**; it never expands to an empty string. Values are
+substituted into parsed structures, not into text, so a secret containing a quote lands in a JSON
+string and is escaped by the serialiser — nothing here concatenates JSON. Headers reject CR/LF, and
+a URL is re-checked for its scheme after substitution.
+
+A rented machine is given its own node name, its link token and the coordinator URL, and never a
+provider credential. What starts Pandora on the far side is the provider's own image or bootstrap
+command; the profile's job is to start that machine.
+
+### Bindings
+
+`/gentoken link:<node> purpose:<cpu|gpu|both> boot:<profile>` mints the token and records the
+binding in `DB/config/global/environment/link_boot_bindings.json` (mode `0600`). `boot` autocompletes
+from local files only — it never calls a provider — and the selected id is re-read and re-validated
+on submit, so a profile deleted or disabled mid-command cannot become a binding.
+
+The binding is written **before** the token line. A binding with no token is inert (nothing
+authorises booting that node, and the next mint overwrites it); a token with no binding is a node
+that silently never boots. So the harmless half goes first, and a failure in either is reported as a
+failure.
+
+A binding records the node, the profile and its revision, the purpose, the `expected_encoders` and
+`image_revision` copied from the profile, and — separately — the `proven_encoders` the machine
+actually measured at registration and the image revision it proved them under. A claim and a
+measurement are different things, and a proof taken on hardware the profile no longer rents is not a
+proof.
+
+Bindings are managed by editing the file. There is no command that deletes one, and no
+database-backed profile editor.
+
+### What is booted for what
+
+The eligibility rule is the same one `pick_node` applies to a registered node: the binding's purpose
+must accept the preset's hardware, and for a GPU preset the preset's video codec must appear in
+`expected_encoders`. A target advertising only `h264_nvenc` therefore cannot satisfy `av1_nvenc`
+demand, and a GPU binding that declares no encoders satisfies nothing — renting on the hope that a
+box turns out to have the right card is how a GPU queue becomes a bill.
+
+A node is not booted when: no link token names it (removing the last one disables its boot), it is
+already registered, it is **drained**, its profile is missing or disabled, an attempt is already
+running, it is in cooldown, its consecutive failures have reached `max_attempts` on the current
+profile revision, or its last attempt ended with an unknown outcome.
+
+If a booted machine registers **without** an expected encoder, the mismatch is recorded on the
+binding and further automatic boots are suppressed. Editing the profile or a later registration that
+proves the encoders clears it.
+
+### Failure, and the outcome nobody heard
+
+Attempts are persisted to `DB/config/global/environment/link_boot_attempts.json` (five per node) and
+report as `booting (step N)`, `waiting for registration`, `ready`, `failed` or `outcome unknown`.
+
+The distinction that matters: a step answering an unaccepted status is a plain **failure** — nothing
+happened, and the attempt retries after `cooldown_secs`. A step that **times out**, or whose
+connection drops after the request went out, is an **unknown outcome**: the provider may well have
+acted on it. That never retries by itself. The attempt stops, records the provider operation id it
+captured, and holds the binding until a human reconciles it. A coordinator that restarts mid-step
+turns that attempt into an unknown outcome for the same reason. Persisting step completion cannot
+make an HTTP request exactly-once; a profile whose provider supports an idempotency header can pass
+`${attempt.idempotency_key}` for it.
+
+Failures spend no part of a job's `LINK_MAX_ATTEMPTS`: nothing ran the job.
+
+Automatic **shutdown is out of scope.** Removing a token, deleting a profile or draining a node
+stops further boots; none of them stops a machine that is already running, and a rented instance
+bills until it is stopped by whatever started it.
+
+### Where it shows
+
+`/lsnode` gains a **Boot profiles** section listing every binding — including nodes that have never
+registered, which appear nowhere else — with its status and, when it will not boot, the reason. The
+same data is in the worker snapshot's `boot` array and so in `GET /api/v1/workers`. A profile that
+does not parse is named there rather than silently skipped.
 
 ## Staying level
 

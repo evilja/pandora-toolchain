@@ -376,6 +376,71 @@ async fn handle_lsworker(ctx: &Context, command: &serenity::all::CommandInteract
         .ok();
 }
 
+// The boot section of `/lsnode`: every node that has a profile bound to it, whether it has
+// registered or not. A node that has never come up appears nowhere else on this screen, and it is
+// the one an operator most needs to see — a machine that was rented and never arrived is invisible
+// in a roster built out of registrations.
+//
+// Nothing here is a second opinion: the blocking reasons come from the manager's own eligibility
+// predicate, so what is printed is what the scheduler decided.
+fn boot_lines() -> Vec<String> {
+    use pandora_toolchain::pnworker::boot::{manager, profile};
+
+    let states = manager::states();
+    let broken: Vec<String> = profile::load_all()
+        .into_iter()
+        .filter_map(|loaded| loaded.err())
+        .collect();
+    if states.is_empty() && broken.is_empty() {
+        return Vec::new();
+    }
+    let settings = manager::settings();
+    let mut lines = vec![String::new(), "**Boot profiles**".to_string()];
+    if !settings.enabled {
+        // Every other symptom of this is a binding that simply never runs, which reads exactly like
+        // a profile that does not work.
+        lines.push(
+            "⚠️ `link_boot_enabled` is off — bindings below are recorded but nothing is booted."
+                .to_string(),
+        );
+    }
+    for broken in broken {
+        lines.push(format!("⚠️ a profile could not be read: {broken}"));
+    }
+    for state in states {
+        let status = state
+            .status
+            .as_ref()
+            .map(|s| s.label())
+            .unwrap_or_else(|| "never booted".to_string());
+        lines.push(format!(
+            "🥾 `{}` → `{}`{} — {}",
+            state.binding.node,
+            state.binding.profile,
+            if state.binding.expected_encoders.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", state.binding.expected_encoders.join(", "))
+            },
+            status
+        ));
+        // Only reasons an operator can act on. "It is already registered" is the healthy case and
+        // saying so under every working node would bury the ones that are stuck.
+        if let Some(blocked) = &state.blocked {
+            if !matches!(
+                blocked,
+                manager::Ineligible::AlreadyOnline | manager::Ineligible::AlreadyBooting
+            ) {
+                lines.push(format!(
+                    "   ↳ will not boot: {}",
+                    blocked.describe()
+                ));
+            }
+        }
+    }
+    lines
+}
+
 async fn handle_lsnode(ctx: &Context, command: &serenity::all::CommandInteraction) {
     use pandora_toolchain::pnworker::link::board;
 
@@ -467,6 +532,7 @@ async fn handle_lsnode(ctx: &Context, command: &serenity::all::CommandInteractio
             lines.push(format!("⚠️ `{}` — migration failed: {}", node.name, error));
         }
     }
+    lines.extend(boot_lines());
     // A node one build behind is mid-update and resolves itself; one that stays behind is stuck,
     // and the coordinator's own build is what an operator compares against to tell them apart.
     let release = board::local_release();
@@ -1230,8 +1296,8 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "admin",
             name: "gentoken",
             summary: "Generate a new API bearer token.",
-            usage: "/gentoken [label:<note>] [local:<true|false>] [link:<node>] [purpose:<cpu|gpu|both>]",
-            details: "Mints a random bearer token for the HTTP API and appends it to the token file. With local enabled, jobs submitted with the token prefer this server's Lumiere Drive profile when configured, falling back to the global Lumiere profile. With link set, it becomes a Pandora Mini node token bound to that node name, opening only the link routes. purpose marks what that node is for and is what decides which presets it is ever offered — a GPU preset never reaches a cpu node. It defaults to cpu, needs link, and is changed by minting a new token rather than by editing the file. The token is shown once, privately. Upper only.",
+            usage: "/gentoken [label:<note>] [local:<true|false>] [link:<node>] [purpose:<cpu|gpu|both>] [boot:<profile>]",
+            details: "Mints a random bearer token for the HTTP API and appends it to the token file. With local enabled, jobs submitted with the token prefer this server's Lumiere Drive profile when configured, falling back to the global Lumiere profile. With link set, it becomes a Pandora Mini node token bound to that node name, opening only the link routes. purpose marks what that node is for and is what decides which presets it is ever offered — a GPU preset never reaches a cpu node. It defaults to cpu, needs link, and is changed by minting a new token rather than by editing the file. boot names a file in DB/config/global/boot-profiles and binds it to that node, so the node is started when a job is waiting for it and no other node can take it — an offline node is not a trigger by itself, and there is no command that boots one by hand. The binding is written before the token, so a half-finished mint leaves nothing that can boot. The token is shown once, privately. Upper only.",
         },
         HelpCommand {
             section: "admin",
@@ -2628,6 +2694,7 @@ impl EventHandler for Handler {
                 return;
             }
             match command_name {
+                "gentoken" => handle_gentoken_autocomplete(&ctx, &autocomplete).await,
                 "cfont" => handle_cfont_autocomplete(&ctx, &autocomplete).await,
                 "edit" => handle_edit_autocomplete(&ctx, &autocomplete).await,
                 "anizmconfirm" => handle_anizmconfirm_autocomplete(&ctx, &autocomplete).await,
@@ -3272,6 +3339,11 @@ impl EventHandler for Handler {
                         .add_string_choice("GPU", "gpu")
                         .add_string_choice("Both", "both")
                         .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "boot", "Boot profile that starts this node when work is waiting for it")
+                        .set_autocomplete(true)
+                        .required(false)
                 ),
             CreateCommand::new("exportdrive")
                 .description("Export Drive profiles encrypted to an age recipient (Witch only)")
@@ -3868,6 +3940,11 @@ async fn main() {
     // on whatever `api_port` it inherited. Nothing on a node needs it: the consoles, the job
     // routes and the submit tiers all belong to the machine that owns the queue.
     let mini = pandora_toolchain::pnworker::link::client::is_mini();
+    // Boot profiles belong to whatever holds the roster and the queue. A node has neither: it takes
+    // work from a coordinator and has nothing to start.
+    if !mini {
+        pandora_toolchain::pnworker::boot::manager::spawn();
+    }
     if mini {
         if env.get(API_PORT).is_some_and(|port| port.trim().parse::<u16>().is_ok_and(|p| p != 0)) {
             println!("[Pandora] mini mode: api_port is set but no API will be served");

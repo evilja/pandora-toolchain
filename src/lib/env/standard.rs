@@ -84,6 +84,26 @@ pub const LINK_NODES_PATH: &str = "DB/config/global/environment/link_nodes.json"
 // for a machine whose checkout is managed by hand.
 pub const LINK_AUTO_UPDATE: &str = "link_auto_update";
 
+// Node boot profiles: the ordered HTTP requests that start a machine which is not running yet, and
+// the bindings that say which profile belongs to which node identity. A profile is a file an
+// operator edits; there is no command that writes one, and no command that boots a node by hand —
+// unmet queued demand is the only trigger.
+//
+// Profiles are private deployment configuration in the same sense the token file is: they carry
+// provider credentials, either literally or by reference into `LINK_BOOT_SECRETS_PATH`.
+pub const LINK_BOOT_PROFILES_DIR: &str = "DB/config/global/boot-profiles";
+pub const LINK_BOOT_BINDINGS_PATH: &str = "DB/config/global/environment/link_boot_bindings.json";
+pub const LINK_BOOT_SECRETS_PATH: &str = "DB/config/global/environment/boot-secrets.toml";
+// Attempts in flight and the cooldowns they left behind. Persisted because an attempt that was
+// interrupted between sending a provider request and hearing the answer is exactly the state that
+// must not be retried blind on the next start.
+pub const LINK_BOOT_ATTEMPTS_PATH: &str = "DB/config/global/environment/link_boot_attempts.json";
+// Off by default: a deployment that has never written a profile must not gain an outbound request
+// path because it upgraded.
+pub const LINK_BOOT_ENABLED: &str = "link_boot_enabled";
+// How many boots may be in flight across the cluster at once.
+pub const LINK_BOOT_MAX_CONCURRENT: &str = "link_boot_max_concurrent";
+
 // The release a machine is running: a counter bumped by every gitsync that moved HEAD, and the
 // commit it was bumped for. Nodes compare their copy against the coordinator's and pull the
 // difference, so this is the one piece of state a restart must not forget.
