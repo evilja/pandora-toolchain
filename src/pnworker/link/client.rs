@@ -22,6 +22,7 @@ use crate::pnworker::link::spec::{
 };
 use crate::pnworker::messages::MessagePayload;
 use crate::pnworker::server_effects::preset_from_name;
+use crate::lib::mpeg::logo::{ServerLogo, logo_extension_from_filename};
 use crate::pnworker::util::ConcatKind;
 
 // The node half of the link. It owns no jobs of its own: it leases one from the coordinator, hands
@@ -1260,6 +1261,30 @@ async fn accept(
             None => return decline("watermark is not valid base64".to_string()),
         },
     };
+    // A spec that carries the picture but not what to do with it would encode a logo in whatever
+    // corner this build happens to default to, so an incomplete one is declined rather than
+    // guessed at. The extension decides the demuxer ffmpeg opens the file with, and only the ones
+    // this build knows are accepted — the bytes came off the wire.
+    let logo = match spec.logo_b64.as_deref() {
+        None => None,
+        Some(encoded) => {
+            let Some(bytes) = decode_base64(encoded).filter(|bytes| !bytes.is_empty()) else {
+                return decline("logo is not valid base64".to_string());
+            };
+            let Some(extension) = spec
+                .logo_extension
+                .as_deref()
+                .and_then(|value| logo_extension_from_filename(&format!("logo.{value}")))
+            else {
+                return decline("logo has no usable image extension".to_string());
+            };
+            Some(ServerLogo {
+                bytes,
+                extension: extension.to_string(),
+                placement: spec.logo_placement.clone().unwrap_or_default().sanitized(),
+            })
+        }
+    };
 
     let mut job = Job::new_api(
         0,
@@ -1276,6 +1301,7 @@ async fn accept(
     job.directory = crate::pnworker::util::job_work_dir(job_id);
     job.preset = preset;
     job.server_watermark = watermark;
+    job.server_logo = logo;
     job.frontend = Frontend::None;
     job.display_link = spec.display_link.clone();
     job.probe_file_index = spec.file_index;

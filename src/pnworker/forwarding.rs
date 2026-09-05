@@ -172,11 +172,29 @@ fn encode_forward_key(job: &Job, source_key: String) -> String {
         job.server_watermark
             .as_deref()
             .map(|watermark| format!("{:x}", md5::compute(watermark))),
+        // Both the picture and where it is drawn: two jobs that burn in the same logo in different
+        // corners produce different videos, so they must not share one encode.
+        logo_forward_key(job),
         job.server_id,
         job.gdrive_folder_global.as_deref(),
         job.gdrive_folder_local.as_deref(),
     ]);
     format!("{:x}", md5::compute(payload.to_string()))
+}
+
+fn logo_forward_key(job: &Job) -> serde_json::Value {
+    let Some(logo) = job.server_logo.as_ref() else {
+        return serde_json::Value::Null;
+    };
+    let placement = logo.placement.sanitized();
+    serde_json::json!([
+        format!("{:x}", md5::compute(&logo.bytes)),
+        logo.extension,
+        placement.position.name(),
+        placement.margin,
+        placement.opacity,
+        placement.width_percent,
+    ])
 }
 
 // Two jobs share an output only if they encode at the same settings *and* stitch the same things
@@ -211,6 +229,7 @@ fn encode_source_keys(job: &Job) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lib::mpeg::logo::{LogoPlacement, LogoPosition, ServerLogo};
     use crate::pnworker::frontend::Frontend;
     use std::path::PathBuf;
     use std::time::Duration;
@@ -228,6 +247,7 @@ mod tests {
             display_link: None,
             attachment: b"ass".to_vec(),
             server_watermark: None,
+            server_logo: None,
             frontend: Frontend::None,
             directory: PathBuf::from("DB/work/1"),
             ready: Stage::Queued,
@@ -278,6 +298,40 @@ mod tests {
         let smartcode = encode_forward_keys(&encode_job(Some("pntools/anime")));
         let anonymous = encode_forward_keys(&encode_job(None));
         assert_ne!(smartcode, anonymous);
+    }
+
+    // A logo is burned into the picture, so two jobs that draw the same one in different corners
+    // produce different videos. Sharing an encode between them would publish one of them with the
+    // other's watermark placement.
+    #[test]
+    fn a_logos_placement_is_part_of_the_forward_key() {
+        let logo = |position, bytes: &[u8]| ServerLogo {
+            bytes: bytes.to_vec(),
+            extension: "png".to_string(),
+            placement: LogoPlacement {
+                position,
+                ..LogoPlacement::default()
+            },
+        };
+
+        let mut none = encode_job(None);
+        none.server_logo = None;
+        let mut corner = encode_job(None);
+        corner.server_logo = Some(logo(LogoPosition::TopRight, b"picture"));
+        let mut other_corner = encode_job(None);
+        other_corner.server_logo = Some(logo(LogoPosition::BottomLeft, b"picture"));
+        let mut other_picture = encode_job(None);
+        other_picture.server_logo = Some(logo(LogoPosition::TopRight, b"different"));
+
+        let key = |job: &Job| encode_forward_keys(job);
+        assert_ne!(key(&none), key(&corner), "a logo is not the same as no logo");
+        assert_ne!(key(&corner), key(&other_corner), "the corner is part of the video");
+        assert_ne!(key(&corner), key(&other_picture), "the picture is part of the video");
+
+        // The same logo in the same place is still one encode, or nothing would ever be shared.
+        let mut twin = encode_job(None);
+        twin.server_logo = Some(logo(LogoPosition::TopRight, b"picture"));
+        assert_eq!(key(&corner), key(&twin));
     }
 
     #[test]

@@ -728,6 +728,7 @@ mod tests {
             display_link: None,
             attachment: Vec::new(),
             server_watermark: None,
+            server_logo: None,
             frontend: Frontend::None,
             directory: PathBuf::from("DB/work/4"),
             ready: Stage::Queued,

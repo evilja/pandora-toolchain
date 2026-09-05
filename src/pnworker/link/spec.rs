@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::lib::db::core::{stage_label, stage_to_int};
+use crate::lib::mpeg::logo::LogoPlacement;
 use crate::lib::mpeg::preset::PresetHardware;
 use crate::lib::p2p::nyaaise::TorrentType;
 use crate::pnworker::core::{JobType, Preset, Stage};
@@ -167,6 +168,16 @@ pub struct LinkJobSpec {
     pub subtitle_b64: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub watermark_b64: Option<String>,
+    // The image watermark travels as bytes, not as a name: unlike a font or a concat group it is
+    // one file belonging to one server, there is no corpus for a node to have synced, and the job
+    // already snapshotted it. Its placement travels beside it because the same picture in a
+    // different corner is a different release.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo_b64: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo_extension: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo_placement: Option<LogoPlacement>,
     pub preset: String,
     pub lang: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

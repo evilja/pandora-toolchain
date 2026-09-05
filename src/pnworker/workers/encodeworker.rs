@@ -13,6 +13,7 @@ use tokio::fs::rename;
 use std::path::PathBuf;
 use std::collections::HashMap;
 use crate::pnworker::core::{Concat, KeepKind, Preset, Stage, WorkerMsg};
+use crate::pnworker::server_effects::load_job_logo;
 use crate::pnworker::util::PathValue;
 use crate::pnworker::core::CommData;
 // The trailing flags are `cache_resolution`, `hls_only` and `gated`: whether the job's output
@@ -143,6 +144,11 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             let WorkerMsg::Encode((directory, preset, job_id, server_id, watermark, cache_resolution, hls_only, idle_encode)) = msg else {
                 continue 'll;
             };
+            // Read from the job directory, which is the one place the picture and its placement
+            // live once the job is set up. The download worker's speculative prefix reads the same
+            // file, and a prefix burned with a different logo would be adopted into the first
+            // minutes of this release.
+            let logo = load_job_logo(&directory);
             // A background encode does not take the foreground marker: the marker is what every
             // idle encoder waits on, and one that published it would be telling itself the machine
             // is busy. Not holding it is also what leaves `enc-main` free to start the encode this
@@ -248,6 +254,23 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             if hls_direct {
                 encode_params.insert("HLS", PathValue::from(path_to_ffmpeg(hls_directory.as_path())));
                 encode_params.insert("HLSNAME", PathValue::from(hls_name.clone()));
+            }
+            // The picture was copied beside the job when it was set up, so this names that copy
+            // rather than the server's config directory: a logo replaced mid-queue must not change
+            // what a job already running ships. Only the encode burns it in — the concat that may
+            // follow is a stream copy of a video the logo is already part of.
+            if let Some(logo) = &logo {
+                let placement = logo.placement.sanitized();
+                encode_params.insert(
+                    "LOGO",
+                    PathValue::from(path_to_ffmpeg(directory.join("contents").join(logo.file_name()).as_path())),
+                );
+                encode_params.insert("LOGOPOS", PathValue::from(placement.position.name().to_string()));
+                encode_params.insert("LOGOMARGIN", PathValue::from(placement.margin.to_string()));
+                encode_params.insert("LOGOOPACITY", PathValue::from(placement.opacity.to_string()));
+                if let Some(width) = placement.width_percent {
+                    encode_params.insert("LOGOWIDTH", PathValue::from(width.to_string()));
+                }
             }
             // The two files a background encode gates itself on, and the same two the speculative
             // planners have always used: the marker that says an ordinary encode is running, and

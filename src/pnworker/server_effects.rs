@@ -1,4 +1,7 @@
 use crate::lib::protocol::core::Protocol;
+use crate::lib::mpeg::logo::{
+    LOGO_EXTENSIONS, LogoConfig, ServerLogo, logo_extension_from_filename,
+};
 use crate::pnworker::core::{Concat, Preset};
 use crate::pnworker::tools::PNASS_INJECT;
 use crate::pnworker::util::{ConcatConfig, ConcatKind, PathValue, ToolResult, run_tool};
@@ -9,6 +12,10 @@ use std::path::{Path, PathBuf};
 pub struct ServerSettings {
     pub preset: Preset,
     pub watermark: Option<Vec<u8>>,
+    // The image watermark, beside the ASS one. Both are optional and independent: an ASS watermark
+    // is text libass draws into the subtitle stream, a logo is a picture the encoder composites over
+    // every frame, and a server may configure either, both, or neither.
+    pub logo: Option<ServerLogo>,
 }
 
 pub struct AppliedServerEffects {
@@ -65,6 +72,7 @@ pub fn load_server_settings(server_id: Option<u64>) -> ServerSettings {
         return ServerSettings {
             preset: Preset::Standard(Concat::NONE),
             watermark: None,
+            logo: None,
         };
     };
 
@@ -91,7 +99,141 @@ pub fn load_server_settings(server_id: Option<u64>) -> ServerSettings {
         .ok()
         .filter(|bytes| !bytes.is_empty());
 
-    ServerSettings { preset, watermark }
+    ServerSettings {
+        preset,
+        watermark,
+        logo: load_server_logo(server_id),
+    }
+}
+
+// The logo config written into a job's own `contents/`, beside the picture it names. Both the
+// download worker's speculative prefix and the encode that adopts it read this, so the two cannot
+// disagree about which picture goes where; reading the server's live config instead would let a
+// logo changed mid-encode apply to half an episode.
+pub const JOB_LOGO_CONFIG_FILE: &str = "server_logo.toml";
+
+pub async fn write_job_logo(directory: &Path, logo: &ServerLogo) -> Result<(), String> {
+    let contents = directory.join("contents");
+    let placement = logo.placement.sanitized();
+    let config = LogoConfig {
+        file: logo.file_name(),
+        placement,
+    };
+    let body = toml::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    // Picture first: a config naming a file that has not landed is what reads back as a broken
+    // logo, and the reader treats a missing picture as no logo at all.
+    tokio::fs::write(contents.join(logo.file_name()), &logo.bytes)
+        .await
+        .map_err(|e| e.to_string())?;
+    tokio::fs::write(contents.join(JOB_LOGO_CONFIG_FILE), body)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// The logo a job was set up with, or None when it has none. Never an error: a job with an unusable
+// logo still has a release to produce, and failing here would strand it over a watermark.
+pub fn load_job_logo(directory: &Path) -> Option<ServerLogo> {
+    let contents = directory.join("contents");
+    let config: LogoConfig =
+        toml::from_str(&std::fs::read_to_string(contents.join(JOB_LOGO_CONFIG_FILE)).ok()?).ok()?;
+    let extension = logo_extension_from_filename(&config.file)?;
+    if config.file.contains('/') || config.file.contains('\\') || config.file.starts_with('.') {
+        return None;
+    }
+    let bytes = std::fs::read(contents.join(&config.file))
+        .ok()
+        .filter(|bytes| !bytes.is_empty())?;
+    Some(ServerLogo {
+        bytes,
+        extension: extension.to_string(),
+        placement: config.placement.sanitized(),
+    })
+}
+
+// The path a job's logo picture sits at, for handing to pnmpeg. Separate from `load_job_logo`
+// because the encoder needs the file, not its bytes.
+pub fn job_logo_path(directory: &Path, logo: &ServerLogo) -> PathBuf {
+    directory.join("contents").join(logo.file_name())
+}
+
+pub fn server_config_dir(server_id: u64) -> PathBuf {
+    PathBuf::from("DB").join("config").join(server_id.to_string())
+}
+
+pub const LOGO_CONFIG_FILE: &str = "logo.toml";
+
+// The image watermark this server configured, or None when it has none — which is also the answer
+// when the config names a file that is not there. A logo that cannot be read must not fail the job:
+// the encode still has a release to produce, and the alternative is every job on that server
+// declining until an operator notices.
+pub fn load_server_logo(server_id: u64) -> Option<ServerLogo> {
+    let directory = server_config_dir(server_id);
+    let contents = std::fs::read_to_string(directory.join(LOGO_CONFIG_FILE)).ok()?;
+    let config: LogoConfig = match toml::from_str(&contents) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("Warning: could not parse {}: {}", directory.join(LOGO_CONFIG_FILE).display(), e);
+            return None;
+        }
+    };
+    // The stored name addresses a file beside the config and nothing else. It is written by the bot,
+    // but it is also a file on disk an operator may edit, and a path that climbed out of the
+    // server's own directory would be read and then shipped inside a release.
+    let extension = logo_extension_from_filename(&config.file)?;
+    if config.file.contains('/') || config.file.contains('\\') || config.file.starts_with('.') {
+        eprintln!("Warning: logo file `{}` is not a plain name", config.file);
+        return None;
+    }
+    let bytes = std::fs::read(directory.join(&config.file))
+        .ok()
+        .filter(|bytes| !bytes.is_empty())?;
+    Some(ServerLogo {
+        bytes,
+        extension: extension.to_string(),
+        placement: config.placement.sanitized(),
+    })
+}
+
+// Writes the image and the config that points at it, replacing whatever was there. The image is
+// written first: a config naming a file that has not landed yet is the one ordering that reads back
+// as a broken logo, and the reader treats a missing file as no logo at all.
+pub fn save_server_logo(server_id: u64, logo: &ServerLogo) -> Result<(), String> {
+    let directory = server_config_dir(server_id);
+    std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+    let file = logo.file_name();
+    std::fs::write(directory.join(&file), &logo.bytes).map_err(|e| e.to_string())?;
+    let config = LogoConfig {
+        file: file.clone(),
+        placement: logo.placement.sanitized(),
+    };
+    let body = toml::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    std::fs::write(directory.join(LOGO_CONFIG_FILE), body).map_err(|e| e.to_string())?;
+    // A server that switches from a PNG to a WebP would otherwise leave the old picture on disk,
+    // where nothing reads it and every backup carries it forever.
+    for extension in LOGO_EXTENSIONS {
+        let stale = directory.join(format!("server_logo.{extension}"));
+        if stale.file_name().map(|name| name.to_string_lossy() != file).unwrap_or(false) {
+            std::fs::remove_file(stale).ok();
+        }
+    }
+    Ok(())
+}
+
+// Removes the config first, so a failure part-way through leaves a server with no logo rather than
+// with a config pointing at a file that has been deleted.
+pub fn clear_server_logo(server_id: u64) -> Result<bool, String> {
+    let directory = server_config_dir(server_id);
+    let config = directory.join(LOGO_CONFIG_FILE);
+    let had_logo = config.exists();
+    match std::fs::remove_file(&config) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.to_string()),
+    }
+    for extension in LOGO_EXTENSIONS {
+        std::fs::remove_file(directory.join(format!("server_logo.{extension}"))).ok();
+    }
+    Ok(had_logo)
 }
 
 pub async fn server_effects(
@@ -248,6 +390,37 @@ mod tests {
             }
             other => panic!("a preset file did not resolve to a named preset: {other:?}"),
         }
+    }
+
+    // The download worker's speculative prefix and the encode that adopts it both read the job's own
+    // copy, so what one wrote the other has to read back exactly — a placement that did not survive
+    // the round trip would put the logo in different corners in one release.
+    #[tokio::test]
+    async fn a_jobs_logo_reads_back_as_it_was_written() {
+        let directory = std::env::temp_dir().join(format!("pnlogo-{}", std::process::id()));
+        std::fs::create_dir_all(directory.join("contents")).unwrap();
+        let logo = ServerLogo {
+            bytes: b"not really a png".to_vec(),
+            extension: "png".to_string(),
+            placement: crate::lib::mpeg::logo::LogoPlacement {
+                position: crate::lib::mpeg::logo::LogoPosition::BottomCenter,
+                margin: 12,
+                opacity: 65,
+                width_percent: Some(9),
+            },
+        };
+        write_job_logo(&directory, &logo).await.unwrap();
+        assert_eq!(load_job_logo(&directory), Some(logo.clone()));
+
+        // The picture is what makes it a logo: a config left behind without one is no logo at all,
+        // not a job that fails.
+        std::fs::remove_file(directory.join("contents").join(logo.file_name())).unwrap();
+        assert_eq!(load_job_logo(&directory), None);
+
+        // And a job that never had one reads back as none rather than as an error.
+        std::fs::remove_file(directory.join("contents").join(JOB_LOGO_CONFIG_FILE)).unwrap();
+        assert_eq!(load_job_logo(&directory), None);
+        std::fs::remove_dir_all(&directory).ok();
     }
 
     // `meta.pandora` is read by index, and line 19 is past the end of every file written before

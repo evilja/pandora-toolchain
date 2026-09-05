@@ -13,7 +13,10 @@ use pandora_toolchain::{pn_data, pn_emit, pn_schema};
 use pandora_toolchain::lib::mpeg::core::RpbData;
 use pandora_toolchain::lib::bin::resolve_runtime_binary;
 use pandora_toolchain::lib::mpeg::hls::{HlsNames, HlsSegmentType, DEFAULT_NAME_TEMPLATE};
-use pandora_toolchain::lib::mpeg::probe::{ffprobe_video_codec, ffprobe_video_height};
+use pandora_toolchain::lib::mpeg::probe::{ffprobe_dimensions, ffprobe_video_codec, ffprobe_video_height};
+use pandora_toolchain::lib::mpeg::logo::{
+    DEFAULT_LOGO_MARGIN, DEFAULT_LOGO_OPACITY, LogoPlacement, LogoPosition, compose_logo_filter,
+};
 use pandora_toolchain::lib::secret::{random_short_id, random_uuid_v4};
 use pandora_toolchain::lib::logging::diag::{exit_reason, memory_line, process_rss_mib, tail_line};
 use pandora_toolchain::lib::logging::tool::ToolLog;
@@ -186,6 +189,26 @@ struct Args {
     #[arg(long)]
     intro_preset: Option<String>,
 
+    /// Image watermark burned into every frame, composited after the preset's own filter chain.
+    #[arg(long)]
+    logo: Option<String>,
+
+    /// Nine-point anchor the logo sits at, e.g. `top-right`.
+    #[arg(long)]
+    logo_position: Option<String>,
+
+    /// Pixels between the logo and the frame edges it is anchored to.
+    #[arg(long)]
+    logo_margin: Option<u32>,
+
+    /// Logo alpha as a percentage, 1-100.
+    #[arg(long)]
+    logo_opacity: Option<u8>,
+
+    /// Logo width as a percentage of the output frame width. Omitted keeps the image's own size.
+    #[arg(long)]
+    logo_width: Option<u8>,
+
     #[arg(long)]
     negkey: Option<String>,
 
@@ -219,6 +242,127 @@ impl Args {
             _ => DEFAULT_NAME_TEMPLATE,
         }
     }
+
+    // The image watermark this run burns in, or None when the server configured none. A `--logo`
+    // whose file is not there is None as well rather than fatal: the encode still has a release to
+    // produce, and refusing it would strand every job on that server.
+    fn logo(&self) -> Option<(String, LogoPlacement)> {
+        let path = self.logo.as_deref().map(str::trim).filter(|path| !path.is_empty())?;
+        if !Path::new(path).is_file() {
+            eprintln!("pnmpeg: --logo `{path}` is not a readable file; encoding without it");
+            return None;
+        }
+        let placement = LogoPlacement {
+            // An unknown name would silently move the logo, so it is refused back to the default
+            // the same way a missing one is — and said out loud, because the two differ.
+            position: match self.logo_position.as_deref() {
+                None => LogoPosition::default(),
+                Some(name) => match LogoPosition::from_name(name) {
+                    Some(position) => position,
+                    None => {
+                        eprintln!("pnmpeg: unknown --logo-position `{name}`; using the default");
+                        LogoPosition::default()
+                    }
+                },
+            },
+            margin: self.logo_margin.unwrap_or(DEFAULT_LOGO_MARGIN),
+            opacity: self.logo_opacity.unwrap_or(DEFAULT_LOGO_OPACITY),
+            width_percent: self.logo_width,
+        };
+        Some((path.to_string(), placement.sanitized()))
+    }
+}
+
+// The width of the frame the logo is composited onto, which is the width the encode *outputs* and
+// not the source's: the overlay is appended after the preset's own chain, so a downscaling preset
+// has already shrunk the picture by the time the logo lands on it.
+//
+// Only consulted for a percentage width. Nothing is probed without one, which is what keeps a logo
+// sized in its own pixels off the ffprobe path entirely.
+fn logo_frame_width(input: &str, preset: Option<&ResolvedPreset>, log: &mut ToolLog) -> Option<u32> {
+    let (width, height) = log.step(
+        &format!("ffprobe dimensions {} (for the logo's percentage width)", input),
+        || ffprobe_dimensions(Path::new(input)),
+    )?;
+    if width == 0 || height == 0 {
+        return None;
+    }
+    // The scale filters cap rather than target, so a source already below the cap keeps its width.
+    let capped = match scale_height(preset) {
+        Some(cap) if height > cap => {
+            ((width as u64 * cap as u64 + height as u64 / 2) / height as u64) as u32
+        }
+        _ => width,
+    };
+    Some(capped.max(1))
+}
+
+// The image watermark this run burns in, resolved once so every encode path applies the same
+// picture in the same place. The foreground encode, the speculative linear prefix it adopts, and
+// the parallel chunk encoders all go through `apply`: a prefix encoded without the logo would be
+// adopted into the middle of a release that has one, and half an episode would carry it.
+#[derive(Clone, Debug, Default)]
+struct LogoOverlay {
+    logo: Option<(String, LogoPlacement)>,
+    frame_width: Option<u32>,
+}
+
+impl LogoOverlay {
+    fn resolve(args: &Args, preset: Option<&ResolvedPreset>, log: &mut ToolLog) -> Self {
+        let Some(logo) = args.logo() else {
+            return LogoOverlay::default();
+        };
+        // Probed only for a percentage width. A logo sized in its own pixels never touches ffprobe.
+        let frame_width = logo
+            .1
+            .width_percent
+            .and_then(|_| logo_frame_width(&args.input, preset, log));
+        log.line(&format!(
+            "logo {} at {} margin={} opacity={} width={:?}% frame_width={:?}",
+            logo.0,
+            logo.1.position.name(),
+            logo.1.margin,
+            logo.1.opacity,
+            logo.1.width_percent,
+            frame_width,
+        ));
+        LogoOverlay {
+            logo: Some(logo),
+            frame_width,
+        }
+    }
+
+    // Appends the overlay to a preset's filter chain, or hands the chain back untouched when no
+    // logo is configured.
+    fn apply(&self, base_filter: String) -> String {
+        match &self.logo {
+            None => base_filter,
+            Some((path, placement)) => {
+                compose_logo_filter(&base_filter, path, placement, self.frame_width)
+            }
+        }
+    }
+
+    // What makes a speculative prefix adoptable by this encode. It is `aot_compatibility` computed
+    // over the filter chain that will actually run, so the logo is part of it: without that, a
+    // prefix speculated before a logo was configured has the same key as one speculated after, and
+    // the foreground encode would mux the first minutes of a release that has no watermark into one
+    // that does. With no logo on either side this is byte-identical to the preset's own key, so
+    // nothing about an unwatermarked server changes.
+    fn compatibility(&self, preset: &ResolvedPreset) -> String {
+        let mut parts = vec![self.apply(preset.video_filter().unwrap_or_default())];
+        parts.extend(preset.video_encoder_args());
+        parts.join("\u{1f}")
+    }
+}
+
+// The `-vf` chain a chunk decoder runs, before the logo is appended. Taken from the preset rather
+// than hardcoded, because the chunks are assembled into one file and every one of them has to have
+// been through the same filters as the others.
+fn chunk_base_filter(preset: Option<&ResolvedPreset>) -> String {
+    preset
+        .and_then(ResolvedPreset::video_filter)
+        .unwrap_or_else(|| format!("ass={},format=yuv420p", pnx264::linear::SUBTITLE_TOKEN))
 }
 
 #[inline]
@@ -296,6 +440,7 @@ impl Drop for IdleGatedEncode {
 fn start_idle_gated_encode(
     args: &Args,
     preset: &ResolvedPreset,
+    logo: &LogoOverlay,
     log: &mut ToolLog,
 ) -> Result<IdleGatedEncode, String> {
     let Some(ass) = args.ass.as_deref() else {
@@ -330,10 +475,12 @@ fn start_idle_gated_encode(
         busy_file: args.aot_busyfile.as_deref().map(PathBuf::from),
         lease_file: args.aot_lockfile.as_deref().map(PathBuf::from),
         job_id: args.aot_job_id.unwrap_or(0),
-        compatibility: preset.aot_compatibility(),
-        filter: preset
-            .video_filter()
-            .unwrap_or_else(|| format!("ass={},format=yuv420p", pnx264::linear::SUBTITLE_TOKEN)),
+        compatibility: logo.compatibility(preset),
+        filter: logo.apply(
+            preset
+                .video_filter()
+                .unwrap_or_else(|| format!("ass={},format=yuv420p", pnx264::linear::SUBTITLE_TOKEN)),
+        ),
         video_args: preset.video_encoder_args(),
     };
     log.line(&format!(
@@ -567,6 +714,7 @@ fn finish_linear_aot(
     args: &Args,
     preset: &ResolvedPreset,
     audio_index: &str,
+    logo: &LogoOverlay,
     proto: &Protocol,
     neg: &str,
     log: &mut ToolLog,
@@ -592,7 +740,7 @@ fn finish_linear_aot(
         "linear AOT handoff found: complete={} pid={} job={} frames={} bytes={} {}",
         initial.complete, initial.pid, initial.job_id, initial.frames, initial.bytes, memory_line()
     ));
-    let wanted = preset.aot_compatibility();
+    let wanted = logo.compatibility(preset);
     if initial.compatibility != wanted {
         // The compatibility string is separated by a control character so that an argument
         // containing a space cannot forge a boundary in it. That makes it unreadable in a log, and
@@ -1056,6 +1204,11 @@ async fn main() {
         panic!("You must use one preset at a time.");
     }
     let active_preset = active_preset(&args);
+    // Resolved once, here, because every encode path burns it in and they all have to agree: the
+    // speculative prefix, the chunk encoders, and the foreground encode each produce part of one
+    // video. Nothing is probed unless a percentage width was asked for, and a run with no `--logo`
+    // does no work at all.
+    let logo = LogoOverlay::resolve(&args, active_preset.as_ref(), &mut log);
     if let Some(preset) = &active_preset {
         log.line(&format!(
             "preset {} ({}, {})",
@@ -1079,7 +1232,7 @@ async fn main() {
             std::process::exit(2);
         };
         let output = PathBuf::from(&args.output);
-        let compatibility = preset.aot_compatibility();
+        let compatibility = logo.compatibility(preset);
         let state_path = output
             .parent()
             .unwrap_or_else(|| Path::new("."))
@@ -1134,9 +1287,11 @@ async fn main() {
             lease_file: args.aot_lockfile.as_deref().map(PathBuf::from),
             job_id,
             compatibility,
-            filter: preset
-                .video_filter()
-                .unwrap_or_else(|| format!("ass={},format=yuv420p", pnx264::linear::SUBTITLE_TOKEN)),
+            filter: logo.apply(
+                preset
+                    .video_filter()
+                    .unwrap_or_else(|| format!("ass={},format=yuv420p", pnx264::linear::SUBTITLE_TOKEN)),
+            ),
             video_args: preset.video_encoder_args(),
         });
         watchdog_stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1190,6 +1345,7 @@ async fn main() {
             input: PathBuf::from(&args.input),
             output: PathBuf::from(&args.output),
             subtitle: PathBuf::from(ass),
+            filter: logo.apply(chunk_base_filter(active_preset.as_ref())),
             cancel_file: args.cancelfile.as_deref().map(PathBuf::from),
             stop_file: PathBuf::from(stop_file),
             busy_file: args.aot_busyfile.as_deref().map(PathBuf::from),
@@ -1502,14 +1658,14 @@ async fn main() {
         // A background preset that also encodes ahead has a prefix waiting for it, and adopting it
         // is the whole point: that speculation was itself gated, so the work is already background
         // work and re-doing it here would only spend the machine twice.
-        let mut handoff = finish_linear_aot(&args, preset, &audio_index, &proto, &neg, &mut log);
+        let mut handoff = finish_linear_aot(&args, preset, &audio_index, &logo, &proto, &neg, &mut log);
         // Nothing to adopt. An ordinary preset falls through to the linear encode below; a
         // background one cannot, because that encode would run at full speed with nothing to stop
         // it. It runs the same gated encoder here instead and adopts its own output.
         if matches!(handoff, Ok(false)) && idle_gated {
-            handoff = match start_idle_gated_encode(&args, preset, &mut log) {
+            handoff = match start_idle_gated_encode(&args, preset, &logo, &mut log) {
                 Ok(idle) => {
-                    let result = finish_linear_aot(&args, preset, &audio_index, &proto, &neg, &mut log);
+                    let result = finish_linear_aot(&args, preset, &audio_index, &logo, &proto, &neg, &mut log);
                     match (idle.error(), result) {
                         // The thread's own account of the failure is the specific one; whatever the
                         // handoff made of the state file disappearing underneath it is not.
@@ -1589,6 +1745,7 @@ async fn main() {
                 input: PathBuf::from(&args.input),
                 output,
                 subtitle: PathBuf::from(ass),
+                filter: logo.apply(chunk_base_filter(active_preset.as_ref())),
                 cancel_file: args.cancelfile.as_deref().map(PathBuf::from),
                 plan: plan.filter(|path| path.exists()),
                 workers,
@@ -1704,10 +1861,13 @@ async fn main() {
                 *i = FfmpegParams::Input(Cow::Owned(c));
             },
             FfmpegParams::BasicFilter(a) => {
+                let mut chain = a.to_string();
                 if let Some(ref b) = args.ass {
-                    let ass = quote_filter_value(b);
-                    *i = FfmpegParams::BasicFilter(Cow::Owned(a.replace("INPUTFILEASS", &ass)));
+                    chain = chain.replace("INPUTFILEASS", &quote_filter_value(b));
                 }
+                // Appended last, so the logo lands on the frame the encoder is about to write —
+                // after any scaling the preset does, not before it.
+                *i = FfmpegParams::BasicFilter(Cow::Owned(logo.apply(chain)));
             }
             FfmpegParams::Output(a) => {
                 *i = FfmpegParams::Output(Cow::Owned(a.replace("OUTFILEV", &args.output)));

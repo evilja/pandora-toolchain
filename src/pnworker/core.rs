@@ -2,6 +2,8 @@ use crate::lib::db::core::JobDb;
 use crate::lib::p2p::core::cleanup_torrent_runtime;
 use crate::lib::p2p::nyaaise::TorrentType;
 use crate::lib::subs::ensure_ass_bytes;
+use crate::lib::mpeg::logo::ServerLogo;
+use crate::pnworker::server_effects::write_job_logo;
 use crate::lumiere_broker::cleanup_expired_hls;
 use crate::pnworker::cache::{
     cache_encode_input, cleanup_expired_input_cache, cleanup_input_cache_startup,
@@ -754,6 +756,20 @@ async fn prepare_queued_job(job: &mut Job, worker: &str, write_subtitle: bool) -
                     "[Pandora] job {} watermark setup failed: {}",
                     job.job_id, e
                 );
+                return Err("could not prepare the work directory".to_string());
+            }
+        }
+        // Beside the job rather than read from the server's config directory at encode time, so a
+        // logo replaced while this job was queued cannot change what it ships — the same reason the
+        // ASS watermark is copied here, and the same reason a leased job carries its bytes.
+        //
+        // The placement is written beside the picture because the job directory is what every
+        // worker reads: the download worker's speculative prefix and the encode that adopts it both
+        // have to burn in the same logo in the same corner, and one of them reading the server's
+        // live config would produce half an episode with the logo somewhere else.
+        if let Some(logo) = &job.server_logo {
+            if let Err(e) = write_job_logo(&job.directory, logo).await {
+                eprintln!("[Pandora] job {} logo setup failed: {}", job.job_id, e);
                 return Err("could not prepare the work directory".to_string());
             }
         }
@@ -4630,6 +4646,9 @@ pub struct Job {
     pub display_link: Option<String>,
     pub attachment: Vec<u8>,
     pub server_watermark: Option<Vec<u8>>,
+    // The server's image watermark, snapshotted the same way and for the same reason: a logo an
+    // operator changes mid-queue must not retroactively apply to jobs already waiting.
+    pub server_logo: Option<ServerLogo>,
     pub frontend: Frontend,
     pub directory: PathBuf,
     pub ready: Stage,
@@ -4769,6 +4788,14 @@ impl Job {
             } else {
                 None
             },
+            server_logo: if matches!(
+                job_type,
+                JobType::Encode | JobType::Pancode | JobType::Batch
+            ) {
+                settings.logo
+            } else {
+                None
+            },
             frontend: Frontend::discord(context, msg),
             directory: env::current_dir()
                 .unwrap_or_else(|_| PathBuf::from("."))
@@ -4860,6 +4887,14 @@ impl Job {
                 JobType::Encode | JobType::Pancode | JobType::Batch
             ) {
                 settings.watermark
+            } else {
+                None
+            },
+            server_logo: if matches!(
+                job_type,
+                JobType::Encode | JobType::Pancode | JobType::Batch
+            ) {
+                settings.logo
             } else {
                 None
             },

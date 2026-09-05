@@ -305,6 +305,14 @@ pub async fn build_batch_child(parent: &Job, entry: &BatchEntry, source: &Path) 
             return None;
         }
     }
+    if let Some(logo) = child.server_logo.clone() {
+        if crate::pnworker::server_effects::write_job_logo(&child.directory, &logo)
+            .await
+            .is_err()
+        {
+            return None;
+        }
+    }
     Some(child)
 }
 

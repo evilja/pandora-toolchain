@@ -639,6 +639,13 @@ own concat folders as it encodes, and counting them would move the revision — 
 every time an unfamiliar output format was met. A node regenerates its own, and a prune drops them
 along with everything else, since they were derived from a set that has just changed.
 
+The **image watermark** is the exception to all of this: it travels in the job spec as bytes
+(`logo_b64`, `logo_extension`, `logo_placement`) rather than through the corpus. Unlike a font or a
+concat group it is one file belonging to one server, there is no set for a node to have synced, and
+the job already snapshotted it — so there is nothing for a revision to describe. A spec that carries
+the picture without a usable extension or with unreadable base64 is declined rather than guessed at,
+since ffmpeg opens the stored file by its name and the bytes came off the wire.
+
 ## What can be leased
 
 The rule is "does the job carry its own source", since a node fetches its own input:

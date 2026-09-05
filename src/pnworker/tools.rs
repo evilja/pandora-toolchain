@@ -107,6 +107,13 @@ pub const PNMPEG_ENCODE: &[CliParam] = &[
     CliParam::OptionalPair("--aot-busyfile", "AOTBUSY"),
     CliParam::OptionalPair("--aot-lockfile", "AOTLOCK"),
     CliParam::OptionalPair("--aot-job-id", "AOTJOBID"),
+    // Present only for a server that configured an image watermark; without them pnmpeg leaves the
+    // preset's filter chain exactly as it was.
+    CliParam::OptionalPair("--logo", "LOGO"),
+    CliParam::OptionalPair("--logo-position", "LOGOPOS"),
+    CliParam::OptionalPair("--logo-margin", "LOGOMARGIN"),
+    CliParam::OptionalPair("--logo-opacity", "LOGOOPACITY"),
+    CliParam::OptionalPair("--logo-width", "LOGOWIDTH"),
     CliParam::Literal("--ass"),
     CliParam::Path("ASS"),
     CliParam::Literal("--fontconfig"),

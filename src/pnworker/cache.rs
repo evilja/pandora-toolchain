@@ -288,6 +288,7 @@ mod tests {
             display_link: None,
             attachment: b"ass".to_vec(),
             server_watermark: None,
+            server_logo: None,
             frontend: Frontend::None,
             directory,
             ready: Stage::Downloading,

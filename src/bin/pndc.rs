@@ -844,6 +844,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("configure", 2),
     ("edit", 2),
     ("touchwatermark", 2),
+    ("touchlogo", 2),
     ("readmebase", 2),
     ("touchapi", 2),
     ("touchtranslation", 2),
@@ -984,6 +985,7 @@ const SERVER_ADMIN_COMMANDS: &[&str] = &[
     "configure",
     "edit",
     "touchwatermark",
+    "touchlogo",
     "readmebase",
     "font",
     "cfont",
@@ -1257,6 +1259,13 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Replace the server-scoped subtitle watermark.",
             usage: "/touchwatermark watermark:<file.ass>",
             details: "Replaces the watermark applied to future encodes. Dialogue Effect `[all]` spans the downloaded video; `[precise]` and other effects preserve the watermark event's own timing. Admin only.",
+        },
+        HelpCommand {
+            section: "admin",
+            name: "touchlogo",
+            summary: "Replace the server-scoped image watermark.",
+            usage: "/touchlogo [image] [position] [margin] [opacity] [width] [clear:true]",
+            details: "The image watermark, beside /touchwatermark's subtitle one — a PNG, JPEG, or WebP the encoder composites over every frame of future Encode, Pancode, and batch jobs. PNG is the one of the three that carries transparency. position is a nine-point anchor (default top-right), margin the pixels from the edges it is anchored to (default 24), opacity its alpha from 1 to 100, and width its size as a percentage of the output frame — 0 restores the image's own pixel size, which is the default. The placement options work on their own once a logo exists, so moving it needs no re-upload; clear:true removes it. The format is read from the file's own signature, not its name. The logo is burned in after any scaling the preset does, so one setting is right at every resolution, and jobs already queued keep the logo they were created with. Admin only.",
         },
         HelpCommand {
             section: "admin",
@@ -2435,6 +2444,9 @@ impl EventHandler for Handler {
                 "touchwatermark" => {
                     handle_touchwatermark(&ctx, &command).await;
                 }
+                "touchlogo" => {
+                    handle_touchlogo(&ctx, &command).await;
+                }
                 "touchapi" => {
                     handle_addapi(&ctx, &command).await;
                 }
@@ -3258,6 +3270,48 @@ impl EventHandler for Handler {
                     CreateCommandOption::new(CommandOptionType::Attachment, "watermark", "ASS watermark subtitle")
                         .required(true)
                 ),
+            {
+                // Every option is optional: with a logo already stored the placement ones work on
+                // their own, so moving it to the other corner needs no re-upload.
+                let mut position = CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "position",
+                    "Where the logo sits. Defaults to top-right.",
+                )
+                .required(false);
+                for anchor in pandora_toolchain::lib::mpeg::logo::LOGO_POSITIONS {
+                    position = position.add_string_choice(anchor.name(), anchor.name());
+                }
+                CreateCommand::new("touchlogo")
+                    .description("Replace the server-scoped image watermark")
+                    .add_option(
+                        CreateCommandOption::new(CommandOptionType::Attachment, "image", "PNG, JPEG, or WebP logo. PNG is the one that carries transparency.")
+                            .required(false)
+                    )
+                    .add_option(position)
+                    .add_option(
+                        CreateCommandOption::new(CommandOptionType::Integer, "margin", "Pixels from the edges the logo is anchored to. Defaults to 24.")
+                            .required(false)
+                            .min_int_value(0)
+                            .max_int_value(pandora_toolchain::lib::mpeg::logo::MAX_LOGO_MARGIN as u64)
+                    )
+                    .add_option(
+                        CreateCommandOption::new(CommandOptionType::Integer, "opacity", "Logo alpha, 1-100. Defaults to 100.")
+                            .required(false)
+                            .min_int_value(1)
+                            .max_int_value(100)
+                    )
+                    .add_option(
+                        CreateCommandOption::new(CommandOptionType::Integer, "width", "Logo width as a percentage of the frame; 0 uses the image's own size.")
+                            .required(false)
+                            .min_int_value(0)
+                            .max_int_value(pandora_toolchain::lib::mpeg::logo::MAX_LOGO_WIDTH_PERCENT as u64)
+                    )
+                    .add_option(
+                        CreateCommandOption::new(CommandOptionType::Boolean, "clear", "Remove this server's image watermark.")
+                            .required(false)
+                    )
+            },
             CreateCommand::new("touchapi")
                 .description("Write or update an API token in the toolchain env file")
                 .add_option(

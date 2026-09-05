@@ -89,6 +89,31 @@ selected. See [WORKER.md](WORKER.md#parallel-veryslow-encoding).
 The file format and its `hardware` tag are described in [WORKER.md](WORKER.md) and
 [LINK.md](LINK.md#purpose); reference copies of every built-in live in `presets/`.
 
+## `pnmpeg` image watermark
+
+`--logo <file>` composites a picture over every frame, appended to whatever `-vf` chain the preset
+already produces so it lands after any scaling that chain does. `--logo-position` is one of the nine
+anchors (`top-left` … `bottom-right`, default `top-right`), `--logo-margin` the pixels from the edges
+it is anchored to, `--logo-opacity` its alpha as 1-100, and `--logo-width` its width as a percentage
+of the output frame — omitted keeps the image's own pixel size, and it is the only one of the five
+that costs an `ffprobe`. Positions use ffmpeg's `W`/`H`/`w`/`h` variables, so one setting is correct
+at every resolution.
+
+The picture arrives through the `movie` source filter rather than a second `-i`: a simple filtergraph
+takes one decoder input, and a real input would mean rewriting every preset's `-map` arguments.
+`eof_action=repeat:shortest=0` keeps a still image on screen for the whole episode rather than ending
+the encode at frame one, and the chain's own `format=` is restated after the overlay because
+`overlay` given an alpha overlay negotiates an alpha format for the main input too — on a 10-bit
+chain that measured as `yuva420p`, which adds a layer no release wants, drops the video to 8 bits, and
+makes libx265 refuse the stream. A preset chain that declares no `format=` is pinned to `yuv420p`,
+which is what the overlay would have produced anyway minus the alpha; **a preset file that wants
+10-bit has to declare its `format=`**, as it already had to for the encoder to receive it.
+
+A `--logo` naming a file that is not there is logged and skipped rather than fatal: the run still has
+a release to produce. The same flags reach every encode path — the foreground encode, the speculative
+linear prefix, and the parallel chunk decoders — and the logo is part of the AOT compatibility key, so
+a prefix speculated without one is never adopted by an encode that wants it.
+
 ## `pnmpeg` intro/outro concat mode
 
 `pnmpeg --concat --input <episode.mp4> [--intro-dir <group-folder>] [--outro-dir <group-folder>] --output <video.mp4>` discovers the retained variants in each group folder it is given. If one has the same H.264/AAC concat properties as the encoded episode (dimensions, pixel format, sample aspect ratio, frame rate, sample rate, and channel count), it is joined with video/audio stream copy. Otherwise, only the best source variant is transcoded to those properties as `pnmpeg_compat_<signature>.mp4` in that group folder; the retained variant is then stream-copied and automatically reused by later compatible encodes. Existing `/touchintro` and `/touchoutro` variants remain untouched.
@@ -178,7 +203,7 @@ Every tool now writes a **run log**: `ToolLog` in `src/lib/logging/tool.rs`, one
 
 `ToolLog::beside(logfile)` derives `<name>.run.log` next to the tool's existing `--logfile` transcript, so pnmpeg and pncurl gained one without a new `CliParam`. pnass and pnp2p take `--logfile` directly (pnass has no subprocess transcript; pnp2p had no log at all).
 
-- **pnmpeg** → `PNmpeg_*<job_id>.run.log`. Args and mode, intro/outro preparation (which may transcode), `select_subinput`, the framerate/samplerate compatibility probe, preset parameter count, the audio-language probe, **every `ffprobe -count_packets` with its duration** — a full demux of the input, the longest thing that runs before ffmpeg exists — then `handing off to ffmpeg`, `spawning ffmpeg`, the **first progress frame**, and the terminal warning/done/fail/cancel. Everything before "first ffmpeg progress" is setup a stalled run never got past.
+- **pnmpeg** → `PNmpeg_*<job_id>.run.log`. Args and mode, intro/outro preparation (which may transcode), the resolved logo and its frame width, `select_subinput`, the framerate/samplerate compatibility probe, preset parameter count, the audio-language probe, **every `ffprobe -count_packets` with its duration** — a full demux of the input, the longest thing that runs before ffmpeg exists — then `handing off to ffmpeg`, `spawning ffmpeg`, the **first progress frame**, and the terminal warning/done/fail/cancel. Everything before "first ffmpeg progress" is setup a stalled run never got past.
 - **pnp2p** → `PNp2p*<job_id>.log`. Args, client initialisation, probe start/result count, the selection being downloaded, and the terminal result. Previously the torrent path wrote nothing to the job directory, so a stuck download and a download that never started were indistinguishable.
 - **pncurl** → `PNcurl*<job_id>.run.log`. Args, which mode started (scrape / direct / drive upload), and its outcome.
 - **pnass** → `PNass_Inject<job_id>.log`. See [`pnass` flags](#pnass-flags).

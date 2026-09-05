@@ -40,6 +40,12 @@ pub struct ParallelConfig {
     pub input: PathBuf,
     pub output: PathBuf,
     pub subtitle: PathBuf,
+    // The `-vf` chain every chunk decoder runs, with `SUBTITLE_TOKEN` where the subtitle path
+    // belongs. Empty means the plain burned-in subtitle chain, which is what this always did before
+    // a caller could hand one in. It is a parameter because the chunks and the file they are
+    // assembled into have to have gone through the same filters: a caller that burns in a logo, or
+    // scales, must not get some of that applied and not the rest.
+    pub filter: String,
     pub cancel_file: Option<PathBuf>,
     pub plan: Option<PathBuf>,
     pub workers: usize,
@@ -73,6 +79,7 @@ pub struct AotChunkConfig {
     pub input: PathBuf,
     pub output: PathBuf,
     pub subtitle: PathBuf,
+    pub filter: String,
     pub cancel_file: Option<PathBuf>,
     pub stop_file: PathBuf,
     pub busy_file: Option<PathBuf>,
@@ -226,6 +233,16 @@ fn count_packets(ffprobe: &Path, input: &Path) -> Result<u64, String> {
         .map_err(|_| "ffprobe returned an unreadable packet count".to_string())
 }
 
+// The chain one chunk decoder runs. An empty configured chain is the burned-in subtitle default
+// this had hardcoded, so a caller that does not care keeps exactly the behaviour it had.
+fn chunk_filter(configured: &str, subtitle: &str) -> String {
+    let quoted = filter_quote(subtitle);
+    match configured.trim() {
+        "" => format!("ass={quoted},format=yuv420p"),
+        chain => chain.replace(crate::linear::SUBTITLE_TOKEN, &quoted),
+    }
+}
+
 fn filter_quote(value: &str) -> String {
     let mut out = String::new();
     for ch in value.chars() {
@@ -339,7 +356,7 @@ fn encode_chunk(
     let seek = format!("{:.9}", start as f64 * source.fps_den as f64 / source.fps_num as f64);
     let frame_count = frames.to_string();
     let subtitle = std::fs::canonicalize(&config.subtitle).unwrap_or_else(|_| config.subtitle.clone());
-    let filter = format!("ass={},format=yuv420p", filter_quote(&subtitle.to_string_lossy()));
+    let filter = chunk_filter(&config.filter, &subtitle.to_string_lossy());
     let mut child = Command::new(&config.ffmpeg)
         .args([
             "-v", "error", "-ss", &seek, "-copyts", "-i",
@@ -428,6 +445,7 @@ pub fn encode_aot_chunk(config: AotChunkConfig) -> Result<(), String> {
         input: config.input,
         output: config.output.clone(),
         subtitle: config.subtitle,
+        filter: config.filter,
         cancel_file: config.cancel_file,
         plan: None,
         workers: 1,

@@ -232,6 +232,27 @@ async fn start_download_planner(
         "--logfile",
         &directory.join("log").join(format!("PNmpeg_Plan{}.log", job_id)).display().to_string(),
     ]);
+    // The speculation has to burn in the same logo the foreground encode will, because what it
+    // produces is the first part of that encode's own video. Read from the job directory, which is
+    // where the encode worker reads it too, so the two cannot be handed different answers. Without
+    // this the prefix would be adopted — or, once the logo is part of the AOT compatibility key,
+    // thrown away — and either way the speculation would have been wasted.
+    if let Some(logo) = crate::pnworker::server_effects::load_job_logo(directory) {
+        let placement = logo.placement.sanitized();
+        command.args([
+            "--logo",
+            &crate::pnworker::server_effects::job_logo_path(directory, &logo).display().to_string(),
+            "--logo-position",
+            placement.position.name(),
+            "--logo-margin",
+            &placement.margin.to_string(),
+            "--logo-opacity",
+            &placement.opacity.to_string(),
+        ]);
+        if let Some(width) = placement.width_percent {
+            command.args(["--logo-width", &width.to_string()]);
+        }
+    }
     command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
