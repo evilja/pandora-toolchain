@@ -114,6 +114,7 @@ pub const PNMPEG_ENCODE: &[CliParam] = &[
     CliParam::OptionalPair("--logo-margin", "LOGOMARGIN"),
     CliParam::OptionalPair("--logo-opacity", "LOGOOPACITY"),
     CliParam::OptionalPair("--logo-width", "LOGOWIDTH"),
+    CliParam::OptionalPair("--logo-period", "LOGOPERIOD"),
     CliParam::Literal("--ass"),
     CliParam::Path("ASS"),
     CliParam::Literal("--fontconfig"),

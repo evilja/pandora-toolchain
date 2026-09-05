@@ -271,6 +271,9 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 if let Some(width) = placement.width_percent {
                     encode_params.insert("LOGOWIDTH", PathValue::from(width.to_string()));
                 }
+                if let Some(period) = placement.period {
+                    encode_params.insert("LOGOPERIOD", PathValue::from(period.label()));
+                }
             }
             // The two files a background encode gates itself on, and the same two the speculative
             // planners have always used: the marker that says an ordinary encode is running, and

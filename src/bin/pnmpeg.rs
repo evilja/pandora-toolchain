@@ -15,7 +15,8 @@ use pandora_toolchain::lib::bin::resolve_runtime_binary;
 use pandora_toolchain::lib::mpeg::hls::{HlsNames, HlsSegmentType, DEFAULT_NAME_TEMPLATE};
 use pandora_toolchain::lib::mpeg::probe::{ffprobe_dimensions, ffprobe_video_codec, ffprobe_video_height};
 use pandora_toolchain::lib::mpeg::logo::{
-    DEFAULT_LOGO_MARGIN, DEFAULT_LOGO_OPACITY, LogoPlacement, LogoPosition, compose_logo_filter,
+    DEFAULT_LOGO_MARGIN, DEFAULT_LOGO_OPACITY, LogoPeriod, LogoPlacement, LogoPosition,
+    compose_logo_filter,
 };
 use pandora_toolchain::lib::secret::{random_short_id, random_uuid_v4};
 use pandora_toolchain::lib::logging::diag::{exit_reason, memory_line, process_rss_mib, tail_line};
@@ -209,6 +210,11 @@ struct Args {
     #[arg(long)]
     logo_width: Option<u8>,
 
+    /// How often the logo shows and for how long, as `<every>:<visible>` — `5m:20s`. Omitted draws
+    /// it on every frame.
+    #[arg(long)]
+    logo_period: Option<String>,
+
     #[arg(long)]
     negkey: Option<String>,
 
@@ -268,6 +274,19 @@ impl Args {
             margin: self.logo_margin.unwrap_or(DEFAULT_LOGO_MARGIN),
             opacity: self.logo_opacity.unwrap_or(DEFAULT_LOGO_OPACITY),
             width_percent: self.logo_width,
+            // Refused back to no period the same way an unknown position is refused back to the
+            // default: a logo drawn on every frame is a watermark that is merely too eager, and a
+            // half-read cadence would be one that appears at times nobody chose.
+            period: match self.logo_period.as_deref() {
+                None => None,
+                Some(value) => match LogoPeriod::parse(value) {
+                    Ok(period) => Some(period),
+                    Err(reason) => {
+                        eprintln!("pnmpeg: --logo-period `{value}` ignored: {reason}");
+                        None
+                    }
+                },
+            },
         };
         Some((path.to_string(), placement.sanitized()))
     }
@@ -318,12 +337,13 @@ impl LogoOverlay {
             .width_percent
             .and_then(|_| logo_frame_width(&args.input, preset, log));
         log.line(&format!(
-            "logo {} at {} margin={} opacity={} width={:?}% frame_width={:?}",
+            "logo {} at {} margin={} opacity={} width={:?}% period={} frame_width={:?}",
             logo.0,
             logo.1.position.name(),
             logo.1.margin,
             logo.1.opacity,
             logo.1.width_percent,
+            logo.1.period.map(|period| period.label()).unwrap_or_else(|| "every frame".to_string()),
             frame_width,
         ));
         LogoOverlay {

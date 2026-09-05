@@ -1264,8 +1264,8 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "admin",
             name: "touchlogo",
             summary: "Replace the server-scoped image watermark.",
-            usage: "/touchlogo [image] [position] [margin] [opacity] [width] [clear:true]",
-            details: "The image watermark, beside /touchwatermark's subtitle one — a PNG, JPEG, or WebP the encoder composites over every frame of future Encode, Pancode, and batch jobs. PNG is the one of the three that carries transparency. position is a nine-point anchor (default top-right), margin the pixels from the edges it is anchored to (default 24), opacity its alpha from 1 to 100, and width its size as a percentage of the output frame — 0 restores the image's own pixel size, which is the default. The placement options work on their own once a logo exists, so moving it needs no re-upload; clear:true removes it. The format is read from the file's own signature, not its name. The logo is burned in after any scaling the preset does, so one setting is right at every resolution, and jobs already queued keep the logo they were created with. Admin only.",
+            usage: "/touchlogo [image] [position] [margin] [opacity] [width] [period] [clear:true]",
+            details: "The image watermark, beside /touchwatermark's subtitle one — a PNG, JPEG, or WebP the encoder composites over every frame of future Encode, Pancode, and batch jobs. PNG is the one of the three that carries transparency. position is a nine-point anchor (default top-right), margin the pixels from the edges it is anchored to (default 24), opacity its alpha from 1 to 100, and width its size as a percentage of the output frame — 0 restores the image's own pixel size, which is the default. period makes the logo a recurring burst instead of a fixture, written as <every>:<visible> — 5m:20s shows it for twenty seconds every five minutes, fading in and out at each end; off draws it on every frame again. The placement options work on their own once a logo exists, so moving it needs no re-upload; clear:true removes it. The format is read from the file's own signature, not its name. The logo is burned in after any scaling the preset does, so one setting is right at every resolution, and jobs already queued keep the logo they were created with. Admin only.",
         },
         HelpCommand {
             section: "admin",
@@ -3306,6 +3306,10 @@ impl EventHandler for Handler {
                             .required(false)
                             .min_int_value(0)
                             .max_int_value(pandora_toolchain::lib::mpeg::logo::MAX_LOGO_WIDTH_PERCENT as u64)
+                    )
+                    .add_option(
+                        CreateCommandOption::new(CommandOptionType::String, "period", "How often the logo shows and for how long, e.g. `5m:20s`. `off` draws it on every frame.")
+                            .required(false)
                     )
                     .add_option(
                         CreateCommandOption::new(CommandOptionType::Boolean, "clear", "Remove this server's image watermark.")

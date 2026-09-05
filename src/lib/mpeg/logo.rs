@@ -106,6 +106,173 @@ pub const DEFAULT_LOGO_OPACITY: u8 = 100;
 pub const MIN_LOGO_WIDTH_PERCENT: u8 = 1;
 pub const MAX_LOGO_WIDTH_PERCENT: u8 = 50;
 
+// The longest interval a period may name. Nothing this encodes is longer than an episode, and a
+// period longer than the video is a logo that is drawn once at the start and never again — which is
+// still a coherent thing to ask for, so the cap is generous rather than tight.
+pub const MAX_LOGO_PERIOD_SECONDS: u32 = 6 * 60 * 60;
+
+// How long the logo takes to arrive and to leave. Derived rather than configured: a quarter of the
+// visible window, capped at a second, is long enough to read as a fade and short enough that a
+// twenty-second appearance is still twenty seconds of logo.
+pub const LOGO_FADE_SECONDS: f64 = 1.0;
+
+// The fade is drawn as this many discrete alpha levels rather than a continuous ramp. ffmpeg has no
+// time-varying alpha for a still overlay — `colorchannelmixer` takes a number, not an expression,
+// and the per-pixel filter that does take one (`geq`) needs the logo turned into a looping video
+// stream that `overlay` then has to fast-forward through from zero on every chunk. A stack of
+// `overlay`s at fixed alphas, each switched on for the slice of the ramp it stands for, costs
+// nothing when it is off and works identically in a chunk that starts twenty minutes in.
+pub const LOGO_FADE_STEPS: u32 = 8;
+
+// A logo that appears in bursts instead of sitting on every frame: `every_seconds` from the start of
+// one appearance to the start of the next, `visible_seconds` on screen each time. Stored as two
+// counts rather than as the `5m:20s` an operator types, because the encoder, the link spec and the
+// forwarding key all want the numbers and none of them should have to parse a duration.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogoPeriod {
+    pub every_seconds: u32,
+    pub visible_seconds: u32,
+}
+
+impl LogoPeriod {
+    // `<every>:<visible>`, each side a duration like `5m`, `90s` or `1h30m`. Rejected rather than
+    // clamped, because a period is typed by hand and an operator who wrote `20s:5m` meant the other
+    // order and should be told so rather than handed a logo that never leaves.
+    pub fn parse(value: &str) -> Result<LogoPeriod, String> {
+        let value = value.trim();
+        let Some((every, visible)) = value.split_once(':') else {
+            return Err(format!(
+                "`{value}` is not a period. It is written as `<every>:<visible>` — `5m:20s` shows the logo for twenty seconds every five minutes."
+            ));
+        };
+        let duration = |part: &str| {
+            parse_duration_seconds(part).ok_or_else(|| {
+                format!(
+                    "`{}` is not a duration. Write it as `5m`, `20s`, `1h30m`, or a plain number of seconds.",
+                    part.trim()
+                )
+            })
+        };
+        let period = LogoPeriod {
+            every_seconds: duration(every)?,
+            visible_seconds: duration(visible)?,
+        };
+        period.validate()?;
+        Ok(period)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.visible_seconds == 0 {
+            return Err(
+                "a period that shows the logo for no time at all would hide it entirely; that is what `clear` is for."
+                    .to_string(),
+            );
+        }
+        if self.every_seconds > MAX_LOGO_PERIOD_SECONDS || self.visible_seconds > MAX_LOGO_PERIOD_SECONDS {
+            return Err(format!(
+                "a period is at most {}; `{}` is longer than anything this encodes.",
+                format_duration_seconds(MAX_LOGO_PERIOD_SECONDS),
+                self.label()
+            ));
+        }
+        if self.visible_seconds >= self.every_seconds {
+            return Err(format!(
+                "`{}` keeps the logo on screen for as long as it waits, so it would never leave. The visible half has to be shorter than the interval, or use `off` to draw it on every frame.",
+                self.label()
+            ));
+        }
+        Ok(())
+    }
+
+    // What an operator typed, spelled back the one way. This is the label the command echoes and the
+    // value the forwarding key hashes, so two servers that wrote `300:20` and `5m:20s` are one.
+    pub fn label(&self) -> String {
+        format!(
+            "{}:{}",
+            format_duration_seconds(self.every_seconds),
+            format_duration_seconds(self.visible_seconds)
+        )
+    }
+
+    // The ramp at each end of an appearance. Capped at a quarter of the window so that a short one
+    // still spends half its time at full alpha instead of being nothing but fade.
+    pub fn fade_seconds(&self) -> f64 {
+        (self.visible_seconds as f64 / 4.0).min(LOGO_FADE_SECONDS)
+    }
+
+    // The `enable` expression for the overlay drawn at `step`/`LOGO_FADE_STEPS` of the logo's alpha:
+    // the slice of the ramp that rounds to that level, on the way in and again on the way out.
+    //
+    // `t` is the frame's own timestamp, so the pattern is anchored to the video rather than to the
+    // run — which is what keeps a parallel chunk that starts twenty minutes in showing the logo at
+    // the same moments the linear encode of the same episode would.
+    pub fn fade_step_enable(&self, step: u32) -> String {
+        let fade = self.fade_seconds();
+        // The ramp reaches `level`/steps at `(level-0.5)*fade/steps` in, and leaves it the same
+        // distance before the end; rounding to the nearest level is what the half is.
+        let entry = |level: f64| (level - 0.5) * fade / LOGO_FADE_STEPS as f64;
+        let visible = self.visible_seconds as f64;
+        let elapsed = format!("mod(t,{})", self.every_seconds);
+        let (opens, closes) = (entry(step as f64), visible - entry(step as f64));
+        if step >= LOGO_FADE_STEPS {
+            return format!("gte({elapsed},{opens:.3})*lte({elapsed},{closes:.3})");
+        }
+        let (next_opens, next_closes) = (entry(step as f64 + 1.0), visible - entry(step as f64 + 1.0));
+        format!(
+            "gte({elapsed},{opens:.3})*lt({elapsed},{next_opens:.3})+gt({elapsed},{next_closes:.3})*lte({elapsed},{closes:.3})"
+        )
+    }
+}
+
+// A duration written the way a person writes one: `1h30m`, `5m`, `90s`, or a bare number of seconds.
+// Units may be combined and a trailing bare number is seconds, so `1m30` is the same as `90s`.
+pub fn parse_duration_seconds(value: &str) -> Option<u32> {
+    let value = value.trim().to_ascii_lowercase();
+    let mut total: u64 = 0;
+    let mut digits = String::new();
+    let mut saw_digit = false;
+    for ch in value.chars() {
+        if ch.is_ascii_digit() {
+            digits.push(ch);
+            saw_digit = true;
+            continue;
+        }
+        let unit: u64 = match ch {
+            'h' => 3600,
+            'm' => 60,
+            's' => 1,
+            _ => return None,
+        };
+        // A unit with no number in front of it is a typo, not a zero.
+        let count = digits.parse::<u64>().ok()?;
+        digits.clear();
+        total = total.checked_add(count.checked_mul(unit)?)?;
+    }
+    if !digits.is_empty() {
+        total = total.checked_add(digits.parse::<u64>().ok()?)?;
+    }
+    if !saw_digit {
+        return None;
+    }
+    u32::try_from(total).ok()
+}
+
+// The canonical spelling of a duration, smallest number of parts that says it. Zero is `0s` rather
+// than the empty string, so a value always reads as a duration.
+pub fn format_duration_seconds(seconds: u32) -> String {
+    let mut out = String::new();
+    if seconds / 3600 > 0 {
+        out.push_str(&format!("{}h", seconds / 3600));
+    }
+    if (seconds % 3600) / 60 > 0 {
+        out.push_str(&format!("{}m", (seconds % 3600) / 60));
+    }
+    if seconds % 60 > 0 || out.is_empty() {
+        out.push_str(&format!("{}s", seconds % 60));
+    }
+    out
+}
+
 // How the logo is drawn, without the bytes. `width_percent` is a share of the *output* frame width;
 // `None` keeps the uploaded image's own pixel size, which is what an operator who already prepared
 // the file at the right scale wants.
@@ -119,6 +286,10 @@ pub struct LogoPlacement {
     pub opacity: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub width_percent: Option<u8>,
+    // Absent is the logo on every frame, which is what a watermark usually is. A period makes it a
+    // recurring burst instead, faded in and out at each end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub period: Option<LogoPeriod>,
 }
 
 fn default_margin() -> u32 {
@@ -136,6 +307,7 @@ impl Default for LogoPlacement {
             margin: DEFAULT_LOGO_MARGIN,
             opacity: DEFAULT_LOGO_OPACITY,
             width_percent: None,
+            period: None,
         }
     }
 }
@@ -151,6 +323,10 @@ impl LogoPlacement {
             width_percent: self
                 .width_percent
                 .map(|value| value.clamp(MIN_LOGO_WIDTH_PERCENT, MAX_LOGO_WIDTH_PERCENT)),
+            // A period that does not describe a burst — no visible time, or as much of it as the
+            // interval — is dropped back to the logo on every frame rather than clamped into some
+            // other cadence nobody asked for.
+            period: self.period.filter(|period| period.validate().is_ok()),
         }
     }
 }
@@ -230,26 +406,63 @@ pub fn compose_logo_filter(
         // stream, so it has no chroma-subsampling constraint of its own.
         logo_chain.push_str(&format!(",scale={width}:-1"));
     }
-    if placement.opacity < 100 {
-        // `format=rgba` first, because a logo that arrived without an alpha channel has nothing for
-        // the mixer to scale and would come out fully opaque.
-        logo_chain.push_str(&format!(
-            ",format=rgba,colorchannelmixer=aa={:.3}",
-            placement.opacity as f64 / 100.0
-        ));
-    }
     let (x, y) = placement.position.overlay_expressions(placement.margin);
+    // `shortest=0` and `eof_action=repeat` keep a still image on screen for the whole episode: an
+    // overlay input that ends after one frame would otherwise stop the encode at frame one.
+    let overlay = format!("overlay={x}:{y}:eof_action=repeat:shortest=0");
     // `overlay` negotiates its own format, and given an alpha-carrying overlay it will pick one for
     // the main input too: a 10-bit chain measured as `yuva420p` on the way in, which both adds an
     // alpha channel no release wants and quietly drops the video to 8 bits — and libx265 then
     // refuses the stream outright with "does not support alpha layer encoding". Restating the
     // chain's own pixel format after the overlay pins both back.
     let output_format = trailing_pixel_format(base_filter).unwrap_or(FALLBACK_PIXEL_FORMAT);
-    // `shortest=0` and `eof_action=repeat` keep a still image on screen for the whole episode: an
-    // overlay input that ends after one frame would otherwise stop the encode at frame one.
-    format!(
-        "{base_filter}[pnbase];{logo_chain}[pnlogo];[pnbase][pnlogo]overlay={x}:{y}:eof_action=repeat:shortest=0,format={output_format}"
-    )
+
+    let Some(period) = placement.period else {
+        if placement.opacity < 100 {
+            // `format=rgba` first, because a logo that arrived without an alpha channel has nothing
+            // for the mixer to scale and would come out fully opaque.
+            logo_chain.push_str(&format!(
+                ",format=rgba,colorchannelmixer=aa={:.3}",
+                placement.opacity as f64 / 100.0
+            ));
+        }
+        return format!("{base_filter}[pnbase];{logo_chain}[pnlogo];[pnbase][pnlogo]{overlay},format={output_format}");
+    };
+
+    // One copy of the picture per rung of the fade, each mixed to its own alpha and switched on for
+    // the slice of the ramp that rounds to it. Only ever one of them is enabled at a time, and a
+    // disabled `overlay` hands the frame straight through, so the whole stack costs nothing during
+    // the minutes the logo is not on screen. See `LOGO_FADE_STEPS` for why it is built this way
+    // rather than with a time-varying alpha.
+    logo_chain.push_str(",format=rgba");
+    let mut graph = format!("{base_filter}[pnbase];{logo_chain},split={LOGO_FADE_STEPS}");
+    for step in 1..=LOGO_FADE_STEPS {
+        graph.push_str(&format!("[pnraw{step}]"));
+    }
+    graph.push(';');
+    for step in 1..=LOGO_FADE_STEPS {
+        graph.push_str(&format!(
+            "[pnraw{step}]colorchannelmixer=aa={:.3}[pnlogo{step}];",
+            placement.opacity as f64 / 100.0 * step as f64 / LOGO_FADE_STEPS as f64
+        ));
+    }
+    for step in 1..=LOGO_FADE_STEPS {
+        let input = match step {
+            1 => "pnbase".to_string(),
+            _ => format!("pnstep{}", step - 1),
+        };
+        // The expression is quoted, which is what lets the commas inside `mod(t,...)` survive the
+        // filtergraph parser splitting arguments on them.
+        graph.push_str(&format!(
+            "[{input}][pnlogo{step}]{overlay}:enable='{}'",
+            period.fade_step_enable(step)
+        ));
+        if step < LOGO_FADE_STEPS {
+            graph.push_str(&format!("[pnstep{step}];"));
+        }
+    }
+    graph.push_str(&format!(",format={output_format}"));
+    graph
 }
 
 // What a chain that declares no format of its own is pinned to after the overlay. Every preset this
@@ -493,6 +706,140 @@ mod tests {
         assert!(!opaque.contains("colorchannelmixer"), "{opaque}");
     }
 
+    // The syntax an operator types is `<every>:<visible>`, and both sides accept the units a person
+    // reaches for. Everything that parses has to spell itself back the one way, because the label is
+    // what the encoder is handed and what the forwarding key hashes.
+    #[test]
+    fn a_period_is_read_the_way_it_is_written() {
+        let period = LogoPeriod::parse("5m:20s").unwrap();
+        assert_eq!(period.every_seconds, 300);
+        assert_eq!(period.visible_seconds, 20);
+        assert_eq!(period.label(), "5m:20s");
+
+        // `300:20` and `5m:20s` are the same cadence, so they must not look like two to anything
+        // downstream that compares labels.
+        assert_eq!(LogoPeriod::parse(" 300 : 20 ").unwrap().label(), "5m:20s");
+        assert_eq!(LogoPeriod::parse("1h30m:90s").unwrap().label(), "1h30m:1m30s");
+
+        assert_eq!(parse_duration_seconds("1m30"), Some(90));
+        assert_eq!(parse_duration_seconds("2h"), Some(7200));
+        assert_eq!(parse_duration_seconds("s"), None);
+        assert_eq!(parse_duration_seconds(""), None);
+        assert_eq!(parse_duration_seconds("5 minutes"), None);
+        assert_eq!(format_duration_seconds(0), "0s");
+        assert_eq!(format_duration_seconds(3600), "1h");
+    }
+
+    // A period typed by hand is refused rather than clamped: the operator who reversed the halves
+    // meant the other order, and silently giving them a logo that never leaves hides that.
+    #[test]
+    fn a_cadence_that_describes_no_burst_is_refused() {
+        assert!(LogoPeriod::parse("20s:5m").is_err(), "visible longer than the interval");
+        assert!(LogoPeriod::parse("5m:5m").is_err(), "visible for the whole interval");
+        assert!(LogoPeriod::parse("5m:0s").is_err(), "never visible");
+        assert!(LogoPeriod::parse("5m").is_err(), "no colon at all");
+        assert!(LogoPeriod::parse("12h:1m").is_err(), "longer than the cap");
+        assert!(LogoPeriod::parse("5m:20s").is_ok());
+    }
+
+    // The fade is drawn as a stack of fixed-alpha overlays, and the whole thing only works if
+    // exactly one rung is enabled at any instant: two enabled at once would composite the logo
+    // twice and show it darker than either rung asks for.
+    #[test]
+    fn exactly_one_rung_of_the_fade_is_lit_at_a_time() {
+        let period = LogoPeriod { every_seconds: 300, visible_seconds: 20 };
+        let fade = period.fade_seconds();
+        assert_eq!(fade, 1.0, "a twenty-second window takes the full second");
+
+        // The enable expressions are arithmetic on `mod(t,every)`, so they can be evaluated here the
+        // same way ffmpeg evaluates them.
+        let lit = |elapsed: f64| -> Vec<u32> {
+            (1..=LOGO_FADE_STEPS)
+                .filter(|step| {
+                    let entry = |level: f64| (level - 0.5) * fade / LOGO_FADE_STEPS as f64;
+                    let (opens, closes) = (entry(*step as f64), 20.0 - entry(*step as f64));
+                    if *step >= LOGO_FADE_STEPS {
+                        return elapsed >= opens && elapsed <= closes;
+                    }
+                    let next = entry(*step as f64 + 1.0);
+                    (elapsed >= opens && elapsed < next)
+                        || (elapsed > 20.0 - next && elapsed <= closes)
+                })
+                .collect()
+        };
+        let mut sampled = 0;
+        let mut ever_full = false;
+        let mut ever_dark = false;
+        for tick in 0..3000 {
+            let elapsed = tick as f64 / 100.0;
+            let on = lit(elapsed);
+            assert!(on.len() <= 1, "{elapsed}s lights {on:?}");
+            match on.first() {
+                None => ever_dark = true,
+                Some(&step) => {
+                    sampled += 1;
+                    ever_full |= step == LOGO_FADE_STEPS;
+                }
+            }
+        }
+        assert!(ever_full, "the logo reaches full alpha inside the window");
+        assert!(ever_dark, "the logo leaves the frame between appearances");
+        // Twenty of every thirty sampled seconds, minus the sliver at each end where the ramp
+        // rounds to nothing.
+        assert!((1900..=2000).contains(&sampled), "{sampled} lit samples of 3000");
+
+        // Both directions of the ramp are covered: rising early in the window, falling late.
+        assert_eq!(lit(0.4), lit(19.6), "the fade out mirrors the fade in");
+        assert!(lit(0.02).is_empty(), "the ramp starts at nothing");
+    }
+
+    // A short appearance must not be all ramp: the fade is capped at a quarter of the window so the
+    // logo still spends half its time at the alpha it was configured with.
+    #[test]
+    fn a_short_appearance_keeps_most_of_itself_at_full_alpha() {
+        assert_eq!(LogoPeriod { every_seconds: 60, visible_seconds: 2 }.fade_seconds(), 0.5);
+        assert_eq!(LogoPeriod { every_seconds: 60, visible_seconds: 30 }.fade_seconds(), 1.0);
+    }
+
+    // The stack is one `overlay` per rung, chained, with the picture split rather than decoded
+    // eight times — and every rung has to carry the still-image options, or the encode stops at the
+    // first frame the moment that rung is the one drawing.
+    #[test]
+    fn a_period_builds_a_faded_stack_of_overlays() {
+        let placement = LogoPlacement {
+            opacity: 50,
+            period: Some(LogoPeriod { every_seconds: 300, visible_seconds: 20 }),
+            ..LogoPlacement::default()
+        };
+        let filter = compose_logo_filter("ass=A,format=yuv420p10le", "logo.png", &placement, None);
+        assert!(filter.starts_with("ass=A,format=yuv420p10le[pnbase];"), "{filter}");
+        assert!(
+            filter.contains(&format!("movie=logo.png,format=rgba,split={LOGO_FADE_STEPS}[pnraw1]")),
+            "{filter}"
+        );
+        assert_eq!(
+            filter.matches("eof_action=repeat:shortest=0").count(),
+            LOGO_FADE_STEPS as usize,
+            "{filter}"
+        );
+        assert_eq!(filter.matches("enable=").count(), LOGO_FADE_STEPS as usize, "{filter}");
+        // The top rung is the configured opacity; the rest are fractions of it on the way there.
+        assert!(filter.contains(&format!("[pnraw{LOGO_FADE_STEPS}]colorchannelmixer=aa=0.500")), "{filter}");
+        assert!(filter.contains("[pnraw1]colorchannelmixer=aa=0.062"), "{filter}");
+        // The pattern is anchored to the frame's own timestamp, which is what keeps a parallel chunk
+        // starting twenty minutes in showing the logo at the same moments a linear encode would.
+        assert!(filter.contains("mod(t,300)"), "{filter}");
+        // Quoted, or the commas inside `mod()` would end the overlay's argument list early.
+        assert!(filter.contains("enable='gte(mod(t,300)"), "{filter}");
+        // And the chain still comes out of the stack in the format it went in as.
+        assert!(filter.ends_with(",format=yuv420p10le"), "{filter}");
+
+        // With no period nothing about the graph changes: one source, one overlay, no enable.
+        let steady = compose_logo_filter("ass=A,format=yuv420p", "logo.png", &LogoPlacement::default(), None);
+        assert!(!steady.contains("enable="), "{steady}");
+        assert!(!steady.contains("split="), "{steady}");
+    }
+
     // These values are stored on disk and may be hand-edited, so they are clamped on the way out
     // rather than trusted: a job should encode with a sane logo, not fail.
     #[test]
@@ -502,12 +849,15 @@ mod tests {
             margin: 99_999,
             opacity: 0,
             width_percent: Some(200),
+            // On screen for longer than it waits: a cadence that describes no burst at all.
+            period: Some(LogoPeriod { every_seconds: 10, visible_seconds: 60 }),
         };
         let safe = wild.sanitized();
         assert_eq!(safe.margin, MAX_LOGO_MARGIN);
         assert_eq!(safe.opacity, 1);
         assert_eq!(safe.width_percent, Some(MAX_LOGO_WIDTH_PERCENT));
         assert_eq!(safe.position, LogoPosition::BottomLeft);
+        assert_eq!(safe.period, None, "an impossible cadence falls back to every frame");
     }
 
     // A path with a comma or a colon in it would end the filter argument early and produce an

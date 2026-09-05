@@ -1,8 +1,8 @@
 use super::*;
 
 use pandora_toolchain::lib::mpeg::logo::{
-    LogoPlacement, LogoPosition, MAX_LOGO_MARGIN, MAX_LOGO_WIDTH_PERCENT, MIN_LOGO_WIDTH_PERCENT,
-    ServerLogo, detect_logo_format,
+    LogoPeriod, LogoPlacement, LogoPosition, MAX_LOGO_MARGIN, MAX_LOGO_WIDTH_PERCENT,
+    MIN_LOGO_WIDTH_PERCENT, ServerLogo, detect_logo_format, format_duration_seconds,
 };
 use pandora_toolchain::pnworker::server_effects::{
     clear_server_logo, load_server_logo, save_server_logo,
@@ -136,9 +136,17 @@ pub async fn handle_touchlogo(ctx: &Context, command: &serenity::all::CommandInt
         Some(percent) => format!("{percent}% of the frame width"),
         None => "its own pixel size".to_string(),
     };
+    let cadence = match placement.period {
+        Some(period) => format!(
+            "shown for {} out of every {}, fading in and out at each end",
+            format_duration_seconds(period.visible_seconds),
+            format_duration_seconds(period.every_seconds),
+        ),
+        None => "on every frame".to_string(),
+    };
     logo_saved(ctx, command, format!(
-        "Saved this server's image watermark: {} bytes, drawn at **{}** with a {}px margin, {}% opacity, at {}.\nIt is burned into future Encode, Pancode, and batch jobs. Jobs already queued keep the logo they were created with.",
-        bytes, placement.position.name(), placement.margin, placement.opacity, size,
+        "Saved this server's image watermark: {} bytes, drawn at **{}** with a {}px margin, {}% opacity, at {}, {}.\nIt is burned into future Encode, Pancode, and batch jobs. Jobs already queued keep the logo they were created with.",
+        bytes, placement.position.name(), placement.margin, placement.opacity, size, cadence,
     )).await;
 }
 
@@ -189,11 +197,26 @@ fn requested_placement(
             ));
         }
     };
+    // `off` puts the logo back on every frame rather than setting a cadence, the way `width` takes
+    // `0` — a server dropping the period should not have to re-upload the picture to do it.
+    let period = match option_str(command, "period") {
+        None => current.period,
+        Some(value)
+            if matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "off" | "none" | "always" | "0"
+            ) =>
+        {
+            None
+        }
+        Some(value) => Some(LogoPeriod::parse(value).map_err(|e| format!("Error: {e}"))?),
+    };
     Ok(LogoPlacement {
         position,
         margin,
         opacity,
         width_percent,
+        period,
     })
 }
 

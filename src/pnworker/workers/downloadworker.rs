@@ -252,6 +252,9 @@ async fn start_download_planner(
         if let Some(width) = placement.width_percent {
             command.args(["--logo-width", &width.to_string()]);
         }
+        if let Some(period) = placement.period {
+            command.args(["--logo-period", &period.label()]);
+        }
     }
     command
         .stdin(std::process::Stdio::null())

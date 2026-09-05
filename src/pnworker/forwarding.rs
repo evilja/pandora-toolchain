@@ -194,6 +194,7 @@ fn logo_forward_key(job: &Job) -> serde_json::Value {
         placement.margin,
         placement.opacity,
         placement.width_percent,
+        placement.period.map(|period| period.label()),
     ])
 }
 

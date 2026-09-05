@@ -407,6 +407,10 @@ mod tests {
                 margin: 12,
                 opacity: 65,
                 width_percent: Some(9),
+                period: Some(crate::lib::mpeg::logo::LogoPeriod {
+                    every_seconds: 300,
+                    visible_seconds: 20,
+                }),
             },
         };
         write_job_logo(&directory, &logo).await.unwrap();
