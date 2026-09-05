@@ -184,11 +184,14 @@ pub struct LinkJobSpec {
     // guild, so without this it would publish to streaming hosts the server had switched off.
     #[serde(default)]
     pub drive_only: bool,
-    // The intro group this job's server selected. The node materialises the group under its own
-    // synced intro root and rebuilds the preset's concat folder from it — the coordinator's own
-    // folder path means nothing on another machine.
+    // The intro and outro groups this job's server selected. The node materialises each group under
+    // its own synced concat root and rebuilds the preset's folders from them — the coordinator's own
+    // folder paths mean nothing on another machine. Both are optional and independent: a server may
+    // stitch on an outro and no intro.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intro_group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outro_group: Option<String>,
     // The asset corpus this job was built against. A node that has not synced this revision
     // refuses the lease rather than encoding with whatever fonts it happens to hold.
     #[serde(default)]
@@ -482,6 +485,7 @@ impl LinkPayload {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pnworker::core::Concat;
 
     // The table has to agree with `frontend::preview_done_edit`, which reads exactly these
     // arguments. Disagreeing in either direction is silent: name the wrong index and the node
@@ -604,18 +608,18 @@ mod tests {
     #[test]
     fn preset_names_are_accepted_by_the_name_table() {
         for preset in [
-            Preset::Standard(None),
-            Preset::VerySlow(None),
-            Preset::Gpu(None),
-            Preset::Av1(None),
-            Preset::PseudoLossless(None),
-            Preset::Dummy(None),
-            Preset::Hd720(None),
-            Preset::Sd480(None),
+            Preset::Standard(Concat::NONE),
+            Preset::VerySlow(Concat::NONE),
+            Preset::Gpu(Concat::NONE),
+            Preset::Av1(Concat::NONE),
+            Preset::PseudoLossless(Concat::NONE),
+            Preset::Dummy(Concat::NONE),
+            Preset::Hd720(Concat::NONE),
+            Preset::Sd480(Concat::NONE),
         ] {
             let name = preset_name(&preset);
             assert!(
-                crate::pnworker::server_effects::preset_from_name(&name, None).is_some(),
+                crate::pnworker::server_effects::preset_from_name(&name, Concat::NONE).is_some(),
                 "preset name {name} is not in the shared name table",
             );
             // The same name is what the encode worker puts on `pnmpeg --preset` and what a preset

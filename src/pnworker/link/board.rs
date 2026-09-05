@@ -1101,6 +1101,7 @@ mod tests {
             return_output: false,
             drive_only: false,
             intro_group: None,
+            outro_group: None,
             assets_revision: String::new(),
             preview: None,
             keep: None,

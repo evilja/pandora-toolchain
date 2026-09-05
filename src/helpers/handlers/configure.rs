@@ -58,6 +58,7 @@ pub async fn handle_configure(
     let existing_gdrive_anon_folder_id = existing_lines.get(10).copied().unwrap_or("").to_string();
     let existing_preset = existing_lines.get(11).copied().unwrap_or("standard").to_string();
     let existing_concat = existing_lines.get(12).copied().unwrap_or("").to_string();
+    let existing_outro = existing_lines.get(19).copied().unwrap_or("").to_string();
     let existing_drive_only = drive_only_from_meta(&existing_meta);
     let existing_hls = hls_from_meta(&existing_meta);
     let existing_hls_name = existing_lines.get(18).copied().unwrap_or("").trim().to_string();
@@ -104,6 +105,7 @@ pub async fn handle_configure(
         anizm_fansub: existing_fansub(FansubSite::Anizm),
         hls: existing_hls.to_string(),
         hls_name: existing_hls_name,
+        outro: existing_outro,
     });
     let path = dir.join("meta.pandora");
     if let Err(e) = tokio::fs::write(&path, body).await {

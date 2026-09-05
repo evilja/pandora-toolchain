@@ -109,6 +109,7 @@ pub const FIELD_GDRIVE_ANONYMOUS: &str = "FIELD_GDRIVE_ANONYMOUS";
 pub const FIELD_WRAPSTYLE: &str = "FIELD_WRAPSTYLE";
 pub const FIELD_ANNOUNCEMENT: &str = "FIELD_ANNOUNCEMENT";
 pub const FIELD_CONCAT: &str = "FIELD_CONCAT";
+pub const FIELD_OUTRO: &str = "FIELD_OUTRO";
 pub const FIELD_LOCAL_GDRIVE: &str = "FIELD_LOCAL_GDRIVE";
 pub const FIELD_DRIVE_ONLY: &str = "FIELD_DRIVE_ONLY";
 pub const FIELD_HLS: &str = "FIELD_HLS";
@@ -709,7 +710,7 @@ pub fn get_stage_text(stage: Stage, lang: &str) -> String {
 mod tests {
     use super::*;
     use crate::lib::p2p::nyaaise::TorrentType;
-    use crate::pnworker::core::Preset;
+    use crate::pnworker::core::{Concat, Preset};
     use crate::pnworker::frontend::Frontend;
     use std::path::PathBuf;
     use std::time::Duration;
@@ -722,7 +723,7 @@ mod tests {
             requested_at: Duration::from_secs(1),
             job_type,
             job_id: 4,
-            preset: Preset::Standard(Some("intro".to_string())),
+            preset: Preset::Standard(Concat::intro_only(Some("intro".to_string()))),
             torrent: TorrentType::Link(source.to_string()),
             display_link: None,
             attachment: Vec::new(),

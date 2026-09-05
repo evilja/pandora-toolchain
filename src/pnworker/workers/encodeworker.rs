@@ -12,7 +12,7 @@ use crate::pnworker::tools::{PNMPEG_CONCAT, PNMPEG_ENCODE, PNMPEG_JOIN, PNMPEG_J
 use tokio::fs::rename;
 use std::path::PathBuf;
 use std::collections::HashMap;
-use crate::pnworker::core::{KeepKind, Preset, Stage, WorkerMsg};
+use crate::pnworker::core::{Concat, KeepKind, Preset, Stage, WorkerMsg};
 use crate::pnworker::util::PathValue;
 use crate::pnworker::core::CommData;
 // The trailing flags are `cache_resolution`, `hls_only` and `gated`: whether the job's output
@@ -22,7 +22,7 @@ use crate::pnworker::core::CommData;
 // the last one, because it depends on the rest of the queue as well as on the preset.
 pub type EncodeData = (PathBuf, Preset, u64, Option<u64>, Option<Vec<u8>>, bool, bool, bool);
 pub type StudioData = (PathBuf, PathBuf, u64);
-pub type KeycodeData = (PathBuf, Vec<PathBuf>, Option<String>, KeepKind, u64, Option<u64>);
+pub type KeycodeData = (PathBuf, Vec<PathBuf>, Concat, KeepKind, u64, Option<u64>);
 
 struct ForegroundEncodeGuard {
     path: PathBuf,
@@ -89,7 +89,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 run_studio_job(&pnmpeg_path, directory, manifest, job_id, &mut proto, &tx).await;
                 continue 'll;
             }
-            if let WorkerMsg::Keycode((directory, inputs, intro_dir, kind, job_id, _server_id)) = msg {
+            if let WorkerMsg::Keycode((directory, inputs, concat, kind, job_id, _server_id)) = msg {
                 let _foreground = ForegroundEncodeGuard::acquire(&directory, job_id);
                 let Some(first) = inputs.first() else {
                     tx.send((job_id, MessagePayload::Static(ENCODE_FAIL), Some(Stage::Failed))).await.unwrap();
@@ -104,7 +104,8 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     ("INPUT", PathValue::from(path_to_ffmpeg(first))),
                     ("OUTPUT", PathValue::from(path_to_ffmpeg(directory.join("work").join("output.mp4").as_path()))),
                     ("CANDIDATES", PathValue::from(rest)),
-                    ("INTRO_DIR", PathValue::from(intro_dir.unwrap_or_default())),
+                    ("INTRO_DIR", PathValue::from(concat.intro.unwrap_or_default())),
+                    ("OUTRO_DIR", PathValue::from(concat.outro.unwrap_or_default())),
                     ("MODE", PathValue::from(mode.to_string())),
                     ("NEGKEY", PathValue::from("pn-encode-main".to_string())),
                     ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),
@@ -163,7 +164,7 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             // `DB/config/global/presets/`: pnmpeg takes `--preset <name>` and looks a file up
             // before falling back to its built-in table, so a preset an operator edited applies
             // here without the worker knowing anything about it.
-            let (intro_dir, insert) = match preset {
+            let (concat, insert) = match preset {
                 Preset::PseudoLossless(cc) => (cc, "pseudolossless".to_string()),
                 Preset::Gpu(cc)            => (cc, "gpu".to_string()),
                 Preset::Av1(cc)            => (cc, "av1".to_string()),
@@ -175,8 +176,9 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 // A preset that is only a file is named by that file, which is the same name
                 // pnmpeg looks it up by. Nothing here needs to know anything else about it.
                 Preset::Named(name, cc)    => (cc, name),
-                Preset::Copy               => (None, "copy".to_string()),
+                Preset::Copy               => (Concat::NONE, "copy".to_string()),
             };
+            let Concat { intro: intro_dir, outro: outro_dir } = concat;
             // The release name is taken from the source height, which a downscaling preset is
             // about to undercut.
             let height_cap = match insert.as_str() {
@@ -184,12 +186,15 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 "480p" => Some(480),
                 _ => None,
             };
-            let intro_q = if intro_dir.is_some() { 2 } else { 1 };
+            // One concat pass stitches on whichever of the two the server configured, so the
+            // progress line counts two runs for an intro, an outro, or both.
+            let concats = intro_dir.is_some() || outro_dir.is_some();
+            let intro_q = if concats { 2 } else { 1 };
             // Whichever ffmpeg run is this job's last one writes the HLS layout itself, so the
-            // broker never has to take an MP4 apart into the same chunks. With an intro that is the
+            // broker never has to take an MP4 apart into the same chunks. With a concat that is the
             // concat rather than the encode: the encode still has to leave a file the concat can
             // read back.
-            let hls_direct = hls_only && intro_dir.is_none();
+            let hls_direct = hls_only && !concats;
             let hls_directory = directory.join("work").join("hls");
             // The names this server publishes under. Read once per job, because the layout has to
             // be spelled the same way by whichever run ends up writing it.
@@ -317,15 +322,20 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                 ToolResult::Success => {}
             }
 
-            if let Some(ref intro_dir) = intro_dir {
+            if concats {
                 if job_cancelled(&directory) {
                     tx.send((job_id, MessagePayload::Static(JOB_CANCELLED), Some(Stage::Cancelled))).await.unwrap();
                     continue 'll;
                 }
+                // Both folders go to the same run. pnmpeg writes one list file holding the intro,
+                // the encode, and the outro in that order, so an episode with both is one
+                // stream-copy mux rather than two passes over the same bytes. An empty path is how
+                // it is told a side has no group, which is what `unwrap_or_default` produces.
                 let mut concat_params = HashMap::from([
                         ("INPUT",      PathValue::from(path_to_ffmpeg(directory.join("work").join("output_noconcat.mp4").as_path()))),
                         ("OUTPUT",     PathValue::from(path_to_ffmpeg(directory.join("work").join("output.mp4").as_path()))),
-                        ("INTRO_DIR",  PathValue::from(path_to_ffmpeg(Path::new(intro_dir)))),
+                        ("INTRO_DIR",  PathValue::from(intro_dir.as_deref().map(|dir| path_to_ffmpeg(Path::new(dir))).unwrap_or_default())),
+                        ("OUTRO_DIR",  PathValue::from(outro_dir.as_deref().map(|dir| path_to_ffmpeg(Path::new(dir))).unwrap_or_default())),
                         ("PRESET",     PathValue::from(insert.clone())),
                         ("NEGKEY",     PathValue::from("pn-encode-main".to_string())),
                         ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),

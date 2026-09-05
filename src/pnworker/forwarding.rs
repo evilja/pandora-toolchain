@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crate::lib::db::core::JobDb;
 use crate::lib::p2p::nyaaise::TorrentType;
 use crate::lib::torrent::{magnet_info_hash, torrent_info_hash};
-use crate::pnworker::core::{Job, JobType, Preset, Stage};
+use crate::pnworker::core::{Concat, Job, JobType, Preset, Stage};
 use crate::pnworker::drive_cleanup::persist_job_drive_upload;
 use crate::pnworker::lifecycle::{cleanup_job, render};
 use crate::pnworker::messages::{
@@ -179,19 +179,13 @@ fn encode_forward_key(job: &Job, source_key: String) -> String {
     format!("{:x}", md5::compute(payload.to_string()))
 }
 
+// Two jobs share an output only if they encode at the same settings *and* stitch the same things
+// onto the result, so both concat folders are part of the key. Keying on the intro alone would let
+// a job with an outro adopt the output of one without.
 fn preset_forward_key(preset: &Preset) -> serde_json::Value {
-    match preset {
-        Preset::PseudoLossless(candidates) => serde_json::json!(["pseudolossless", candidates]),
-        Preset::Dummy(candidates) => serde_json::json!(["dummy", candidates]),
-        Preset::Standard(candidates) => serde_json::json!(["standard", candidates]),
-        Preset::VerySlow(candidates) => serde_json::json!(["veryslow", candidates]),
-        Preset::Gpu(candidates) => serde_json::json!(["gpu", candidates]),
-        Preset::Av1(candidates) => serde_json::json!(["av1", candidates]),
-        Preset::Hd720(candidates) => serde_json::json!(["720p", candidates]),
-        Preset::Sd480(candidates) => serde_json::json!(["480p", candidates]),
-        Preset::Named(name, candidates) => serde_json::json!([name, candidates]),
-        Preset::Copy => serde_json::json!(["copy", null]),
-    }
+    let Concat { intro, outro } = preset.concat();
+    let name = preset.name().unwrap_or_else(|| "copy".to_string());
+    serde_json::json!([name, intro, outro])
 }
 
 fn encode_source_keys(job: &Job) -> Vec<String> {
@@ -229,7 +223,7 @@ mod tests {
             requested_at: Duration::from_secs(1),
             job_type: JobType::Encode,
             job_id: 1,
-            preset: Preset::Standard(None),
+            preset: Preset::Standard(Concat::NONE),
             torrent: TorrentType::Magnet("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567".to_string()),
             display_link: None,
             attachment: b"ass".to_vec(),

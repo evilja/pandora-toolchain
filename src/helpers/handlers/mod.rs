@@ -92,14 +92,15 @@ pub use self::changerank::handle_changerank;
 pub use self::interaction::handle_interaction;
 pub use self::providers::handle_providers;
 pub use self::translation::{handle_addtranslation, handle_addtranslationall, handle_gettranslation, handle_gettranslationall};
-pub use self::addintro::handle_addintro;
+pub use self::addintro::{handle_addintro, handle_addoutro};
 pub use self::watermark::handle_touchwatermark;
 pub use self::studio::handle_studio;
 pub use self::catlogs::handle_catlogs;
 pub use self::refreshcache::handle_refreshcache;
 
 use pandora_toolchain::pnworker::messages::*;
-use pandora_toolchain::pnworker::util::IntrosConfig;
+use pandora_toolchain::pnworker::core::Concat;
+use pandora_toolchain::pnworker::util::{ConcatConfig, ConcatKind};
 use pandora_toolchain::lib::env::standard::ENV_PATH;
 use pandora_toolchain::lumiere_broker::{
     DriveCandidate, DriveUploadSpec, GLOBAL_DRIVE_PROFILE, LumiereClient, content_type_for_path,
@@ -136,6 +137,11 @@ struct ServerMetaFields {
     anizm_fansub: String,
     hls: String,
     hls_name: String,
+    // Appended after every field that existed before outros did, because `meta.pandora` is read by
+    // line index: inserting it beside `concat` would silently re-key every line below it on files
+    // already on disk. A file written before this line existed simply has no line 19, which reads
+    // back as no outro group.
+    outro: String,
 }
 
 fn compose_server_meta(fields: &ServerMetaFields) -> String {
@@ -159,6 +165,7 @@ fn compose_server_meta(fields: &ServerMetaFields) -> String {
         fields.anizm_fansub.as_str(),
         fields.hls.as_str(),
         fields.hls_name.as_str(),
+        fields.outro.as_str(),
     ];
     format!("{}\n", lines.join("\n"))
 }
@@ -1240,6 +1247,7 @@ mod server_meta_tests {
             anizm_fansub: "42".to_string(),
             hls: "true".to_string(),
             hls_name: "%uuid%_%res%".to_string(),
+            outro: "Ending".to_string(),
         }
     }
 
@@ -1247,11 +1255,14 @@ mod server_meta_tests {
     fn every_field_lands_on_its_documented_line() {
         let meta = compose_server_meta(&fields());
         let lines = meta.lines().collect::<Vec<_>>();
-        assert_eq!(lines.len(), 19);
+        assert_eq!(lines.len(), 20);
         assert_eq!(lines[0], "EN");
         assert_eq!(lines[8], "2");
         assert_eq!(lines[11], "standard");
         assert_eq!(lines[12], "Summer");
+        // The outro is line 19 and nothing else moved: every index above is what it was before
+        // outros existed, which is what lets an old file be read without a migration.
+        assert_eq!(lines[19], "Ending");
         assert!(drive_only_from_meta(&meta));
         assert_eq!(
             fansub_from_meta(&meta, FansubSite::AnimeciX).as_deref(),

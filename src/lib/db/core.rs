@@ -11,7 +11,7 @@ macro_rules! job_query {
         concat!(
             "SELECT job_id, author, channel_id, response_id, requested_at, ",
             "started_at, ended_at, cancel_reason, ",
-            "job_type, preset_type, preset_name, candidates, link, directory, stage, archived, ",
+            "job_type, preset_type, preset_name, candidates, outro, link, directory, stage, archived, ",
             "progress, uploaded_links, acix_pending, server_id, ",
             "COALESCE(worker, 'que-main') AS worker FROM jobs ",
             $tail
@@ -54,6 +54,7 @@ impl JobDb {
                 job_type     INTEGER NOT NULL,
                 preset_type  INTEGER NOT NULL,
                 candidates   TEXT,
+                outro        TEXT,
                 link         TEXT NOT NULL,
                 directory    TEXT NOT NULL,
                 stage        INTEGER NOT NULL,
@@ -108,6 +109,12 @@ impl JobDb {
         // Add candidates column if missing
         self.add_column_if_missing(
             "ALTER TABLE jobs ADD COLUMN candidates TEXT"
+        ).await?;
+
+        // The outro folder. `candidates` held the intro before outros existed and goes on holding
+        // it, so an old row reads back as a job with an intro and no outro, which is what it was.
+        self.add_column_if_missing(
+            "ALTER TABLE jobs ADD COLUMN outro TEXT"
         ).await?;
 
         self.add_column_if_missing(
@@ -204,21 +211,26 @@ impl JobDb {
     }
 
     pub async fn insert_job(&self, job: &Job) -> Result<(), sqlx::Error> {
-        let (preset_type, candidates) = match &job.preset {
-            Preset::PseudoLossless(c) => (0i64, candidates_to_db(c)),
-            Preset::Standard(c)       => (1i64, candidates_to_db(c)),
-            Preset::Gpu(c)            => (2i64, candidates_to_db(c)),
-            Preset::Dummy(c)          => (3i64, candidates_to_db(c)),
-            Preset::Copy              => (4i64, None),
-            Preset::VerySlow(c)       => (5i64, candidates_to_db(c)),
-            Preset::Hd720(c)          => (6i64, candidates_to_db(c)),
-            Preset::Sd480(c)          => (7i64, candidates_to_db(c)),
-            Preset::Av1(c)            => (8i64, candidates_to_db(c)),
+        let preset_type = match &job.preset {
+            Preset::PseudoLossless(_) => 0i64,
+            Preset::Standard(_)       => 1i64,
+            Preset::Gpu(_)            => 2i64,
+            Preset::Dummy(_)          => 3i64,
+            Preset::Copy              => 4i64,
+            Preset::VerySlow(_)       => 5i64,
+            Preset::Hd720(_)          => 6i64,
+            Preset::Sd480(_)          => 7i64,
+            Preset::Av1(_)            => 8i64,
             // Every discriminant above names a table compiled into the binary. This one does not,
             // so the row carries the preset's name in `preset_name` and this number means only
             // "look there".
-            Preset::Named(_, c)       => (9i64, candidates_to_db(c)),
+            Preset::Named(_, _)       => 9i64,
         };
+        // `candidates` is the intro folder, under the name the column has always had; the outro
+        // folder is its own column rather than a second value packed into it, because the console
+        // reads this one back and a packed pair would only be a format nobody documented.
+        let candidates = concat_to_db(&job.preset.concat().intro);
+        let outro = concat_to_db(&job.preset.concat().outro);
         let preset_name = job.preset.name();
         let link = job
             .display_link
@@ -229,9 +241,9 @@ impl JobDb {
             r#"
             INSERT INTO jobs (
                 job_id, author, channel_id, response_id, requested_at,
-                job_type, preset_type, preset_name, candidates, link, directory, stage, server_id, worker
+                job_type, preset_type, preset_name, candidates, outro, link, directory, stage, server_id, worker
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(job_id) DO UPDATE SET
                 author = excluded.author,
                 channel_id = excluded.channel_id,
@@ -241,6 +253,7 @@ impl JobDb {
                 preset_type = excluded.preset_type,
                 preset_name = excluded.preset_name,
                 candidates = excluded.candidates,
+                outro = excluded.outro,
                 link = excluded.link,
                 directory = excluded.directory,
                 stage = excluded.stage,
@@ -261,6 +274,7 @@ impl JobDb {
         .bind(preset_type)
         .bind(&preset_name)
         .bind(candidates)
+        .bind(outro)
         .bind(link)
         .bind(job.directory.to_string_lossy().to_string())
         .bind(stage_to_int(job.ready))
@@ -500,6 +514,7 @@ pub struct JobRow {
     pub preset_type:  i64,
     pub preset_name:  Option<String>,
     pub candidates:   Option<String>,
+    pub outro:        Option<String>,
     pub link:         String,
     pub directory:    String,
     pub stage:        i64,
@@ -643,8 +658,8 @@ pub fn preset_label(preset_type: i64) -> &'static str {
     }
 }
 
-fn candidates_to_db(candidates: &Option<String>) -> Option<String> {
-    candidates.clone()
+fn concat_to_db(folder: &Option<String>) -> Option<String> {
+    folder.clone()
 }
 
 pub fn stage_to_int(stage: Stage) -> i64 {

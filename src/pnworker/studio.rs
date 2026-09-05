@@ -5,7 +5,7 @@ use crate::lib::mpeg::studio::{
     STUDIO_MAX_TRACK_VOLUME_PERCENT, StudioInput, StudioRenderManifest, StudioRenderTrack,
     StudioSourceKind, StudioTrackMode, StudioVideoPreset,
 };
-use crate::pnworker::core::{KeepKind, Preset};
+use crate::pnworker::core::{Concat, KeepKind, Preset};
 use crate::pnworker::keep::{now_secs, resolve_studio_keywords, sanitize_keyword};
 use crate::pnworker::server_effects::load_server_settings;
 use serde::{Deserialize, Serialize};
@@ -761,25 +761,25 @@ pub fn studio_render_presets(
     preview: bool,
 ) -> (Preset, StudioVideoPreset) {
     if preview {
-        return (Preset::Dummy(None), StudioVideoPreset::Dummy);
+        return (Preset::Dummy(Concat::NONE), StudioVideoPreset::Dummy);
     }
     if source_kind == KeepKind::Encode {
         return (Preset::Copy, StudioVideoPreset::Standard);
     }
     match load_server_settings(Some(guild_id)).preset {
-        Preset::PseudoLossless(_) => (Preset::PseudoLossless(None), StudioVideoPreset::PseudoLossless),
-        Preset::VerySlow(_) => (Preset::VerySlow(None), StudioVideoPreset::VerySlow),
-        Preset::Gpu(_) => (Preset::Gpu(None), StudioVideoPreset::Gpu),
+        Preset::PseudoLossless(_) => (Preset::PseudoLossless(Concat::NONE), StudioVideoPreset::PseudoLossless),
+        Preset::VerySlow(_) => (Preset::VerySlow(Concat::NONE), StudioVideoPreset::VerySlow),
+        Preset::Gpu(_) => (Preset::Gpu(Concat::NONE), StudioVideoPreset::Gpu),
         // Studio's renderer has its own fixed encoder table. Until it accepts resolved presets,
         // AV1 remains a release-encode choice and Studio renders use the established x264 path.
         // Same reasoning for a preset file: Studio's table is keyed by variant and has no entry
         // it could resolve one against.
-        Preset::Av1(_) | Preset::Named(_, _) => (Preset::Standard(None), StudioVideoPreset::Standard),
-        Preset::Dummy(_) => (Preset::Dummy(None), StudioVideoPreset::Dummy),
+        Preset::Av1(_) | Preset::Named(_, _) => (Preset::Standard(Concat::NONE), StudioVideoPreset::Standard),
+        Preset::Dummy(_) => (Preset::Dummy(Concat::NONE), StudioVideoPreset::Dummy),
         // Studio renders at the timeline's own resolution; the downscaling presets have no
         // ffmpeg params on the Studio side, so they fall back to the standard one.
         Preset::Standard(_) | Preset::Hd720(_) | Preset::Sd480(_) | Preset::Copy => {
-            (Preset::Standard(None), StudioVideoPreset::Standard)
+            (Preset::Standard(Concat::NONE), StudioVideoPreset::Standard)
         }
     }
 }

@@ -1124,7 +1124,7 @@ async fn dispatch_keycode_ready(
         return lease_keycode_to(db, job, &node).await;
     }
     let inputs = resolved.paths;
-    let intro_dir = job.preset.candidates().cloned();
+    let concat = job.preset.concat().clone();
     if inputs.is_empty() {
         return fail_keycode(db, job, "no usable keyword outputs").await;
     }
@@ -1136,7 +1136,7 @@ async fn dispatch_keycode_ready(
         WorkerMsg::Keycode((
             job.directory.clone(),
             inputs,
-            intro_dir,
+            concat,
             resolved.kind,
             job.job_id,
             job.server_id,
@@ -1292,15 +1292,15 @@ fn keep_keywords(job: &Job) -> Option<(String, String)> {
 
 fn preset_without_intro(preset: &Preset) -> Preset {
     match preset {
-        Preset::PseudoLossless(_) => Preset::PseudoLossless(None),
-        Preset::Dummy(_) => Preset::Dummy(None),
-        Preset::Standard(_) => Preset::Standard(None),
-        Preset::VerySlow(_) => Preset::VerySlow(None),
-        Preset::Gpu(_) => Preset::Gpu(None),
-        Preset::Av1(_) => Preset::Av1(None),
-        Preset::Hd720(_) => Preset::Hd720(None),
-        Preset::Sd480(_) => Preset::Sd480(None),
-        Preset::Named(name, _) => Preset::Named(name.clone(), None),
+        Preset::PseudoLossless(_) => Preset::PseudoLossless(Concat::NONE),
+        Preset::Dummy(_) => Preset::Dummy(Concat::NONE),
+        Preset::Standard(_) => Preset::Standard(Concat::NONE),
+        Preset::VerySlow(_) => Preset::VerySlow(Concat::NONE),
+        Preset::Gpu(_) => Preset::Gpu(Concat::NONE),
+        Preset::Av1(_) => Preset::Av1(Concat::NONE),
+        Preset::Hd720(_) => Preset::Hd720(Concat::NONE),
+        Preset::Sd480(_) => Preset::Sd480(Concat::NONE),
+        Preset::Named(name, _) => Preset::Named(name.clone(), Concat::NONE),
         Preset::Copy => Preset::Copy,
     }
 }
@@ -4156,23 +4156,53 @@ async fn dispatch_or_kill(
     }
 }
 
+// The concat folders a preset carries: the intro group's folder, stitched onto the front of the
+// encode, and the outro group's, stitched onto the back. Both are the folder a group resolved to
+// when the job was created rather than the group's name, because that is all the encoder needs —
+// it is handed the folder and picks a stream-compatible variant out of it.
+//
+// One value rather than two parallel `Option<String>`s on every variant: a preset that carries only
+// half of what a server configured is a release that ships without its outro, and the compiler
+// cannot catch a missing field that was never added.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Concat {
+    pub intro: Option<String>,
+    pub outro: Option<String>,
+}
+
+impl Concat {
+    pub const NONE: Concat = Concat { intro: None, outro: None };
+
+    pub fn new(intro: Option<String>, outro: Option<String>) -> Self {
+        Concat { intro, outro }
+    }
+
+    pub fn intro_only(intro: Option<String>) -> Self {
+        Concat { intro, outro: None }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.intro.is_none() && self.outro.is_none()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Preset {
-    PseudoLossless(Option<String>),
-    Dummy(Option<String>),
-    Standard(Option<String>),
-    VerySlow(Option<String>),
-    Gpu(Option<String>),
-    Av1(Option<String>),
+    PseudoLossless(Concat),
+    Dummy(Concat),
+    Standard(Concat),
+    VerySlow(Concat),
+    Gpu(Concat),
+    Av1(Concat),
     // Standard x264 settings at a capped frame height. API-only: no /edit choice offers them.
-    Hd720(Option<String>),
-    Sd480(Option<String>),
+    Hd720(Concat),
+    Sd480(Concat),
     // A preset that exists only as a file in `DB/config/global/presets/`, named by its own file
     // stem. Every variant above is a table compiled into the binary that a file of the same name
     // may replace; this one is the case where there is no such table and the file is the whole
     // preset. It carries its name because nothing else knows it — the name is what `resolve` looks
     // the file up by, and what travels to a node.
-    Named(String, Option<String>),
+    Named(String, Concat),
     Copy,
 }
 
@@ -4195,8 +4225,10 @@ impl Preset {
         })
     }
 
-    // The intro/concat folder this preset carries, whichever variant it is.
-    pub fn candidates(&self) -> Option<&String> {
+    // The intro and outro folders this preset carries, whichever variant it is. `Copy` carries
+    // none: it is a stream copy of an existing file, not an encode anything is stitched onto.
+    pub fn concat(&self) -> &Concat {
+        const NONE: &Concat = &Concat::NONE;
         match self {
             Preset::PseudoLossless(c)
             | Preset::Dummy(c)
@@ -4206,9 +4238,14 @@ impl Preset {
             | Preset::Av1(c)
             | Preset::Hd720(c)
             | Preset::Sd480(c)
-            | Preset::Named(_, c) => c.as_ref(),
-            Preset::Copy => None,
+            | Preset::Named(_, c) => c,
+            Preset::Copy => NONE,
         }
+    }
+
+    // The intro folder alone, which is what the callers that predate outros still ask for.
+    pub fn candidates(&self) -> Option<&String> {
+        self.concat().intro.as_ref()
     }
 }
 
@@ -4708,11 +4745,11 @@ impl Job {
         let preset = match job_type {
             JobType::Encode | JobType::Pancode | JobType::Batch => settings.preset.clone(),
             // A keycode join is an x264 encode whatever the server encodes releases with; only the
-            // intro group carries over.
-            JobType::Keycode => Preset::Standard(settings.preset.candidates().cloned()),
+            // concat groups carry over.
+            JobType::Keycode => Preset::Standard(settings.preset.concat().clone()),
             JobType::Studio => Preset::Copy,
-            JobType::StudioPreview => Preset::Dummy(None),
-            _ => Preset::Dummy(None),
+            JobType::StudioPreview => Preset::Dummy(Concat::NONE),
+            _ => Preset::Dummy(Concat::NONE),
         };
         Self {
             author,
@@ -4802,11 +4839,11 @@ impl Job {
         let preset = match job_type {
             JobType::Encode | JobType::Pancode | JobType::Batch => settings.preset.clone(),
             // A keycode join is an x264 encode whatever the server encodes releases with; only the
-            // intro group carries over.
-            JobType::Keycode => Preset::Standard(settings.preset.candidates().cloned()),
+            // concat groups carry over.
+            JobType::Keycode => Preset::Standard(settings.preset.concat().clone()),
             JobType::Studio => Preset::Copy,
-            JobType::StudioPreview => Preset::Dummy(None),
-            _ => Preset::Dummy(None),
+            JobType::StudioPreview => Preset::Dummy(Concat::NONE),
+            _ => Preset::Dummy(Concat::NONE),
         };
         Self {
             author,
@@ -4903,31 +4940,31 @@ mod tests {
             download_aot_for(&preset).map(|aot| (aot.preset, aot.chunked))
         };
         for (preset, name) in [
-            (Preset::Standard(None), "standard"),
-            (Preset::PseudoLossless(None), "pseudolossless"),
-            (Preset::Dummy(None), "dummy"),
+            (Preset::Standard(Concat::NONE), "standard"),
+            (Preset::PseudoLossless(Concat::NONE), "pseudolossless"),
+            (Preset::Dummy(Concat::NONE), "dummy"),
         ] {
             assert_eq!(linear(preset), Some((name.to_string(), false)), "{name}");
         }
         // VerySlow plans chunk boundaries instead of keeping one encoder alive.
         assert_eq!(
-            linear(Preset::VerySlow(None)),
+            linear(Preset::VerySlow(Concat::NONE)),
             Some(("veryslow".to_string(), true))
         );
         assert_eq!(
-            linear(Preset::Av1(None)),
+            linear(Preset::Av1(Concat::NONE)),
             Some(("av1".to_string(), false))
         );
         // Off by default, and a stream copy has no preset to speculate with at all.
-        for preset in [Preset::Gpu(None), Preset::Hd720(None), Preset::Sd480(None), Preset::Copy] {
+        for preset in [Preset::Gpu(Concat::NONE), Preset::Hd720(Concat::NONE), Preset::Sd480(Concat::NONE), Preset::Copy] {
             assert_eq!(linear(preset.clone()), None, "{:?}", preset);
         }
         // Whatever it decides, it names a preset pnmpeg can look up — including its file.
         for preset in [
-            Preset::Standard(None),
-            Preset::VerySlow(None),
-            Preset::Gpu(None),
-            Preset::Av1(None),
+            Preset::Standard(Concat::NONE),
+            Preset::VerySlow(Concat::NONE),
+            Preset::Gpu(Concat::NONE),
+            Preset::Av1(Concat::NONE),
         ] {
             let name = preset.name().unwrap();
             assert!(

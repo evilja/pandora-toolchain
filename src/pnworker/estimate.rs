@@ -245,6 +245,7 @@ pub(crate) fn format_eta(secs: u64) -> String {
 mod tests {
     use super::*;
     use crate::lib::p2p::nyaaise::TorrentType;
+    use crate::pnworker::core::Concat;
 
     fn encode_job(id: u64, ready: Stage, dispatched: bool) -> Job {
         let mut job = Job::new_api(
@@ -272,12 +273,12 @@ mod tests {
 
     #[test]
     fn remaining_secs_queued_uses_preset_fps() {
-        assert_eq!(remaining_secs_queued(Some(300), &Preset::PseudoLossless(None)), Some(10));
-        assert_eq!(remaining_secs_queued(Some(300), &Preset::Dummy(None)), Some(2));
-        assert_eq!(remaining_secs_queued(Some(300), &Preset::Standard(None)), Some(5));
-        assert_eq!(remaining_secs_queued(Some(300), &Preset::Gpu(None)), Some(5));
-        assert_eq!(remaining_secs_queued(Some(300), &Preset::Av1(None)), Some(5));
-        assert_eq!(remaining_secs_queued(None, &Preset::Standard(None)), None);
+        assert_eq!(remaining_secs_queued(Some(300), &Preset::PseudoLossless(Concat::NONE)), Some(10));
+        assert_eq!(remaining_secs_queued(Some(300), &Preset::Dummy(Concat::NONE)), Some(2));
+        assert_eq!(remaining_secs_queued(Some(300), &Preset::Standard(Concat::NONE)), Some(5));
+        assert_eq!(remaining_secs_queued(Some(300), &Preset::Gpu(Concat::NONE)), Some(5));
+        assert_eq!(remaining_secs_queued(Some(300), &Preset::Av1(Concat::NONE)), Some(5));
+        assert_eq!(remaining_secs_queued(None, &Preset::Standard(Concat::NONE)), None);
     }
 
     #[test]

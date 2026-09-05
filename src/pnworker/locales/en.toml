@@ -330,6 +330,10 @@ args = 0
 text = "Concat / intro"
 args = 0
 
+[FIELD_OUTRO]
+text = "Concat / outro"
+args = 0
+
 [FIELD_LOCAL_GDRIVE]
 text = "Local Google Drive"
 args = 0

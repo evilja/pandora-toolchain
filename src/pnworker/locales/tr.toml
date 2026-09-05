@@ -330,6 +330,10 @@ args = 0
 text = "Birleştirme / intro"
 args = 0
 
+[FIELD_OUTRO]
+text = "Birleştirme / outro"
+args = 0
+
 [FIELD_LOCAL_GDRIVE]
 text = "Yerel Google Drive"
 args = 0

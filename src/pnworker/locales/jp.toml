@@ -330,6 +330,10 @@ args = 0
 text = "結合 / イントロ"
 args = 0
 
+[FIELD_OUTRO]
+text = "結合 / アウトロ"
+args = 0
+
 [FIELD_LOCAL_GDRIVE]
 text = "ローカルGoogle Drive"
 args = 0

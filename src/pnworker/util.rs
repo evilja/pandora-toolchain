@@ -216,9 +216,41 @@ where
 }
 
 pub const INTROS_PATH: &str = "DB/config/global/environment/intros.toml";
+pub const OUTROS_PATH: &str = "DB/config/global/environment/outros.toml";
+
+// Which end of the episode a concat group is stitched onto. An intro and an outro are the same kind
+// of thing — a folder of retained variants pnmpeg picks a stream-compatible one out of — and differ
+// only in the config they are registered in and the side of the encode they land on. Everything
+// that handles one handles the other by carrying this rather than by having a second copy.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConcatKind {
+    Intro,
+    Outro,
+}
+
+pub const CONCAT_KINDS: [ConcatKind; 2] = [ConcatKind::Intro, ConcatKind::Outro];
+
+impl ConcatKind {
+    pub fn config_path(self) -> &'static str {
+        match self {
+            ConcatKind::Intro => INTROS_PATH,
+            ConcatKind::Outro => OUTROS_PATH,
+        }
+    }
+
+    // The lowercase noun this kind is spelled with everywhere an operator sees it: the `/touchintro`
+    // and `/touchouttro` command names, the `concat` and `outro` option help, and error text.
+    pub fn label(self) -> &'static str {
+        match self {
+            ConcatKind::Intro => "intro",
+            ConcatKind::Outro => "outro",
+        }
+    }
+}
 
 #[derive(Deserialize, Serialize, Debug, Default)]
-pub struct IntrosConfig {
+pub struct ConcatConfig {
     pub groups: HashMap<String, String>,
 }
 
@@ -234,21 +266,31 @@ enum IntroGroupValue {
     Files(Vec<String>),
 }
 
-impl IntrosConfig {
+impl ConcatConfig {
     pub fn load() -> Self {
-        let contents = match std::fs::read_to_string(INTROS_PATH) {
+        ConcatConfig::load_kind(ConcatKind::Intro)
+    }
+
+    // Only intros ever had the legacy file-list form, so only they are migrated on read. `outros.toml`
+    // was born as a folder map and a parse failure there is a broken file, not an old one.
+    pub fn load_kind(kind: ConcatKind) -> Self {
+        let contents = match std::fs::read_to_string(kind.config_path()) {
             Ok(contents) => contents,
-            Err(_) => return IntrosConfig::default(),
+            Err(_) => return ConcatConfig::default(),
         };
         if contents.trim().is_empty() {
-            return IntrosConfig::default();
+            return ConcatConfig::default();
         }
-        if let Ok(config) = toml::from_str::<IntrosConfig>(&contents) {
+        if let Ok(config) = toml::from_str::<ConcatConfig>(&contents) {
             return config;
+        }
+        if kind != ConcatKind::Intro {
+            eprintln!("Warning: could not parse {}", kind.config_path());
+            return ConcatConfig::default();
         }
         match migrate_intro_config_contents(&contents) {
             Ok((config, true)) => {
-                if let Err(e) = write_intro_config(&config) {
+                if let Err(e) = write_concat_config(ConcatKind::Intro, &config) {
                     eprintln!("Warning: failed to save migrated intro config: {}", e);
                 }
                 config
@@ -256,7 +298,7 @@ impl IntrosConfig {
             Ok((config, false)) => config,
             Err(e) => {
                 eprintln!("Warning: failed to migrate intro config: {}", e);
-                IntrosConfig::default()
+                ConcatConfig::default()
             }
         }
     }
@@ -265,10 +307,10 @@ impl IntrosConfig {
         self.groups.get(group).filter(|folder| !folder.trim().is_empty()).cloned()
     }
 
-    // A job snapshots the folder its intro group resolved to, not the group's name, because that is
-    // all the encoder needs. Naming it again — to tell a linked node which intro to sync — means
-    // asking the config which group that folder belongs to, rather than re-reading the server's
-    // settings, which may have changed since the job was created.
+    // A job snapshots the folder its concat group resolved to, not the group's name, because that
+    // is all the encoder needs. Naming it again — to tell a linked node which intro or outro to
+    // sync — means asking the config which group that folder belongs to, rather than re-reading the
+    // server's settings, which may have changed since the job was created.
     pub fn group_for_folder(&self, folder: &str) -> Option<String> {
         let folder = folder.trim();
         if folder.is_empty() {
@@ -286,7 +328,7 @@ impl IntrosConfig {
 }
 
 pub fn migrate_intro_config() -> Result<bool, String> {
-    let contents = match std::fs::read_to_string(INTROS_PATH) {
+    let contents = match std::fs::read_to_string(ConcatKind::Intro.config_path()) {
         Ok(contents) => contents,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(e.to_string()),
@@ -296,14 +338,14 @@ pub fn migrate_intro_config() -> Result<bool, String> {
     }
     let (config, migrated) = migrate_intro_config_contents(&contents)?;
     if migrated {
-        write_intro_config(&config)?;
+        write_concat_config(ConcatKind::Intro, &config)?;
     }
     Ok(migrated)
 }
 
-fn migrate_intro_config_contents(contents: &str) -> Result<(IntrosConfig, bool), String> {
+fn migrate_intro_config_contents(contents: &str) -> Result<(ConcatConfig, bool), String> {
     let raw: LegacyIntrosConfig = toml::from_str(contents).map_err(|e| e.to_string())?;
-    let mut config = IntrosConfig::default();
+    let mut config = ConcatConfig::default();
     let mut migrated = false;
     for (name, value) in raw.groups {
         let folder = match value {
@@ -365,18 +407,19 @@ fn intro_folder_name(name: &str) -> String {
     format!("intro-{:x}", md5::compute(name.as_bytes()))
 }
 
-fn write_intro_config(config: &IntrosConfig) -> Result<(), String> {
-    if let Some(parent) = Path::new(INTROS_PATH).parent() {
+pub fn write_concat_config(kind: ConcatKind, config: &ConcatConfig) -> Result<(), String> {
+    let path = kind.config_path();
+    if let Some(parent) = Path::new(path).parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let body = toml::to_string_pretty(config).map_err(|e| e.to_string())?;
-    let temporary = format!("{}.tmp", INTROS_PATH);
+    let temporary = format!("{}.tmp", path);
     std::fs::write(&temporary, body).map_err(|e| e.to_string())?;
-    match std::fs::rename(&temporary, INTROS_PATH) {
+    match std::fs::rename(&temporary, path) {
         Ok(()) => Ok(()),
-        Err(first) if Path::new(INTROS_PATH).exists() => {
-            std::fs::remove_file(INTROS_PATH).map_err(|e| e.to_string())?;
-            std::fs::rename(&temporary, INTROS_PATH)
+        Err(first) if Path::new(path).exists() => {
+            std::fs::remove_file(path).map_err(|e| e.to_string())?;
+            std::fs::rename(&temporary, path)
                 .map_err(|e| format!("{}; replacement failed: {}", first, e))
         }
         Err(e) => Err(e.to_string()),
@@ -385,7 +428,7 @@ fn write_intro_config(config: &IntrosConfig) -> Result<(), String> {
 
 #[cfg(test)]
 mod intro_tests {
-    use super::{IntrosConfig, migrate_intro_config_contents};
+    use super::{ConcatConfig, ConcatKind, INTROS_PATH, OUTROS_PATH, migrate_intro_config_contents};
 
     // A job snapshots the folder its group resolved to, so naming the group again is a reverse
     // lookup. Two groups can legitimately point at one folder; the answer has to be stable rather
@@ -396,7 +439,7 @@ mod intro_tests {
         groups.insert("summer".to_string(), "DB/intros/summer".to_string());
         groups.insert("winter".to_string(), "DB/intros/winter".to_string());
         groups.insert("alias".to_string(), "DB/intros/summer".to_string());
-        let config = IntrosConfig { groups };
+        let config = ConcatConfig { groups };
 
         assert_eq!(config.group_for_folder("DB/intros/winter"), Some("winter".to_string()));
         assert_eq!(config.group_for_folder("DB/intros/summer"), Some("alias".to_string()));
@@ -406,6 +449,18 @@ mod intro_tests {
         );
         assert_eq!(config.group_for_folder("DB/intros/nothing"), None);
         assert_eq!(config.group_for_folder("   "), None);
+    }
+
+    // The two kinds are separate registries in separate files. Sharing one would make an intro
+    // group named `summer` and an outro group named `summer` the same entry, which is exactly the
+    // collision the folder roots are kept apart to avoid.
+    #[test]
+    fn each_concat_kind_reads_its_own_file() {
+        assert_eq!(ConcatKind::Intro.config_path(), INTROS_PATH);
+        assert_eq!(ConcatKind::Outro.config_path(), OUTROS_PATH);
+        assert_ne!(ConcatKind::Intro.config_path(), ConcatKind::Outro.config_path());
+        assert_eq!(ConcatKind::Intro.label(), "intro");
+        assert_eq!(ConcatKind::Outro.label(), "outro");
     }
 
     #[test]

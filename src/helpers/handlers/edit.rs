@@ -8,6 +8,17 @@ use serenity::builder::CreateAutocompleteResponse;
 
 const CLEAR_SENTINEL: &str = "-";
 const DISABLE_CONCAT_LABEL: &str = "Disable concat";
+
+// The two options that select a concat group, and the registry each reads. `concat` keeps its name
+// from before outros existed; renaming it would break every registered slash command.
+fn concat_option_kind(name: &str) -> Option<ConcatKind> {
+    match name {
+        "concat" => Some(ConcatKind::Intro),
+        "outro" => Some(ConcatKind::Outro),
+        _ => None,
+    }
+}
+
 const MAX_CONCAT_CHOICES: usize = 25;
 const MAX_CONCAT_GROUP_CHOICES: usize = MAX_CONCAT_CHOICES - 1;
 const MAX_CONCAT_CHOICE_CHARS: usize = 100;
@@ -86,8 +97,9 @@ fn filter_preset_choices(partial: &str) -> Vec<(String, String)> {
 }
 
 // `/edit` autocompletes several unrelated options, so the focused option decides which directory is
-// searched: the local intro groups for `concat`, the presets this deployment holds for `preset`,
-// and the matching site's live fansub directory for each per-site fansub selector.
+// searched: the local intro groups for `concat`, the local outro groups for `outro`, the presets
+// this deployment holds for `preset`, and the matching site's live fansub directory for each
+// per-site fansub selector.
 pub async fn handle_edit_autocomplete(
     ctx: &Context,
     interaction: &serenity::all::CommandInteraction,
@@ -115,14 +127,14 @@ pub async fn handle_edit_autocomplete(
     // Nothing below matches an option this build does not know about, and the answer is then an
     // empty list that Discord draws exactly like a failure. A slash command whose registered
     // options have drifted from the code is precisely the case that produces it.
-    if !matches!(focused.name, "concat" | "preset") {
+    if !matches!(focused.name, "concat" | "outro" | "preset") {
         eprintln!(
             "[edit] no autocomplete source for option `{}`; answering with nothing",
             focused.name
         );
     }
-    if focused.name == "concat" {
-        let config = IntrosConfig::load();
+    if let Some(kind) = concat_option_kind(focused.name) {
+        let config = ConcatConfig::load_kind(kind);
         for (label, value) in filter_concat_choices(&config.groups, &partial) {
             response = response.add_string_choice(label, value);
         }
@@ -142,6 +154,30 @@ pub async fn handle_edit_autocomplete(
             interaction.channel_id.get(),
             e
         );
+    }
+}
+
+// A submitted concat group is checked against the registry it belongs to, because autocomplete
+// offers a value rather than enforcing it: a typed name that resolves to nothing would be stored
+// and then silently produce releases with no intro or no outro. `-` clears the selection and an
+// omitted option keeps what is there.
+fn edit_concat_field(
+    command: &serenity::all::CommandInteraction,
+    kind: ConcatKind,
+    option: &str,
+    existing: &str,
+) -> Result<String, String> {
+    match option_str(command, option).map(str::trim) {
+        None => Ok(existing.to_string()),
+        Some(CLEAR_SENTINEL) | Some("") => Ok(String::new()),
+        Some(group) if ConcatConfig::load_kind(kind).resolve(group).is_some() => {
+            Ok(group.to_string())
+        }
+        Some(group) => Err(format!(
+            "Error: {} group `{}` does not exist",
+            kind.label(),
+            group
+        )),
     }
 }
 
@@ -232,6 +268,7 @@ pub async fn handle_edit(
     let existing_gdrive_anon_folder_id = existing_lines.get(10).copied().unwrap_or("");
     let existing_preset = existing_lines.get(11).copied().unwrap_or("standard");
     let existing_concat = existing_lines.get(12).copied().unwrap_or("");
+    let existing_outro = existing_lines.get(19).copied().unwrap_or("");
     let existing_drive_only = drive_only_from_meta(&existing_meta);
     let existing_hls = hls_from_meta(&existing_meta);
     let existing_hls_name = hls_name_from_meta(&existing_meta);
@@ -302,7 +339,7 @@ pub async fn handle_edit(
             // fourth copy of the built-in names, which could not know about a preset an operator
             // had put in `DB/config/global/presets/` under a name of its own — and autocomplete
             // offers a value rather than enforcing it, so this is where a typed name is refused.
-            if pandora_toolchain::pnworker::server_effects::preset_from_name(&canonical, None)
+            if pandora_toolchain::pnworker::server_effects::preset_from_name(&canonical, Concat::NONE)
                 .is_none()
             {
                 edit_error(
@@ -324,12 +361,17 @@ pub async fn handle_edit(
         edit_error(ctx, command, deferred, format!("Error: {reason}")).await;
         return;
     }
-    let concat = match option_str(command, "concat").map(str::trim) {
-        None => existing_concat.to_string(),
-        Some("-") | Some("") => String::new(),
-        Some(group) if IntrosConfig::load().resolve(group).is_some() => group.to_string(),
-        Some(group) => {
-            edit_error(ctx, command, deferred, format!("Error: concat group `{}` does not exist", group)).await;
+    let concat = match edit_concat_field(command, ConcatKind::Intro, "concat", existing_concat) {
+        Ok(value) => value,
+        Err(e) => {
+            edit_error(ctx, command, deferred, e).await;
+            return;
+        }
+    };
+    let outro = match edit_concat_field(command, ConcatKind::Outro, "outro", existing_outro) {
+        Ok(value) => value,
+        Err(e) => {
+            edit_error(ctx, command, deferred, e).await;
             return;
         }
     };
@@ -372,6 +414,7 @@ pub async fn handle_edit(
         anizm_fansub: fansub_value(FansubSite::Anizm),
         hls: hls.to_string(),
         hls_name: hls_name.clone(),
+        outro: outro.clone(),
     });
     let path = dir.join("meta.pandora");
     if let Err(e) = tokio::fs::write(&path, body).await {
@@ -404,6 +447,11 @@ pub async fn handle_edit(
     } else {
         concat
     };
+    let outro_display = if outro.is_empty() {
+        command_message(command, VALUE_DISABLED)
+    } else {
+        outro
+    };
     let drive_only_display = command_message(command, if drive_only { VALUE_ENABLED } else { VALUE_DISABLED });
     let hls_display = command_message(command, if hls { VALUE_ENABLED } else { VALUE_DISABLED });
     let mut embed = success_embed(command, COMMAND_SERVER_UPDATED)
@@ -419,7 +467,8 @@ pub async fn handle_edit(
         .field(command_message(command, FIELD_HLS_NAME), format!("`{}`", hls_name), true)
         .field(command_message(command, FIELD_WRAPSTYLE), wrap_display, true)
         .field(command_message(command, FIELD_PRESET), preset, true)
-        .field(command_message(command, FIELD_CONCAT), concat_display, true);
+        .field(command_message(command, FIELD_CONCAT), concat_display, true)
+        .field(command_message(command, FIELD_OUTRO), outro_display, true);
     for (site, (value, display)) in &fansubs {
         let shown = display
             .clone()

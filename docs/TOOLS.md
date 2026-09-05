@@ -74,7 +74,7 @@ arrives from a job spec, so anything that is not a plain word is refused before 
 The older boolean flags — `--x264`, `--veryslow`, `--pseudolossless`, `--dummy`, `--gpu`, `--720p`,
 `--480p` — still work and now go through the same lookup, so a preset file takes effect whichever
 way the preset was named. Exactly one preset may be given per run. The concat tables are not
-presets and stay compiled in: they are how an intro is stitched on, not a quality choice.
+presets and stay compiled in: they are how an intro or outro is stitched on, not a quality choice.
 
 The preset selected here also decides whether the run adopts a speculative ahead-of-time prefix and
 whether it chunks across parallel encoders — read off the preset rather than off the flag it was
@@ -89,24 +89,35 @@ selected. See [WORKER.md](WORKER.md#parallel-veryslow-encoding).
 The file format and its `hardware` tag are described in [WORKER.md](WORKER.md) and
 [LINK.md](LINK.md#purpose); reference copies of every built-in live in `presets/`.
 
-## `pnmpeg` intro concat mode
+## `pnmpeg` intro/outro concat mode
 
-`pnmpeg --concat --input <episode.mp4> --intro-dir <group-folder> --output <video.mp4>` discovers the retained intro variants in the group folder. If one has the same H.264/AAC concat properties as the encoded episode (dimensions, pixel format, sample aspect ratio, frame rate, sample rate, and channel count), both files are joined with video/audio stream copy. Otherwise, only the best source intro is transcoded to those properties as `pnmpeg_compat_<signature>.mp4` in the group folder; that retained variant is then stream-copied and automatically reused by later compatible encodes. Existing `/touchintro` variants remain untouched.
+`pnmpeg --concat --input <episode.mp4> [--intro-dir <group-folder>] [--outro-dir <group-folder>] --output <video.mp4>` discovers the retained variants in each group folder it is given. If one has the same H.264/AAC concat properties as the encoded episode (dimensions, pixel format, sample aspect ratio, frame rate, sample rate, and channel count), it is joined with video/audio stream copy. Otherwise, only the best source variant is transcoded to those properties as `pnmpeg_compat_<signature>.mp4` in that group folder; the retained variant is then stream-copied and automatically reused by later compatible encodes. Existing `/touchintro` and `/touchoutro` variants remain untouched.
 
-The frame total reported for this pass is the sum of the intro's and the episode's own
-`-count_packets` counts. ffmpeg is handed an ffconcat list here rather than a media file, and a list
+Both ends are optional and independent: an empty or absent `--intro-dir` or `--outro-dir` simply
+contributes nothing. One run handles both, writing an ffconcat list of intro, episode, outro in that
+order, so an episode with both is a single stream-copy mux rather than two passes over the same
+bytes. `--intro-preset` names the preset any transcode is done with and is required whenever either
+folder is given; one preset serves both, because the episode they are joined to is the same file.
+
+AV1 sequence headers can disagree beyond the probed fields, so an AV1 candidate is stream-copied
+with the episode and decoded across the boundary before it is trusted. The pair is built in the
+order it will actually play — variant before the episode for an intro, after it for an outro — since
+it is the transition itself that is being tested.
+
+The frame total reported for this pass is the sum of every joined file's own
+`-count_packets` count. ffmpeg is handed an ffconcat list here rather than a media file, and a list
 is not something `ffprobe` can count without `-f concat`, so the files behind the list are what get
 counted — counting the argument returned nothing and scored the whole pass as `frame / 0`, with no
 percentage and no ETA. A zero total is logged as a `WARNING` in the run log for the same reason.
 
-`intros.toml` maps group names directly to these folders. `pndc` startup migrates legacy file-array groups into per-group folders before workers start.
+`intros.toml` and `outros.toml` map group names directly to these folders. `pndc` startup migrates legacy file-array intro groups into per-group folders before workers start; `outros.toml` was born in the folder format and is never migrated.
 
 ## `pnmpeg` Pandora Studio mode
 
 `pnmpeg --studio --input <manifest.json> --output <video.mp4>` renders a file-backed Pandora Studio snapshot through the normal pnprotocol progress/cancel/log path. The JSON manifest supplies ordered ffconcat video inputs, stable audio tracks, source kind, video preset, total FPS/duration, and an optional preview window.
 
 - Encode-kind full renders use video stream copy and AAC audio; preview windows always use the Dummy libx264 preset.
-- Backup-kind full renders use the selected Standard/VerySlow/GPU/PseudoLossless/Dummy video settings without subtitle or intro filters.
+- Backup-kind full renders use the selected Standard/VerySlow/GPU/PseudoLossless/Dummy video settings without subtitle or concat filters.
 - Insert tracks are delayed and mixed over base audio. Override tracks additionally mute base audio for their clipped placement intervals. Duck tracks lower every other source to their configured target percentage, with symmetric fade-down/fade-up times clamped to half the duck track duration; overlapping duck envelopes multiply. A source with no audio receives duration-matched stereo silence.
 - Every track applies its cumulative start/end cuts and own 0-500% volume, is normalized to 48 kHz stereo, mixed with a limiter, and clipped to the video or preview duration.
 - Preview input seeking is applied before the concat source and track trims/delays are made relative to the preview window. Invalid manifests and concat-list failures exit nonzero so the worker reports failure rather than uploading a missing output.
@@ -167,7 +178,7 @@ Every tool now writes a **run log**: `ToolLog` in `src/lib/logging/tool.rs`, one
 
 `ToolLog::beside(logfile)` derives `<name>.run.log` next to the tool's existing `--logfile` transcript, so pnmpeg and pncurl gained one without a new `CliParam`. pnass and pnp2p take `--logfile` directly (pnass has no subprocess transcript; pnp2p had no log at all).
 
-- **pnmpeg** → `PNmpeg_*<job_id>.run.log`. Args and mode, intro preparation (which may transcode), `select_subinput`, the framerate/samplerate compatibility probe, preset parameter count, the audio-language probe, **every `ffprobe -count_packets` with its duration** — a full demux of the input, the longest thing that runs before ffmpeg exists — then `handing off to ffmpeg`, `spawning ffmpeg`, the **first progress frame**, and the terminal warning/done/fail/cancel. Everything before "first ffmpeg progress" is setup a stalled run never got past.
+- **pnmpeg** → `PNmpeg_*<job_id>.run.log`. Args and mode, intro/outro preparation (which may transcode), `select_subinput`, the framerate/samplerate compatibility probe, preset parameter count, the audio-language probe, **every `ffprobe -count_packets` with its duration** — a full demux of the input, the longest thing that runs before ffmpeg exists — then `handing off to ffmpeg`, `spawning ffmpeg`, the **first progress frame**, and the terminal warning/done/fail/cancel. Everything before "first ffmpeg progress" is setup a stalled run never got past.
 - **pnp2p** → `PNp2p*<job_id>.log`. Args, client initialisation, probe start/result count, the selection being downloaded, and the terminal result. Previously the torrent path wrote nothing to the job directory, so a stuck download and a download that never started were indistinguishable.
 - **pncurl** → `PNcurl*<job_id>.run.log`. Args, which mode started (scrape / direct / drive upload), and its outcome.
 - **pnass** → `PNass_Inject<job_id>.log`. See [`pnass` flags](#pnass-flags).

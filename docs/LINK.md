@@ -240,7 +240,7 @@ All under `/api/v1/link/`, all requiring a link token.
   [Returned artifacts](#returned-artifacts).
 - `GET /link/release` — what the coordinator is running: `{ version, build, commit, reset }`. A node
   polls it once per loop pass. See [Staying level](#staying-level).
-- `GET /link/assets/manifest` — the font and intro corpus, with its revision. See [Assets](#assets).
+- `GET /link/assets/manifest` — the font, intro and outro corpus, with its revision. See [Assets](#assets).
 - `GET /link/assets/:hash` — one asset, addressed by content hash.
 
 ## Saying hello again
@@ -603,7 +603,7 @@ Pandora; a deployment that predates the ledger has no such guarantee and runs ev
 
 ## Assets
 
-Fonts and intro videos are the two things a node needs that do not travel in a job spec, and a
+Fonts, intro videos and outro videos are the things a node needs that do not travel in a job spec, and a
 missing font does not fail — libass substitutes one and the release goes out in the wrong typeface
 with nothing to show for it. So a node syncs the coordinator's whole corpus, and a job whose
 revision it cannot prove it holds is declined rather than encoded.
@@ -616,23 +616,26 @@ exactly when the corpus does and there is no counter for `/cfont` to remember to
 - Fonts land in `DB/fontconfig/<bucket>`, which is where the startup installer already copies from
   into the OS font path — libass resolves through system fontconfig, so a synced font is not a
   usable font until that has run.
-- Intros land in `DB/cache/link-intros/<group>`, deliberately apart from anything an operator
-  hand-placed, because pnmpeg writes compatibility variants back into whatever folder it is given.
-  A spec carries the *group name*, never the coordinator's folder path, which means nothing on
-  another machine.
+- Intros land in `DB/cache/link-intros/<group>` and outros in `DB/cache/link-outros/<group>`,
+  deliberately apart from anything an operator hand-placed, because pnmpeg writes compatibility
+  variants back into whatever folder it is given. The two roots are also apart from each other,
+  since intro and outro groups are separate registries and one name may exist in both. A spec
+  carries each *group name* (`intro_group`, `outro_group`), never the coordinator's folder path,
+  which means nothing on another machine; the node rebuilds the preset's folders from its own
+  synced copies and declines the job if a named group materialised no files.
 
-**Deletions are pruned, and only for intros.** Fetching what is missing cannot see a file being
-removed: the revision moves, nothing is missing, and a node would record the new revision while
-still holding what the corpus dropped — so two machines agreeing on a revision would not mean they
-held the same corpus. That is not cosmetic for an intro, because the whole folder is handed to
-pnmpeg and it picks a variant out of it: a retired intro would go on shipping from every node that
-ever had it. Fonts are left alone on purpose — `DB/fontconfig` is shared with fonts an operator
+**Deletions are pruned, and only for concat groups.** Fetching what is missing cannot see a file
+being removed: the revision moves, nothing is missing, and a node would record the new revision
+while still holding what the corpus dropped — so two machines agreeing on a revision would not mean
+they held the same corpus. That is not cosmetic for an intro or an outro, because the whole folder is
+handed to pnmpeg and it picks a variant out of it: a retired one would go on shipping from every node
+that ever had it. Fonts are left alone on purpose — `DB/fontconfig` is shared with fonts an operator
 placed by hand, the installer has already copied them somewhere deleting the bucket copy would not
 reach, and an extra font substitutes for nothing.
 
 pnmpeg's own `pnmpeg_compat_*` variants are **not** part of the corpus. They are a per-machine cache
 derived from it, keyed by one episode's exact stream properties; they appear in the coordinator's
-intro folder as it encodes, and counting them would move the revision — and re-sync every node —
+own concat folders as it encodes, and counting them would move the revision — and re-sync every node —
 every time an unfamiliar output format was met. A node regenerates its own, and a prune drops them
 along with everything else, since they were derived from a set that has just changed.
 
@@ -1007,7 +1010,7 @@ have named itself in a log:
   nobody read again. It is watched now, and its ending exits the process so the restart loop can
   bring the queue back.
 - **Blocking work on the async runtime.** Building the asset manifest walks and hashes the whole
-  font and intro corpus; a node's log chunks are appended file by file. Both ran inline — the first
+  font, intro and outro corpus; a node's log chunks are appended file by file. Both ran inline — the first
   inside `pn_worker`'s loop and inside the board's own lock, the second on the thread serving the
   API — so a large corpus or a busy cluster showed up as leases timing out and a coordinator that
   paused, neither of which anything reported. The manifest is now kept warm off the runtime and

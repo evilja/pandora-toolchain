@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 use crate::lib::env::core::get_pandora_env;
 use crate::lib::env::standard::PANDORA_MODE;
 use crate::pnworker::core::{Job, JobType, Preset};
-use crate::pnworker::util::IntrosConfig;
+use crate::pnworker::util::{ConcatConfig, ConcatKind};
 use crate::pnworker::link::board;
 use crate::pnworker::link::board::NoNode;
 use crate::pnworker::link::client::{encode_base64, job_type_is_leasable};
@@ -176,11 +176,13 @@ pub fn build_spec(
     drive_only: bool,
 ) -> LinkJobSpec {
     let (source_kind, source) = source_to_wire(&job.torrent);
-    // The concat folder lives inside the preset variant, and `preset_name` cannot carry it: it is a
-    // path on this machine and means nothing on another. What travels is the group's name, which
-    // the node resolves against the copy it synced.
-    let intro_group = intro_candidates(&job.preset)
-        .and_then(|folder| IntrosConfig::load().group_for_folder(&folder));
+    // The concat folders live inside the preset variant, and `preset_name` cannot carry them: they
+    // are paths on this machine and mean nothing on another. What travels is each group's name,
+    // which the node resolves against the copy it synced.
+    let intro_group = concat_folder(&job.preset, ConcatKind::Intro)
+        .and_then(|folder| ConcatConfig::load_kind(ConcatKind::Intro).group_for_folder(&folder));
+    let outro_group = concat_folder(&job.preset, ConcatKind::Outro)
+        .and_then(|folder| ConcatConfig::load_kind(ConcatKind::Outro).group_for_folder(&folder));
     LinkJobSpec {
         job_id: job.job_id.to_string(),
         job_type: job_type_name(job.job_type),
@@ -210,6 +212,7 @@ pub fn build_spec(
         return_output,
         drive_only,
         intro_group,
+        outro_group,
         assets_revision: crate::pnworker::link::assets::manifest().revision,
         // The font travels as its name, not as this machine's path to it: both sides resolve it
         // over the same synced buckets, so the node finds the same file or declines the job.
@@ -250,12 +253,16 @@ pub fn keep_kind_for(job: &Job) -> crate::pnworker::core::KeepKind {
     }
 }
 
-// The intro/concat folder a preset carries. Every encoding variant holds one; `Copy` never does.
-pub fn intro_candidates(preset: &Preset) -> Option<String> {
-    preset
-        .candidates()
-        .cloned()
-        .filter(|folder| !folder.trim().is_empty())
+// One of the concat folders a preset carries. Every encoding variant holds both slots; `Copy` holds
+// neither, and a slot the server left unset is blank rather than absent in some configurations —
+// which is not a group name to look up.
+pub fn concat_folder(preset: &Preset, kind: ConcatKind) -> Option<String> {
+    let concat = preset.concat();
+    match kind {
+        ConcatKind::Intro => concat.intro.clone(),
+        ConcatKind::Outro => concat.outro.clone(),
+    }
+    .filter(|folder| !folder.trim().is_empty())
 }
 
 // The worker label a leased job wears. `/workers` and the job embed both render `Job.worker`
@@ -301,7 +308,7 @@ pub fn keycode_node(resolved: &crate::pnworker::keep::ResolvedKeywords) -> Optio
 mod tests {
     use super::*;
     use crate::lib::p2p::nyaaise::TorrentType;
-    use crate::pnworker::core::{Job, KeepRequest, KeycodeRequest};
+    use crate::pnworker::core::{Concat, Job, KeepRequest, KeycodeRequest};
 
     fn job(job_type: JobType) -> Job {
         Job::new_api(
@@ -521,24 +528,44 @@ mod tests {
     // The concat folder lives inside the preset variant and is easy to drop on the way out — which
     // is exactly what happened before this existed, leaving leased jobs with no intro at all.
     #[test]
-    fn every_encoding_preset_yields_its_concat_folder() {
-        let folder = Some("DB/intros/summer".to_string());
+    fn every_encoding_preset_yields_its_concat_folders() {
+        let concat = Concat::new(
+            Some("DB/intros/summer".to_string()),
+            Some("DB/outros/summer".to_string()),
+        );
         for preset in [
-            Preset::Standard(folder.clone()),
-            Preset::VerySlow(folder.clone()),
-            Preset::Gpu(folder.clone()),
-            Preset::Av1(folder.clone()),
-            Preset::PseudoLossless(folder.clone()),
-            Preset::Dummy(folder.clone()),
-            Preset::Hd720(folder.clone()),
-            Preset::Sd480(folder.clone()),
+            Preset::Standard(concat.clone()),
+            Preset::VerySlow(concat.clone()),
+            Preset::Gpu(concat.clone()),
+            Preset::Av1(concat.clone()),
+            Preset::PseudoLossless(concat.clone()),
+            Preset::Dummy(concat.clone()),
+            Preset::Hd720(concat.clone()),
+            Preset::Sd480(concat.clone()),
         ] {
-            assert_eq!(intro_candidates(&preset).as_deref(), Some("DB/intros/summer"));
+            assert_eq!(
+                concat_folder(&preset, ConcatKind::Intro).as_deref(),
+                Some("DB/intros/summer")
+            );
+            assert_eq!(
+                concat_folder(&preset, ConcatKind::Outro).as_deref(),
+                Some("DB/outros/summer")
+            );
         }
-        assert_eq!(intro_candidates(&Preset::Copy), None);
-        assert_eq!(intro_candidates(&Preset::Standard(None)), None);
-        // A blank folder is no folder; it must not travel as a group name to look up.
-        assert_eq!(intro_candidates(&Preset::Standard(Some("  ".to_string()))), None);
+        for kind in [ConcatKind::Intro, ConcatKind::Outro] {
+            assert_eq!(concat_folder(&Preset::Copy, kind), None);
+            assert_eq!(concat_folder(&Preset::Standard(Concat::NONE), kind), None);
+            // A blank folder is no folder; it must not travel as a group name to look up.
+            let blank = Concat::new(Some("  ".to_string()), Some("  ".to_string()));
+            assert_eq!(concat_folder(&Preset::Standard(blank), kind), None);
+        }
+        // A server that set one side and not the other travels with exactly that.
+        let intro_only = Preset::Standard(Concat::intro_only(Some("DB/intros/only".to_string())));
+        assert_eq!(
+            concat_folder(&intro_only, ConcatKind::Intro).as_deref(),
+            Some("DB/intros/only")
+        );
+        assert_eq!(concat_folder(&intro_only, ConcatKind::Outro), None);
     }
 
     // A node refuses a job whose corpus it cannot prove it holds, so the spec has to name one.

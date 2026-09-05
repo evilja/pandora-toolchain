@@ -887,6 +887,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("anizmconfirm", 4),
     ("publish", 4),
     ("touchintro", 4),
+    ("touchoutro", 4),
     ("changerank", 4),
     ("fontcheck", 4),
 ];
@@ -1021,7 +1022,7 @@ const HELP_SECTIONS: &[HelpSection] = &[
     HelpSection { slug: "admin", title: "Admin", blurb: "Server config, tokens, translations, auth, and ranks." },
     HelpSection { slug: "publish", title: "Publish", blurb: "AnimeciX and Akira publish confirmation commands." },
     HelpSection { slug: "fonts", title: "Fonts", blurb: "Font installation and font availability checks." },
-    HelpSection { slug: "misc", title: "Misc", blurb: "Provider, flavor, pool, intro, and general help commands." },
+    HelpSection { slug: "misc", title: "Misc", blurb: "Provider, flavor, pool, intro, outro, and general help commands." },
 ];
 
 fn help_catalog() -> &'static [HelpCommand] {
@@ -1044,7 +1045,7 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "encode",
             name: "encode",
             summary: "Encode, locally keep, or join video outputs.",
-            usage: "/encode do|pan|batch|link|keep|key ... (preset and intro come from /edit)",
+            usage: "/encode do|pan|batch|link|keep|key ... (preset, intro and outro come from /edit)",
             details: "`do` encodes with an attached ASS; `pan` selects a file from `/probe`; `batch` pairs a `/probe` selection with a subtitle zip in order and encodes every episode after you confirm the pairing; `link` fetches the ASS from a URL; `keep` encodes an attachment and stores the output under a keyword; `key` joins kept keyword outputs.",
         },
         HelpCommand {
@@ -1241,14 +1242,14 @@ fn help_catalog() -> &'static [HelpCommand] {
             name: "configure",
             summary: "Configure server language and Forgejo; Drive profiles live in Lumiere.",
             usage: "/configure language:<EN|TR|JP> [forgejo] [api_key] [wrapstyle] (Drive profiles are configured in Lumiere; encode defaults are set with /edit)",
-            details: "Writes server metadata. Google Drive credentials and roots are configured in the external Lumiere broker, never through Discord. Encode preset and intro defaults are managed later with /edit. wrapstyle controls ASS WrapStyle normalization; default dont_touch leaves existing subtitles unchanged.",
+            details: "Writes server metadata. Google Drive credentials and roots are configured in the external Lumiere broker, never through Discord. Encode preset, intro and outro defaults are managed later with /edit. wrapstyle controls ASS WrapStyle normalization; default dont_touch leaves existing subtitles unchanged.",
         },
         HelpCommand {
             section: "admin",
             name: "edit",
             summary: "Edit individual server metadata fields, leaving the rest untouched.",
             usage: "/edit [language] [forgejo] [api_key] [local_gdrive] [drive_only] [hls] [hls_name] [wrapstyle] [preset] [concat] [announcement_channel]",
-            details: "Like /configure but every field is optional — omitted fields keep their current value. Pass `-` to clear a text field. local_gdrive selects whether Lumiere should prefer the deterministic guild Drive profile before the global profile. drive_only:true restricts future release uploads to Google Drive and suppresses Byse, LuluStream, and Voe; false restores all configured Lumiere providers. AV1 requires either drive_only:true or hls:true; HLS uses fMP4/CMAF. hls_name is the template every file in an HLS release is named after — `%uuid%` a fresh v4 UUID, `%random%` six random hex characters, `%res%` the published height as `720p` — defaulting to `%uuid%_%random%_%res%`; pass `-` to restore it. Active uploads are unchanged. Drive credentials and roots are managed only in Lumiere. wrapstyle can be dont_touch or 0-3. preset and concat set server-wide encode defaults; type/search in concat and select a registered `/touchintro` group, or select `Disable concat` to clear it. The dropdown updates from the global intro config as groups are added. Set announcement_channel:true to point announcements at the current channel. Requires the server to already be configured.",
+            details: "Like /configure but every field is optional — omitted fields keep their current value. Pass `-` to clear a text field. local_gdrive selects whether Lumiere should prefer the deterministic guild Drive profile before the global profile. drive_only:true restricts future release uploads to Google Drive and suppresses Byse, LuluStream, and Voe; false restores all configured Lumiere providers. AV1 requires either drive_only:true or hls:true; HLS uses fMP4/CMAF. hls_name is the template every file in an HLS release is named after — `%uuid%` a fresh v4 UUID, `%random%` six random hex characters, `%res%` the published height as `720p` — defaulting to `%uuid%_%random%_%res%`; pass `-` to restore it. Active uploads are unchanged. Drive credentials and roots are managed only in Lumiere. wrapstyle can be dont_touch or 0-3. preset, concat and outro set server-wide encode defaults; type/search in concat and select a registered `/touchintro` group, or in outro a registered `/touchoutro` group, and select `Disable concat` to clear either. Each dropdown updates from its own global config as groups are added. An intro and an outro are independent: setting one does not require the other, and both are stitched on in one stream-copy pass after the encode. Set announcement_channel:true to point announcements at the current channel. Requires the server to already be configured.",
         },
         HelpCommand {
             section: "admin",
@@ -1431,6 +1432,13 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Encode and register an intro group.",
             usage: "/touchintro name:<group> video:<attachment>",
             details: "Encodes the uploaded video into 44100/23.976, 44100/24, 48000/23.976, and 48000/24 libx264 MP4 variants, stores them in DB/concat/<serverid>/<group>, and points the intros.toml group at that folder. PNmpeg adds and reuses compatibility variants there when future encodes need another format.",
+        },
+        HelpCommand {
+            section: "misc",
+            name: "touchoutro",
+            summary: "Encode and register an outro group.",
+            usage: "/touchoutro name:<group> video:<attachment>",
+            details: "The same encode as /touchintro for the other end of the episode: the uploaded video becomes 44100/23.976, 44100/24, 48000/23.976, and 48000/24 libx264 MP4 variants in DB/concat-outro/<serverid>/<group>, and the outros.toml group points at that folder. Intro and outro groups are separate registries, so the same name may be used for both. Select one with `/edit outro`.",
         },
         HelpCommand {
             section: "admin",
@@ -1834,7 +1842,7 @@ mod tests {
         for command in ["configure", "edit", "touchwatermark", "readmebase", "font", "cfont"] {
             assert!(requires_server_admin(command), "{} should require Server Administrator", command);
         }
-        for command in ["touchapi", "touchtranslation", "touchintro", "acixconfirm", "acixunpublish", "openanimeconfirm", "anizmconfirm", "publish"] {
+        for command in ["touchapi", "touchtranslation", "touchintro", "touchoutro", "acixconfirm", "acixunpublish", "openanimeconfirm", "anizmconfirm", "publish"] {
             assert!(!requires_server_admin(command), "{} should remain rank-only", command);
         }
     }
@@ -2544,6 +2552,9 @@ impl EventHandler for Handler {
                 "readmebase" => {
                     handle_readmebase(&ctx, &command).await;
                 }
+                "touchoutro" => {
+                    handle_addoutro(&ctx, &command).await;
+                }
                 "touchintro" => {
                     handle_addintro(&ctx, &command).await;
                 }
@@ -3218,6 +3229,11 @@ impl EventHandler for Handler {
                         .set_autocomplete(true)
                 )
                 .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "outro", "Type/search and select an outro group; choose Disable concat to clear.")
+                        .required(false)
+                        .set_autocomplete(true)
+                )
+                .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "animecix_fansub", "Type to search AnimeciX fansubs; `-` to unset.")
                         .required(false)
                         .set_autocomplete(true)
@@ -3713,6 +3729,16 @@ impl EventHandler for Handler {
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::Attachment, "video", "Intro source video")
+                        .required(true)
+                ),
+            CreateCommand::new("touchoutro")
+                .description("Encode and register an outro group")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "name", "Outro group name")
+                        .required(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Attachment, "video", "Outro source video")
                         .required(true)
                 ),
             CreateCommand::new("auth")

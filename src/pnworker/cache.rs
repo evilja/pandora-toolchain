@@ -269,7 +269,7 @@ pub(crate) fn jobs_share_source(job: &Job, other: &Job) -> bool {
 mod tests {
     use super::*;
     use crate::lib::p2p::nyaaise::TorrentType;
-    use crate::pnworker::core::{JobType, Preset};
+    use crate::pnworker::core::{Concat, JobType, Preset};
     use crate::pnworker::frontend::Frontend;
     use std::time::{Duration, UNIX_EPOCH};
 
@@ -281,7 +281,7 @@ mod tests {
             requested_at: Duration::from_secs(1),
             job_type: JobType::Encode,
             job_id: id,
-            preset: Preset::Standard(None),
+            preset: Preset::Standard(Concat::NONE),
             torrent: TorrentType::Magnet(
                 "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567".to_string(),
             ),

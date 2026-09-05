@@ -1,30 +1,50 @@
 use super::*;
 
-const INTROS_PATH: &str = "DB/config/global/environment/intros.toml";
+use pandora_toolchain::pnworker::util::{ConcatKind, write_concat_config};
 
-struct IntroVariant {
+struct ConcatVariant {
     label: &'static str,
     sample_rate: &'static str,
     fps: &'static str,
 }
 
-const INTRO_VARIANTS: &[IntroVariant] = &[
-    IntroVariant { label: "44100_23976", sample_rate: "44100", fps: "24000/1001" },
-    IntroVariant { label: "44100_24", sample_rate: "44100", fps: "24" },
-    IntroVariant { label: "48000_23976", sample_rate: "48000", fps: "24000/1001" },
-    IntroVariant { label: "48000_24", sample_rate: "48000", fps: "24" },
+const CONCAT_VARIANTS: &[ConcatVariant] = &[
+    ConcatVariant { label: "44100_23976", sample_rate: "44100", fps: "24000/1001" },
+    ConcatVariant { label: "44100_24", sample_rate: "44100", fps: "24" },
+    ConcatVariant { label: "48000_23976", sample_rate: "48000", fps: "24000/1001" },
+    ConcatVariant { label: "48000_24", sample_rate: "48000", fps: "24" },
 ];
 
+// `/touchintro` and `/touchoutro` are the same command with a different registry to write into and
+// a different folder to install under. Sharing the body is what keeps the two from drifting: the
+// variant grid an outro is encoded to has to be the one an intro is encoded to, or a preset that
+// concats both would need two different compatibility passes.
 pub async fn handle_addintro(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,
 ) {
-    let server_id = match command_server_id(ctx, command, "/touchintro").await {
+    handle_addconcat(ctx, command, ConcatKind::Intro).await;
+}
+
+pub async fn handle_addoutro(
+    ctx: &Context,
+    command: &serenity::all::CommandInteraction,
+) {
+    handle_addconcat(ctx, command, ConcatKind::Outro).await;
+}
+
+async fn handle_addconcat(
+    ctx: &Context,
+    command: &serenity::all::CommandInteraction,
+    kind: ConcatKind,
+) {
+    let label = kind.label();
+    let server_id = match command_server_id(ctx, command, &format!("/touch{}", label)).await {
         Some(id) => id,
         None => return,
     };
     let name = match option_trimmed(command, "name") {
-        Some(s) if valid_intro_name(&s) => s,
+        Some(s) if valid_concat_name(&s) => s,
         Some(_) => {
             command_error(ctx, command, "Error: `name` may only contain letters, numbers, `_`, and `-`.").await;
             return;
@@ -57,11 +77,15 @@ pub async fn handle_addintro(
         }
     };
 
-    let out_dir = PathBuf::from("DB").join("concat").join(server_id.to_string());
+    // Intro and outro groups share a name space per server only within their own kind, so they are
+    // installed under separate roots: two groups both called `summer` must not overwrite each other.
+    let out_dir = PathBuf::from("DB")
+        .join(concat_root(kind))
+        .join(server_id.to_string());
     let final_dir = out_dir.join(&name);
     let tmp_dir = PathBuf::from("DB")
         .join("work")
-        .join(format!("addintro_{}_{}", server_id, command.id.get()));
+        .join(format!("add{}_{}_{}", label, server_id, command.id.get()));
     let encoded_dir = tmp_dir.join("encoded");
     if let Err(e) = tokio::fs::create_dir_all(&out_dir).await {
         addintro_response(ctx, command, format!("Failed to create concat dir: {}", e)).await;
@@ -80,11 +104,11 @@ pub async fn handle_addintro(
     }
 
     let mut file_names = Vec::new();
-    for (idx, variant) in INTRO_VARIANTS.iter().enumerate() {
-        addintro_response(ctx, command, format!("Encoding variant {}/{} (`{}`)...", idx + 1, INTRO_VARIANTS.len(), variant.label)).await;
+    for (idx, variant) in CONCAT_VARIANTS.iter().enumerate() {
+        addintro_response(ctx, command, format!("Encoding variant {}/{} (`{}`)...", idx + 1, CONCAT_VARIANTS.len(), variant.label)).await;
         let file_name = format!("{}_{}.mp4", name, variant.label);
         let tmp_output = encoded_dir.join(&file_name);
-        match encode_intro_variant(&input, &tmp_output, variant).await {
+        match encode_concat_variant(&input, &tmp_output, variant).await {
             Ok(()) => {}
             Err(e) => {
                 addintro_response(ctx, command, format!("Failed to encode `{}`: {}", variant.label, e)).await;
@@ -117,11 +141,11 @@ pub async fn handle_addintro(
         tokio::fs::remove_dir_all(&previous_dir).await.ok();
     }
 
-    match upsert_intro_group(&name, final_dir.display().to_string()).await {
+    match upsert_concat_group(kind, &name, final_dir.display().to_string()).await {
         Ok(()) => {
             cleanup_addintro_tmp(&tmp_dir).await;
             let paths = file_names.iter().map(|file| final_dir.join(file).display().to_string()).collect::<Vec<_>>();
-            let content = format!("Added intro group `{}` with {} variants in `{}`:\n{}", name, paths.len(), final_dir.display(), paths.iter().map(|p| format!("`{}`", p)).collect::<Vec<_>>().join("\n"));
+            let content = format!("Added {} group `{}` with {} variants in `{}`:\n{}", label, name, paths.len(), final_dir.display(), paths.iter().map(|p| format!("`{}`", p)).collect::<Vec<_>>().join("\n"));
             command
                 .edit_response(
                     ctx,
@@ -134,19 +158,32 @@ pub async fn handle_addintro(
         }
         Err(e) => {
             cleanup_addintro_tmp(&tmp_dir).await;
-            addintro_response(ctx, command, format!("Encoded files, but failed to update intros.toml: {}", e)).await;
+            let file = Path::new(kind.config_path())
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| kind.config_path().to_string());
+            addintro_response(ctx, command, format!("Encoded files, but failed to update {}: {}", file, e)).await;
         }
     }
 }
 
-fn valid_intro_name(name: &str) -> bool {
+// `DB/concat` is where intro groups have always been installed; renaming it would strand every
+// group an operator already registered, so only the outro root is new.
+fn concat_root(kind: ConcatKind) -> &'static str {
+    match kind {
+        ConcatKind::Intro => "concat",
+        ConcatKind::Outro => "concat-outro",
+    }
+}
+
+fn valid_concat_name(name: &str) -> bool {
     !name.is_empty()
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
-async fn encode_intro_variant(input: &Path, output: &Path, variant: &IntroVariant) -> Result<(), String> {
+async fn encode_concat_variant(input: &Path, output: &Path, variant: &ConcatVariant) -> Result<(), String> {
     let input = input.display().to_string();
     let output = output.display().to_string();
     let fps = variant.fps.to_string();
@@ -176,14 +213,15 @@ async fn encode_intro_variant(input: &Path, output: &Path, variant: &IntroVarian
     }
 }
 
-async fn upsert_intro_group(name: &str, folder: String) -> Result<(), String> {
-    if let Some(parent) = Path::new(INTROS_PATH).parent() {
-        tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
-    }
-    let mut config = IntrosConfig::load();
-    config.groups.insert(name.to_string(), folder);
-    let body = toml::to_string_pretty(&config).map_err(|e| e.to_string())?;
-    tokio::fs::write(INTROS_PATH, body).await.map_err(|e| e.to_string())
+async fn upsert_concat_group(kind: ConcatKind, name: &str, folder: String) -> Result<(), String> {
+    let name = name.to_string();
+    tokio::task::spawn_blocking(move || {
+        let mut config = ConcatConfig::load_kind(kind);
+        config.groups.insert(name, folder);
+        write_concat_config(kind, &config)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 async fn addintro_response(

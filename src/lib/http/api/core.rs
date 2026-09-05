@@ -889,12 +889,12 @@ async fn get_job(
 }
 
 // A payload may name the preset its job encodes with, overriding the server default that
-// `Job::new_api` has already resolved. The intro group that default carries belongs to the server
+// `Job::new_api` has already resolved. The concat groups that default carries belong to the server
 // rather than to the preset, so the override keeps it.
 fn apply_preset(job: &mut Job, requested: Option<&str>) -> Result<(), Response> {
     if let Some(name) = requested.map(str::trim).filter(|name| !name.is_empty()) {
-        let candidates = job.preset.candidates().cloned();
-        job.preset = preset_from_name(name, candidates).ok_or_else(|| {
+        let concat = job.preset.concat().clone();
+        job.preset = preset_from_name(name, concat).ok_or_else(|| {
             (
                 StatusCode::BAD_REQUEST,
                 format!(

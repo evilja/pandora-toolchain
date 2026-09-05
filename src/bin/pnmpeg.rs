@@ -177,7 +177,12 @@ struct Args {
     #[arg(long)]
     intro_dir: Option<String>,
 
-    /// Preset whose encoder settings make a retained intro compatible with an encoded episode.
+    /// Folder containing the retained variants for one outro group.
+    #[arg(long)]
+    outro_dir: Option<String>,
+
+    /// Preset whose encoder settings make a retained intro or outro compatible with an encoded
+    /// episode. One preset serves both: the episode they are joined to is the same file.
     #[arg(long)]
     intro_preset: Option<String>,
 
@@ -480,7 +485,7 @@ fn prepare_hls_output(
 // Rewrite a preset that writes one MP4 into one that writes the HLS layout: `+faststart` belongs to
 // the MP4 muxer and is refused by any other, and the output filename becomes the options that name
 // the playlist and its chunks. Every preset ends in its output, which is the argument being
-// replaced — the encode's, and the intro concat's, which is a stream copy and just as final a mux.
+// replaced — the encode's, and the concat's, which is a stream copy and just as final a mux.
 fn retarget_params_to_hls(
     params: &mut Vec<FfmpegParams>,
     directory: &Path,
@@ -987,7 +992,8 @@ fn selected_preset(args: &Args) -> Option<String> {
 }
 
 // The preset this run encodes with, or None for a run that encodes nothing of its own — a concat
-// or a legacy concat, which stitch an intro onto a file that has already been encoded.
+// or a legacy concat, which stitch an intro and/or an outro onto a file that has already been
+// encoded.
 //
 // One function, because every decision downstream has to be made about the same preset: the ffmpeg
 // parameters, the settings the ahead-of-time encoder drives libx264 with, whether it may encode
@@ -1026,8 +1032,8 @@ async fn main() {
     // the --logfile transcript is only created once ffmpeg itself starts.
     let mut log = ToolLog::beside(args.logfile.as_deref());
     log.line(&format!(
-        "pnmpeg start input={} output={} ass={:?} lang={:?} intro_dir={:?} candidates={}",
-        args.input, args.output, args.ass, args.lang, args.intro_dir, args.candidate.len()
+        "pnmpeg start input={} output={} ass={:?} lang={:?} intro_dir={:?} outro_dir={:?} candidates={}",
+        args.input, args.output, args.ass, args.lang, args.intro_dir, args.outro_dir, args.candidate.len()
     ));
     log.line(&format!(
         "mode preset={:?} concat={} legacyconcat={} joinconcat={} joinass={} studio={} extractsubs={}",
@@ -1352,28 +1358,22 @@ async fn main() {
         .join("PNmpeg_Concat.txt");
 
     let intro_dir = args.intro_dir.as_deref().filter(|path| !path.trim().is_empty());
+    let outro_dir = args.outro_dir.as_deref().filter(|path| !path.trim().is_empty());
+    // One preparation per configured end. Each is transcoded against the episode's own stream
+    // properties, so an intro and an outro from folders in different formats both come back
+    // stream-copy compatible with the file they are joined to — and with each other.
     let selected_subinput = match intro_dir {
-        Some(intro_dir) => match log.step(
-            &format!("prepare_compatible_intro from {} (may transcode the intro)", intro_dir),
-            || {
-                let preset_name = args.intro_preset.as_deref().ok_or_else(|| {
-                    "--intro-preset is required when --intro-dir is used for concat".to_string()
-                })?;
-                let preset = resolve_preset(preset_name)
-                    .ok_or_else(|| format!("unknown intro preset `{preset_name}`"))?;
-                prepare_compatible_intro(Path::new(&args.input), Path::new(intro_dir), &preset)
-            },
-        ) {
-            Ok(path) => Some(path.display().to_string()),
-            Err(e) => {
-                log.line(&format!("intro preparation failed: {}", e));
-                eprintln!("Intro preparation failed: {}", e);
-                std::process::exit(1);
-            }
-        },
+        Some(intro_dir) => Some(prepare_concat_side(&args, intro_dir, ConcatSide::Intro, &mut log)),
+        // Without an intro folder the legacy candidate list is what may still supply one. An outro
+        // has no such path — it only ever arrives as a folder.
         None => log.step("select_subinput", || select_subinput(&args.input, &args.candidate, &args.subinput)),
     };
-    log.line(&format!("selected_subinput={:?}", selected_subinput));
+    let selected_outro = outro_dir
+        .map(|outro_dir| prepare_concat_side(&args, outro_dir, ConcatSide::Outro, &mut log));
+    log.line(&format!(
+        "selected_subinput={:?} selected_outro={:?}",
+        selected_subinput, selected_outro
+    ));
 
     if args.joinconcat || args.joinass {
         let mut join_inputs = Vec::new();
@@ -1384,6 +1384,10 @@ async fn main() {
         }
         join_inputs.push(args.input.clone());
         join_inputs.extend(args.candidate.iter().cloned());
+        // Last, after every joined part: an outro ends the release, not each piece of it.
+        if let Some(outro) = &selected_outro {
+            join_inputs.push(outro.clone());
+        }
         let mut totalframe: u64 = 0;
         let parent = PathBuf::from_str(&args.input).unwrap()
             .parent()
@@ -1451,7 +1455,9 @@ async fn main() {
 
     let subinput_for_legacy = selected_subinput.clone();
     let input_for_legacy = args.input.clone();
-    let use_legacy = args.concat && intro_dir.is_none() && !args.candidate.is_empty() && log.step(
+    // The legacy path muxes exactly two inputs through a complex filter, so it can only ever be an
+    // intro and the episode. A configured outro is a third part and has to go through the list file.
+    let use_legacy = args.concat && intro_dir.is_none() && outro_dir.is_none() && !args.candidate.is_empty() && log.step(
         "ffprobe framerate/samplerate compatibility check",
         || subinput_for_legacy.as_ref().map(|p| {
             ffprobe_framerate(p) != ffprobe_framerate(&input_for_legacy) ||
@@ -1665,12 +1671,17 @@ async fn main() {
                 // sum is what the concatenated output holds.
                 let mut counted_inputs: Vec<String> = Vec::new();
                 if let Some(ref mut file) = concfile {
-                    if let Some(ref b) = selected_subinput {
-                        let canon_input = PathBuf::from_str(&args.input).unwrap().canonicalize().unwrap().display().to_string();
-                        let canon_snput = PathBuf::from_str(b).unwrap().canonicalize().unwrap().display().to_string();
-                        file.write(format!("file '{}'\nfile '{}'\n", canon_snput, canon_input).as_bytes()).await.unwrap();
-                        counted_inputs.push(canon_snput);
-                        counted_inputs.push(canon_input);
+                    // Intro, episode, outro, in the order they play. Each end is optional and this
+                    // is the one place their order is decided, so a run with only an outro writes
+                    // the episode first rather than writing nothing at all.
+                    let mut parts = Vec::new();
+                    parts.extend(selected_subinput.clone());
+                    parts.push(args.input.clone());
+                    parts.extend(selected_outro.clone());
+                    for part in &parts {
+                        let canon = PathBuf::from_str(part).unwrap().canonicalize().unwrap().display().to_string();
+                        file.write(format!("file '{}'\n", canon).as_bytes()).await.unwrap();
+                        counted_inputs.push(canon);
                     }
                     c = c.replace("CONCATFILEV", &concfilepath.display().to_string());
                 } else {
@@ -1836,16 +1847,75 @@ async fn run_with_progress(
     }
 }
 
-fn prepare_compatible_intro(
+// Resolves one end's folder to the single file the concat will actually use, transcoding a variant
+// when nothing retained is already stream-copy compatible. A folder that was configured and cannot
+// be used is fatal: continuing would ship a release silently missing that end.
+fn prepare_concat_side(
+    args: &Args,
+    folder: &str,
+    side: ConcatSide,
+    log: &mut ToolLog,
+) -> String {
+    let prepared = log.step(
+        &format!("prepare_compatible_concat from {} (may transcode the {})", folder, side.label()),
+        || {
+            let preset_name = args.intro_preset.as_deref().ok_or_else(|| {
+                "--intro-preset is required when --intro-dir or --outro-dir is used for concat"
+                    .to_string()
+            })?;
+            let preset = resolve_preset(preset_name)
+                .ok_or_else(|| format!("unknown intro preset `{preset_name}`"))?;
+            prepare_compatible_concat(Path::new(&args.input), Path::new(folder), &preset, side)
+        },
+    );
+    match prepared {
+        Ok(path) => path.display().to_string(),
+        Err(e) => {
+            log.line(&format!("{} preparation failed: {}", side.label(), e));
+            eprintln!("{} preparation failed: {}", side.title(), e);
+            std::process::exit(1);
+        }
+    }
+}
+
+// Which end of the episode a retained variant is being prepared for. It changes nothing about how
+// the variant is encoded — both ends are stream-copied against the same episode — but it does decide
+// which side of the AV1 boundary check the variant sits on, and what the operator is told when the
+// folder is unusable.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum ConcatSide {
+    Intro,
+    Outro,
+}
+
+impl ConcatSide {
+    fn label(self) -> &'static str {
+        match self {
+            ConcatSide::Intro => "intro",
+            ConcatSide::Outro => "outro",
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            ConcatSide::Intro => "Intro",
+            ConcatSide::Outro => "Outro",
+        }
+    }
+}
+
+fn prepare_compatible_concat(
     main: &Path,
-    intro_dir: &Path,
+    concat_dir: &Path,
     preset: &ResolvedPreset,
+    side: ConcatSide,
 ) -> Result<PathBuf, String> {
+    let label = side.label();
     let target = ffprobe_concat_media(main)
         .ok_or_else(|| format!("could not probe concat streams in `{}`", main.display()))?;
     if preset.output_video_codec().as_deref() != Some(target.video_codec.as_str()) {
         return Err(format!(
-            "intro preset `{}` encodes {}, but the episode contains {}",
+            "{label} preset `{}` encodes {}, but the episode contains {}",
             preset.name,
             preset
                 .output_video_codec()
@@ -1853,8 +1923,8 @@ fn prepare_compatible_intro(
             target.video_codec,
         ));
     }
-    let mut files = std::fs::read_dir(intro_dir)
-        .map_err(|e| format!("could not read `{}`: {}", intro_dir.display(), e))?
+    let mut files = std::fs::read_dir(concat_dir)
+        .map_err(|e| format!("could not read `{}`: {}", concat_dir.display(), e))?
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
         .filter(|path| {
             let temporary = path.file_name().and_then(|name| name.to_str())
@@ -1867,7 +1937,7 @@ fn prepare_compatible_intro(
         .collect::<Vec<_>>();
     files.sort();
     if files.is_empty() {
-        return Err(format!("intro folder `{}` contains no videos", intro_dir.display()));
+        return Err(format!("{label} folder `{}` contains no videos", concat_dir.display()));
     }
 
     let mut source: Option<(PathBuf, ConcatMedia)> = None;
@@ -1876,7 +1946,7 @@ fn prepare_compatible_intro(
             continue;
         };
         if media == target
-            && (target.video_codec != "av1" || av1_concat_copy_is_playable(path, main))
+            && (target.video_codec != "av1" || av1_boundary_is_playable(path, main, side))
         {
             return Ok(path.clone());
         }
@@ -1900,26 +1970,25 @@ fn prepare_compatible_intro(
         }
     }
     let (source, _) = source.ok_or_else(|| {
-        format!("intro folder `{}` contains no probeable video with audio", intro_dir.display())
+        format!("{label} folder `{}` contains no probeable video with audio", concat_dir.display())
     })?;
     let signature = serde_json::to_vec(&target).map_err(|e| e.to_string())?;
     let signature_hash = format!("{:x}", md5::compute(signature));
-    let cache = intro_dir.join(format!("pnmpeg_compat_{}.mp4", signature_hash));
-    let temporary = intro_dir.join(format!("pnmpeg_compat_{}.tmp.mp4", signature_hash));
+    let cache = concat_dir.join(format!("pnmpeg_compat_{}.mp4", signature_hash));
+    let temporary = concat_dir.join(format!("pnmpeg_compat_{}.tmp.mp4", signature_hash));
     std::fs::remove_file(&temporary).ok();
-    encode_compatible_intro(&source, &temporary, &target, preset)?;
+    encode_compatible_concat(&source, &temporary, &target, preset, side)?;
     let encoded = ffprobe_concat_media(&temporary)
-        .ok_or_else(|| "could not probe generated intro variant".to_string())?;
+        .ok_or_else(|| format!("could not probe generated {label} variant"))?;
     if encoded != target {
         std::fs::remove_file(&temporary).ok();
-        return Err(format!("generated intro is still incompatible: {:?} != {:?}", encoded, target));
+        return Err(format!("generated {label} is still incompatible: {:?} != {:?}", encoded, target));
     }
-    if target.video_codec == "av1" && !av1_concat_copy_is_playable(&temporary, main) {
+    if target.video_codec == "av1" && !av1_boundary_is_playable(&temporary, main, side) {
         std::fs::remove_file(&temporary).ok();
-        return Err(
-            "generated AV1 intro matches the stream properties but fails across the concat boundary"
-                .to_string(),
-        );
+        return Err(format!(
+            "generated AV1 {label} matches the stream properties but fails across the concat boundary"
+        ));
     }
     if cache.exists() {
         std::fs::remove_file(&cache).map_err(|e| e.to_string())?;
@@ -1931,6 +2000,17 @@ fn prepare_compatible_intro(
 // AV1 sequence headers can differ while ffprobe reports identical stream properties. Build the
 // exact stream-copy transition the final concat will use, then decode across that boundary; a
 // retained file is trusted only when both halves are playable as one stream.
+// The variant sits before the episode for an intro and after it for an outro, and it is the
+// transition itself that is being tested — so the pair is built in the order it will actually play,
+// and the seek lands on whichever boundary that produces.
+fn av1_boundary_is_playable(variant: &Path, main: &Path, side: ConcatSide) -> bool {
+    let (first, second) = match side {
+        ConcatSide::Intro => (variant, main),
+        ConcatSide::Outro => (main, variant),
+    };
+    av1_concat_copy_is_playable(first, second)
+}
+
 fn av1_concat_copy_is_playable(intro: &Path, main: &Path) -> bool {
     let Some(intro_ms) = ffprobe_duration_millis(intro) else {
         return false;
@@ -1982,11 +2062,12 @@ file '{}'
     decoded
 }
 
-fn encode_compatible_intro(
+fn encode_compatible_concat(
     source: &Path,
     output: &Path,
     target: &ConcatMedia,
     preset: &ResolvedPreset,
+    side: ConcatSide,
 ) -> Result<(), String> {
     use pandora_toolchain::lib::mpeg::core::run_ffmpeg_params;
 
@@ -2056,7 +2137,7 @@ fn encode_compatible_intro(
         Ok(())
     } else {
         std::fs::remove_file(output).ok();
-        Err(format!("ffmpeg could not convert intro `{}`", source.display()))
+        Err(format!("ffmpeg could not convert {} `{}`", side.label(), source.display()))
     }
 }
 
@@ -2195,7 +2276,7 @@ mod tests {
         }
     }
 
-    // A concat stitches an intro onto an already-encoded file. It is not an encode, so it has no
+    // A concat stitches an intro and/or outro onto an already-encoded file. It is not an encode, so it has no
     // preset and must never try to adopt a speculative prefix.
     #[test]
     fn a_concat_selects_no_preset_but_a_bare_run_defaults_to_standard() {

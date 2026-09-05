@@ -12,7 +12,7 @@ use crate::lib::env::standard::{
 };
 use crate::lib::p2p::nyaaise::TorrentType;
 use crate::lib::sync::lock;
-use crate::pnworker::core::{HalfJob, Job, JobClass, JobType, Stage};
+use crate::pnworker::core::{Concat, HalfJob, Job, JobClass, JobType, Stage};
 use crate::pnworker::frontend::Frontend;
 use crate::pnworker::link::assets::{self, AssetKind, AssetManifest};
 use crate::pnworker::link::spec::{
@@ -22,6 +22,7 @@ use crate::pnworker::link::spec::{
 };
 use crate::pnworker::messages::MessagePayload;
 use crate::pnworker::server_effects::preset_from_name;
+use crate::pnworker::util::ConcatKind;
 
 // The node half of the link. It owns no jobs of its own: it leases one from the coordinator, hands
 // it to this process's ordinary `pn_worker`, forwards everything that worker says back up, and
@@ -496,7 +497,7 @@ async fn fetch_asset(
         .map_err(|e| e.to_string())
 }
 
-// Brings this node's font and intro corpus up to the coordinator's, and records the revision it
+// Brings this node's font, intro and outro corpus up to the coordinator's, and records the revision it
 // reached. Only what is missing is fetched, compared by content — a node that already holds a font
 // under a different mtime does not download it again.
 async fn reconcile_assets(
@@ -508,7 +509,7 @@ async fn reconcile_assets(
     // Before the fetch, because a deletion is the change a fetch cannot see: nothing is missing,
     // so without this the node would record the new revision and go on holding a file the corpus
     // no longer has.
-    for path in assets::prune_intros(&manifest) {
+    for path in assets::prune_concat(&manifest) {
         println!("[link] dropped {} (no longer in the corpus)", path.display());
     }
     let missing = assets::missing(&manifest);
@@ -1226,20 +1227,26 @@ async fn accept(
     let Some(source) = source_from_wire(&spec.source_kind, &spec.source) else {
         return decline(format!("unsupported source kind {}", spec.source_kind));
     };
-    // The concat folder inside a preset is a path on the coordinator. What arrived is the group's
+    // The concat folders inside a preset are paths on the coordinator. What arrived is each group's
     // name; the folder is wherever this node materialised it. An empty group would hand pnmpeg a
-    // folder with no variants and quietly produce a release with no intro, which is the same class
-    // of failure as a substituted font.
-    let intro_candidates = match spec.intro_group.as_deref() {
-        None => None,
-        Some(group) => {
-            if !assets::intro_group_is_populated(group) {
-                return decline(format!("intro group {group} synced no files"));
-            }
-            Some(assets::intro_dir(group).display().to_string())
+    // folder with no variants and quietly produce a release missing its intro or outro, which is the
+    // same class of failure as a substituted font.
+    let mut resolved = Concat::NONE;
+    for (kind, group) in [
+        (ConcatKind::Intro, spec.intro_group.as_deref()),
+        (ConcatKind::Outro, spec.outro_group.as_deref()),
+    ] {
+        let Some(group) = group else { continue };
+        if !assets::concat_group_is_populated(kind, group) {
+            return decline(format!("{} group {group} synced no files", kind.label()));
         }
-    };
-    let Some(preset) = preset_from_name(&spec.preset, intro_candidates) else {
+        let folder = assets::concat_dir(kind, group).display().to_string();
+        match kind {
+            ConcatKind::Intro => resolved.intro = Some(folder),
+            ConcatKind::Outro => resolved.outro = Some(folder),
+        }
+    }
+    let Some(preset) = preset_from_name(&spec.preset, resolved) else {
         return decline(format!("unsupported preset {}", spec.preset));
     };
     let attachment = match decode_base64(&spec.subtitle_b64) {

@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::lib::sync::lock;
-use crate::pnworker::util::IntrosConfig;
+use crate::pnworker::util::{CONCAT_KINDS, ConcatConfig, ConcatKind};
 
-// Fonts and intro videos are the two things a node needs that do not travel in a job spec, and a
+// Fonts and concat videos are the things a node needs that do not travel in a job spec, and a
 // missing font does not fail — libass substitutes one and ships a release in the wrong typeface.
 // That is the failure this module exists to make impossible: a node syncs the coordinator's whole
 // asset set, and a job whose revision it has not synced is refused rather than encoded.
@@ -19,9 +19,11 @@ use crate::pnworker::util::IntrosConfig;
 // filesystem that rounds mtimes.
 
 pub const FONT_ROOT: &str = "DB/fontconfig";
-// Synced intro variants live apart from anything an operator hand-placed, so a reconcile can never
-// overwrite a coordinator's own intro folder on a machine that is both.
+// Synced concat variants live apart from anything an operator hand-placed, so a reconcile can never
+// overwrite a coordinator's own intro or outro folder on a machine that is both. The two kinds get
+// their own roots so that groups sharing a name do not collide.
 pub const LINK_INTRO_ROOT: &str = "DB/cache/link-intros";
+pub const LINK_OUTRO_ROOT: &str = "DB/cache/link-outros";
 const REVISION_FILE: &str = "DB/cache/link-assets-revision";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,13 +31,33 @@ const REVISION_FILE: &str = "DB/cache/link-assets-revision";
 pub enum AssetKind {
     Font,
     Intro,
+    Outro,
+}
+
+impl AssetKind {
+    // The concat kind this asset belongs to, or None for a font. Every path decision below is made
+    // by this rather than by a second match on the variant, so adding a kind adds one arm.
+    pub fn concat_kind(self) -> Option<ConcatKind> {
+        match self {
+            AssetKind::Font => None,
+            AssetKind::Intro => Some(ConcatKind::Intro),
+            AssetKind::Outro => Some(ConcatKind::Outro),
+        }
+    }
+}
+
+fn asset_kind_of(kind: ConcatKind) -> AssetKind {
+    match kind {
+        ConcatKind::Intro => AssetKind::Intro,
+        ConcatKind::Outro => AssetKind::Outro,
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AssetEntry {
     pub hash: String,
     pub kind: AssetKind,
-    // The font bucket under `DB/fontconfig`, or the intro group name.
+    // The font bucket under `DB/fontconfig`, or the intro/outro group name.
     pub group: String,
     pub name: String,
     pub bytes: u64,
@@ -54,10 +76,11 @@ impl AssetManifest {
         self.entries.iter().find(|entry| entry.hash == hash)
     }
 
-    pub fn intro_entries(&self, group: &str) -> impl Iterator<Item = &AssetEntry> {
+    pub fn concat_entries(&self, kind: ConcatKind, group: &str) -> impl Iterator<Item = &AssetEntry> {
+        let wanted = asset_kind_of(kind);
         self.entries
             .iter()
-            .filter(move |entry| entry.kind == AssetKind::Intro && entry.group == group)
+            .filter(move |entry| entry.kind == wanted && entry.group == group)
     }
 }
 
@@ -104,7 +127,7 @@ fn revision_of(entries: &[AssetEntry]) -> String {
 
 // Variants pnmpeg produced to make a retained intro concat-compatible with one episode's exact
 // stream properties, and the temporaries it writes them through. They are a per-machine cache
-// derived from the corpus rather than part of it: they appear in the coordinator's own intro
+// derived from the corpus rather than part of it: they appear in the coordinator's own concat
 // folder as it encodes, so counting them would move the revision — and re-sync every node — every
 // time a new output format was encountered. A node regenerates its own on demand.
 const GENERATED_INTRO_PREFIX: &str = "pnmpeg_compat_";
@@ -127,7 +150,7 @@ fn plain_files(directory: &Path) -> Vec<PathBuf> {
 }
 
 // Builds the coordinator's manifest: every font bucket under `DB/fontconfig`, and every file in
-// every folder an intro group resolves to.
+// every folder an intro or outro group resolves to.
 pub fn build_manifest() -> AssetManifest {
     let mut entries = Vec::new();
     if let Ok(buckets) = std::fs::read_dir(FONT_ROOT) {
@@ -150,23 +173,25 @@ pub fn build_manifest() -> AssetManifest {
             }
         }
     }
-    let intros = IntrosConfig::load();
-    let mut groups = intros.groups.iter().collect::<Vec<_>>();
-    groups.sort();
-    for (group, folder) in groups {
-        if folder.trim().is_empty() {
-            continue;
-        }
-        for file in plain_files(Path::new(folder)) {
-            let generated = file
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(is_generated_intro)
-                .unwrap_or(false);
-            if generated {
+    for kind in CONCAT_KINDS {
+        let config = ConcatConfig::load_kind(kind);
+        let mut groups = config.groups.iter().collect::<Vec<_>>();
+        groups.sort();
+        for (group, folder) in groups {
+            if folder.trim().is_empty() {
                 continue;
             }
-            push_entry(&mut entries, AssetKind::Intro, group, &file);
+            for file in plain_files(Path::new(folder)) {
+                let generated = file
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(is_generated_intro)
+                    .unwrap_or(false);
+                if generated {
+                    continue;
+                }
+                push_entry(&mut entries, asset_kind_of(kind), group, &file);
+            }
         }
     }
     let revision = revision_of(&entries);
@@ -255,39 +280,47 @@ fn safe_component(value: &str) -> bool {
         && !value.starts_with('.')
 }
 
-// Where the coordinator reads an entry from. Fonts sit under `DB/fontconfig/<bucket>`, but an
-// intro lives wherever that group resolves to in `intros.toml` — which is emphatically not where a
-// node puts it. Conflating the two served every font correctly and answered 404 for every intro.
+// Where the coordinator reads an entry from. Fonts sit under `DB/fontconfig/<bucket>`, but a concat
+// group lives wherever it resolves to in `intros.toml` or `outros.toml` — which is emphatically not
+// where a node puts it. Conflating the two served every font correctly and answered 404 for every
+// intro.
 pub fn source_path(entry: &AssetEntry) -> Option<PathBuf> {
     if !safe_component(&entry.name) || !safe_component(&entry.group) {
         return None;
     }
-    Some(match entry.kind {
-        AssetKind::Font => PathBuf::from(FONT_ROOT).join(&entry.group).join(&entry.name),
-        AssetKind::Intro => {
-            PathBuf::from(IntrosConfig::load().resolve(&entry.group)?).join(&entry.name)
+    Some(match entry.kind.concat_kind() {
+        None => PathBuf::from(FONT_ROOT).join(&entry.group).join(&entry.name),
+        Some(kind) => {
+            PathBuf::from(ConcatConfig::load_kind(kind).resolve(&entry.group)?).join(&entry.name)
         }
     })
 }
 
 // Where a node writes an entry. Fonts go to the bucket the startup installer already copies into
-// the OS font path; intros go to the node's own synced folder, deliberately apart from anything an
-// operator hand-placed, since pnmpeg writes compatibility variants back into whatever folder it is
-// given.
+// the OS font path; intros and outros go to the node's own synced folders, deliberately apart from
+// anything an operator hand-placed, since pnmpeg writes compatibility variants back into whatever
+// folder it is given.
 pub fn install_path(entry: &AssetEntry) -> Option<PathBuf> {
     if !safe_component(&entry.name) || !safe_component(&entry.group) {
         return None;
     }
-    Some(match entry.kind {
-        AssetKind::Font => PathBuf::from(FONT_ROOT).join(&entry.group).join(&entry.name),
-        AssetKind::Intro => intro_dir(&entry.group).join(&entry.name),
+    Some(match entry.kind.concat_kind() {
+        None => PathBuf::from(FONT_ROOT).join(&entry.group).join(&entry.name),
+        Some(kind) => concat_dir(kind, &entry.group).join(&entry.name),
     })
 }
 
-// On a coordinator an intro group resolves through `intros.toml`; on a node it is always this
-// folder, because the node materialised it and nothing else knows the group exists.
-pub fn intro_dir(group: &str) -> PathBuf {
-    PathBuf::from(LINK_INTRO_ROOT).join(group)
+// On a coordinator a concat group resolves through `intros.toml` or `outros.toml`; on a node it is
+// always this folder, because the node materialised it and nothing else knows the group exists.
+pub fn concat_dir(kind: ConcatKind, group: &str) -> PathBuf {
+    PathBuf::from(concat_root(kind)).join(group)
+}
+
+fn concat_root(kind: ConcatKind) -> &'static str {
+    match kind {
+        ConcatKind::Intro => LINK_INTRO_ROOT,
+        ConcatKind::Outro => LINK_OUTRO_ROOT,
+    }
 }
 
 // Entries this machine does not already hold, byte for byte.
@@ -308,52 +341,54 @@ pub fn missing(manifest: &AssetManifest) -> Vec<AssetEntry> {
         .collect()
 }
 
-// Files under the node's synced intro root that the manifest no longer names, removed.
+// Files under the node's synced concat roots that the manifest no longer names, removed.
 //
 // `missing` only ever adds, which leaves the one change a fetch-what-is-missing sync cannot see:
 // a deletion. The coordinator's revision moves, nothing is missing, and the node records the new
 // revision while still holding a file the corpus no longer has — so two machines agreeing on a
-// revision did not mean they held the same corpus. For an intro that is not cosmetic: the whole
-// folder is handed to pnmpeg, which picks a variant out of it, so a retired intro goes on shipping
-// from every node that ever had it.
+// revision did not mean they held the same corpus. For an intro or outro that is not cosmetic: the
+// whole folder is handed to pnmpeg, which picks a variant out of it, so a retired one goes on
+// shipping from every node that ever had it.
 //
-// Only intros are pruned. `DB/fontconfig` is shared with fonts an operator placed by hand, the
-// startup installer has already copied them into the OS font path where deleting the bucket copy
-// would not remove them, and a font the corpus no longer lists causes no substitution — which is
-// the failure the corpus exists to prevent. The intro root is the node's own and holds nothing
-// else, which is exactly why it is kept apart from the coordinator's.
-pub fn prune_intros(manifest: &AssetManifest) -> Vec<PathBuf> {
+// Only concat groups are pruned. `DB/fontconfig` is shared with fonts an operator placed by hand,
+// the startup installer has already copied them into the OS font path where deleting the bucket
+// copy would not remove them, and a font the corpus no longer lists causes no substitution — which
+// is the failure the corpus exists to prevent. The concat roots are the node's own and hold nothing
+// else, which is exactly why they are kept apart from the coordinator's.
+pub fn prune_concat(manifest: &AssetManifest) -> Vec<PathBuf> {
     let mut removed = Vec::new();
-    let Ok(groups) = std::fs::read_dir(LINK_INTRO_ROOT) else {
-        return removed;
-    };
-    for group_entry in groups.flatten() {
-        if !group_entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+    for kind in CONCAT_KINDS {
+        let Ok(groups) = std::fs::read_dir(concat_root(kind)) else {
             continue;
-        }
-        let directory = group_entry.path();
-        let group = group_entry.file_name().to_string_lossy().to_string();
-        let wanted = manifest
-            .intro_entries(&group)
-            .map(|entry| entry.name.clone())
-            .collect::<Vec<_>>();
-        for file in plain_files(&directory) {
-            let Some(name) = file.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            if wanted.iter().any(|kept| kept == name) {
+        };
+        for group_entry in groups.flatten() {
+            if !group_entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
                 continue;
             }
-            // Generated variants go with everything else. They are derived from the files this
-            // group held, and this only runs when that set has changed.
-            if std::fs::remove_file(&file).is_ok() {
-                removed.push(file);
+            let directory = group_entry.path();
+            let group = group_entry.file_name().to_string_lossy().to_string();
+            let wanted = manifest
+                .concat_entries(kind, &group)
+                .map(|entry| entry.name.clone())
+                .collect::<Vec<_>>();
+            for file in plain_files(&directory) {
+                let Some(name) = file.file_name().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                if wanted.iter().any(|kept| kept == name) {
+                    continue;
+                }
+                // Generated variants go with everything else. They are derived from the files this
+                // group held, and this only runs when that set has changed.
+                if std::fs::remove_file(&file).is_ok() {
+                    removed.push(file);
+                }
             }
-        }
-        // A group the corpus dropped entirely leaves its directory behind, which
-        // `intro_group_is_populated` would go on treating as a group with no files.
-        if wanted.is_empty() {
-            std::fs::remove_dir(&directory).ok();
+            // A group the corpus dropped entirely leaves its directory behind, which
+            // `concat_group_is_populated` would go on treating as a group with no files.
+            if wanted.is_empty() {
+                std::fs::remove_dir(&directory).ok();
+            }
         }
     }
     removed
@@ -393,10 +428,11 @@ pub fn record_revision(revision: &str) {
     std::fs::write(path, revision).ok();
 }
 
-// A synced intro group that materialised nothing would hand pnmpeg an empty folder and quietly
-// produce a release with no intro, which is the same class of failure as a substituted font.
-pub fn intro_group_is_populated(group: &str) -> bool {
-    !plain_files(&intro_dir(group)).is_empty()
+// A synced concat group that materialised nothing would hand pnmpeg an empty folder and quietly
+// produce a release with no intro or no outro, which is the same class of failure as a substituted
+// font.
+pub fn concat_group_is_populated(kind: ConcatKind, group: &str) -> bool {
+    !plain_files(&concat_dir(kind, group)).is_empty()
 }
 
 #[cfg(test)]
@@ -447,19 +483,31 @@ mod tests {
     }
 
     // A font is read from and written to the same place, so conflating the two sides looked
-    // correct for 105 of 142 entries and answered 404 for the rest: an intro lives wherever
-    // `intros.toml` points on the coordinator, and under the node's own synced root on a node.
+    // correct for 105 of 142 entries and answered 404 for the rest: a concat group lives wherever
+    // its config points on the coordinator, and under the node's own synced root on a node.
     #[test]
-    fn an_intro_is_not_read_from_where_a_node_writes_it() {
-        let intro = entry(AssetKind::Intro, "opening", "op1.mkv", "x");
-        let install = install_path(&intro).expect("a node must have somewhere to put it");
-        assert!(install.starts_with(LINK_INTRO_ROOT), "{}", install.display());
-        // The source resolves through the intro config, so it is only `Some` where that group is
-        // actually configured — and it is never the node's synced root.
-        if let Some(source) = source_path(&intro) {
-            assert_ne!(source, install);
-            assert!(!source.starts_with(LINK_INTRO_ROOT), "{}", source.display());
+    fn a_concat_group_is_not_read_from_where_a_node_writes_it() {
+        for (kind, root) in [
+            (AssetKind::Intro, LINK_INTRO_ROOT),
+            (AssetKind::Outro, LINK_OUTRO_ROOT),
+        ] {
+            let asset = entry(kind, "opening", "op1.mkv", "x");
+            let install = install_path(&asset).expect("a node must have somewhere to put it");
+            assert!(install.starts_with(root), "{}", install.display());
+            // The source resolves through the concat config, so it is only `Some` where that group
+            // is actually configured — and it is never the node's synced root.
+            if let Some(source) = source_path(&asset) {
+                assert_ne!(source, install);
+                assert!(!source.starts_with(root), "{}", source.display());
+            }
         }
+
+        // Intro and outro groups may share a name, and must not then share a folder.
+        let name = "opening";
+        assert_ne!(
+            install_path(&entry(AssetKind::Intro, name, "a.mkv", "x")),
+            install_path(&entry(AssetKind::Outro, name, "a.mkv", "x")),
+        );
 
         // A font is genuinely the same path on both sides; that coincidence is what hid the bug.
         let font = entry(AssetKind::Font, "main", "Roboto.ttf", "x");
@@ -482,30 +530,39 @@ mod tests {
     // node holding it while reporting itself level. pnmpeg picks a variant out of the whole
     // folder, so that is a retired intro going out on real releases.
     #[test]
-    fn a_dropped_intro_is_removed_from_the_nodes_own_root() {
+    fn a_dropped_concat_file_is_removed_from_the_nodes_own_root() {
         let group = format!("prune-test-{}", std::process::id());
-        let directory = intro_dir(&group);
-        std::fs::create_dir_all(&directory).unwrap();
-        std::fs::write(directory.join("kept.mkv"), b"kept").unwrap();
-        std::fs::write(directory.join("retired.mkv"), b"retired").unwrap();
-        std::fs::write(directory.join("pnmpeg_compat_abc.mp4"), b"derived").unwrap();
+        let directories = CONCAT_KINDS.map(|kind| concat_dir(kind, &group));
+        for directory in &directories {
+            std::fs::create_dir_all(directory).unwrap();
+            std::fs::write(directory.join("kept.mkv"), b"kept").unwrap();
+            std::fs::write(directory.join("retired.mkv"), b"retired").unwrap();
+            std::fs::write(directory.join("pnmpeg_compat_abc.mp4"), b"derived").unwrap();
+        }
 
         let manifest = AssetManifest {
             revision: "r".to_string(),
-            entries: vec![entry(AssetKind::Intro, &group, "kept.mkv", "x")],
+            entries: vec![
+                entry(AssetKind::Intro, &group, "kept.mkv", "x"),
+                entry(AssetKind::Outro, &group, "kept.mkv", "x"),
+            ],
         };
-        let removed = prune_intros(&manifest);
-        assert!(directory.join("kept.mkv").exists());
-        assert!(!directory.join("retired.mkv").exists());
-        // The generated variant was derived from a set that has just changed, and regenerates on
-        // demand; keeping it would concat an intro built from a file that is gone.
-        assert!(!directory.join("pnmpeg_compat_abc.mp4").exists());
-        assert_eq!(removed.len(), 2);
+        let removed = prune_concat(&manifest);
+        for directory in &directories {
+            assert!(directory.join("kept.mkv").exists());
+            assert!(!directory.join("retired.mkv").exists());
+            // The generated variant was derived from a set that has just changed, and regenerates
+            // on demand; keeping it would concat from a file that is gone.
+            assert!(!directory.join("pnmpeg_compat_abc.mp4").exists());
+        }
+        assert_eq!(removed.len(), 4);
 
         // A group the corpus dropped entirely takes its directory with it.
-        prune_intros(&AssetManifest { revision: "r".to_string(), entries: Vec::new() });
-        assert!(!directory.exists());
-        assert!(!intro_group_is_populated(&group));
+        prune_concat(&AssetManifest { revision: "r".to_string(), entries: Vec::new() });
+        for kind in CONCAT_KINDS {
+            assert!(!concat_dir(kind, &group).exists());
+            assert!(!concat_group_is_populated(kind, &group));
+        }
     }
 
     // A node must never install bytes that are not what the manifest promised, whatever the reason
