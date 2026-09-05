@@ -130,11 +130,16 @@ async fn probe_stream_field(source: &FsPath, field: &str) -> Vec<String> {
 // Modern ffprobe exposes the RFC 6381 value directly (for example `av01.0.08M.10`), which is the
 // only form a player accepts: a codec family on its own (`avc1`) does not parse, so a player that
 // checks CODECS decides the video is unsupported, keeps the audio it can name, and renders the
-// stream as a black frame with a soundtrack. An older ffprobe that has no such field therefore
-// leaves the attribute off entirely and lets the player probe the segments instead — CODECS is
-// advisory, and saying nothing is what a player recovers from.
+// stream as a black frame with a soundtrack. The portable build this ships with (FFmpeg 7.0.2) has
+// no such field, so the profile and level it does report are assembled into the same value instead,
+// and a stream neither route can name leaves the attribute off altogether — CODECS is advisory, and
+// a player recovers from its absence by probing the segments, not from being told the wrong thing.
 async fn probe_codec_strings(source: &FsPath) -> Vec<String> {
-    let values = deduplicate_codec_strings(probe_stream_field(source, "mime_codec_string").await);
+    let mut values =
+        deduplicate_codec_strings(probe_stream_field(source, "mime_codec_string").await);
+    if values.is_empty() {
+        values = assembled_codec_strings(source).await;
+    }
     if values.is_empty() {
         return Vec::new();
     }
@@ -146,6 +151,90 @@ async fn probe_codec_strings(source: &FsPath) -> Vec<String> {
         return Vec::new();
     }
     values
+}
+
+// Only the two tracks a release carries are asked about: a data or timed-metadata stream a
+// transport stream picked up has no codec string to give and is not what CODECS describes.
+async fn assembled_codec_strings(source: &FsPath) -> Vec<String> {
+    let mut values = Vec::new();
+    for stream in ["v:0", "a:0"] {
+        let Some(descriptor) = probe_stream_descriptor(source, stream).await else {
+            continue;
+        };
+        match codec_string_from_descriptor(&descriptor) {
+            Some(value) => values.push(value),
+            None => return Vec::new(),
+        }
+    }
+    values
+}
+
+async fn probe_stream_descriptor(source: &FsPath, stream: &str) -> Option<Vec<String>> {
+    let mut command = Command::new(resolve_runtime_binary("ffprobe"));
+    command
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            stream,
+            "-show_entries",
+            "stream=codec_name,profile,level",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(source);
+    command.kill_on_drop(true);
+    let output = command.output().await.ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?;
+    let fields: Vec<String> = first_probe_record(&text)?
+        .split(',')
+        .map(|field| field.trim().to_string())
+        .collect();
+    match fields.first() {
+        Some(codec) if !codec.is_empty() => Some(fields),
+        _ => None,
+    }
+}
+
+// `codec_name,profile,level`, as ffprobe prints it: `h264,High,40` becomes `avc1.640028` — the
+// profile's idc, the constraint flags that profile sets, and the level, each a hex byte. Guessing
+// is what this must not do, so a profile that is not in the table gives nothing.
+fn codec_string_from_descriptor(fields: &[String]) -> Option<String> {
+    let codec = fields.first()?.as_str();
+    let profile = fields.get(1).map(String::as_str).unwrap_or_default();
+    match codec {
+        "h264" => {
+            let (profile_idc, constraints): (u32, u32) = match profile {
+                "Constrained Baseline" => (66, 0x40),
+                "Baseline" => (66, 0x00),
+                "Main" => (77, 0x00),
+                "Extended" => (88, 0x00),
+                "High" => (100, 0x00),
+                "High 10" | "High 10 Intra" => (110, 0x00),
+                "High 4:2:2" | "High 4:2:2 Intra" => (122, 0x00),
+                "High 4:4:4 Predictive" | "High 4:4:4 Intra" => (244, 0x00),
+                _ => return None,
+            };
+            // ffprobe prints -99 for a level it could not read.
+            let level = fields.get(2)?.parse::<i64>().ok()?;
+            if !(1..=255).contains(&level) {
+                return None;
+            }
+            Some(format!("avc1.{profile_idc:02x}{constraints:02x}{level:02x}"))
+        }
+        "aac" => match profile {
+            "LC" => Some("mp4a.40.2".to_string()),
+            "Main" => Some("mp4a.40.1".to_string()),
+            "LTP" => Some("mp4a.40.3".to_string()),
+            "HE-AAC" => Some("mp4a.40.5".to_string()),
+            "HE-AACv2" => Some("mp4a.40.29".to_string()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn is_video_codec_string(value: &str) -> bool {
@@ -705,6 +794,49 @@ mod tests {
         assert!(is_video_codec_string("avc1.640028"));
         assert!(is_video_codec_string("av01.0.08M.10"));
         assert!(!is_video_codec_string("mp4a.40.2"));
+    }
+
+    // The bundled FFmpeg 7.0.2 has no `mime_codec_string`, so what it does report has to add up to
+    // the same value a newer ffprobe would have handed over for the same chunk.
+    #[test]
+    fn a_profile_and_level_assemble_into_the_codec_string_ffprobe_did_not_report() {
+        let descriptor = |fields: [&str; 3]| fields.map(str::to_string).to_vec();
+        assert_eq!(
+            codec_string_from_descriptor(&descriptor(["h264", "High", "40"])).as_deref(),
+            Some("avc1.640028")
+        );
+        assert_eq!(
+            codec_string_from_descriptor(&descriptor(["h264", "Main", "31"])).as_deref(),
+            Some("avc1.4d001f")
+        );
+        assert_eq!(
+            codec_string_from_descriptor(&descriptor(["h264", "Constrained Baseline", "30"]))
+                .as_deref(),
+            Some("avc1.42401e")
+        );
+        assert_eq!(
+            codec_string_from_descriptor(&["aac".to_string(), "LC".to_string()]).as_deref(),
+            Some("mp4a.40.2")
+        );
+
+        // A level ffprobe could not read, a profile that is not in the table, and a codec this
+        // cannot spell are all left to the player to probe rather than described wrongly.
+        assert_eq!(
+            codec_string_from_descriptor(&descriptor(["h264", "High", "-99"])),
+            None
+        );
+        assert_eq!(
+            codec_string_from_descriptor(&descriptor(["h264", "unknown", "40"])),
+            None
+        );
+        assert_eq!(
+            codec_string_from_descriptor(&descriptor(["hevc", "Main", "120"])),
+            None
+        );
+        assert_eq!(
+            codec_string_from_descriptor(&["aac".to_string()]),
+            None
+        );
     }
 
     #[test]
