@@ -35,6 +35,13 @@ impl HlsPublication {
     }
 }
 
+// A transport stream carries its streams inside a program, so ffprobe prints every `-show_entries`
+// record of a chunk twice — once for the program and once for the stream list — with a blank line
+// between them. Reading the whole block as one record turns a good probe into a failed one.
+fn first_probe_record(text: &str) -> Option<&str> {
+    text.lines().map(str::trim).find(|line| !line.is_empty())
+}
+
 // Height names the output, width only decorates the master's STREAM-INF, so a source ffprobe cannot
 // measure is a missing label rather than a failed publication.
 async fn probe_dimensions(source: &FsPath) -> Option<(u32, u32)> {
@@ -57,7 +64,7 @@ async fn probe_dimensions(source: &FsPath) -> Option<(u32, u32)> {
         return None;
     }
     let text = String::from_utf8(output.stdout).ok()?;
-    let (width, height) = text.trim().split_once(',')?;
+    let (width, height) = first_probe_record(&text)?.split_once(',')?;
     Some((
         width.trim().parse::<u32>().ok()?,
         height.trim().parse::<u32>().ok()?,
@@ -83,10 +90,8 @@ async fn probe_video_codec(source: &FsPath) -> Option<String> {
     if !output.status.success() {
         return None;
     }
-    String::from_utf8(output.stdout)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+    let text = String::from_utf8(output.stdout).ok()?;
+    first_probe_record(&text).map(str::to_string)
 }
 
 async fn probe_stream_field(source: &FsPath, field: &str) -> Vec<String> {
@@ -122,26 +127,31 @@ async fn probe_stream_field(source: &FsPath, field: &str) -> Vec<String> {
         .collect()
 }
 
-// Modern ffprobe exposes the RFC 6381 value directly (for example `av01.0.08M.10`). Older builds
-// fall back to a conservative codec-family value so the master still never advertises AVC for an
-// AV1 variant.
+// Modern ffprobe exposes the RFC 6381 value directly (for example `av01.0.08M.10`), which is the
+// only form a player accepts: a codec family on its own (`avc1`) does not parse, so a player that
+// checks CODECS decides the video is unsupported, keeps the audio it can name, and renders the
+// stream as a black frame with a soundtrack. An older ffprobe that has no such field therefore
+// leaves the attribute off entirely and lets the player probe the segments instead — CODECS is
+// advisory, and saying nothing is what a player recovers from.
 async fn probe_codec_strings(source: &FsPath) -> Vec<String> {
-    let values = probe_stream_field(source, "mime_codec_string").await;
-    if !values.is_empty() {
-        return deduplicate_codec_strings(values);
+    let values = deduplicate_codec_strings(probe_stream_field(source, "mime_codec_string").await);
+    if values.is_empty() {
+        return Vec::new();
     }
-    let values = probe_stream_field(source, "codec_name")
-        .await
-        .into_iter()
-        .filter_map(|value| match value.as_str() {
-            "av1" => Some("av01".to_string()),
-            "h264" => Some("avc1".to_string()),
-            "hevc" => Some("hvc1".to_string()),
-            "aac" => Some("mp4a.40.2".to_string()),
-            _ => None,
-        })
-        .collect();
-    deduplicate_codec_strings(values)
+    // Naming only the audio has the same effect on a player as naming the video wrongly, so a
+    // video stream the probe could not describe withdraws the whole attribute.
+    if probe_video_codec(source).await.is_some()
+        && !values.iter().any(|value| is_video_codec_string(value))
+    {
+        return Vec::new();
+    }
+    values
+}
+
+fn is_video_codec_string(value: &str) -> bool {
+    ["avc1", "avc3", "av01", "hvc1", "hev1", "vp09", "dvh1", "dvhe"]
+        .iter()
+        .any(|family| value.starts_with(family))
 }
 
 fn deduplicate_codec_strings(values: Vec<String>) -> Vec<String> {
@@ -386,10 +396,16 @@ async fn finish_hls(directory: &FsPath, names: &HlsNames) -> Result<(), String> 
     let probe_path = directory.join(probe_name);
     let dimensions = probe_dimensions(&probe_path).await;
     let codecs = probe_codec_strings(&probe_path).await;
+    // The fMP4 layout exists for AV1 alone, so an init segment describing anything else means the
+    // encoder wrote a layout nobody asked for. The stream itself is the check: an ffprobe too old
+    // to name codecs the RFC 6381 way still reads the codec of the track.
     if names.segment_type == HlsSegmentType::Fmp4
-        && !codecs.iter().any(|codec| codec.starts_with("av01"))
+        && !matches!(
+            probe_video_codec(&probe_path).await.as_deref(),
+            Some("av1")
+        )
     {
-        return Err("AV1 HLS init segment has no AV1 codec string".to_string());
+        return Err("AV1 HLS init segment does not carry an AV1 stream".to_string());
     }
     let master = master_playlist(names, bandwidth, dimensions, &codecs);
     tokio::fs::write(directory.join(&names.master), master)
@@ -665,6 +681,30 @@ mod tests {
         assert!(master.contains("RESOLUTION=1920x1080"));
         assert!(master.contains("CODECS=\"av01.0.08M.10,mp4a.40.2\""));
         assert!(master.ends_with(&format!("{}\n", names.media)));
+    }
+
+    // A chunk ffprobe describes twice used to be parsed as one unreadable record, which is how a
+    // 1080p master ended up with no RESOLUTION on it.
+    #[test]
+    fn a_repeated_transport_stream_probe_reads_as_its_first_record() {
+        assert_eq!(first_probe_record("1920,1080\n\n1920,1080\n"), Some("1920,1080"));
+        assert_eq!(first_probe_record("h264\n\nh264\n"), Some("h264"));
+        assert_eq!(first_probe_record("\n\n"), None);
+        assert_eq!(first_probe_record(""), None);
+    }
+
+    // A player reads CODECS to decide what it can decode, and `avc1` on its own is not a codec
+    // string: naming the video badly, or naming only the audio, both play the release as audio.
+    #[test]
+    fn a_master_advertises_whole_codec_strings_or_none_at_all() {
+        let names = HlsNames::new(STEM, HlsSegmentType::Ts);
+        let master = master_playlist(&names, 4_000_000, Some((1920, 1080)), &[]);
+        assert!(!master.contains("CODECS="));
+        assert!(master.contains("RESOLUTION=1920x1080"));
+
+        assert!(is_video_codec_string("avc1.640028"));
+        assert!(is_video_codec_string("av01.0.08M.10"));
+        assert!(!is_video_codec_string("mp4a.40.2"));
     }
 
     #[test]
