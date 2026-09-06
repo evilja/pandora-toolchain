@@ -85,13 +85,25 @@ async fn acknowledge(ctx: &Context, component: &ComponentInteraction) {
 async fn probe_file_list(job_id: u64) -> Option<String> {
     let db = pandora_toolchain::lib::db::core::JobDb::new().await.ok()?;
     let row = db.get_job(job_id).await.ok()??;
-    let progress: serde_json::Value = serde_json::from_str(row.progress.as_deref()?).ok()?;
-    if progress.get("type").and_then(|value| value.as_str()) != Some("probe") {
+    probe_list_from_progress(row.progress.as_deref())
+}
+
+// The rendered rows, under the key a probe writes them to today and the one older rows used.
+// `files` beside them has since become the structured array the console reads, so asking for that
+// as a string found nothing on every probe written since — and a page button that cannot find the
+// list tells the user it is gone, which is what made a multi-page probe look like a job that had
+// been removed the moment it was paged.
+fn probe_list_from_progress(progress: Option<&str>) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(progress?).ok()?;
+    if value.get("type").and_then(|value| value.as_str()) != Some("probe") {
         return None;
     }
-    progress
-        .get("files")
+    value
+        .get("file_text")
         .and_then(|value| value.as_str())
+        .or_else(|| value.get("files").and_then(|value| value.as_str()))
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
         .map(str::to_string)
 }
 
@@ -126,4 +138,53 @@ fn swap_probe_list(embed: &Embed, body: &str) -> Option<CreateEmbed> {
         rebuilt = rebuilt.footer(CreateEmbedFooter::new(&footer.text));
     }
     Some(rebuilt.timestamp(serenity::model::Timestamp::now()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::probe_list_from_progress;
+
+    // The shape a probe actually writes: the rendered lines under `file_text`, with `files` beside
+    // them as the structured array the console reads.
+    #[test]
+    fn the_page_list_is_read_from_what_a_probe_writes_today() {
+        let progress = serde_json::json!({
+            "type": "probe",
+            "file_text": "`3` — E01\n`1` — E02",
+            "files": [
+                { "index": 3, "name": "[Group] Show - 01.mkv", "bytes": 1 },
+                { "index": 1, "name": "[Group] Show - 02.mkv", "bytes": 2 },
+            ],
+            "file_options": [],
+        })
+        .to_string();
+        assert_eq!(
+            probe_list_from_progress(Some(&progress)).as_deref(),
+            Some("`3` — E01\n`1` — E02")
+        );
+    }
+
+    #[test]
+    fn a_row_written_before_the_split_still_pages() {
+        let progress = serde_json::json!({
+            "type": "probe",
+            "files": "`0` — video.mkv (700MB)",
+            "file_options": [],
+        })
+        .to_string();
+        assert_eq!(
+            probe_list_from_progress(Some(&progress)).as_deref(),
+            Some("`0` — video.mkv (700MB)")
+        );
+    }
+
+    #[test]
+    fn anything_that_is_not_a_probe_list_pages_nothing() {
+        let encode = serde_json::json!({ "type": "encode", "frame": "1", "total": "2" }).to_string();
+        assert_eq!(probe_list_from_progress(Some(&encode)), None);
+        assert_eq!(probe_list_from_progress(Some(r#"{"type":"probe","file_text":"  "}"#)), None);
+        assert_eq!(probe_list_from_progress(Some(r#"{"type":"probe"}"#)), None);
+        assert_eq!(probe_list_from_progress(Some("not json")), None);
+        assert_eq!(probe_list_from_progress(None), None);
+    }
 }
