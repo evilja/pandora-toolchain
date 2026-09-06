@@ -342,6 +342,10 @@ args = 0
 text = "Google Drive-only uploads"
 args = 0
 
+[FIELD_MERGE_RELEASE_ONLY]
+text = "/merge answers with the release file"
+args = 0
+
 [FIELD_HLS]
 text = "Lumiere HLS-only output (12 hours)"
 args = 0

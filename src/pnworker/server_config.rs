@@ -4,6 +4,9 @@ use std::path::PathBuf;
 pub const SERVER_DRIVE_ONLY_LINE: usize = 14;
 pub const SERVER_HLS_LINE: usize = 17;
 pub const SERVER_HLS_NAME_LINE: usize = 18;
+// Appended after the outro group on line 19, for the same reason that one was appended: a
+// `meta.pandora` is read by line index, so a new setting can only ever go on the end.
+pub const SERVER_MERGE_RELEASE_ONLY_LINE: usize = 20;
 
 // Every distribution site names its fansubs differently — AnimeciX addresses a numeric translator
 // template, OpenAnime a `fansubSecureName` string, Anizm a numeric staff-form fansub id — so each
@@ -91,6 +94,27 @@ pub async fn server_drive_only(server_id: Option<u64>) -> bool {
     tokio::fs::read_to_string(server_meta_path(server_id))
         .await
         .map(|meta| drive_only_from_meta(&meta))
+        .unwrap_or(false)
+}
+
+// Whether `/merge` answers with the release file itself instead of the embed describing it. Off
+// everywhere it was never set, which is every server that has not asked for it.
+pub fn merge_release_only_from_meta(meta: &str) -> bool {
+    matches!(
+        meta.lines()
+            .nth(SERVER_MERGE_RELEASE_ONLY_LINE)
+            .map(str::trim)
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .as_str(),
+        "true" | "1" | "enabled" | "on"
+    )
+}
+
+pub async fn server_merge_release_only(server_id: u64) -> bool {
+    tokio::fs::read_to_string(server_meta_path(server_id))
+        .await
+        .map(|meta| merge_release_only_from_meta(&meta))
         .unwrap_or(false)
 }
 
@@ -190,6 +214,23 @@ mod tests {
     #[test]
     fn malformed_restrictive_policy_fails_closed() {
         assert!(drive_only_from_meta(&meta_with_policy(Some("tru"))));
+    }
+
+    // A file written before this line existed ends at the outro group, and `nth` on a missing
+    // line answers None rather than panicking — which is the whole reason settings are appended.
+    #[test]
+    fn merge_release_only_is_off_until_a_server_turns_it_on() {
+        assert!(!merge_release_only_from_meta(""));
+        let mut lines = vec![String::new(); SERVER_MERGE_RELEASE_ONLY_LINE + 1];
+        assert!(!merge_release_only_from_meta(&lines.join("\n")));
+        for enabled in ["true", "1", "enabled", "on", "TRUE"] {
+            lines[SERVER_MERGE_RELEASE_ONLY_LINE] = enabled.to_string();
+            assert!(merge_release_only_from_meta(&lines.join("\n")), "{}", enabled);
+        }
+        for disabled in ["", "false", "0", "off", "nonsense"] {
+            lines[SERVER_MERGE_RELEASE_ONLY_LINE] = disabled.to_string();
+            assert!(!merge_release_only_from_meta(&lines.join("\n")), "{}", disabled);
+        }
     }
 
     #[test]

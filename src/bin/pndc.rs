@@ -829,6 +829,8 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("release", 0),
     ("source", 0),
     ("smartlist", 0),
+    ("attribute", 0),
+    ("alias", 0),
     ("get", 0),
     ("job", 0),
     ("!enc", 0),
@@ -1176,6 +1178,20 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Write SOURCE.md for an attached episode folder.",
             usage: "/source episode:<n> link:<source_link>",
             details: "Stores the episode source link in the attached Forgejo repo. Source links can be torrent URLs, magnet links, or Google Drive links.",
+        },
+        HelpCommand {
+            section: "repo",
+            name: "attribute",
+            summary: "Styles and credit lines this channel's releases are built with.",
+            usage: "/attribute set [file] [dialogue] | /attribute list | /attribute remove dialogue:<line> | /attribute clear [what]",
+            details: "Requires an attached anime repo. `file` is an ASS file whose styles (and the PlayRes canvas they were drawn for) replace the merged script's at every /merge and /smartcode. `dialogue` is a full ASS Dialogue line injected into the release, mostly credits: %name% %season% %episode% %tl% %tlc% %ts% %qc% and the rest of the /attach fields are substituted, and %enc% becomes the person who ran /smartcode — a /merge leaves it standing for the encode that follows. Injected lines are stamped PandoraIdentifier in the actor field, so re-merging replaces them instead of stacking a second copy. Dialogues submitted before are offered as autocomplete and are never stored twice.",
+        },
+        HelpCommand {
+            section: "misc",
+            name: "alias",
+            summary: "The name you are credited under in releases.",
+            usage: "/alias choose name:<name> | /alias force user:<user> name:<name>",
+            details: "Sets what %enc% resolves to in an /attribute credit line. `choose` sets your own name and is open to everyone; `force` sets somebody else's and needs the admin tier. An alias is global — one name per person across every server — and `-` clears it, falling back to the Discord display name.",
         },
         HelpCommand {
             section: "repo",
@@ -2657,6 +2673,12 @@ impl EventHandler for Handler {
                 "smartlist" => {
                     handle_smartlist(&ctx, &command).await;
                 }
+                "attribute" => {
+                    handle_attribute(&ctx, &command).await;
+                }
+                "alias" => {
+                    handle_alias(&ctx, &command).await;
+                }
                 "get" => {
                     handle_get(&ctx, &command).await;
                 }
@@ -2733,6 +2755,7 @@ impl EventHandler for Handler {
                 "edit" => handle_edit_autocomplete(&ctx, &autocomplete).await,
                 "anizmconfirm" => handle_anizmconfirm_autocomplete(&ctx, &autocomplete).await,
                 "publish" => handle_publish_autocomplete(&ctx, &autocomplete).await,
+                "attribute" => handle_attribute_autocomplete(&ctx, &autocomplete).await,
                 _ => {}
             }
         } else if let Interaction::Component(component) = interaction {
@@ -3156,6 +3179,61 @@ impl EventHandler for Handler {
                     CreateCommandOption::new(CommandOptionType::String, "link", "Source link (torrent URL, magnet link, or Google Drive link)")
                         .required(true)
                 ),
+            CreateCommand::new("attribute")
+                .description("Styles and credit lines this channel's releases are built with")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::SubCommand, "set", "Set the styles file and/or add a credit dialogue")
+                        .add_sub_option(
+                            CreateCommandOption::new(CommandOptionType::Attachment, "file", "ASS file whose styles replace the merged script's")
+                                .required(false)
+                        )
+                        .add_sub_option(
+                            CreateCommandOption::new(CommandOptionType::String, "dialogue", "ASS Dialogue line to inject; %tl% %ts% %enc% and friends are substituted")
+                                .required(false)
+                                .set_autocomplete(true)
+                        )
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::SubCommand, "list", "Show this channel's styles file and credit dialogues")
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::SubCommand, "remove", "Remove one credit dialogue from this channel")
+                        .add_sub_option(
+                            CreateCommandOption::new(CommandOptionType::String, "dialogue", "The dialogue to remove")
+                                .required(true)
+                                .set_autocomplete(true)
+                        )
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::SubCommand, "clear", "Remove this channel's attributes")
+                        .add_sub_option(
+                            CreateCommandOption::new(CommandOptionType::String, "what", "What to clear, default all")
+                                .required(false)
+                                .add_string_choice("Everything", "all")
+                                .add_string_choice("Dialogues", "dialogues")
+                                .add_string_choice("Styles file", "styles")
+                        )
+                ),
+            CreateCommand::new("alias")
+                .description("The name you are credited under in releases")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::SubCommand, "choose", "Set your own credited name")
+                        .add_sub_option(
+                            CreateCommandOption::new(CommandOptionType::String, "name", "The name to credit you as, or - to use your Discord name")
+                                .required(true)
+                        )
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::SubCommand, "force", "Set somebody else's credited name (admin)")
+                        .add_sub_option(
+                            CreateCommandOption::new(CommandOptionType::User, "user", "Whose name to set")
+                                .required(true)
+                        )
+                        .add_sub_option(
+                            CreateCommandOption::new(CommandOptionType::String, "name", "The name to credit them as, or - to use their Discord name")
+                                .required(true)
+                        )
+                ),
             CreateCommand::new("smartlist")
                 .description("List every uploaded episode of this channel's anime with its links"),
             CreateCommand::new("get")
@@ -3224,6 +3302,10 @@ impl EventHandler for Handler {
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::Boolean, "hls", "Use only Lumiere HLS output for releases; retain it for 12 hours.")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Boolean, "merge_release_only", "/merge answers with the release file itself instead of an embed.")
                         .required(false)
                 )
                 .add_option(

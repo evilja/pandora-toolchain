@@ -2,7 +2,7 @@ use super::*;
 use pandora_toolchain::lib::mpeg::hls::{validate_name_template, DEFAULT_NAME_TEMPLATE};
 use pandora_toolchain::pnworker::server_config::{
     drive_only_from_meta, fansub_from_meta, hls_from_meta, hls_name_from_meta,
-    validate_preset_delivery, FansubSite,
+    merge_release_only_from_meta, validate_preset_delivery, FansubSite,
 };
 use serenity::builder::CreateAutocompleteResponse;
 
@@ -272,6 +272,7 @@ pub async fn handle_edit(
     let existing_drive_only = drive_only_from_meta(&existing_meta);
     let existing_hls = hls_from_meta(&existing_meta);
     let existing_hls_name = hls_name_from_meta(&existing_meta);
+    let existing_merge_release_only = merge_release_only_from_meta(&existing_meta);
 
     let language = match option_str(command, "language") {
         Some(l) if matches!(l, "EN" | "TR" | "JP") => l.to_string(),
@@ -318,6 +319,8 @@ pub async fn handle_edit(
         .unwrap_or_else(|| existing_local_gdrive.to_string());
     let drive_only = option_bool(command, "drive_only").unwrap_or(existing_drive_only);
     let hls = option_bool(command, "hls").unwrap_or(existing_hls);
+    let merge_release_only =
+        option_bool(command, "merge_release_only").unwrap_or(existing_merge_release_only);
     // The template is stored as written, not as rendered: `-` restores the default rather than
     // clearing the line to nothing, because a name is not something a release can go without.
     let hls_name = match option_str(command, "hls_name").map(str::trim) {
@@ -415,6 +418,7 @@ pub async fn handle_edit(
         hls: hls.to_string(),
         hls_name: hls_name.clone(),
         outro: outro.clone(),
+        merge_release_only: merge_release_only.to_string(),
     });
     let path = dir.join("meta.pandora");
     if let Err(e) = tokio::fs::write(&path, body).await {
@@ -454,6 +458,8 @@ pub async fn handle_edit(
     };
     let drive_only_display = command_message(command, if drive_only { VALUE_ENABLED } else { VALUE_DISABLED });
     let hls_display = command_message(command, if hls { VALUE_ENABLED } else { VALUE_DISABLED });
+    let merge_release_only_display =
+        command_message(command, if merge_release_only { VALUE_ENABLED } else { VALUE_DISABLED });
     let mut embed = success_embed(command, COMMAND_SERVER_UPDATED)
         .description(format!("Server `{}`", server_id))
         .field(command_message(command, FIELD_LANGUAGE), language, true)
@@ -468,7 +474,8 @@ pub async fn handle_edit(
         .field(command_message(command, FIELD_WRAPSTYLE), wrap_display, true)
         .field(command_message(command, FIELD_PRESET), preset, true)
         .field(command_message(command, FIELD_CONCAT), concat_display, true)
-        .field(command_message(command, FIELD_OUTRO), outro_display, true);
+        .field(command_message(command, FIELD_OUTRO), outro_display, true)
+        .field(command_message(command, FIELD_MERGE_RELEASE_ONLY), merge_release_only_display, true);
     for (site, (value, display)) in &fansubs {
         let shown = display
             .clone()

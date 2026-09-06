@@ -10,6 +10,8 @@ mod cfont;
 mod merge;
 mod release;
 mod source;
+mod attribute;
+mod alias;
 mod smartlist;
 mod get;
 mod init;
@@ -61,6 +63,8 @@ pub use self::cfont::{handle_cfont, handle_cfont_autocomplete, refresh_font_name
 pub use self::merge::handle_merge;
 pub use self::release::handle_release;
 pub use self::source::handle_source;
+pub use self::attribute::{handle_attribute, handle_attribute_autocomplete};
+pub use self::alias::{credited_name, handle_alias};
 pub use self::smartlist::handle_smartlist;
 pub use self::get::handle_get;
 pub use self::init::handle_init;
@@ -146,6 +150,8 @@ struct ServerMetaFields {
     // already on disk. A file written before this line existed simply has no line 19, which reads
     // back as no outro group.
     outro: String,
+    // Line 20, appended for the same reason line 19 was.
+    merge_release_only: String,
 }
 
 fn compose_server_meta(fields: &ServerMetaFields) -> String {
@@ -170,8 +176,102 @@ fn compose_server_meta(fields: &ServerMetaFields) -> String {
         fields.hls.as_str(),
         fields.hls_name.as_str(),
         fields.outro.as_str(),
+        fields.merge_release_only.as_str(),
     ];
     format!("{}\n", lines.join("\n"))
+}
+
+// The channel's `/attribute` styles and credit lines, applied to what the merge produced. Styles
+// are replaced wholesale — that is what "the release uses these styles" means — and the credit
+// lines are injected last, so they are drawn with the styles they were written against.
+//
+// Runs even for a channel with no attributes when the merge output carries injected lines already:
+// a release fed back in through TL or TS would otherwise gain a second copy of its own credits.
+async fn apply_channel_attributes(
+    server_id: u64,
+    channel_id: u64,
+    meta: &ChannelMeta,
+    episode: u32,
+    encoder: Option<&str>,
+    merged_bytes: Vec<u8>,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<u8>, String> {
+    use pandora_toolchain::lib::attribute::{
+        dialogues_path, inject_dialogues, read_list, read_styles, replace_styles, substitute,
+        PANDORA_ACTOR,
+    };
+
+    let dialogues = read_list(dialogues_path(server_id, channel_id)).await;
+    let styles = read_styles(server_id, channel_id).await;
+    let stamped = merged_bytes
+        .windows(PANDORA_ACTOR.len())
+        .any(|window| window == PANDORA_ACTOR.as_bytes());
+    if dialogues.is_empty() && styles.is_none() && !stamped {
+        return Ok(merged_bytes);
+    }
+
+    let text = String::from_utf8(merged_bytes)
+        .map_err(|e| format!("the merged ASS is not valid UTF-8: {}", e))?;
+    // libass reads a byte-order mark as part of the first section header, and so does everything
+    // below; a file that arrives with one is written back without it.
+    let mut text = text.strip_prefix('\u{feff}').unwrap_or(&text).to_string();
+    if let Some(styles) = styles {
+        let styled = replace_styles(&text, &styles)
+            .map_err(|reason| format!("the attribute file is unusable — {}", reason))?;
+        if !styled.missing_styles.is_empty() {
+            warnings.push(format!(
+                "The attribute styles define no `{}`; lines using those styles render in the default style.",
+                styled.missing_styles.join("`, `")
+            ));
+        }
+        text = styled.text;
+    }
+    let pairs = attribute_variables(meta, episode, encoder);
+    let lines: Vec<String> = dialogues
+        .iter()
+        .map(|line| substitute(line, &pairs))
+        .collect();
+    Ok(inject_dialogues(&text, &lines).into_bytes())
+}
+
+// What an attribute dialogue can name. The anime's own fields and the credits `/attach` recorded,
+// under the same `%name%` spelling `base.md` uses, plus `%enc%` — which is only listed when there
+// is an encoder, since an unlisted variable is left standing rather than blanked.
+fn attribute_variables(
+    meta: &ChannelMeta,
+    episode: u32,
+    encoder: Option<&str>,
+) -> Vec<(&'static str, String)> {
+    let mut pairs: Vec<(&'static str, String)> = vec![
+        ("name", meta.name.clone().unwrap_or_default()),
+        ("slug", meta.slug.clone().unwrap_or_default()),
+        ("kind", meta.kind.clone().unwrap_or_default()),
+        ("mal_id", meta.mal_id.map(|id| id.to_string()).unwrap_or_default()),
+        ("episode_count", meta.episode_count.map(|c| c.to_string()).unwrap_or_default()),
+        ("year", meta.year.map(|y| y.to_string()).unwrap_or_default()),
+        ("repo_url", meta.repo_url.clone().unwrap_or_default()),
+        ("season", meta.season.to_string()),
+        ("episode", episode.to_string()),
+        ("tl", credit_value(&meta.tl)),
+        ("tlc", credit_value(&meta.tlc)),
+        ("ts", credit_value(&meta.ts)),
+        ("qc", credit_value(&meta.qc)),
+    ];
+    if let Some(encoder) = encoder {
+        pairs.push(("enc", encoder.to_string()));
+    }
+    pairs
+}
+
+// `---` is how `/attach` and `/edit` spell a credit nobody filled in; printing it into a release
+// would credit the work to three dashes.
+fn credit_value(value: &str) -> String {
+    let value = value.trim();
+    if value == "---" {
+        String::new()
+    } else {
+        value.to_string()
+    }
 }
 
 struct SmartMergeResult {
@@ -196,6 +296,9 @@ async fn smartcode_merge_upload(
     response_msg: &mut Message,
     label: &str,
     log_prefix: &str,
+    // Who `%enc%` names, when there is an answer. `/merge` produces a release nobody has encoded
+    // yet, so it leaves the variable standing for the `/smartcode` that eventually does.
+    encoder: Option<String>,
 ) -> Option<SmartMergeResult> {
     let episode = positive_u32_option(ctx, command, "episode").await?;
     let link_opt = option_trimmed(command, "link");
@@ -440,6 +543,25 @@ async fn smartcode_merge_upload(
             .content("ASS merge produced no dialogue lines; release upload was skipped.")).await;
         return None;
     }
+
+    let merged_bytes = match apply_channel_attributes(
+        server_id,
+        command.channel_id.get(),
+        &meta,
+        episode,
+        encoder.as_deref(),
+        merged_bytes,
+        &mut warnings,
+    )
+    .await
+    {
+        Ok(bytes) => bytes,
+        Err(reason) => {
+            let _ = response_msg.edit(ctx, EditMessage::new()
+                .content(format!("Attributes could not be applied: {}", reason))).await;
+            return None;
+        }
+    };
 
     let release_path = format!("{}/Release - {} - E{:02}.ass", folder, safe_name, episode);
     let release_commit = "Smartcode merge".to_string();
@@ -1227,7 +1349,8 @@ async fn font_response(
 mod server_meta_tests {
     use super::{compose_server_meta, ServerMetaFields};
     use pandora_toolchain::pnworker::server_config::{
-        drive_only_from_meta, fansub_from_meta, hls_from_meta, hls_name_from_meta, FansubSite,
+        drive_only_from_meta, fansub_from_meta, hls_from_meta, hls_name_from_meta,
+        merge_release_only_from_meta, FansubSite,
     };
 
     fn fields() -> ServerMetaFields {
@@ -1252,6 +1375,7 @@ mod server_meta_tests {
             hls: "true".to_string(),
             hls_name: "%uuid%_%res%".to_string(),
             outro: "Ending".to_string(),
+            merge_release_only: "true".to_string(),
         }
     }
 
@@ -1259,7 +1383,7 @@ mod server_meta_tests {
     fn every_field_lands_on_its_documented_line() {
         let meta = compose_server_meta(&fields());
         let lines = meta.lines().collect::<Vec<_>>();
-        assert_eq!(lines.len(), 20);
+        assert_eq!(lines.len(), 21);
         assert_eq!(lines[0], "EN");
         assert_eq!(lines[8], "2");
         assert_eq!(lines[11], "standard");
@@ -1267,6 +1391,8 @@ mod server_meta_tests {
         // The outro is line 19 and nothing else moved: every index above is what it was before
         // outros existed, which is what lets an old file be read without a migration.
         assert_eq!(lines[19], "Ending");
+        assert_eq!(lines[20], "true");
+        assert!(merge_release_only_from_meta(&meta));
         assert!(drive_only_from_meta(&meta));
         assert_eq!(
             fansub_from_meta(&meta, FansubSite::AnimeciX).as_deref(),

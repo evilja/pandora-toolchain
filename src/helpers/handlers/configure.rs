@@ -1,6 +1,6 @@
 use super::*;
 use pandora_toolchain::pnworker::server_config::{
-    drive_only_from_meta, fansub_from_meta, hls_from_meta, FansubSite,
+    drive_only_from_meta, fansub_from_meta, hls_from_meta, FansubSite, merge_release_only_from_meta,
 };
 
 pub async fn handle_configure(
@@ -106,7 +106,8 @@ pub async fn handle_configure(
         hls: existing_hls.to_string(),
         hls_name: existing_hls_name,
         outro: existing_outro,
-    });
+            merge_release_only: merge_release_only_from_meta(&existing_meta).to_string(),
+});
     let path = dir.join("meta.pandora");
     if let Err(e) = tokio::fs::write(&path, body).await {
         command.create_response(ctx, CreateInteractionResponse::Message(
