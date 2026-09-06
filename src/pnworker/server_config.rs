@@ -7,6 +7,8 @@ pub const SERVER_HLS_NAME_LINE: usize = 18;
 // Appended after the outro group on line 19, for the same reason that one was appended: a
 // `meta.pandora` is read by line index, so a new setting can only ever go on the end.
 pub const SERVER_MERGE_RELEASE_ONLY_LINE: usize = 20;
+// Line 21, appended for the same reason lines 19 and 20 were.
+pub const SERVER_CHANNEL_RENAME_LINE: usize = 21;
 
 // Every distribution site names its fansubs differently — AnimeciX addresses a numeric translator
 // template, OpenAnime a `fansubSecureName` string, Anizm a numeric staff-form fansub id — so each
@@ -161,6 +163,30 @@ pub async fn server_hls_name(server_id: Option<u64>) -> String {
         .await
         .map(|meta| hls_name_from_meta(&meta))
         .unwrap_or_else(|_| crate::lib::mpeg::hls::DEFAULT_NAME_TEMPLATE.to_string())
+}
+
+// Whether `/init` and `/attach` may rename the channel they run in to the anime they attached.
+// A missing line, a blank one, and anything this does not recognise all mean enabled: renaming is
+// what every server got before the line existed, and a server that has not been re-saved through
+// `/edit` since must keep behaving the way its operators know it to.
+pub fn channel_rename_from_meta(meta: &str) -> bool {
+    let Some(value) = meta.lines().nth(SERVER_CHANNEL_RENAME_LINE).map(str::trim) else {
+        return true;
+    };
+    !matches!(
+        value.to_ascii_lowercase().as_str(),
+        "false" | "0" | "disabled" | "off"
+    )
+}
+
+pub async fn server_channel_rename(server_id: Option<u64>) -> bool {
+    let Some(server_id) = server_id else {
+        return true;
+    };
+    tokio::fs::read_to_string(server_meta_path(server_id))
+        .await
+        .map(|meta| channel_rename_from_meta(&meta))
+        .unwrap_or(true)
 }
 
 // AV1 may be delivered unchanged through Drive or as fMP4/CMAF HLS. The external streaming hosts

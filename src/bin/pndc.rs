@@ -3313,6 +3313,10 @@ impl EventHandler for Handler {
                         .required(false)
                 )
                 .add_option(
+                    CreateCommandOption::new(CommandOptionType::Boolean, "channel_rename", "Let /init and /attach rename the channel to the anime. Default on.")
+                        .required(false)
+                )
+                .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "wrapstyle", "ASS WrapStyle normalization. Use dont_touch to clear.")
                         .required(false)
                         .add_string_choice("dont_touch", "dont_touch")

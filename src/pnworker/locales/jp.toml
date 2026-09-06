@@ -354,6 +354,10 @@ args = 0
 text = "HLS出力名"
 args = 0
 
+[FIELD_CHANNEL_RENAME]
+text = "アタッチ時にチャンネル名を変更"
+args = 0
+
 [FIELD_ANIMECIX_FANSUB]
 text = "AnimeciXファンサブ"
 args = 0
