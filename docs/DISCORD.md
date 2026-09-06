@@ -175,11 +175,18 @@ an `/encode` with a hand-uploaded subtitle is untouched.
 
 - **Styles** — `/attribute set file:<ass>` stores the upload at
   `DB/config/<serverid>/<channelid>/attribute.ass`. At merge time its `[V4+ Styles]` section
-  replaces the merged script's wholesale, and `PlayResX`, `PlayResY` and `ScaledBorderAndShadow`
-  come with it: a style is written against a canvas, and taking the styles without it renders them
-  at a size nobody chose. `WrapStyle` is *not* taken — that one is `/edit wrapstyle`. A file that
-  defines no styles is refused at upload. Events left asking for a style the new list does not
-  define are reported as a merge warning, not rewritten; libass renders those in Default.
+  replaces the merged script's wholesale — and is **resized onto the canvas the merged script
+  already declares**. Nothing is carried over from the attribute file's header: the released script
+  keeps its own `PlayRes`, `ScaledBorderAndShadow` and `WrapStyle`, and the styles are scaled to
+  fit it. `Fontsize`, `Outline`, `Shadow` and `MarginV` scale by the Y ratio, `Spacing`, `MarginL`
+  and `MarginR` by the X ratio; colours, `ScaleX`/`ScaleY`, `Angle`, `Alignment` and `Encoding` are
+  numbers that mean the same thing at any size and are copied untouched. Which field is which is
+  read from the section's own `Format:` line, so a V4 (SSA) list resizes correctly instead of
+  having its colours multiplied. If either script declares no `PlayRes` the styles are used at the
+  size they were written and the merge says so — libass's own 384x288 fallback would scale a modern
+  style list by five. A file that defines no styles is refused at upload. Events left asking for a
+  style the new list does not define are reported as a merge warning, not rewritten; libass renders
+  those in Default.
 - **Dialogues** — `/attribute set dialogue:<line>` appends a full ASS `Dialogue:` line (with or
   without the prefix; ten comma-separated fields) to
   `DB/config/<serverid>/<channelid>/attribute_dialogues.json`. They are injected into the release

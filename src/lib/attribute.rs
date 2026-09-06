@@ -12,17 +12,33 @@ const EVENT_FIELDS: usize = 10;
 const STYLE_FIELD: usize = 3;
 const ACTOR_FIELD: usize = 4;
 
-// Script Info keys copied from the styles file along with the styles themselves. A style is written
-// against a canvas: the same border, shadow and font size mean different things at 1280x720 than at
-// 1920x1080, so taking the styles without these would render them at a size nobody chose. WrapStyle
-// is deliberately not among them — that one is the server's `/edit wrapstyle` setting.
-const CANVAS_KEYS: [&str; 3] = ["PlayResX", "PlayResY", "ScaledBorderAndShadow"];
+// Style fields that are a length on the canvas rather than a number that means the same thing at
+// any size, and which of the two ratios each is measured along. Everything absent from this list —
+// the colours, the name, ScaleX/ScaleY (already percentages), Angle, Alignment, Encoding — is
+// carried across untouched. Names are matched against the section's own `Format:` line rather than
+// assumed, since V4 and V4+ order their fields differently.
+const SCALED_BY_X: [&str; 3] = ["spacing", "marginl", "marginr"];
+const SCALED_BY_Y: [&str; 4] = ["fontsize", "outline", "shadow", "marginv"];
+// A margin is a whole number of pixels in every script Aegisub has ever written.
+const INTEGER_FIELDS: [&str; 3] = ["marginl", "marginr", "marginv"];
+
+// What happened to the styles on their way onto the merged script's canvas.
+#[derive(Debug, PartialEq)]
+pub enum Resample {
+    // Both scripts name the same canvas, so the styles already fit it.
+    NotNeeded,
+    Scaled { x: f64, y: f64 },
+    // One of the two does not say what canvas it was drawn for. The styles are used at the size
+    // they were written, which is the only size known about them.
+    Unknown,
+}
 
 pub struct StyledAss {
     pub text: String,
     // Styles the events still ask for that the new style list does not define. libass silently
     // renders those lines in Default, so they are reported rather than corrected.
     pub missing_styles: Vec<String>,
+    pub resample: Resample,
 }
 
 // A dialogue as it will be stored and injected: the caller's line, validated, with the actor field
@@ -79,18 +95,31 @@ pub fn style_names(source: &str) -> Vec<String> {
     defined_styles(&block)
 }
 
-// Replaces the merged script's style list with the one from the attribute file, and takes the
-// canvas the styles were written against with it.
+// Replaces the merged script's style list with the one from the attribute file, resized to the
+// canvas the merged script already declares. The merged script's own header is left exactly as it
+// was: it is the script being released, and a style is only ever a length measured against it.
 pub fn replace_styles(merged: &str, styles_source: &str) -> Result<StyledAss, String> {
     let newline = if merged.contains("\r\n") { "\r\n" } else { "\n" };
     let source_lines = read_lines(styles_source);
     let Some(source_styles) = find_section(&source_lines, is_styles_header) else {
         return Err("the attribute file has no [V4+ Styles] section".to_string());
     };
-    let style_block: Vec<String> = source_lines[source_styles.clone()]
+    let mut style_block: Vec<String> = source_lines[source_styles.clone()]
         .iter()
         .map(|line| line.to_string())
         .collect();
+
+    let merged_lines = read_lines(merged);
+    let resample = resample_ratios(
+        script_resolution(&source_lines),
+        script_resolution(&merged_lines),
+    );
+    if let Resample::Scaled { x, y } = resample {
+        style_block = style_block
+            .iter()
+            .map(|line| resample_style_line(line, &style_block, x, y))
+            .collect();
+    }
 
     let mut lines: Vec<String> = read_lines(merged).iter().map(|l| l.to_string()).collect();
     match find_section(&lines.iter().map(String::as_str).collect::<Vec<_>>(), is_styles_header) {
@@ -105,8 +134,6 @@ pub fn replace_styles(merged: &str, styles_source: &str) -> Result<StyledAss, St
             lines.splice(at..at, style_block.iter().cloned());
         }
     }
-    apply_canvas_keys(&mut lines, &source_lines);
-
     let defined = defined_styles(&style_block);
     let refs = lines.iter().map(String::as_str).collect::<Vec<_>>();
     let missing_styles = missing_event_styles(&refs, &defined);
@@ -115,6 +142,7 @@ pub fn replace_styles(merged: &str, styles_source: &str) -> Result<StyledAss, St
     Ok(StyledAss {
         text,
         missing_styles,
+        resample,
     })
 }
 
@@ -226,33 +254,102 @@ fn find_section(
     Some(start..end)
 }
 
-fn apply_canvas_keys(lines: &mut Vec<String>, source_lines: &[&str]) {
-    let Some(source_info) = find_section(source_lines, is_script_info_header) else {
-        return;
+// The canvas a script declares, as (x, y). A script that names neither is answered as unknown
+// rather than guessed at: libass falls back to 384x288, and resampling a modern style list from
+// that would multiply every font size by five.
+fn script_resolution(lines: &[&str]) -> (Option<f64>, Option<f64>) {
+    let Some(info) = find_section(lines, is_script_info_header) else {
+        return (None, None);
     };
-    for key in CANVAS_KEYS {
-        let Some(value) = source_lines[source_info.clone()]
+    let read = |key: &str| {
+        lines[info.clone()]
             .iter()
             .find_map(|line| script_info_value(line, key))
-        else {
+            .and_then(|value| value.parse::<f64>().ok())
+            .filter(|value| *value > 0.0)
+    };
+    (read("PlayResX"), read("PlayResY"))
+}
+
+// A script that gives only one of the two axes is scaled by the ratio it does give, on both. That
+// is what a 4:3-to-16:9 resample would get wrong, and what every real script — which declares both
+// — never reaches.
+fn resample_ratios(
+    source: (Option<f64>, Option<f64>),
+    target: (Option<f64>, Option<f64>),
+) -> Resample {
+    let ratio = |from: Option<f64>, to: Option<f64>| match (from, to) {
+        (Some(from), Some(to)) if from > 0.0 => Some(to / from),
+        _ => None,
+    };
+    let x = ratio(source.0, target.0);
+    let y = ratio(source.1, target.1);
+    let (x, y) = match (x, y) {
+        (Some(x), Some(y)) => (x, y),
+        (Some(both), None) | (None, Some(both)) => (both, both),
+        (None, None) => return Resample::Unknown,
+    };
+    if (x - 1.0).abs() < f64::EPSILON && (y - 1.0).abs() < f64::EPSILON {
+        return Resample::NotNeeded;
+    }
+    Resample::Scaled { x, y }
+}
+
+// One `Style:` line scaled onto the target canvas. The section's own `Format:` line decides which
+// field is which, so a V4 script — whose fields are neither the same nor in the same order as a
+// V4+ one — is resized correctly instead of having its colours multiplied.
+fn resample_style_line(line: &str, block: &[String], x: f64, y: f64) -> String {
+    let Some(body) = strip_event_prefix(line.trim_start(), "style:") else {
+        return line.to_string();
+    };
+    let Some(format) = style_format(block) else {
+        return line.to_string();
+    };
+    let mut fields: Vec<String> = body.split(',').map(str::to_string).collect();
+    // A line that does not match the format it was written under is one this cannot safely touch.
+    if fields.len() != format.len() {
+        return line.to_string();
+    }
+    for (index, name) in format.iter().enumerate() {
+        let factor = if SCALED_BY_X.contains(&name.as_str()) {
+            x
+        } else if SCALED_BY_Y.contains(&name.as_str()) {
+            y
+        } else {
             continue;
         };
-        let entry = format!("{}: {}", key, value);
-        let refs = lines.iter().map(String::as_str).collect::<Vec<_>>();
-        let Some(info) = find_section(&refs, is_script_info_header) else {
-            // No Script Info at all: one is opened above whatever comes first, since the keys are
-            // meaningless anywhere else.
-            lines.splice(0..0, ["[Script Info]".to_string(), entry]);
-            continue;
-        };
-        match lines[info.clone()]
-            .iter()
-            .position(|line| script_info_value(line, key).is_some())
-        {
-            Some(offset) => lines[info.start + offset] = entry,
-            None => lines.insert(info.end, entry),
+        if let Some(scaled) = scale_number(&fields[index], factor, INTEGER_FIELDS.contains(&name.as_str())) {
+            fields[index] = scaled;
         }
     }
+    format!("Style: {}", fields.join(","))
+}
+
+fn style_format(block: &[String]) -> Option<Vec<String>> {
+    let body = block
+        .iter()
+        .find_map(|line| strip_event_prefix(line.trim_start(), "format:"))?;
+    let format: Vec<String> = body
+        .split(',')
+        .map(|name| name.trim().to_ascii_lowercase())
+        .collect();
+    (format.len() > 1).then_some(format)
+}
+
+fn scale_number(value: &str, factor: f64, integer: bool) -> Option<String> {
+    let scaled = value.trim().parse::<f64>().ok()? * factor;
+    if integer {
+        return Some(format!("{}", scaled.round() as i64));
+    }
+    // Three decimals is past anything a renderer distinguishes, and trimming keeps a whole number
+    // written as one: a 48 that doubles is `96`, not `96.000`.
+    let text = format!("{:.3}", scaled);
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    Some(if text.is_empty() || text == "-0" {
+        "0".to_string()
+    } else {
+        text.to_string()
+    })
 }
 
 fn script_info_value(line: &str, key: &str) -> Option<String> {
@@ -414,19 +511,65 @@ mod tests {
     }
 
     #[test]
-    fn styles_are_replaced_along_with_the_canvas_they_were_drawn_for() {
+    fn styles_are_replaced_and_resized_onto_the_scripts_own_canvas() {
         let styled = replace_styles(MERGED, STYLES).unwrap();
-        assert!(styled.text.contains("Style: Default,Gandhi Sans,72"));
-        assert!(styled.text.contains("Style: Credits,Gandhi Sans,54"));
+        // 1920x1080 styles onto a 1280x720 script: two thirds, on both axes.
+        assert_eq!(styled.resample, Resample::Scaled { x: 2.0 / 3.0, y: 2.0 / 3.0 });
+        assert!(styled.text.contains("Style: Default,Gandhi Sans,48"));
+        assert!(styled.text.contains("Style: Credits,Gandhi Sans,36"));
         assert!(!styled.text.contains("Style: Sign,Arial,30"));
-        assert!(styled.text.contains("PlayResX: 1920"));
-        assert!(styled.text.contains("PlayResY: 1080"));
-        assert!(styled.text.contains("ScaledBorderAndShadow: yes"));
-        // The server owns the wrap style, and the events are the merge's own.
+        // The merged script's header is the released script's header, untouched.
+        assert!(styled.text.contains("PlayResX: 1280"));
+        assert!(styled.text.contains("PlayResY: 720"));
+        assert!(!styled.text.contains("PlayResX: 1920"));
+        assert!(!styled.text.contains("ScaledBorderAndShadow"));
         assert!(styled.text.contains("WrapStyle: 0"));
         assert!(styled.text.contains("Hello, world"));
         // The attribute file's sample line is not carried over with its styles.
         assert!(!styled.text.contains("sample the styles were drawn against"));
+    }
+
+    // Every length is scaled along the axis it is measured on, and nothing else is touched: a
+    // colour multiplied by two thirds would be a different colour.
+    #[test]
+    fn only_lengths_are_scaled_and_each_along_its_own_axis() {
+        let source = "[Script Info]\nPlayResX: 640\nPlayResY: 360\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, Bold, ScaleX, Spacing, Angle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Credits,Gandhi Sans,30,&H00FFFFFF,-1,100,1.5,45,1.25,0,2,10,10,15,1\n";
+        let target = "[Script Info]\nPlayResX: 1280\nPlayResY: 1080\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Credits,,0,0,0,,hi\n";
+        let styled = replace_styles(target, source).unwrap();
+        assert_eq!(styled.resample, Resample::Scaled { x: 2.0, y: 3.0 });
+        assert!(
+            styled.text.contains("Style: Credits,Gandhi Sans,90,&H00FFFFFF,-1,100,3,45,3.75,0,2,20,20,45,1"),
+            "{}",
+            styled.text
+        );
+    }
+
+    // A V4 script names its fields in a different order and has one this build has never heard of;
+    // reading the section's own Format line is what keeps a colour from being scaled as a margin.
+    #[test]
+    fn an_ssa_style_list_is_resized_by_its_own_format_line() {
+        let source = "[Script Info]\nPlayResY: 360\n\n[V4 Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, TertiaryColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, AlphaLevel, Encoding\nStyle: Old,Arial,20,&H00FFFFFF,&H0000FFFF,&H00000000,&H80000000,-1,0,1,2,1,2,10,10,20,0,1\n";
+        let target = "[Script Info]\nPlayResY: 720\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Old,,0,0,0,,hi\n";
+        let styled = replace_styles(target, source).unwrap();
+        assert_eq!(styled.resample, Resample::Scaled { x: 2.0, y: 2.0 });
+        assert!(
+            styled.text.contains("Style: Old,Arial,40,&H00FFFFFF,&H0000FFFF,&H00000000,&H80000000,-1,0,1,4,2,2,20,20,40,0,1"),
+            "{}",
+            styled.text
+        );
+    }
+
+    #[test]
+    fn a_canvas_nobody_declared_leaves_the_styles_at_the_size_they_were_written() {
+        let source = "[V4+ Styles]\nFormat: Name, Fontname, Fontsize\nStyle: Credits,Arial,48\n";
+        let target = "[Script Info]\nPlayResX: 1920\nPlayResY: 1080\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Credits,,0,0,0,,hi\n";
+        let styled = replace_styles(target, source).unwrap();
+        assert_eq!(styled.resample, Resample::Unknown);
+        assert!(styled.text.contains("Style: Credits,Arial,48"));
+        // And a matching canvas is not a resize at all.
+        let same = replace_styles(target, &format!("[Script Info]\nPlayResX: 1920\nPlayResY: 1080\n\n{}", source)).unwrap();
+        assert_eq!(same.resample, Resample::NotNeeded);
+        assert!(same.text.contains("Style: Credits,Arial,48"));
     }
 
     #[test]

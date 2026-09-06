@@ -198,7 +198,7 @@ async fn apply_channel_attributes(
 ) -> Result<Vec<u8>, String> {
     use pandora_toolchain::lib::attribute::{
         dialogues_path, inject_dialogues, read_list, read_styles, replace_styles, substitute,
-        PANDORA_ACTOR,
+        Resample, PANDORA_ACTOR,
     };
 
     let dialogues = read_list(dialogues_path(server_id, channel_id)).await;
@@ -218,6 +218,18 @@ async fn apply_channel_attributes(
     if let Some(styles) = styles {
         let styled = replace_styles(&text, &styles)
             .map_err(|reason| format!("the attribute file is unusable — {}", reason))?;
+        match styled.resample {
+            // Reported rather than guessed around: the alternative is libass's own 384x288 default,
+            // which would scale a modern style list by five.
+            Resample::Unknown => warnings.push(
+                "The attribute file or the merged subtitles declare no PlayRes, so the styles were used at the size they were written.".to_string(),
+            ),
+            Resample::Scaled { x, y } => println!(
+                "[attribute] resized styles onto the release canvas x={:.4} y={:.4}",
+                x, y
+            ),
+            Resample::NotNeeded => {}
+        }
         if !styled.missing_styles.is_empty() {
             warnings.push(format!(
                 "The attribute styles define no `{}`; lines using those styles render in the default style.",
