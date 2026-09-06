@@ -828,6 +828,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("merge", 0),
     ("release", 0),
     ("source", 0),
+    ("smartlist", 0),
     ("get", 0),
     ("job", 0),
     ("!enc", 0),
@@ -1175,6 +1176,13 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Write SOURCE.md for an attached episode folder.",
             usage: "/source episode:<n> link:<source_link>",
             details: "Stores the episode source link in the attached Forgejo repo. Source links can be torrent URLs, magnet links, or Google Drive links.",
+        },
+        HelpCommand {
+            section: "repo",
+            name: "smartlist",
+            summary: "List the uploaded episodes of the attached anime and their links.",
+            usage: "/smartlist",
+            details: "Requires an attached anime repo. Reads this channel's finished uploads from the job database and posts one plain-text block per episode, in episode order, carrying every host the episode was uploaded to. An episode encoded more than once lists only its newest upload.",
         },
         HelpCommand {
             section: "repo",
@@ -2646,6 +2654,9 @@ impl EventHandler for Handler {
                 "source" => {
                     handle_source(&ctx, &command).await;
                 }
+                "smartlist" => {
+                    handle_smartlist(&ctx, &command).await;
+                }
                 "get" => {
                     handle_get(&ctx, &command).await;
                 }
@@ -3145,6 +3156,8 @@ impl EventHandler for Handler {
                     CreateCommandOption::new(CommandOptionType::String, "link", "Source link (torrent URL, magnet link, or Google Drive link)")
                         .required(true)
                 ),
+            CreateCommand::new("smartlist")
+                .description("List every uploaded episode of this channel's anime with its links"),
             CreateCommand::new("get")
                 .description("Get the download link for an episode's translation or typeset file")
                 .add_option(

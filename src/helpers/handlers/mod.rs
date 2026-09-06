@@ -10,6 +10,7 @@ mod cfont;
 mod merge;
 mod release;
 mod source;
+mod smartlist;
 mod get;
 mod init;
 mod attach;
@@ -60,6 +61,7 @@ pub use self::cfont::{handle_cfont, handle_cfont_autocomplete, refresh_font_name
 pub use self::merge::handle_merge;
 pub use self::release::handle_release;
 pub use self::source::handle_source;
+pub use self::smartlist::handle_smartlist;
 pub use self::get::handle_get;
 pub use self::init::handle_init;
 pub use self::attach::handle_attach;

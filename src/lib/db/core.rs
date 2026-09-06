@@ -12,7 +12,7 @@ macro_rules! job_query {
             "SELECT job_id, author, channel_id, response_id, requested_at, ",
             "started_at, ended_at, cancel_reason, ",
             "job_type, preset_type, preset_name, candidates, outro, link, directory, stage, archived, ",
-            "progress, uploaded_links, acix_pending, server_id, ",
+            "progress, uploaded_links, acix_pending, server_id, episode, ",
             "COALESCE(worker, 'que-main') AS worker FROM jobs ",
             $tail
         )
@@ -63,6 +63,7 @@ impl JobDb {
                 uploaded_links TEXT,
                 acix_pending TEXT,
                 server_id    INTEGER,
+                episode      INTEGER,
                 worker       TEXT DEFAULT 'que-main',
                 created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
             )
@@ -131,6 +132,12 @@ impl JobDb {
         ).await?;
         self.add_column_if_missing(
             "ALTER TABLE jobs ADD COLUMN worker TEXT DEFAULT 'que-main'"
+        ).await?;
+        // Which episode of the channel's attached anime this job encoded, for `/smartlist`. Rows
+        // written before this column existed keep answering from `acix_pending` — see
+        // `JobRow::episode_number` — so nothing is backfilled here.
+        self.add_column_if_missing(
+            "ALTER TABLE jobs ADD COLUMN episode INTEGER"
         ).await?;
         // A preset that exists only as a file has no discriminant to be recognised by later, so
         // the name is stored beside the type. Only `Preset::Named` needs it; it is written for
@@ -232,6 +239,13 @@ impl JobDb {
         let candidates = concat_to_db(&job.preset.concat().intro);
         let outro = concat_to_db(&job.preset.concat().outro);
         let preset_name = job.preset.name();
+        // Smartcode names the episode when it queues the job; an AnimeciX record carries it for the
+        // other paths that know one. A job that is not an episode of anything stores nothing.
+        let episode = job
+            .smartcode_drive_name
+            .as_ref()
+            .map(|name| name.episode as i64)
+            .or_else(|| job.acix.as_ref().and_then(|acix| acix.episode_num));
         let link = job
             .display_link
             .clone()
@@ -241,9 +255,9 @@ impl JobDb {
             r#"
             INSERT INTO jobs (
                 job_id, author, channel_id, response_id, requested_at,
-                job_type, preset_type, preset_name, candidates, outro, link, directory, stage, server_id, worker
+                job_type, preset_type, preset_name, candidates, outro, link, directory, stage, server_id, episode, worker
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(job_id) DO UPDATE SET
                 author = excluded.author,
                 channel_id = excluded.channel_id,
@@ -258,6 +272,7 @@ impl JobDb {
                 directory = excluded.directory,
                 stage = excluded.stage,
                 server_id = excluded.server_id,
+                episode = excluded.episode,
                 worker = excluded.worker,
                 started_at = NULL,
                 ended_at = NULL,
@@ -279,6 +294,7 @@ impl JobDb {
         .bind(job.directory.to_string_lossy().to_string())
         .bind(stage_to_int(job.ready))
         .bind(job.server_id.map(|id| id as i64))
+        .bind(episode)
         .bind(&job.worker)
         .execute(&self.pool)
         .await?;
@@ -492,6 +508,19 @@ impl JobDb {
         Ok(owners)
     }
 
+    // What one channel has finished uploading, newest first, for `/smartlist`. Ordered by
+    // `requested_at` rather than `ended_at` so a re-encode queued after the one it replaces wins
+    // even when it finished first, and archived rows are kept: a job's links outlive its work
+    // directory, and every episode uploaded more than a few days ago is archived.
+    pub async fn get_uploaded_jobs_by_channel(&self, channel_id: u64) -> Result<Vec<JobRow>, sqlx::Error> {
+        sqlx::query_as::<_, JobRow>(job_query!(
+            "WHERE channel_id = ? AND stage = 6 AND uploaded_links IS NOT NULL ORDER BY requested_at DESC"
+        ))
+        .bind(channel_id as i64)
+        .fetch_all(&self.pool)
+        .await
+    }
+
     pub async fn get_jobs_by_author(&self, author: u64) -> Result<Vec<JobRow>, sqlx::Error> {
         sqlx::query_as::<_, JobRow>(job_query!("WHERE author = ? ORDER BY requested_at DESC"))
             .bind(author as i64)
@@ -523,10 +552,55 @@ pub struct JobRow {
     pub uploaded_links:  Option<String>,
     pub acix_pending:    Option<String>,
     pub server_id:       Option<i64>,
+    pub episode:         Option<i64>,
     pub worker:          String,
 }
 
+// The hosts a finished job can have been uploaded to, in the order they are shown. The stored
+// object also holds private Drive metadata and encode warnings, so the keys are named rather than
+// iterated over.
+pub const UPLOADED_LINK_KEYS: &[&str] = &["drive", "byse", "lulustream", "voe", "hls"];
+
 impl JobRow {
+    // Every host link the job recorded. A link the Drive cleanup has since redacted reads back as
+    // null and drops out here, which is the point: it no longer resolves.
+    pub fn uploaded_link_urls(&self) -> Vec<String> {
+        let Some(value) = self
+            .uploaded_links
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        else {
+            return Vec::new();
+        };
+        let mut links: Vec<String> = Vec::new();
+        for key in UPLOADED_LINK_KEYS {
+            let Some(link) = value.get(*key).and_then(|item| item.as_str()) else {
+                continue;
+            };
+            let link = link.trim();
+            if (link.starts_with("https://") || link.starts_with("http://"))
+                && !links.iter().any(|existing| existing == link)
+            {
+                links.push(link.to_string());
+            }
+        }
+        links
+    }
+
+    // The episode this job encoded. The column is written when the job is queued, so it is empty on
+    // every row inserted before the column existed and on a job whose episode only became known
+    // when AnimeciX queued its publish record at upload time; both still answer from that record.
+    pub fn episode_number(&self) -> Option<i64> {
+        if let Some(episode) = self.episode.filter(|episode| *episode >= 1) {
+            return Some(episode);
+        }
+        self.acix_pending
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+            .and_then(|value| value.pointer("/acix/episode_num").and_then(|num| num.as_i64()))
+            .filter(|episode| *episode >= 1)
+    }
+
     pub fn candidates_as_vec(&self) -> Option<Vec<String>> {
         self.candidates.as_ref().map(|s| {
             s.split(',').map(|p| p.to_string()).collect()
@@ -688,4 +762,85 @@ fn unix_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(uploaded_links: Option<&str>, acix_pending: Option<&str>, episode: Option<i64>) -> JobRow {
+        JobRow {
+            job_id: 1,
+            author: 2,
+            channel_id: 3,
+            response_id: 4,
+            requested_at: 5,
+            started_at: None,
+            ended_at: None,
+            cancel_reason: None,
+            job_type: 1,
+            preset_type: 1,
+            preset_name: None,
+            candidates: None,
+            outro: None,
+            link: String::new(),
+            directory: String::new(),
+            stage: 6,
+            archived: 0,
+            progress: None,
+            uploaded_links: uploaded_links.map(str::to_string),
+            acix_pending: acix_pending.map(str::to_string),
+            server_id: None,
+            episode,
+            worker: "que-main".to_string(),
+        }
+    }
+
+    #[test]
+    fn every_host_is_listed_once_in_display_order() {
+        let stored = r#"{"drive":"https://drive.google.com/file/d/abc/view","byse":"https://byse.sx/e/xyz",
+            "lulustream":null,"voe":"https://voe.sx/e/qrs","hls":"https://lumiere.example/master.m3u8",
+            "drive_file_id":"abc","warnings":["something"]}"#;
+        assert_eq!(
+            row(Some(stored), None, None).uploaded_link_urls(),
+            vec![
+                "https://drive.google.com/file/d/abc/view",
+                "https://byse.sx/e/xyz",
+                "https://voe.sx/e/qrs",
+                "https://lumiere.example/master.m3u8",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_job_with_no_usable_links_lists_nothing() {
+        // Backup rows store `{"drive": null}` once the cleanup has redacted the upload, and a
+        // BackupAll row stores episode text rather than links at all.
+        assert!(row(Some(r#"{"drive":null}"#), None, None).uploaded_link_urls().is_empty());
+        assert!(row(Some(r#"{"episodes":"01 done"}"#), None, None).uploaded_link_urls().is_empty());
+        assert!(row(Some("not json"), None, None).uploaded_link_urls().is_empty());
+        assert!(row(None, None, None).uploaded_link_urls().is_empty());
+    }
+
+    #[test]
+    fn the_column_names_the_episode_and_the_publish_record_is_the_fallback() {
+        let pending = r#"{"status":"pending","acix":{"name":"Anime","mal_id":20,"season_num":1,
+            "episode_num":7,"template":50,"extra":""},"drive":"https://drive.example/video"}"#;
+        assert_eq!(row(None, None, Some(3)).episode_number(), Some(3));
+        assert_eq!(row(None, Some(pending), Some(3)).episode_number(), Some(3));
+        // Written before the column existed, or queued by a path that only learned the episode
+        // when AnimeciX recorded it at upload time.
+        assert_eq!(row(None, Some(pending), None).episode_number(), Some(7));
+        assert_eq!(row(None, None, None).episode_number(), None);
+    }
+
+    #[test]
+    fn a_movie_records_no_episode_and_is_not_invented_one() {
+        // `/smartcode` on a Movie channel queues `episode_num: null`, and a zero would sort ahead
+        // of every real episode if it were ever stored.
+        let movie = r#"{"status":"pending","acix":{"name":"Film","mal_id":20,"season_num":null,
+            "episode_num":null,"template":50,"extra":""},"drive":"https://drive.example/video"}"#;
+        assert_eq!(row(None, Some(movie), None).episode_number(), None);
+        assert_eq!(row(None, None, Some(0)).episode_number(), None);
+    }
 }

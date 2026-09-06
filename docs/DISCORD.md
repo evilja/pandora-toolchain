@@ -6,7 +6,7 @@ Discord-facing behavior: commands, authorization tiers, presence updates, and th
 
 Authorization is managed in `bin/pndc.rs` (one Discord user-id per line):
 
-- `authorize.pandora` — `/encode`, `/studio`, `/probe`, `/subs`, `/backup`, `/smartcode`, `/source`
+- `authorize.pandora` — `/encode`, `/studio`, `/probe`, `/subs`, `/backup`, `/smartcode`, `/source`, `/smartlist`
 - `upper.pandora` — `/attach`, `/init`, `/gentoken`, `/destruct`, `/detach` (privileged workflow)
 - `fansubber.pandora` — `/job` (subtitle-uploader workflow, kept separate from repo-`/init` so a translator/typesetter can be granted the lighter tier without repo-creation rights)
 - `admin.pandora` — `/hearts`, `/gitsync`, `/gitforce`, `/gitquery`, `/configure`, `/edit`, `/refreshcache`, `/touchwatermark`, `/touchlogo`, `/touchapi`, `/gettranslation`, `/touchtranslation`, `/gettranslationall`, `/touchtranslationall`, `!auth`, `!ban`
@@ -61,6 +61,7 @@ Pandora needs **View Channel, Send Messages, Embed Links, Add Reactions** and **
 - `/smartcode keep <episode> [link] [keyword]` — run the same merge/upload/encode flow as `/smartcode do`, but retain the encode locally under a generated or supplied keyword instead of uploading it.
 - `/smartcode preview <episode> [link]` — runs the same smartcode merge/upload step, then renders 1-3 TS preview screenshots from `\fn` typeset lines instead of encoding.
 - `/source <episode> <link>` — write `{pad2(episode)}/SOURCE.md` (content `# <link>\n`) to the channel's attached Forgejo repo. Requires the channel to be attached and `episode` in `1..=episode_count`. Commit message: `"Set source link"`. No worker, no encoder — pure in-handler Forgejo upsert.
+- `/smartlist` — list every uploaded episode of the channel's attached anime, newest upload per episode, as plain text rather than an embed. Requires the channel to be attached; reads `DB/DATA.db` only, no worker and no Forgejo call. See [`/smartlist`](#smartlist) below.
 - `/attach <mal> <repo> [season]` — fetch MAL metadata via JIKAN (with AniList fallback), then bootstrap an existing Forgejo repo: create per-episode folders (`pad2` for 1..=episode_count, accepting `1`/`01`/`001` as equivalent on existence check), each with an empty `.gitkeep`; create `README.md` at root only if absent (and only if `DB/config/<serverid>/base.md` is present). Requires both `mal` and `repo`. `season` is the 1-based sequel number stored in the channel meta (defaults to 1). Repos are public.
 - `/init <mal> [season]` — same bootstrap, but creates a new public repo at `<forgejo_org>/<slug>` via the Forgejo API first. `season` works the same as `/attach`. Channel reattach to a different MAL id is refused; same MAL id is idempotent.
 - `/detach` — **upper-tier**; removes the channel's `meta.toml` attachment; the Forgejo repo is left untouched. In-handler, no worker. (Also happens automatically when the channel/thread is deleted — see the `meta.toml` note in [PROJECT.md](PROJECT.md).)
@@ -140,6 +141,29 @@ The browser editor is the one place where the format still matters: it decodes t
 - `Encoded → Uploading` and Backup's `Downloaded → Uploading` → `Uploading { idx, total: qlen }`.
 - Unified finish block: when a job reaches a terminal stage it captures `finished_fe = Some(i.frontend.clone())` before the `queue.retain`/archive; after the loop, `if let Some(fe) = finished_fe { fe.set_presence(presence_from_queue(&queue)).await }`. Cloning the `Frontend` (instead of holding a `&mut queue` borrow) is what lets the presence be recomputed against the already-shrunk queue.
 - Probe timeout (`Stage::Probed` after 180s) → clones `queue[pos].frontend`, removes the timed-out job, then calls `frontend.set_presence(presence_from_queue(&queue)).await`.
+
+## `/smartlist`
+
+Answers "what has this channel released, and where is it" from the job database, so a channel can
+be handed its own catalogue without anyone reading back through the encode messages.
+
+- The rows are `jobs` where `channel_id` is the invoking channel, `stage = 6` (Uploaded) and
+  `uploaded_links` is set, ordered by `requested_at` descending. Archived rows are included: a
+  job's links outlive its work directory, and every episode uploaded more than a few days ago is
+  archived.
+- The episode number comes from the `jobs.episode` column, written at insert from the job's
+  `smartcode_drive_name` or its queued AnimeciX record. A row with no column value — inserted
+  before the column existed, or by a path that only learned the episode when AnimeciX recorded it
+  at upload time — falls back to `acix_pending`'s `acix.episode_num`. See
+  `JobRow::episode_number`. A job with neither, such as a bare `/encode do` or a Movie channel's
+  release, is not an episode of anything and is left out.
+- Newest first means the first row an episode appears in is the encode that replaced the earlier
+  ones, so a re-encoded episode is listed once, at its newest upload.
+- Each episode prints as `<episode>:` followed by one line per host — `drive`, `byse`,
+  `lulustream`, `voe`, `hls`, in that order, skipping any the row does not carry. A Drive link the
+  cleanup has since redacted reads back as null and is skipped with it.
+- Output is public plain text, not an embed, split across as many messages as the 2000-character
+  limit needs: the first is the interaction response, the rest are followups.
 
 ## `/job`
 
