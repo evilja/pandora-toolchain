@@ -838,6 +838,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("attach", 1),
     ("init", 1),
     ("detach", 1),
+    ("link", 1),
     ("font", 1),
     ("cfont", 1),
     ("!ts", 1),
@@ -1155,15 +1156,15 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "repo",
             name: "smartcode",
             summary: "Merge attached repo subtitles, then encode or preview an episode.",
-            usage: "/smartcode do|keep episode:<n> [link] or /smartcode preview episode:<n> [link] [cooldown]",
-            details: "Requires this channel to be attached to an anime repo. `do` reads TL/TS files, uploads the release ASS, then encodes using the source link or SOURCE.md. `keep` runs the same flow and retains the encode locally under a generated or supplied keyword. `preview` performs the merge/upload step, then renders up to three stamp-first, cluster-ranked previews. Cooldown defaults to 90 seconds; set it to 0 to disable cooldown.",
+            usage: "/smartcode do|keep episode:<n> [link], /smartcode pan episode:<n> [job_id] [index], or /smartcode preview episode:<n> [link] [cooldown]",
+            details: "Requires this channel to be attached to an anime repo. `do` reads TL/TS files, uploads the release ASS, then encodes using the source link or SOURCE.md. `keep` runs the same flow and retains the encode locally under a generated or supplied keyword. `pan` runs the same merge and then encodes one probed file out of a pack: `job_id` and `index` come from a `/probe` result, and when both are omitted they are read from the probe a `/source episode:<n> job_id:<id> index:<n>` wrote into SOURCE.md. Naming them writes them back to SOURCE.md, so an episode is pointed at a pack once. A `pan` with no probe from either place uploads the release and encodes nothing, rather than guessing which file the episode is. `preview` performs the merge/upload step, then renders up to three stamp-first, cluster-ranked previews. Cooldown defaults to 90 seconds; set it to 0 to disable cooldown.",
         },
         HelpCommand {
             section: "repo",
             name: "merge",
             summary: "Merge TL and TS subtitles for an attached episode.",
             usage: "/merge episode:<n> [link]",
-            details: "Requires an attached anime repo. Produces and uploads the release ASS for the episode without starting an encode.",
+            details: "Requires an attached anime repo. Produces and uploads the release ASS for the episode without starting an encode. With `/edit merge_release_only` on it answers with the release file itself; `/link set channel:<channel>` then sends that file to the linked channel instead, and the command's own reply stays here with a jump link to it.",
         },
         HelpCommand {
             section: "repo",
@@ -1176,8 +1177,8 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "repo",
             name: "source",
             summary: "Write SOURCE.md for an attached episode folder.",
-            usage: "/source episode:<n> link:<source_link>",
-            details: "Stores the episode source link in the attached Forgejo repo. Source links can be torrent URLs, magnet links, or Google Drive links.",
+            usage: "/source episode:<n> link:<source_link> | /source episode:<n> job_id:<id> index:<n>",
+            details: "Stores the episode source link in the attached Forgejo repo. Source links can be torrent URLs, magnet links, or Google Drive links. `job_id` and `index` take a `/probe` result instead — the same pair `/encode pan` takes — and record which file of the pack this episode is on a comment line beside the link, which is what `/smartcode pan` reads back. Pass `link` or `job_id`, not both.",
         },
         HelpCommand {
             section: "repo",
@@ -1185,6 +1186,13 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Styles and credit lines this channel's releases are built with.",
             usage: "/attribute set [file] [dialogue] | /attribute list | /attribute remove dialogue:<line> | /attribute clear [what]",
             details: "Requires an attached anime repo. `file` is an ASS file whose styles replace the merged script's at every /merge and /smartcode, resized onto the canvas that script declares — font sizes, outlines, shadows and margins are scaled, and no header is carried over. `dialogue` is a full ASS Dialogue line injected into the release, mostly credits: %name% %season% %episode% %tl% %tlc% %ts% %qc% and the rest of the /attach fields are substituted, and %enc% becomes the person who ran /smartcode — a /merge leaves it standing for the encode that follows. Injected lines are stamped PandoraIdentifier in the actor field, so re-merging replaces them instead of stacking a second copy. Dialogues submitted before are offered as autocomplete and are never stored twice.",
+        },
+        HelpCommand {
+            section: "repo",
+            name: "link",
+            summary: "Send part of this channel's output to another channel.",
+            usage: "/link set channel:<channel> [use] | /link list | /link clear [use]",
+            details: "Requires an attached anime repo. Run it in the attached channel and name the channel that should take one kind of that channel's output; the work still happens here, only the output moves. `use` picks which output, and defaults to the only one there is today: the release ASS `/merge` sends when `/edit merge_release_only` is on. Pandora needs View Channel, Send Messages and Attach Files in the linked channel — without them the release is attached to the `/merge` reply here and the reason is printed with it. `clear` sends that output back here; a link outlives `/detach` the way this channel's `/attribute` styles do, so re-attaching finds it again.",
         },
         HelpCommand {
             section: "misc",
@@ -1946,6 +1954,31 @@ fn default_season() -> u16 { 1 }
 
 fn default_credit() -> String { "---".to_string() }
 
+// A link is only worth offering for a channel Pandora can post a file into. Categories, stages and
+// voice channels are filtered out by Discord itself once the option names the types it takes.
+const LINKABLE_CHANNEL_TYPES: &[ChannelType] = &[
+    ChannelType::Text,
+    ChannelType::News,
+    ChannelType::PublicThread,
+    ChannelType::PrivateThread,
+    ChannelType::NewsThread,
+];
+
+// The `use` option of `/link set` and `/link clear`, built from the uses the storage knows about so
+// the two never drift apart.
+fn link_use_option() -> CreateCommandOption {
+    let mut option = CreateCommandOption::new(
+        CommandOptionType::String,
+        "use",
+        "What the linked channel takes; defaults to the /merge release",
+    )
+    .required(false);
+    for (link_use, description) in pandora_toolchain::lib::channel_link::LINK_USES {
+        option = option.add_string_choice(*description, *link_use);
+    }
+    option
+}
+
 fn perm_path(name: &str) -> String {
     format!("DB/config/global/perms/{}", name)
 }
@@ -2651,6 +2684,11 @@ impl EventHandler for Handler {
                                 self.tx.send(JobClass::Job(job)).await.unwrap();
                             }
                         }
+                        "pan" => {
+                            if let Some(job) = handle_smartcode_pan(&ctx, &command).await {
+                                self.tx.send(JobClass::Job(job)).await.unwrap();
+                            }
+                        }
                         "preview" | "exp" => {
                             if let Some(job) = handle_smartcode_preview(&ctx, &command).await {
                                 self.tx.send(JobClass::Job(job)).await.unwrap();
@@ -2675,6 +2713,9 @@ impl EventHandler for Handler {
                 }
                 "attribute" => {
                     handle_attribute(&ctx, &command).await;
+                }
+                "link" => {
+                    handle_link(&ctx, &command).await;
                 }
                 "alias" => {
                     handle_alias(&ctx, &command).await;
@@ -3133,6 +3174,23 @@ impl EventHandler for Handler {
                         .add_sub_option(keyword_option.clone())
                 )
                 .add_option(
+                    CreateCommandOption::new(CommandOptionType::SubCommand, "pan", "Merge subtitles, then encode a previously probed file")
+                        .add_sub_option(
+                            CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (1-based)")
+                                .required(true)
+                                .min_int_value(1)
+                        )
+                        .add_sub_option(
+                            CreateCommandOption::new(CommandOptionType::String, "job_id", "Job ID from /probe result. Falls back to SOURCE.md if omitted.")
+                                .required(false)
+                        )
+                        .add_sub_option(
+                            CreateCommandOption::new(CommandOptionType::Integer, "index", "File index from probe results; required with job_id")
+                                .required(false)
+                                .min_int_value(0)
+                        )
+                )
+                .add_option(
                     CreateCommandOption::new(CommandOptionType::SubCommand, "preview", "Render 1-3 typeset preview screenshots")
                         .add_sub_option(
                             CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (1-based)")
@@ -3177,7 +3235,16 @@ impl EventHandler for Handler {
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "link", "Source link (torrent URL, magnet link, or Google Drive link)")
-                        .required(true)
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "job_id", "Job ID from /probe result, instead of link")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "index", "File index from probe results; required with job_id")
+                        .required(false)
+                        .min_int_value(0)
                 ),
             CreateCommand::new("attribute")
                 .description("Styles and credit lines this channel's releases are built with")
@@ -3213,6 +3280,24 @@ impl EventHandler for Handler {
                                 .add_string_choice("Dialogues", "dialogues")
                                 .add_string_choice("Styles file", "styles")
                         )
+                ),
+            CreateCommand::new("link")
+                .description("Send part of this channel's output to another channel")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::SubCommand, "set", "Link a channel to this one")
+                        .add_sub_option(
+                            CreateCommandOption::new(CommandOptionType::Channel, "channel", "The channel that takes the output")
+                                .required(true)
+                                .channel_types(LINKABLE_CHANNEL_TYPES.to_vec())
+                        )
+                        .add_sub_option(link_use_option())
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::SubCommand, "list", "Show what this channel is linked to")
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::SubCommand, "clear", "Stop redirecting one kind of output")
+                        .add_sub_option(link_use_option())
                 ),
             CreateCommand::new("alias")
                 .description("The name you are credited under in releases")

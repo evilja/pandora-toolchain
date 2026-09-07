@@ -262,7 +262,7 @@ pub async fn set_source(
 
     let folder = pad2(episode);
     let source_path = format!("{}/SOURCE.md", folder);
-    let source_content = format!("# {}\n", source_link(link));
+    let source_content = crate::lib::source_doc::compose(&source_link(link), None);
     let source_b64 = base64_encode(&source_content);
     fg.upsert_file(&owner_repo, &source_path, &source_b64, "Set source link").await
         .map_err(|e| format!("Failed to write {}: {}", source_path, e))?;
@@ -374,11 +374,8 @@ pub async fn smartcode_merge(
                 .0;
             let bytes = base64_decode_bytes(&b64).map_err(|e| format!("failed to decode {}: {}", source_md_path, e))?;
             let text = String::from_utf8(bytes).map_err(|e| format!("{} is not valid UTF-8: {}", source_md_path, e))?;
-            text.lines()
-                .map(str::trim)
-                .find(|l| !l.is_empty() && !l.starts_with(';'))
-                .map(|l| l.trim_start_matches('#').trim().to_string())
-                .filter(|s| !s.is_empty())
+            crate::lib::source_doc::parse(&text)
+                .map(|doc| doc.link)
                 .ok_or_else(|| format!("{} does not contain a parseable source link.", source_md_path))?
         }
     };
@@ -538,7 +535,7 @@ async fn smartcode_merge_inner(
 
     let source_path = format!("{}/SOURCE.md", folder);
     if link_from_arg {
-        let source_content = format!("# {}\n", source_link(link));
+        let source_content = crate::lib::source_doc::compose(&source_link(link), None);
         let source_b64 = base64_encode(&source_content);
         fg.upsert_file(owner_repo, &source_path, &source_b64, "Smartcode source").await
             .map_err(|e| format!("SOURCE.md upload to {} failed: {}", source_path, e))?;

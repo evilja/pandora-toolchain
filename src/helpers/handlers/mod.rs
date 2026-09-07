@@ -11,6 +11,7 @@ mod merge;
 mod release;
 mod source;
 mod attribute;
+mod link;
 mod alias;
 mod smartlist;
 mod get;
@@ -58,12 +59,13 @@ pub use self::probe::{handle_probe, handle_probe_component};
 pub use self::batch::{handle_batch, handle_batch_component};
 pub use self::subs::handle_subs;
 pub use self::backup::handle_backup;
-pub use self::smartcode::{handle_smartcode, handle_smartcode_preview};
+pub use self::smartcode::{handle_smartcode, handle_smartcode_pan, handle_smartcode_preview};
 pub use self::cfont::{handle_cfont, handle_cfont_autocomplete, refresh_font_name_choices, resolve_preview_watermark_font_path, warm_font_name_cache};
 pub use self::merge::handle_merge;
 pub use self::release::handle_release;
 pub use self::source::handle_source;
 pub use self::attribute::{handle_attribute, handle_attribute_autocomplete};
+pub use self::link::{handle_link, link_target};
 pub use self::alias::{credited_name, handle_alias};
 pub use self::smartlist::handle_smartlist;
 pub use self::get::handle_get;
@@ -115,6 +117,7 @@ use pandora_toolchain::lumiere_broker::{
     guild_drive_profile,
 };
 use pandora_toolchain::pnworker::server_config::{read_server_fansub, FansubSite};
+use pandora_toolchain::lib::source_doc::ProbeRef;
 
 fn read_server_acix_template(server_id: u64) -> Option<i64> {
     read_server_fansub(server_id, FansubSite::AnimeciX)?
@@ -289,8 +292,46 @@ fn credit_value(value: &str) -> String {
     }
 }
 
+// The `job_id`/`index` pair a probe-taking subcommand carries, resolved against the job DB into
+// the link that probe ran on. `Ok(None)` means the command has no such options or left them empty;
+// `Err(())` means it had them and they did not resolve, and the person has already been told why.
+async fn resolve_command_probe(
+    ctx: &Context,
+    command: &serenity::all::CommandInteraction,
+    response_msg: &mut Message,
+) -> Result<Option<(String, ProbeRef)>, ()> {
+    let Some(raw) = option_str(command, "job_id").map(str::trim).filter(|id| !id.is_empty()) else {
+        return Ok(None);
+    };
+    let reason = match raw.parse::<u64>() {
+        Err(_) => "Error: job_id must be a number.".to_string(),
+        Ok(job_id) => match option_i64(command, "index") {
+            Some(index) if index >= 0 => match JobDb::new().await {
+                Err(e) => format!("Error: failed to open job DB: {}", e),
+                Ok(db) => match db.get_job(job_id).await {
+                    Ok(Some(row)) => {
+                        return Ok(Some((
+                            row.link,
+                            ProbeRef { job_id, file_index: index as u64 },
+                        )));
+                    }
+                    Ok(None) => "Error: probe job was not found.".to_string(),
+                    Err(e) => format!("Error: failed to read probe job: {}", e),
+                },
+            },
+            _ => "Error: `index` is required with `job_id`.".to_string(),
+        },
+    };
+    let _ = response_msg.edit(ctx, EditMessage::new().content(reason)).await;
+    Err(())
+}
+
 struct SmartMergeResult {
     link: String,
+    // The probe the link came out of, when it came out of one: either from this command's own
+    // `job_id`/`index`, or from the `SOURCE.md` a probe-form `/source` wrote. `/smartcode pan` is
+    // the only caller that needs it — the rest encode whatever the link resolves to.
+    probe: Option<ProbeRef>,
     merged_bytes: Vec<u8>,
     tl_bytes: Vec<u8>,
     ts_bytes: Option<Vec<u8>>,
@@ -359,9 +400,17 @@ async fn smartcode_merge_upload(
         }
     };
 
-    let link = match link_opt {
-        Some(ref l) => l.clone(),
-        None => {
+    // A subcommand that takes a probe (`/smartcode pan`) resolves its link out of the probe job,
+    // and is treated as having been given one: the probe is written into `SOURCE.md` beside the
+    // link so the next run of the same episode needs neither option again.
+    let probe_opt = match resolve_command_probe(ctx, command, response_msg).await {
+        Ok(probe) => probe,
+        Err(()) => return None,
+    };
+    let (link, probe, source_from_argument) = match (link_opt.as_ref(), probe_opt) {
+        (Some(link), _) => (link.clone(), None, true),
+        (None, Some((link, probe))) => (link, Some(probe), true),
+        (None, None) => {
             let source_md_path = format!("{}/SOURCE.md", folder);
             let b64 = match fg.get_file_content(&owner_repo, &source_md_path).await {
                 Ok(Some((b, _))) => b,
@@ -393,13 +442,8 @@ async fn smartcode_merge_upload(
                     return None;
                 }
             };
-            let parsed = text.lines()
-                .map(str::trim)
-                .find(|l| !l.is_empty() && !l.starts_with(';'))
-                .map(|l| l.trim_start_matches('#').trim().to_string())
-                .filter(|s| !s.is_empty());
-            match parsed {
-                Some(p) => p,
+            match pandora_toolchain::lib::source_doc::parse(&text) {
+                Some(doc) => (doc.link, doc.probe, false),
                 None => {
                     let _ = response_msg.edit(ctx, EditMessage::new()
                         .content(format!("`{}` does not contain a parseable source link.", source_md_path))).await;
@@ -595,10 +639,10 @@ async fn smartcode_merge_upload(
     };
 
     let source_path = format!("{}/SOURCE.md", folder);
-    if link_opt.is_none() {
+    if !source_from_argument {
         println!("[{}] source from {} (skipping rewrite)", log_prefix, source_path);
     } else {
-        let source_content = format!("# {}\n", source_link(&link));
+        let source_content = pandora_toolchain::lib::source_doc::compose(&source_link(&link), probe);
         let source_b64 = base64_encode(&source_content);
         let source_commit = "Smartcode source".to_string();
         match fg.upsert_file(&owner_repo, &source_path, &source_b64, &source_commit).await {
@@ -620,7 +664,7 @@ async fn smartcode_merge_upload(
         log_prefix, owner_repo, episode, tl_path,
         if ts_bytes_opt.is_some() { "present" } else { "absent" },
         warnings.len(), merged_bytes.len(), release_path,
-        if link_opt.is_some() { "argument" } else { "SOURCE.md" });
+        if source_from_argument { "argument" } else { "SOURCE.md" });
 
     pandora_toolchain::lib::git::record_attachment_sync(server_id, command.channel_id.get()).await;
 
@@ -628,6 +672,7 @@ async fn smartcode_merge_upload(
 
     Some(SmartMergeResult {
         link,
+        probe,
         merged_bytes,
         tl_bytes,
         ts_bytes: ts_bytes_opt,

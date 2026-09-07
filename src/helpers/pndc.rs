@@ -74,6 +74,15 @@ pub(super) fn option_user(
         .and_then(|opt| opt.value.as_user_id())
 }
 
+pub(super) fn option_channel(
+    command: &serenity::all::CommandInteraction,
+    name: &str,
+) -> Option<serenity::all::ChannelId> {
+    command_options(command).iter()
+        .find(|opt| opt.name == name)
+        .and_then(|opt| opt.value.as_channel_id())
+}
+
 pub(super) fn option_attachment<'a>(
     command: &'a serenity::all::CommandInteraction,
     name: &str,

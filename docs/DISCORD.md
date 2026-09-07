@@ -7,7 +7,7 @@ Discord-facing behavior: commands, authorization tiers, presence updates, and th
 Authorization is managed in `bin/pndc.rs` (one Discord user-id per line):
 
 - `authorize.pandora` — `/encode`, `/studio`, `/probe`, `/subs`, `/backup`, `/smartcode`, `/source`, `/smartlist`, `/attribute`, `/alias` (`/alias force` additionally needs the admin tier)
-- `upper.pandora` — `/attach`, `/init`, `/gentoken`, `/destruct`, `/detach` (privileged workflow)
+- `upper.pandora` — `/attach`, `/init`, `/gentoken`, `/destruct`, `/detach`, `/link` (privileged workflow)
 - `fansubber.pandora` — `/job` (subtitle-uploader workflow, kept separate from repo-`/init` so a translator/typesetter can be granted the lighter tier without repo-creation rights)
 - `admin.pandora` — `/hearts`, `/gitsync`, `/gitforce`, `/gitquery`, `/configure`, `/edit`, `/refreshcache`, `/touchwatermark`, `/touchlogo`, `/touchapi`, `/gettranslation`, `/touchtranslation`, `/gettranslationall`, `/touchtranslationall`, `!auth`, `!ban`
 - `witch.pandora` — `/publish`, `/acixconfirm`, `/acixunpublish`, `/akiraconfirm`, `/openanimeconfirm`, `/anizmconfirm`, `/exportdrive`, `/keyvault`, `/genwitchtoken`, `/teenode`, `/limit`, `/touchflavor`, `/lsflavor`, `/rmflavor`, `/touchpool`, `/lspool`, `/rmpool`, `/changerank`, `/fontcheck`, `/touchintro`, `/touchoutro`, `/catlogs`
@@ -59,10 +59,12 @@ Pandora needs **View Channel, Send Messages, Embed Links, Add Reactions** and **
 - `/backup <torrent>` — download + Drive-only re-upload (no streaming hosts). GDrive and direct video links are supported (treated as downloads from non-torrent sources).
 - `/smartcode do <episode> [link]` — merge the channel's attached TL (required) and TS (optional) subtitles for an episode via `pnass --merge`, upload the merged result to the channel's repo as `Release - <name> - E<NN>.ass`, upsert `SOURCE.md`, then queue a regular `/encode` job against the merged file. The server’s `/edit` preset, concat, and outro settings are applied automatically. `link` is optional: if absent, the source link is read from `{pad2(episode)}/SOURCE.md` (parser skips blank/`;`-prefixed lines and strips a leading `#`); the existing `SOURCE.md` is left untouched in that case. See [`/smartcode`](#smartcode) for the merge details.
 - `/smartcode keep <episode> [link] [keyword]` — run the same merge/upload/encode flow as `/smartcode do`, but retain the encode locally under a generated or supplied keyword instead of uploading it.
+- `/smartcode pan <episode> [job_id] [index]` — the same merge/upload flow as `/smartcode do`, queued as a `Pancode` job against one file of a probed pack instead of an `Encode` job against whatever the link resolves to. `job_id`/`index` come from a `/probe` result, exactly as `/encode pan` takes them; passing `job_id` without `index` is refused. When both are omitted the probe is read from the `; pandora-probe job=<id> index=<n>` line a probe-form `/source` wrote into `{pad2(episode)}/SOURCE.md`. Naming them writes them back to `SOURCE.md` beside the link, so a pack is pointed at once and paged through. A `pan` that finds a probe in neither place still uploads the release and then encodes nothing, saying so — guessing which file of a pack an episode is would be a silent wrong answer.
 - `/smartcode preview <episode> [link]` — runs the same smartcode merge/upload step, then renders 1-3 TS preview screenshots from `\fn` typeset lines instead of encoding.
-- `/source <episode> <link>` — write `{pad2(episode)}/SOURCE.md` (content `# <link>\n`) to the channel's attached Forgejo repo. Requires the channel to be attached and `episode` in `1..=episode_count`. Commit message: `"Set source link"`. No worker, no encoder — pure in-handler Forgejo upsert.
+- `/source <episode> [link] [job_id] [index]` — write `{pad2(episode)}/SOURCE.md` to the channel's attached Forgejo repo. Takes either a `link` or a `/probe` job id plus `index`, the same pair `/encode pan` and `/subs` take; passing both, or neither, is refused. A `link` writes `# <link>\n` as it always has. A probe writes the probe job's own link plus a second line, `; pandora-probe job=<id> index=<n>` — a comment every reader of this file already skips, so a `SOURCE.md` written by this version still parses under the one before it, and `/smartcode pan` reads the file index back off it. Requires the channel to be attached and `episode` in `1..=episode_count`. Commit message: `"Set source link"`. No worker, no encoder — pure in-handler Forgejo upsert.
 - `/smartlist` — list every uploaded episode of the channel's attached anime, newest upload per episode, as plain text rather than an embed. Requires the channel to be attached; reads `DB/DATA.db` only, no worker and no Forgejo call. See [`/smartlist`](#smartlist) below.
 - `/attribute set|list|remove|clear` — the styles and credit lines this channel's releases are built with. Requires the channel to be attached; in-handler, no worker. See [`/attribute`](#attribute) below.
+- `/link set|list|clear` — **upper-tier**; run in an attached channel to name another channel that takes one kind of this channel's output. The work still happens in the attached channel; only the output moves. `use` selects which output and defaults to the only one that exists today, `merge`: the release ASS `/merge` answers with when `/edit merge_release_only` is on. Pandora needs View Channel, Send Messages and Attach Files in the linked channel; without them the release is attached to the `/merge` reply as usual and the refusal is printed with it. Stored in `DB/config/<serverid>/<channelid>/links.json`, so a link outlives `/detach` the way the channel's `/attribute` styles do. In-handler, no worker. See [`/link`](#link) below.
 - `/alias choose|force` — the name `%enc%` credits somebody as. `choose` sets the caller's own and is rank 0; `force` sets another user's and needs the admin tier. Aliases are global, one per Discord account, in `DB/config/global/environment/aliases.pandora`. `-` clears one, falling back to the Discord display name.
 - `/attach <mal> <repo> [season]` — fetch MAL metadata via JIKAN (with AniList fallback), then bootstrap an existing Forgejo repo: create per-episode folders (`pad2` for 1..=episode_count, accepting `1`/`01`/`001` as equivalent on existence check), each with an empty `.gitkeep`; create `README.md` at root only if absent (and only if `DB/config/<serverid>/base.md` is present). Requires both `mal` and `repo`. `season` is the 1-based sequel number stored in the channel meta (defaults to 1). Repos are public.
 - `/init <mal> [season]` — same bootstrap, but creates a new public repo at `<forgejo_org>/<slug>` via the Forgejo API first. `season` works the same as `/attach`. Channel reattach to a different MAL id is refused; same MAL id is idempotent. Both commands also rename the channel (or thread) they run in to the anime's name, truncated to Discord's 100-character limit, unless the server has turned that off with `/edit channel_rename:false`.
@@ -212,6 +214,32 @@ an `/encode` with a hand-uploaded subtitle is untouched.
   [what:all|dialogues|styles]` empties them. Clearing a channel never touches the server's
   autocomplete history.
 
+## `/link`
+
+Where part of an attached channel's output goes, when that is not the channel the command was typed
+in. Run in the attached channel; the work still happens there and only the output moves.
+
+- `/link set channel:<channel> [use]` stores `{ "<use>": "<channel id>" }` in
+  `DB/config/<serverid>/<channelid>/links.json`, beside that channel's `meta.toml` and
+  `attribute.ass`. Ids are stored as strings — a Discord snowflake is past what a JSON number
+  survives in every reader that touches these files. The channel option is restricted to text,
+  announcement and thread channels; linking a channel to itself is refused.
+- `use` names which output, and every value it accepts is in `lib::channel_link::LINK_USES`. There
+  is one today, `merge` (the default): the release ASS `/merge` answers with when
+  [`/edit merge_release_only`](#discord-commands) is on. Adding a use means adding it there and
+  reading it wherever that output is produced.
+- **`/merge` with both set** posts the release, with its warnings as subtext lines, into the linked
+  channel, and its own reply stays in the attached channel as the usual embed plus a `Channel`
+  field holding a jump link to the message it sent. If the linked channel refuses the post —
+  Pandora needs View Channel, Send Messages and Attach Files there — the release is attached to the
+  reply as it would have been with no link at all, with the refusal printed above it as a subtext
+  line and the Discord error logged with the usual permission hint. A release past 8 MB never
+  attaches anywhere and falls back to the embed, linked or not.
+- `/link list` prints every use with the channel it points at, or `not linked`. `/link clear [use]`
+  removes one, and the output comes back to the attached channel.
+- A link outlives `/detach`, the way the channel's `/attribute` styles do: `/detach` removes only
+  `meta.toml`, so re-attaching the same channel finds the links it had.
+
 ## `/job`
 
 Slash command `type` (TL / TLC / TS, required) + `episode` (1-based int, required) + `subtitle` (attachment, required) + `commit` (optional string). Runs entirely in `src/helpers/handlers/job.rs` — no worker, no `JobType`, no `❌` cancel path. The channel **must** already be attached (`read_channel_meta` non-empty) and the episode must be in `1..=episode_count`.
@@ -242,27 +270,30 @@ Flow:
 
 ## `/smartcode`
 
-Slash command with two subcommands:
+Slash command with four subcommands:
 
 - `/smartcode do episode:<n> [link]` merges the channel's attached TL and TS subtitles, uploads the result, and queues a regular `JobType::Encode` against the merged file. The server's `/edit` preset, concat, and outro settings apply automatically. `/smartcode keep` performs the same work but retains the encode locally under a generated or supplied keyword.
+- `/smartcode pan episode:<n> [job_id] [index]` runs the identical merge/upload flow and queues `JobType::Pancode` instead, so the encode runs against one file of a probed pack rather than against whatever the link resolves to on its own. See step 1 for where the probe comes from.
 - `/smartcode preview episode:<n> [link]` runs the same merge/upload flow, then queues `JobType::Preview` to render 1-3 screenshot previews from TS `Dialogue` events containing `\fn` font override tags.
 
 The channel **must** already be attached (`read_channel_meta` non-empty) and the episode must be in `1..=episode_count`.
 
 Flow:
 
-1. Resolve `link`:
-   - If the user supplied a non-empty `link` argument, use it directly.
-   - Otherwise, fetch `{pad2(episode)}/SOURCE.md` from the attached repo via `fg.get_file_content` and base64-decode (`base64_decode_bytes`). Parse: skip blank lines and `;`-prefixed comments; take the first non-empty line; strip a leading `# `; trim. Missing file → bail with an error.
+1. Resolve `link`, and the probe it came out of when there is one (`lib::source_doc`):
+   - If the subcommand takes a probe and `job_id` was given (`/smartcode pan`), read the probe job's own link out of the job DB and keep `job_id`/`index` beside it. `job_id` without a non-negative `index` is refused, as is a `job_id` no job row answers to.
+   - Otherwise, if the user supplied a non-empty `link` argument, use it directly, with no probe.
+   - Otherwise, fetch `{pad2(episode)}/SOURCE.md` from the attached repo via `fg.get_file_content` and base64-decode (`base64_decode_bytes`), then `source_doc::parse` it: the link is the first line that is neither blank nor `;`-prefixed, with a leading `#` stripped; the probe, if any, is the `; pandora-probe job=<id> index=<n>` line a probe-form `/source` wrote. A probe line missing or mangling either field is treated as no probe rather than as a guessed index. Missing file → bail with an error.
 2. Classify the resolved link with `nyaaise(&link)` to pick a `TorrentType`.
 3. Download TL (required) and TS (optional) from `{pad2(episode)}/TL - {safe_name} - E{pad2}.ass` and `{pad2(episode)}/TS - {safe_name} - E{pad2}.ass` via `fg.get_file_content`. Stash them in a per-call temp dir (`temp_dir/pandora_smartcode_{nanos|job_id}/`). If TS is absent, run `PNASS_SPLIT_SIGNS` first: TL events whose style name contains `Sign` are moved, with their used styles, into a generated TS file; TL is updated without those sign events; both files are uploaded back to the repo and a warning/notification is shown.
 4. Run `pnass --merge` (the `PNASS_MERGE` spec when TS is present, `PNASS_MERGE_TL_ONLY` when it isn't) via `pnworker::util::run_tool`. The pnass negkey for this flow is `PNassMerge` (separate from the `PNass` one used by `PNASS_LAYER`), so the tool can detect it's being driven by smartcode. The merge specs pass `--smart-layer 9` and `--wrap-style <server setting>`; only events with no override tags beyond basic bold/italic/underline/strikeout get layer-normalised, and sign-style events keep their existing layer. Output goes to `output.ass` in the same temp dir. Non-`ToolResult::Success` → reply with `"Merge failed: <err>"` and bail.
 5. Upload the merged ASS as `Release - {safe_name} - E{pad2}.ass` via `fg.upsert_file`, commit message `"Smartcode merge"`.
 6. Resolve the source-link origin:
-   - If `link` was supplied as an argument → write `SOURCE.md` with `# {link}\n` (commit `"Smartcode source"`).
-   - If `link` was read from `SOURCE.md` itself → skip the rewrite (the file already contains it).
+   - If `link` or `job_id`/`index` was supplied as an argument → write `SOURCE.md` with `source_doc::compose` (commit `"Smartcode source"`): `# {link}\n`, plus `; pandora-probe job=<id> index=<n>` when the source came from a probe. A link given on its own replaces any probe line that was there, since the link it described has just been replaced.
+   - If the source was read from `SOURCE.md` itself → skip the rewrite (the file already contains it).
 7. For `do`, build a `JobType::Encode` from the merged bytes + the resolved source link, the same way `/encode` would, and submit it to the worker queue via `self.tx.send(JobClass::Job(job))`. Named local smartcode Drive uploads store the returned file ID and Drive folder ID under the channel config; when a later named smartcode upload for the same episode completes, the previous stored Drive file is deleted and the state is replaced with the new IDs.
-8. For `preview`, parse TL and optional TS with structured ASS parsing. Any actor/effect `stamp` comments supply the first three manual frames; otherwise timed TS dialogue is grouped into 1-second-gap clusters and ranked by `\fn` presence, drawings, line count, tag count, duration, and start time. Selected shots keep a hard 10-second gap and prefer clusters outside the post-shot cooldown before backfilling. The optional `cooldown` argument is measured in seconds, defaults to 90, accepts 0 through 3600, and uses 0 to disable cooldown. The overlay shows timestamp, cluster/stamp length, and normalized rank weight (`+` for stamps); `preview_ranking.log` is archived with the job logs.
+8. For `pan`, build a `JobType::Pancode` the same way, with `probe_job_id`/`probe_file_index` set from the resolved probe, so the worker adopts the probe's own torrent data and downloads only that file index. A `pan` that resolved no probe from either place has already uploaded the release; it queues nothing and says which `SOURCE.md` records no probe, rather than encoding an arbitrary file of the pack.
+9. For `preview`, parse TL and optional TS with structured ASS parsing. Any actor/effect `stamp` comments supply the first three manual frames; otherwise timed TS dialogue is grouped into 1-second-gap clusters and ranked by `\fn` presence, drawings, line count, tag count, duration, and start time. Selected shots keep a hard 10-second gap and prefer clusters outside the post-shot cooldown before backfilling. The optional `cooldown` argument is measured in seconds, defaults to 90, accepts 0 through 3600, and uses 0 to disable cooldown. The overlay shows timestamp, cluster/stamp length, and normalized rank weight (`+` for stamps); `preview_ranking.log` is archived with the job logs.
 
 Preview watermark font is configured per server with `/cfont [font]`, stored at `DB/config/<server_id>/preview.toml` as `watermark_font`. The default requested font is `Gandhi Sans Bold`; the bot does not ship it, so install it with `/font` if needed. Rendering falls back to the embedded Liberation Mono font when no configured/default font resolves.
 

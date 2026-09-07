@@ -55,6 +55,84 @@ pub async fn handle_smartcode(
     Some(job)
 }
 
+// `/smartcode pan` is `/smartcode do` for a season pack: the merge is identical, and the encode
+// runs against one probed file rather than against whatever the link resolves to on its own. The
+// probe comes from this command's `job_id`/`index` or, when they are omitted, from the `SOURCE.md`
+// a probe-form `/source` wrote for the episode — so a pack is named once and paged through.
+pub async fn handle_smartcode_pan(
+    ctx: &Context,
+    command: &serenity::all::CommandInteraction,
+) -> Option<Job> {
+    let mut response_msg = working_response(ctx, command, "Working…").await?;
+    let encoder = credited_name(&command.user).await;
+    let result = smartcode_merge_upload(
+        ctx,
+        command,
+        &mut response_msg,
+        "/smartcode pan",
+        "smartcode-pan",
+        Some(encoder),
+    )
+    .await?;
+
+    let Some(probe) = result.probe else {
+        let _ = response_msg
+            .edit(
+                ctx,
+                EditMessage::new().content(format!(
+                    "The release was merged and uploaded, but nothing was encoded: `{}` records no probe. Pass `job_id` and `index`, or run `/source episode:{} job_id:<id> index:<n>` first.",
+                    result.source_path, result.episode
+                )),
+            )
+            .await;
+        return None;
+    };
+
+    let _ = response_msg.edit(ctx, EditMessage::new().content("...")).await;
+    if let Err(error) = response_msg.react(ctx, '❌').await {
+        // Not fatal — the job runs either way — but the ❌ is the only way to cancel it from
+        // Discord, so silently not having one is worth a line.
+        report_send_failure("cancel reaction", response_msg.channel_id.get(), &error);
+    }
+
+    let final_msg = match command.get_response(&ctx.http).await {
+        Ok(m) => m,
+        Err(_) => return None,
+    };
+
+    let mut job = Job::new(
+        command.user.id.get(),
+        command.channel_id.get(),
+        final_msg.id.get(),
+        JobType::Pancode,
+        final_msg.id.get(),
+        nyaaise(&result.link),
+        result.merged_bytes,
+        ctx.clone(),
+        final_msg,
+        read_lang(command.guild_id),
+        command.guild_id.map(|g| g.get()),
+    );
+    job.acix = build_acix_publish(ctx, command).await;
+    job.probe_job_id = Some(probe.job_id);
+    job.probe_file_index = Some(probe.file_index);
+    job.display_link = Some(format!(
+        "{} • file #{}",
+        display_source_link(&result.link),
+        probe.file_index
+    ));
+    job.smartcode_drive_name = Some(
+        pandora_toolchain::pnworker::core::SmartcodeDriveName::new(
+            &result.owner_repo,
+            &result.gdrive_folder_local,
+            result.episode,
+        ),
+    );
+    job.gdrive_folder_global = Some(result.gdrive_folder_global);
+    job.gdrive_folder_local = Some(result.gdrive_folder_local);
+    Some(job)
+}
+
 pub async fn handle_smartcode_preview(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,
