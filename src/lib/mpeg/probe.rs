@@ -29,9 +29,17 @@ pub fn ffprobe_lang(path: &str, f_lang: &str) -> Option<u32> {
             "-of", "json",
             path,
         ])
-        .output().unwrap();
+        .output().ok()?;
 
-    let data: FfprobeOutput = serde_json::from_slice(&output.stdout).unwrap();
+    if !output.status.success() {
+        return None;
+    }
+
+    ffprobe_lang_from_json(&output.stdout, f_lang)
+}
+
+fn ffprobe_lang_from_json(stdout: &[u8], f_lang: &str) -> Option<u32> {
+    let data: FfprobeOutput = serde_json::from_slice(stdout).ok()?;
 
     for stream in data.streams {
         let lang = stream
@@ -384,7 +392,27 @@ pub fn ffprobe_video_height(path: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{duration_to_centiseconds, probe_duration_ms};
+    use super::{duration_to_centiseconds, ffprobe_lang_from_json, probe_duration_ms};
+
+    #[test]
+    fn probe_language_selects_the_matching_audio_stream() {
+        let output = br#"{
+            "streams": [
+                {"index": 1, "tags": {"language": "eng"}},
+                {"index": 2, "tags": {"language": "jpn"}}
+            ]
+        }"#;
+
+        assert_eq!(ffprobe_lang_from_json(output, "jpn"), Some(2));
+        assert_eq!(ffprobe_lang_from_json(output, "tur"), None);
+    }
+
+    #[test]
+    fn probe_language_treats_unusable_output_as_no_match() {
+        assert_eq!(ffprobe_lang_from_json(b"", "jpn"), None);
+        assert_eq!(ffprobe_lang_from_json(b"not json", "jpn"), None);
+        assert_eq!(ffprobe_lang_from_json(br#"{}"#, "jpn"), None);
+    }
 
     #[test]
     fn probe_duration_accepts_string_and_number_forms() {
