@@ -761,3 +761,219 @@ args = 0
 [TUTORIAL_NEXT]
 text = "Sonraki"
 args = 0
+
+[TUTORIAL_1_SAVED_TITLE]
+text = "Bağlantıyı bir kez vermeniz yeterli"
+args = 0
+
+[TUTORIAL_1_SAVED_BODY]
+text = "1. bölümü daha önce `/smartcode` ile hazırladınız mı? Pandora o bölümün videosunu nereden alacağını hatırlar. Altyazıyı `/job` ile düzelttikten sonra sadece `/smartcode do episode:1` yazın. Aynı bağlantıyı tekrar arayıp yapıştırmanıza gerek yok. Bu bilgi, bu kanaldaki her bölüm için ayrı tutulur. Yeni bir bölümün bağlantısını ilk seferde verin. Kaynak videoyu değiştirmek isterseniz yeni `link` ekleyin. Paketi `/smartcode pan` ile kaydettiyseniz tekrar `/smartcode pan episode:1` kullanın; seçtiğiniz dosya da hatırlanır. Kayıtlı probe artık kullanılamıyorsa yeniden `/probe` çalıştırıp yeni iş kimliği ve index değerini verin."
+args = 0
+
+[TUTORIAL_ADMIN_START_TITLE]
+text = "Yönetici rehberi · Buradan başlayın"
+args = 0
+
+[TUTORIAL_ADMIN_START_BODY]
+text = "Kurulumu yapacağınız kanalda `/configure` çalıştırın. Ayarlar, giriş/kapanış videoları, ASS filigranı ve resim logosu için sırayla yol gösterir. **Bilgileri gir** özel bir form açar. Tek tek kutuları boş bırakırsanız mevcut değerleri korunur; tüm adım için **Atla** kullanın. Kaydedilen her adım hemen uygulanır. **Bitir**, kaydedilenleri geri almadan durur. Sunucuda aynı anda tek kurulum yapılır; 10 dakika işlem yapılmazsa oturum kapanır. Medya dosyaları kanala gönderilir ve diğer üyeler görebilir. Tokenı yalnızca özel forma girin. `/configure` ve `/edit` için Pandora Admin erişimi ve Discord Sunucu Yöneticisi izni gerekir; Witch, Discord izin kontrolünü aşabilir. Bu rehberi okumak yetki vermez."
+args = 0
+
+[TUTORIAL_ADMIN_INIT_TITLE]
+text = "/init için gerekenler"
+args = 0
+
+[TUTORIAL_ADMIN_INIT_BODY]
+text = "`/init` öncesinde depo adımındaki **forgejo** ve **api_key** alanlarını doldurun. Giriş videosu, logo ve yükleme ayarları bekleyebilir.\n• `forgejo`: Forgejo sitenizde ekibin organizasyon sayfasını açıp adresini kopyalayın; örneğin `https://git.example.com/MyTeam`. `MyTeam` dahil olmalı; yalnızca site adresi yetmez. Site sahibinden organizasyon oluşturmasını ve tokenın ait olduğu hesaba burada depo oluşturma izni vermesini isteyin.\n• `api_key`: o hesapla giriş yapıp Ayarlar → Uygulamalar (`/user/settings/applications`) sayfasından token oluşturun. Pandora’nın organizasyon/depo işlemleri için `write:organization` ve `write:repository` izinlerini verin. Tokenı özel kurulum formuna kopyalayın. [Forgejo token rehberi](https://forgejo.org/docs/latest/user/authentication/token-scope/).\nArdından animenin kanalında `/init mal:<MyAnimeList anime sayfası>` çalıştırın; ikinci sezon için `season:2` ekleyin. Pandora herkese açık proje ve bölüm klasörlerini oluşturur. `language` yalnızca bot dilini seçer. `announcement_channel` duyuru içindir; bu alanlar organizasyon ve tokenın yerine geçmez."
+args = 0
+
+[TUTORIAL_ADMIN_EDIT_TITLE]
+text = "Günlük /edit ayarları"
+args = 0
+
+[TUTORIAL_ADMIN_EDIT_BODY]
+text = "Sonradan yalnızca birkaç ayarı değiştirmek için `/edit` kullanın. Belirtmediğiniz alanlar aynı kalır.\n• `language`: EN, TR veya JP. `forgejo` ve `api_key`: önceki sayfadaki organizasyon adresi ve token; `-` ile temizlenir.\n• `announcement_channel:true`: yazdığınız kanalı duyuru kanalı yapar.\n• `preset`: videonun nasıl kodlanacağı. `standard` ile başlayın; bu kurulumdaki seçenekleri görmek için alana yazın. GPU/AV1 uygun donanım ister.\n• `wrapstyle`: uzun altyazı satırlarının nasıl bölüneceği. `dont_touch`, altyazıyı hazırlayanın seçimini korur. 0/3 satırları dengeler, 1 kenarda böler, 2 otomatik bölmez.\n• `concat`: giriş grubu; `outro`: kapanış grubu. `/touchintro` veya `/touchoutro` ile eklenmiş adları seçin; `-` kapatır.\n• `channel_rename`: `/init` ve `/attach` anime kanallarının adını değiştirsin mi? Varsayılan true.\n• `merge_release_only`: true ise `/merge` doğrudan altyazı dosyasını verir; varsayılan false. Bu isteğe bağlı seçimler `/init` ile proje oluşturmak için gerekli değildir."
+args = 0
+
+[TUTORIAL_ADMIN_DELIVERY_TITLE]
+text = "Biten videolar nereye gider?"
+args = 0
+
+[TUTORIAL_ADMIN_DELIVERY_BODY]
+text = "• `local_gdrive`: varsa bu sunucunun Drive profilini tercih eder. Drive hesabını bot yöneticisi Lumiere üzerinden bağlar; Google gizli bilgilerini Discord’a yapıştırmayın.\n• `drive_only:true`: yayın videolarını yalnızca Drive’a yükler. `false`: yapılandırılmış sağlayıcıları kullanır.\n• `hls:true`: yalnızca 12 saat geçerli Lumiere oynatma bağlantısını yayınlar. `drive_only` ayarından önceliklidir. AV1 için yalnızca HLS veya yalnızca Drive gerekir.\n• `hls_name`: isteğe bağlı dosya adı şablonu. `%uuid%`, `%random%`, `%res%` kimlik, rastgele metin ve çözünürlük ekler. Özel ad gerekmiyorsa bırakın; `-` varsayılana döner.\n• `animecix_fansub`, `openanime_fansub`, `anizm_fansub`: `/edit` otomatik tamamlama ile her sitede grubunuzu ayrı seçin. Kurulum formu da aynı kimlikleri kabul eder. Her sitenin listesi ayrıdır; birindeki ad diğerinde çalışmayabilir. `-` seçimi temizler. Yayın hesaplarını önce bot yöneticisi bağlamalıdır. Bunlar `/init` için ön koşul değildir."
+args = 0
+
+[TUTORIAL_ADMIN_MEDIA_TITLE]
+text = "Giriş, kapanış ve filigranlar"
+args = 0
+
+[TUTORIAL_ADMIN_MEDIA_BODY]
+text = "`/configure` her dosyayı sırayla ister ve yüklenen giriş/kapanış videolarını otomatik seçer. Ayrı ayrı yönetmek de mümkün:\n• `/touchintro name:my_intro video:<dosya>` giriş videosunu hazırlar. Ardından `/edit concat:my_intro` ile seçin.\n• `/touchoutro name:my_outro video:<dosya>` kapanışı hazırlar. Ardından `/edit outro:my_outro` ile seçin. Adlarda harf, rakam, `_` ve `-` kullanın. Oynatma sırası giriş → bölüm → kapanıştır.\n• `/touchwatermark watermark:<dosya.ass>` biçimlendirilmiş yazı filigranı ekler. ASS düzenleyicisinde satırın Effect alanındaki `[all]` tüm bölümü, `[precise]` veya boş Effect satırın kendi zamanlamasını kullanır.\n• `/touchlogo image:<dosya.png>` resim filigranı ekler. PNG, JPEG ve WebP kabul edilir; arka plan istemiyorsanız saydam PNG kullanın. `position` konumu, `margin` kenar boşluğunu, `opacity` 1–100 arası görünürlüğü, `width` genişlik yüzdesini seçer (0 özgün boyut). `period:5m:20s` her 5 dakikada 20 saniye gösterir; `off` sürekli gösterir. `clear:true` kaldırır. Yeniden yüklemeden konum ayarlarını değiştirebilirsiniz.\nBunlar yeni işlere uygulanır; kuyruktaki işler eski ayarlarını korur."
+args = 0
+
+[TUTORIAL_ADMIN_AUTH_TITLE]
+text = "Ekibinize erişim verin"
+args = 0
+
+[TUTORIAL_ADMIN_AUTH_BODY]
+text = "Pandora erişim seviyeleri Discord rollerinden ayrıdır. İlk yönetici erişimini bot yöneticisinden isteyin.\n`/auth user_id:<Discord kullanıcı kimliği> level:<seviye>` çalıştırın. Kimliği kopyalamak için Discord Ayarlar → Gelişmiş → Geliştirici Modu seçeneğini açıp kişide Kullanıcı Kimliğini Kopyala kullanın. Menüde Authorize, Fansubber, Admin, Upper ve Witch bulunur. Yalnızca kendi seviyenize eşit veya daha düşük seviye verebilirsiniz; `/auth` komutunun ayarlı erişim seviyesi de gerekir. Yetki yalnızca bu kanalda değil, botun sunucuları genelinde geçerlidir.\nErişimi `/lsauth` ile görün, `/rm user_id:<kimlik> level:<seviye>` ile kaldırın. Discord’da Yönetici rolü olması Pandora listelerine otomatik eklemez. `/configure`, `/edit`, `/touchwatermark` ve `/touchlogo` ayrıca Discord Sunucu Yöneticisi iznini kontrol eder; Witch istisnadır. Giriş/kapanış yüklemenin kendi komut seviyesi vardır; reddedilirse bot yöneticisine danışın."
+args = 0
+
+[TUTORIAL_ADMIN_EXTRAS_TITLE]
+text = "Son dokunuşlar"
+args = 0
+
+[TUTORIAL_ADMIN_EXTRAS_BODY]
+text = "• `/font`: altyazıda kullanılan fontları yükleyin. `/cfont`, önizleme yazılarının fontunu seçer. Eksik fontlar yayının görünümünü değiştirebilir.\n• `/readmebase`: yeni anime projeleri için ortak README şablonunu ayarlar. `/init` için zorunlu değildir.\n• `/attribute`: bu anime kanalının altyazı stillerini ve emek veren satırlarını ayarlar. `/alias choose`, kodlayan kişi için kullanılacak adı seçer.\n• `/link set`: desteklenen çıktıyı başka kanala yönlendirir; örneğin `/merge` ile biten altyazıyı.\n• `/source`: video hazırlamadan bölüm bağlantısını kaydeder veya değiştirir. `/smartcode` kaydedilmiş bağlantıyı hatırlar; aynı bölümü tekrar işlerken yalnızca bölüm numarası yeterlidir.\n• `/providers`: kullanılabilir yükleme servislerini gösterir. Hesaplar ve Drive profilleri bot yöneticisi tarafından Lumiere üzerinden yönetilir. Yükleme ayarı seçmek hesap bağlamaz.\nHazır olduğunuzda bir bölümde `/init`, `/job`, ardından `/smartcode` deneyin; `/tutorial 1` bu akışı anlatır."
+args = 0
+
+[CONFIG_ENTER]
+text = "Bilgileri gir"
+args = 0
+
+[CONFIG_SKIP]
+text = "Atla"
+args = 0
+
+[CONFIG_FINISH]
+text = "Bitir"
+args = 0
+
+[CONFIG_SKIP_HELP]
+text = "Boş kutular ve Atla mevcut değerleri korur. Kaydedilen adımlar hemen uygulanır. Bitir kaydedilenleri korur."
+args = 0
+
+[CONFIG_OCCUPIED]
+text = "Bu sunucuda bir kurulum açık. Bitirin veya 10 dakika işlem yapılmamasını bekleyip /configure çalıştırın."
+args = 0
+
+[CONFIG_EXPIRED]
+text = "Bu kurulum adımı artık kullanılamıyor veya yetkiniz yok. Son kurulum mesajını kullanın ya da /configure çalıştırın."
+args = 0
+
+[CONFIG_SAVE_FAILED]
+text = "Ayarlar kaydedilemedi. Tekrar deneyin; sürerse bot yöneticisine danışın."
+args = 0
+
+[CONFIG_INVALID]
+text = "Değerlerden biri kabul edilmedi. Aşağıdaki biçimleri kontrol edip tekrar deneyin. Bu formdaki hiçbir değer kaydedilmedi."
+args = 0
+
+[CONFIG_DELIVERY_INVALID]
+text = "Bu ön ayar uygun yükleme seçimi gerektirir. AV1 için hls:true veya drive_only:true gerekir. Önce /edit ile yüklemeyi değiştirip tekrar deneyin."
+args = 0
+
+[CONFIG_LOGO_MISSING]
+text = "Önce logo yükleyin veya logo istemiyorsanız konum adımını atlayın."
+args = 0
+
+[CONFIG_MEDIA_INVALID]
+text = "Dosya kurulamadı. Tek bir geçerli dosya gönderin: video en fazla 100 MiB, ASS/logo en fazla 4 MiB. Logo PNG, JPEG veya WebP olmalı; ASS filigranı Dialogue satırları içermeli. Tekrar deneyin veya Atla kullanın."
+args = 0
+
+[CONFIG_PROCESSING]
+text = "Dosyanız hazırlanıyor. Videolar birkaç dakika sürebilir; sonraki adım burada görünecek."
+args = 0
+
+[CONFIG_DONE]
+text = "Kurulum bitti. Kaydedilen ayarlar korunur; atlanan alanlar değişmez. Sonradan /edit ve medya komutlarıyla düzenleyebilirsiniz. Tam rehber: /tutorial admin."
+args = 0
+
+[CONFIG_INIT_MISSING]
+text = "/init ile proje oluşturmadan önce organizasyon adresini (forgejo) ve API tokenını (api_key) ekleyin. İsteğe bağlı görsel ayarlar atlanabilir."
+args = 0
+
+[CONFIG_INIT_READY]
+text = "Organizasyon adresi ve token kayıtlı. Bir anime kanalında /init deneyebilirsiniz. Hesabın orada depo oluşturma izni olmalıdır; kurulum bu izni sınamaz."
+args = 0
+
+[CONFIG_BASICS_TITLE]
+text = "Dil ve duyurular"
+args = 0
+
+[CONFIG_BASICS_BODY]
+text = "`language` seçin: EN (English), TR (Türkçe), JP (日本語). Duyurular bu kanala gelsin diye `announcement_channel` alanına true, duyuru kanalını kaldırmak için false yazın. Boşsa aynı kalır. Yeni sunucuda varsayılan dil EN’dir. Kurulum 10 dakika işlem yapılmazsa kapanır. Yardım: /tutorial admin."
+args = 0
+
+[CONFIG_REPO_TITLE]
+text = "Ekibin proje alanını bağlayın"
+args = 0
+
+[CONFIG_REPO_BODY]
+text = "/init için `forgejo`: organizasyon sayfanız; ör. https://git.example.com/MyTeam (MyTeam dahil). `api_key`: o hesabın Ayarlar → Uygulamalar bölümünden alınan, write:organization ve write:repository izinli token. Hesabın organizasyonda depo oluşturma izni olmalı. Tokenı yalnızca bu özel forma yapıştırın; yanıt olarak gösterilmez. Boş kutular mevcut değeri korur; `-` temizler. Henüz yoksa atlayıp Forgejo yöneticinize danışın. Adımlar /tutorial admin içinde."
+args = 0
+
+[CONFIG_DELIVERY_TITLE]
+text = "Videolar nereye yüklensin?"
+args = 0
+
+[CONFIG_DELIVERY_BODY]
+text = "True veya false yazın. `local_gdrive`: bu sunucunun Drive profilini tercih et (varsayılan true). `drive_only`: yayınları yalnızca Drive’a yükle (varsayılan false). `hls`: yalnızca 12 saatlik oynatma bağlantısı üret (varsayılan false); Drive-only ayarından önceliklidir. AV1 öncesinde Drive-only veya HLS seçin. Sağlayıcı hesaplarını bot yöneticisi Lumiere’de bağlar; bu düğmeler hesap bağlamaz."
+args = 0
+
+[CONFIG_ENCODE_TITLE]
+text = "Video ve altyazı varsayılanları"
+args = 0
+
+[CONFIG_ENCODE_BODY]
+text = "`preset`: başlangıç için standard kullanabilirsiniz. Diğer hazır adlar: veryslow, pseudolossless, gpu, av1, dummy; yöneticinin eklediği özel ön ayar adları da çalışır. GPU/AV1 uygun donanım ister; dummy geliştirme içindir. `wrapstyle`: dont_touch altyazıyı hazırlayanın satır bölmesini korur (varsayılan); 0/3 dengeler, 1 kenarda böler, 2 otomatik bölmez. /init için zorunlu değiller."
+args = 0
+
+[CONFIG_CHANNEL_TITLE]
+text = "Kanal ve dosya tercihleri"
+args = 0
+
+[CONFIG_CHANNEL_BODY]
+text = "`channel_rename`: true, /init ve /attach komutlarının kanalı anime adına göre adlandırmasına izin verir (varsayılan true). `merge_release_only`: true ise /merge doğrudan altyazı dosyasını verir (varsayılan false). `hls_name`: %uuid%, %random%, %res% kullanan isteğe bağlı şablon; ör. %uuid%_%random%_%res%. `-` şablonu sıfırlar. Değeri korumak için kutuyu boş bırakın."
+args = 0
+
+[CONFIG_FANSUB_TITLE]
+text = "Yayın ekibi kimlikleri"
+args = 0
+
+[CONFIG_FANSUB_BODY]
+text = "İsteğe bağlı: `animecix_fansub`, `openanime_fansub`, `anizm_fansub` her sitedeki grubunuzu belirtir. Başka siteden kopyalanmış değer değil, o sitenin kimliğini kullanın. Kolayca bulmak için daha sonra /edit arama önerilerini kullanın; emin değilseniz atlayın. Kimlikleri biliyorsanız buraya girin. `-` seçimi temizler. Yayın hesapları bot yöneticisi tarafından önceden bağlanmış olmalı."
+args = 0
+
+[CONFIG_INTRO_TITLE]
+text = "Giriş videosu ekleyin"
+args = 0
+
+[CONFIG_INTRO_BODY]
+text = "Bu kanala tek bir giriş videosu ekleyin (en fazla 100 MiB). Diğer kanal üyeleri bu yüklemeyi görebilir. Pandora hazırlar ve sunucu için otomatik seçer. Başka dosya göndermeden sonraki adımı bekleyin. Ya da Bilgileri gir ile `concat` alanına var olan giriş grubunun adını yazın; `-` girişi kapatır. Atla mevcut girişi korur."
+args = 0
+
+[CONFIG_OUTRO_TITLE]
+text = "Kapanış videosu ekleyin"
+args = 0
+
+[CONFIG_OUTRO_BODY]
+text = "Buraya tek bir kapanış videosu ekleyin (en fazla 100 MiB; kanaldakiler görebilir). Pandora hazırlar ve otomatik seçer. Sıra giriş → bölüm → kapanış olur. Ya da `outro` alanına var olan grubu yazın; `-` kapatır. Atla mevcut kapanışı korur."
+args = 0
+
+[CONFIG_WATERMARK_TITLE]
+text = "Yazı filigranı ekleyin"
+args = 0
+
+[CONFIG_WATERMARK_BODY]
+text = "Buraya bir .ass filigran dosyası gönderin (en fazla 4 MiB; kanal görebilir). Dialogue satırları içermeli. Tüm bölüm için Effect alanını [all], satırın kendi zamanı için [precise] veya boş yapın. Sunucunun mevcut ASS filigranını değiştirir. Atla mevcut olanı korur. Resim istiyorsanız atlayıp sonraki adımı kullanın."
+args = 0
+
+[CONFIG_LOGO_TITLE]
+text = "Resim logosu ekleyin"
+args = 0
+
+[CONFIG_LOGO_BODY]
+text = "Buraya bir PNG, JPEG veya WebP gönderin (en fazla 4 MiB; kanal görebilir). Saydam PNG düz arka planı önler. Sunucu logosunu değiştirir ve mevcut konumunu korur. Yeni logo sağ üstte, 24 piksel boşlukla, tam görünürlükte ve özgün boyutta başlar. Sonraki adımda değiştirebilirsiniz. Atla mevcut logoyu korur."
+args = 0
+
+[CONFIG_PLACEMENT_TITLE]
+text = "Logonuzu yerleştirin"
+args = 0
+
+[CONFIG_PLACEMENT_BODY]
+text = "Logonuz yoksa atlayın. `position`: top-left, top-center, top-right, middle-left, middle-center, middle-right, bottom-left, bottom-center veya bottom-right. `margin`: kenardan piksel boşluğu (0–2000). `opacity`: 1–100. `width`: video genişliğinin yüzdesi (1–50) veya özgün boyut için 0. `period`: ör. 5m:20s her 5 dakikada 20 saniye gösterir; off sürekli gösterir. Boş kutular mevcut değerleri korur. Sonradan /touchlogo ile de düzenleyebilirsiniz."
+args = 0
+
+[CONFIG_MEDIA_FORBIDDEN]
+text = "Bu medyayı kurmak ilgili /touch komutunun erişim seviyesini gerektirir. Bot yöneticisine danışın, varsa mevcut grubu seçin veya Atla kullanın."
+args = 0

@@ -1206,8 +1206,8 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "misc",
             name: "tutorial",
             summary: "A beginner walkthrough in the server's language.",
-            usage: "/tutorial 1",
-            details: "Walks through /encode do, /probe then /encode pan, and /init, /job, /smartcode with examples.",
+            usage: "/tutorial 1 | /tutorial admin",
+            details: "The beginner lesson covers /encode, /probe and team workflows, including reusing saved episode links. The admin lesson explains guided /configure, every /edit field, /init prerequisites, permissions and branding.",
         },
         HelpCommand {
             section: "repo",
@@ -1282,16 +1282,16 @@ fn help_catalog() -> &'static [HelpCommand] {
         HelpCommand {
             section: "admin",
             name: "configure",
-            summary: "Configure server language and Forgejo; Drive profiles live in Lumiere.",
-            usage: "/configure language:<EN|TR|JP> [forgejo] [api_key] [wrapstyle] (Drive profiles are configured in Lumiere; encode defaults are set with /edit)",
-            details: "Writes server metadata. Google Drive credentials and roots are configured in the external Lumiere broker, never through Discord. Encode preset, intro and outro defaults are managed later with /edit. wrapstyle controls ASS WrapStyle normalization; default dont_touch leaves existing subtitles unchanged.",
+            summary: "Guided server setup with skippable settings and media uploads.",
+            usage: "/configure",
+            details: "Opens a private guided setup. Fill optional forms, skip fields, or finish early; completed steps save immediately. The wizard covers /edit settings and channel uploads for intros, outros, ASS watermarks and image logos. Upload installation keeps the corresponding /touch command permissions. Google Drive accounts are connected through Lumiere by the operator.",
         },
         HelpCommand {
             section: "admin",
             name: "edit",
             summary: "Edit individual server metadata fields, leaving the rest untouched.",
             usage: "/edit [language] [forgejo] [api_key] [local_gdrive] [drive_only] [hls] [hls_name] [wrapstyle] [preset] [concat] [announcement_channel]",
-            details: "Like /configure but every field is optional — omitted fields keep their current value. Pass `-` to clear a text field. local_gdrive selects whether Lumiere should prefer the deterministic guild Drive profile before the global profile. drive_only:true restricts future release uploads to Google Drive and suppresses Byse, LuluStream, and Voe; false restores all configured Lumiere providers. AV1 requires either drive_only:true or hls:true; HLS uses fMP4/CMAF. hls_name is the template every file in an HLS release is named after — `%uuid%` a fresh v4 UUID, `%random%` six random hex characters, `%res%` the published height as `720p` — defaulting to `%uuid%_%random%_%res%`; pass `-` to restore it. Active uploads are unchanged. Drive credentials and roots are managed only in Lumiere. wrapstyle can be dont_touch or 0-3. preset, concat and outro set server-wide encode defaults; type/search in concat and select a registered `/touchintro` group, or in outro a registered `/touchoutro` group, and select `Disable concat` to clear either. Each dropdown updates from its own global config as groups are added. An intro and an outro are independent: setting one does not require the other, and both are stitched on in one stream-copy pass after the encode. Set announcement_channel:true to point announcements at the current channel. Requires the server to already be configured.",
+            details: "Directly updates selected settings without opening the /configure wizard; omitted fields keep their current value. Pass `-` to clear a text field. local_gdrive selects whether Lumiere should prefer the deterministic guild Drive profile before the global profile. drive_only:true restricts future release uploads to Google Drive and suppresses Byse, LuluStream, and Voe; false restores all configured Lumiere providers. AV1 requires either drive_only:true or hls:true; HLS uses fMP4/CMAF. hls_name is the template every file in an HLS release is named after — `%uuid%` a fresh v4 UUID, `%random%` six random hex characters, `%res%` the published height as `720p` — defaulting to `%uuid%_%random%_%res%`; pass `-` to restore it. Active uploads are unchanged. Drive credentials and roots are managed only in Lumiere. wrapstyle can be dont_touch or 0-3. preset, concat and outro set server-wide encode defaults; type/search in concat and select a registered `/touchintro` group, or in outro a registered `/touchoutro` group, and select `Disable concat` to clear either. Each dropdown updates from its own global config as groups are added. An intro and an outro are independent: setting one does not require the other, and both are stitched on in one stream-copy pass after the encode. Set announcement_channel:true to point announcements at the current channel. Requires the server to already be configured.",
         },
         HelpCommand {
             section: "admin",
@@ -2351,6 +2351,7 @@ async fn try_rename_channel_to_anime(ctx: &Context, channel_id: serenity::all::C
 #[serenity::async_trait]
 impl EventHandler for Handler {
     async fn message(&self, context: Context, msg: Message) {
+        if handle_configure_upload(&context, &msg).await { return; }
         let parts: Vec<&str> = msg.content.split_whitespace().collect();
         if parts.is_empty() { return; }
         if !is_authorized(parts[0], msg.author.id.get()) { return; }
@@ -2810,8 +2811,14 @@ impl EventHandler for Handler {
                 "attribute" => handle_attribute_autocomplete(&ctx, &autocomplete).await,
                 _ => {}
             }
+        } else if let Interaction::Modal(modal) = interaction {
+            if modal.data.custom_id.starts_with("pnconfig:") {
+                handle_configure_modal(&ctx, &modal).await;
+            }
         } else if let Interaction::Component(component) = interaction {
-            if component.data.custom_id.starts_with("pntutorial:") {
+            if component.data.custom_id.starts_with("pnconfig:") {
+                handle_configure_component(&ctx, &component).await;
+            } else if component.data.custom_id.starts_with("pntutorial:") {
                 handle_tutorial_component(&ctx, &component).await;
             } else if component.data.custom_id.starts_with("pnhelp:") {
                 handle_help_component(&ctx, &component).await;
@@ -3340,6 +3347,11 @@ impl EventHandler for Handler {
                     CreateCommandOption::new(CommandOptionType::SubCommand, "1", "Your first video: encode, probe, and team workflows")
                         .description_localized("tr", "İlk videonuz: encode, probe ve ekip iş akışları")
                         .description_localized("ja", "初めての動画：encode・probe・チーム作業")
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::SubCommand, "admin", "Server setup, access, and branding explained step by step")
+                        .description_localized("tr", "Sunucu kurulumu, yetkiler ve görsel ayarlar adım adım")
+                        .description_localized("ja", "サーバー設定・権限・装飾を順番に説明")
                 ),
             CreateCommand::new("smartlist")
                 .description("List every uploaded episode of this channel's anime with its links"),
@@ -3357,31 +3369,9 @@ impl EventHandler for Handler {
                         .min_int_value(1)
                 ),
             CreateCommand::new("configure")
-                .description("Configure this server (Drive credentials are managed by Lumiere)")
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "language", "Bot language")
-                        .required(true)
-                        .add_string_choice("English", "EN")
-                        .add_string_choice("Türkçe", "TR")
-                        .add_string_choice("日本語", "JP")
-                )
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "forgejo", "Forgejo base link (e.g. https://git.einzu.fun) — leave empty to unset")
-                        .required(false)
-                )
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "api_key", "Forgejo API token. Omit to keep the existing one.")
-                        .required(false)
-                )
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "wrapstyle", "ASS WrapStyle normalization. Default dont_touch.")
-                        .required(false)
-                        .add_string_choice("dont_touch", "dont_touch")
-                        .add_string_choice("0", "0")
-                        .add_string_choice("1", "1")
-                        .add_string_choice("2", "2")
-                        .add_string_choice("3", "3")
-                ),
+                .description("Set up this server step by step; skip anything you do not need")
+                .description_localized("tr", "Sunucuyu adım adım kurun; gerek duymadığınız adımları atlayın")
+                .description_localized("ja", "サーバーを順番に設定。不要な項目はスキップできます"),
             CreateCommand::new("edit")
                 .description("Edit individual server metadata fields, leaving the rest untouched")
                 .add_option(

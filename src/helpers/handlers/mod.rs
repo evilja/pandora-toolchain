@@ -78,7 +78,7 @@ pub use self::detach::handle_detach;
 pub use self::job::handle_job;
 pub use self::ts_message::handle_ts_message;
 pub use self::gitcode::handle_gitcode;
-pub use self::configure::handle_configure;
+pub use self::configure::{handle_configure, handle_configure_component, handle_configure_modal, handle_configure_upload};
 pub use self::edit::{handle_edit, handle_edit_autocomplete};
 pub use self::addapi::handle_addapi;
 pub use self::gentoken::{handle_gentoken, handle_gentoken_autocomplete, handle_genwitchtoken};
@@ -130,6 +130,7 @@ fn read_server_acix_template(server_id: u64) -> Option<i64> {
 
 // `meta.pandora` is positional, so `/configure` and `/edit` compose it here instead of each keeping
 // its own line list — a field added in one place can no longer shift the other's lines.
+#[derive(Clone)]
 struct ServerMetaFields {
     language: String,
     forgejo: String,
@@ -159,6 +160,60 @@ struct ServerMetaFields {
     merge_release_only: String,
     // Line 21, appended for the same reason lines 19 and 20 were.
     channel_rename: String,
+}
+
+impl ServerMetaFields {
+    fn parse(text: &str) -> Self {
+        let lines: Vec<_> = text.lines().collect();
+        Self {
+            language: lines.get(0).copied().unwrap_or("EN").to_string(),
+            forgejo: lines.get(1).copied().unwrap_or("").to_string(),
+            announcement_channel: lines.get(2).copied().unwrap_or("").to_string(),
+            api_key: lines.get(3).copied().unwrap_or("").to_string(),
+            gdrive_client_id: lines.get(4).copied().unwrap_or("").to_string(),
+            gdrive_client_secret: lines.get(5).copied().unwrap_or("").to_string(),
+            gdrive_refresh_token: lines.get(6).copied().unwrap_or("").to_string(),
+            gdrive_folder_id: lines.get(7).copied().unwrap_or("").to_string(),
+            wrap_style: lines.get(8).copied().unwrap_or("").to_string(),
+            local_gdrive: lines.get(9).copied().unwrap_or("true").to_string(),
+            gdrive_anon_folder_id: lines.get(10).copied().unwrap_or("").to_string(),
+            preset: lines.get(11).copied().unwrap_or("standard").to_string(),
+            concat: lines.get(12).copied().unwrap_or("").to_string(),
+            animecix_fansub: lines.get(13).copied().unwrap_or("").to_string(),
+            drive_only: lines.get(14).copied().unwrap_or("false").to_string(),
+            openanime_fansub: lines.get(15).copied().unwrap_or("").to_string(),
+            anizm_fansub: lines.get(16).copied().unwrap_or("").to_string(),
+            hls: lines.get(17).copied().unwrap_or("false").to_string(),
+            hls_name: lines.get(18).copied().unwrap_or("").to_string(),
+            outro: lines.get(19).copied().unwrap_or("").to_string(),
+            merge_release_only: lines.get(20).copied().unwrap_or("false").to_string(),
+            channel_rename: lines.get(21).copied().unwrap_or("true").to_string(),
+        }
+    }
+
+    fn set(&mut self, field: &str, value: String) -> Result<(), ()> {
+        match field {
+            "language" => self.language = value,
+            "forgejo" => self.forgejo = value,
+            "announcement_channel" => self.announcement_channel = value,
+            "api_key" => self.api_key = value,
+            "wrapstyle" => self.wrap_style = value,
+            "local_gdrive" => self.local_gdrive = value,
+            "preset" => self.preset = value,
+            "concat" => self.concat = value,
+            "animecix_fansub" => self.animecix_fansub = value,
+            "drive_only" => self.drive_only = value,
+            "openanime_fansub" => self.openanime_fansub = value,
+            "anizm_fansub" => self.anizm_fansub = value,
+            "hls" => self.hls = value,
+            "hls_name" => self.hls_name = value,
+            "outro" => self.outro = value,
+            "merge_release_only" => self.merge_release_only = value,
+            "channel_rename" => self.channel_rename = value,
+            _ => return Err(()),
+        }
+        Ok(())
+    }
 }
 
 fn compose_server_meta(fields: &ServerMetaFields) -> String {

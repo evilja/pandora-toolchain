@@ -761,3 +761,219 @@ args = 0
 [TUTORIAL_NEXT]
 text = "次へ"
 args = 0
+
+[TUTORIAL_1_SAVED_TITLE]
+text = "リンクを教えるのは一度だけ"
+args = 0
+
+[TUTORIAL_1_SAVED_BODY]
+text = "第1話をすでに `/smartcode` で作りましたか？ Pandoraはその話の動画の場所を覚えています。`/job` で字幕を直したら、もう一度 `/smartcode do episode:1` と入力するだけ。同じリンクを探して貼り直す必要はありません。この情報は、このチャンネルの各話ごとに保存されます。新しい話には初回だけリンクを指定してください。元の動画を変更したいときは、新しい `link` を指定します。パックを `/smartcode pan` で保存した場合は `/smartcode pan episode:1` で再実行でき、選んだファイルも記憶されています。保存したprobeが利用できなくなった場合は `/probe` をやり直し、新しいジョブIDとindexを指定してください。"
+args = 0
+
+[TUTORIAL_ADMIN_START_TITLE]
+text = "管理者ガイド · はじめに"
+args = 0
+
+[TUTORIAL_ADMIN_START_BODY]
+text = "設定に使うチャンネルで `/configure` を実行します。設定項目、冒頭・末尾の動画、ASS透かし、画像ロゴを順番に案内します。**入力する**で非公開フォームを開きます。空欄は現在の値を維持し、**スキップ**はその手順全体を飛ばします。保存した設定はすぐ反映され、**終了**しても保存済みの内容は残ります。設定はサーバーごとに1人ずつ行い、10分間操作がないと終了します。メディアの添付はチャンネルに投稿され、他のメンバーにも見えます。トークンは非公開フォームだけに入力してください。`/configure` と `/edit` にはPandoraのAdmin権限とDiscordのサーバー管理者権限が必要です。WitchはDiscord権限の確認を省略できます。このガイドを読むだけでは権限は付与されません。"
+args = 0
+
+[TUTORIAL_ADMIN_INIT_TITLE]
+text = "/init に必要なもの"
+args = 0
+
+[TUTORIAL_ADMIN_INIT_BODY]
+text = "`/init` の前に、リポジトリの手順で **forgejo** と **api_key** を設定します。冒頭動画、ロゴ、配信先の設定は後回しにできます。\n• `forgejo`：Forgejoでチームの組織ページを開き、URLをコピーします。例：`https://git.example.com/MyTeam`。`MyTeam` まで必要で、サイトのアドレスだけでは足りません。サイトの管理者に組織の作成と、トークン所有者へのリポジトリ作成権限を依頼してください。\n• `api_key`：そのアカウントでログインし、設定 → アプリケーション（`/user/settings/applications`）でトークンを作成します。Pandoraの組織・リポジトリ操作用に `write:organization` と `write:repository` を付け、非公開の設定フォームに貼り付けます。[Forgejoのトークンガイド](https://forgejo.org/docs/latest/user/authentication/token-scope/)。\n次にアニメのチャンネルで `/init mal:<MyAnimeListのアニメページ>` を実行します。第2シーズンなら `season:2` を追加します。公開プロジェクトと各話のフォルダーが作られます。`language` は表示言語、`announcement_channel` は告知先です。組織やトークンの代わりにはなりません。"
+args = 0
+
+[TUTORIAL_ADMIN_EDIT_TITLE]
+text = "日常の /edit 設定"
+args = 0
+
+[TUTORIAL_ADMIN_EDIT_BODY]
+text = "後から一部だけ変更するときは `/edit` を使います。省略した項目は変わりません。\n• `language`：EN、TR、JP。`forgejo` と `api_key` は前のページで説明した組織URLとトークンです。`-` で消去できます。\n• `announcement_channel:true`：今いるチャンネルを告知先にします。\n• `preset`：動画の変換方式です。まずは `standard`。入力すると、この環境の候補が出ます。GPU/AV1には対応する機器が必要です。\n• `wrapstyle`：長い字幕の改行方式です。`dont_touch` は制作者の設定を維持。0/3は行を均等にし、1は端で折り返し、2は自動改行しません。\n• `concat` は冒頭、`outro` は末尾の動画グループ。`/touchintro`・`/touchoutro` で登録した名前を選びます。`-` で無効にできます。\n• `channel_rename`：`/init`・`/attach` がアニメのチャンネル名を変更するか。初期値はtrue。\n• `merge_release_only`：trueなら `/merge` が字幕ファイルを直接返します。初期値はfalse。これらは `/init` でプロジェクトを作るための必須設定ではありません。"
+args = 0
+
+[TUTORIAL_ADMIN_DELIVERY_TITLE]
+text = "完成した動画の保存先"
+args = 0
+
+[TUTORIAL_ADMIN_DELIVERY_BODY]
+text = "• `local_gdrive`：利用できれば、このサーバー用のDrive設定を優先します。Driveアカウントの接続はボット運用者がLumiereで行います。Googleの秘密情報をDiscordに貼り付けないでください。\n• `drive_only:true`：公開動画をDriveだけにアップロード。falseなら設定済みの配信先を使います。\n• `hls:true`：12時間有効なLumiere再生リンクだけを発行します。`drive_only` より優先されます。AV1はHLSのみ、またはDriveのみの配信が必要です。\n• `hls_name`：任意のファイル名テンプレート。`%uuid%`、`%random%`、`%res%` は識別子・ランダム文字・解像度になります。通常は変更不要で、`-` は初期値に戻します。\n• `animecix_fansub`、`openanime_fansub`、`anizm_fansub`：`/edit` の候補からサイトごとにチームを選びます。設定フォームでも同じIDを使えます。サイトごとに一覧が異なるため、別サイトの名前は使えないことがあります。`-` で消去。公開用アカウントは先にボット運用者が接続します。これらは `/init` の前提条件ではありません。"
+args = 0
+
+[TUTORIAL_ADMIN_MEDIA_TITLE]
+text = "冒頭・末尾動画と透かし"
+args = 0
+
+[TUTORIAL_ADMIN_MEDIA_BODY]
+text = "`/configure` はファイルを順番に求め、アップロードした冒頭・末尾動画を自動で選択します。個別に設定することもできます。\n• `/touchintro name:my_intro video:<ファイル>` で冒頭動画を準備し、`/edit concat:my_intro` で選択します。\n• `/touchoutro name:my_outro video:<ファイル>` で末尾動画を準備し、`/edit outro:my_outro` で選択します。名前は英数字・`_`・`-`。再生順は冒頭 → 本編 → 末尾です。\n• `/touchwatermark watermark:<ファイル.ass>` は装飾付きの文字透かしです。ASS編集ソフトで行のEffectを `[all]` にすると全編に表示し、`[precise]` または空欄ならその行の時刻を使います。\n• `/touchlogo image:<ファイル.png>` は画像透かしです。PNG、JPEG、WebPに対応。背景を消したい場合は透過PNGを使います。`position` は位置、`margin` は端からの間隔、`opacity` は1〜100の不透明度、`width` は幅の割合（0は元のサイズ）。`period:5m:20s` は5分ごとに20秒、`off` は常時表示。`clear:true` は削除です。画像を再送せず位置だけ変更できます。\n新しいジョブに適用され、すでにキューに入ったジョブの設定は変わりません。"
+args = 0
+
+[TUTORIAL_ADMIN_AUTH_TITLE]
+text = "チームに利用権限を付ける"
+args = 0
+
+[TUTORIAL_ADMIN_AUTH_BODY]
+text = "Pandoraのアクセス権はDiscordのロールとは別です。最初の管理者登録はボット運用者に依頼してください。\n`/auth user_id:<DiscordユーザーID> level:<レベル>` を使います。IDはDiscordの設定 → 詳細設定 → 開発者モードを有効にし、その人の「ユーザーIDをコピー」で取得できます。候補はAuthorize、Fansubber、Admin、Upper、Witchです。自分以下のレベルだけを付与でき、`/auth` 自体に設定されたコマンド権限も必要です。付与した権限はこのチャンネルだけでなく、ボットが使われるサーバー全体に適用されます。\n`/lsauth` で確認し、`/rm user_id:<ID> level:<レベル>` で解除します。Discordの管理者ロールだけではPandoraの許可リストに入りません。`/configure`、`/edit`、`/touchwatermark`、`/touchlogo` はDiscordのサーバー管理者権限も確認しますが、Witchは例外です。冒頭・末尾動画の登録にはそれぞれのコマンド権限が必要で、拒否された場合は運用者に相談してください。"
+args = 0
+
+[TUTORIAL_ADMIN_EXTRAS_TITLE]
+text = "仕上げの設定"
+args = 0
+
+[TUTORIAL_ADMIN_EXTRAS_BODY]
+text = "• `/font`：字幕で使うフォントを登録します。`/cfont` はプレビューの表示用フォントです。フォントがないと仕上がりが変わることがあります。\n• `/readmebase`：新しいアニメプロジェクトの共通READMEひな形を設定します。`/init` に必須ではありません。\n• `/attribute`：このアニメのチャンネル用に字幕スタイルとクレジット行を設定します。`/alias choose` はエンコード担当者の表示名を選びます。\n• `/link set`：対応する出力を別チャンネルへ送ります。例：`/merge` の完成字幕。\n• `/source`：動画を作らずに各話のリンクを保存・変更します。`/smartcode` は保存したリンクを覚えるので、同じ話の再実行は話数だけで済みます。\n• `/providers`：利用できるアップロード先を確認します。アカウントとDrive設定はボット運用者がLumiereで管理します。配信先を選ぶだけではアカウントは接続されません。\n準備ができたら1話分で `/init`、`/job`、`/smartcode` を試しましょう。`/tutorial 1` で手順を確認できます。"
+args = 0
+
+[CONFIG_ENTER]
+text = "入力する"
+args = 0
+
+[CONFIG_SKIP]
+text = "スキップ"
+args = 0
+
+[CONFIG_FINISH]
+text = "終了"
+args = 0
+
+[CONFIG_SKIP_HELP]
+text = "空欄とスキップは現在の値を維持します。保存はすぐ反映され、終了しても保存した内容は残ります。"
+args = 0
+
+[CONFIG_OCCUPIED]
+text = "このサーバーでは設定が開いています。終了するか、10分間操作せずに待ってから /configure を実行してください。"
+args = 0
+
+[CONFIG_EXPIRED]
+text = "この設定手順は無効か、権限がありません。最新の設定メッセージを使うか /configure を再実行してください。"
+args = 0
+
+[CONFIG_SAVE_FAILED]
+text = "設定を保存できませんでした。再試行し、続く場合はボット運用者に相談してください。"
+args = 0
+
+[CONFIG_INVALID]
+text = "受け付けられない値があります。下の形式を確認して再入力してください。このフォームの値は保存されていません。"
+args = 0
+
+[CONFIG_DELIVERY_INVALID]
+text = "このプリセットには対応する配信設定が必要です。AV1には hls:true または drive_only:true が必要です。先に /edit で配信設定を変えて再試行してください。"
+args = 0
+
+[CONFIG_LOGO_MISSING]
+text = "先にロゴをアップロードしてください。不要なら配置設定をスキップできます。"
+args = 0
+
+[CONFIG_MEDIA_INVALID]
+text = "ファイルを登録できませんでした。有効なファイルを1つ送ってください。動画は100 MiBまで、ASS・ロゴは4 MiBまでです。ロゴはPNG・JPEG・WebP、ASS透かしにはDialogue行が必要です。再試行またはスキップしてください。"
+args = 0
+
+[CONFIG_PROCESSING]
+text = "ファイルを準備中です。動画は数分かかる場合があります。ここに次の手順が表示されます。"
+args = 0
+
+[CONFIG_DONE]
+text = "設定を終了しました。保存した設定は残り、スキップした項目は変わりません。後から /edit やメディア用コマンドで変更できます。詳しくは /tutorial admin。"
+args = 0
+
+[CONFIG_INIT_MISSING]
+text = "/init でプロジェクトを作る前に、組織URL（forgejo）とAPIトークン（api_key）の両方を設定してください。装飾は省略できます。"
+args = 0
+
+[CONFIG_INIT_READY]
+text = "組織URLとトークンは保存されています。アニメのチャンネルで /init を試せます。アカウントには組織内でリポジトリを作る権限も必要です。設定時にはその権限をテストしません。"
+args = 0
+
+[CONFIG_BASICS_TITLE]
+text = "言語と告知"
+args = 0
+
+[CONFIG_BASICS_BODY]
+text = "`language` を選択：EN（英語）、TR（トルコ語）、JP（日本語）。`announcement_channel` はtrueでこのチャンネルを告知先にし、falseで解除します。空欄は維持。新しいサーバーの初期言語はENです。10分間操作がないと設定を終了します。ヘルプ：/tutorial admin。"
+args = 0
+
+[CONFIG_REPO_TITLE]
+text = "チームの作業場所を接続"
+args = 0
+
+[CONFIG_REPO_BODY]
+text = "/init 用に `forgejo`：組織ページ（例：https://git.example.com/MyTeam、MyTeamまで必要）を入力します。`api_key`：そのアカウントの設定 → アプリケーションで作った、write:organization と write:repository 権限付きトークンです。アカウントには組織内でリポジトリを作る権限が必要です。トークンはこの非公開フォームだけに貼り付け、返信には表示されません。空欄は維持、`-` は消去。まだない場合はスキップしてForgejo管理者に相談してください。詳しくは /tutorial admin。"
+args = 0
+
+[CONFIG_DELIVERY_TITLE]
+text = "動画の配信先を選ぶ"
+args = 0
+
+[CONFIG_DELIVERY_BODY]
+text = "true または false を入力します。`local_gdrive`：サーバー専用Driveを優先（初期値true）。`drive_only`：Driveだけに公開（初期値false）。`hls`：12時間の再生リンクだけを作成（初期値false）。HLSはDrive-onlyより優先します。AV1を選ぶ前にDrive-onlyかHLSにしてください。配信アカウントは運用者がLumiereで接続します。この設定だけでは接続されません。"
+args = 0
+
+[CONFIG_ENCODE_TITLE]
+text = "動画と字幕の初期設定"
+args = 0
+
+[CONFIG_ENCODE_BODY]
+text = "`preset`：まずは standard が使えます。他の組み込み名は veryslow、pseudolossless、gpu、av1、dummy。運用者が登録した独自名も使えます。GPU/AV1には対応機器が必要で、dummyは開発用です。`wrapstyle`：dont_touchは制作者の改行を維持（初期値）。0/3は均等化、1は端で折り返し、2は自動改行なし。どちらも /init に必須ではありません。"
+args = 0
+
+[CONFIG_CHANNEL_TITLE]
+text = "チャンネルとファイルの設定"
+args = 0
+
+[CONFIG_CHANNEL_BODY]
+text = "`channel_rename`：trueなら /init と /attach がチャンネル名をアニメ名に変更（初期値true）。`merge_release_only`：trueなら /merge が字幕ファイルを直接返す（初期値false）。`hls_name`：%uuid%、%random%、%res%を使う任意のひな形。例：%uuid%_%random%_%res%。`-` で初期値に戻ります。空欄は現在の値を維持します。"
+args = 0
+
+[CONFIG_FANSUB_TITLE]
+text = "公開時のチームID"
+args = 0
+
+[CONFIG_FANSUB_BODY]
+text = "任意：`animecix_fansub`、`openanime_fansub`、`anizm_fansub` は各サイトのチームIDです。別サイトの値は使えません。後から /edit の検索候補で簡単に選べるので、不明ならスキップしてください。IDが分かればここに入力できます。`-` は消去です。公開アカウントは運用者が先に接続しておく必要があります。"
+args = 0
+
+[CONFIG_INTRO_TITLE]
+text = "冒頭動画を追加"
+args = 0
+
+[CONFIG_INTRO_BODY]
+text = "このチャンネルに冒頭動画を1つ添付してください（100 MiBまで）。他のメンバーにも見える投稿です。Pandoraが準備し、このサーバー用に自動選択します。次の手順が出るまで別のファイルを送らないでください。既存のグループは「入力する」の `concat` に名前を指定できます。`-` は無効化、スキップは現在の冒頭動画を維持します。"
+args = 0
+
+[CONFIG_OUTRO_TITLE]
+text = "末尾動画を追加"
+args = 0
+
+[CONFIG_OUTRO_BODY]
+text = "ここに末尾動画を1つ添付してください（100 MiBまで、チャンネルに公開）。Pandoraが準備して自動選択します。順番は冒頭 → 本編 → 末尾です。既存グループは `outro` に入力でき、`-` は無効化。スキップは現在の末尾動画を維持します。"
+args = 0
+
+[CONFIG_WATERMARK_TITLE]
+text = "文字の透かしを追加"
+args = 0
+
+[CONFIG_WATERMARK_BODY]
+text = ".ass透かしファイルを1つ送ってください（4 MiBまで、チャンネルに公開）。Dialogue行が必要です。Effectを[all]にすると全編、[precise]か空欄なら行の時刻を使います。既存のASS透かしを置き換えます。スキップは維持します。画像を使う場合は次の手順へ進んでください。"
+args = 0
+
+[CONFIG_LOGO_TITLE]
+text = "画像ロゴを追加"
+args = 0
+
+[CONFIG_LOGO_BODY]
+text = "PNG・JPEG・WebPを1つ送ってください（4 MiBまで、チャンネルに公開）。透過PNGなら背景を透明にできます。既存ロゴを置き換え、配置は維持します。初回は右上、余白24ピクセル、不透明度100、元のサイズです。次の手順で変更できます。スキップは現在のロゴを維持します。"
+args = 0
+
+[CONFIG_PLACEMENT_TITLE]
+text = "ロゴを配置"
+args = 0
+
+[CONFIG_PLACEMENT_BODY]
+text = "ロゴがなければスキップしてください。`position`：top-left、top-center、top-right、middle-left、middle-center、middle-right、bottom-left、bottom-center、bottom-right。`margin`：端からのピクセル数（0〜2000）。`opacity`：1〜100。`width`：動画幅に対する割合（1〜50）、0は元のサイズ。`period`：例の5m:20sは5分ごとに20秒、offは常時表示です。空欄は維持します。後から /touchlogo でも変更できます。"
+args = 0
+
+[CONFIG_MEDIA_FORBIDDEN]
+text = "このメディアの登録には対応する /touch コマンドの権限が必要です。運用者に依頼するか、既存グループを選ぶか、スキップしてください。"
+args = 0

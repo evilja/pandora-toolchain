@@ -19,7 +19,7 @@ pub struct Forgejo {
 impl Forgejo {
     pub fn new(forgejo_line: String, api_key: String) -> Result<Self, String> {
         if api_key.is_empty() {
-            return Err("forgejo API key is empty. Run /configure with the `api_key` option.".to_string());
+            return Err("forgejo API key is empty. Run /configure and enter the token in the repository step.".to_string());
         }
         let token = api_key;
         let mut headers = reqwest::header::HeaderMap::new();

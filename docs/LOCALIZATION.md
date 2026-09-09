@@ -39,3 +39,8 @@ One table per message ID. `text` is the template (use `\n` for newlines), `args`
 4. Run the locale key/argument-count test; startup merges the new id into existing runtime TOMLs without replacing custom translations.
 
 The consts intentionally have the same name as the TOML keys, so `pub const X: &str = "X";` is the standard form. `src/pnworker/locales/legacy.toml` is migration data for the old generated table, not a fourth selectable language.
+
+The setup wizard uses `CONFIG_*` keys for its steps, navigation, validation and completion messages.
+`TUTORIAL_ADMIN_*` supplies the paged administrator guide; `TUTORIAL_1_SAVED_*` explains reusing
+episode links. These are new keys so existing runtime locale files receive the added guidance
+without overwriting custom translations. Input field names retain their `/edit` spellings.

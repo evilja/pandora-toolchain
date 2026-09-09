@@ -77,7 +77,8 @@ Pandora needs **View Channel, Send Messages, Embed Links, Add Reactions** and **
 - `/gitsync` — admin; `git fetch` + fast-forward, kills the shrine, archives `DB/work`, `std::process::exit(0)` to restart. Before that wipe it moves every `DB/work/<job_id>/log` still present to `DB/saved_data/<job_id>/log` (`preserve_work_logs`), never overwriting a copy an archived job already put there: a job's logs otherwise only survive if it *finished*, so syncing used to destroy the logs of exactly the jobs worth reading — the ones that were still stuck. The reply then lists every commit the pull brought in, newest first, one `@<short id> — <commit title>` line each (for example `@e5a95f7 — feat: add /refreshcache …`) — the same set as `git log <old HEAD>..<new HEAD>`, so a sync that was four commits behind lists all four. A pull with nothing to bring in, and a failed pull, both report the single unchanged HEAD line instead, so the reply always names where the bot actually is. At most 10 commits are listed and the remainder is counted as `…(+N)`, because a Discord message caps at 2000 characters; the walk itself stops after 100 commits and marks the count as a floor (`…(+N+)`), since a force-push leaves the previous tip unreachable and nothing gets hidden from the walk. The short id comes from git's own abbreviation length and grows if a prefix collides. Titles are commit summaries verbatim, so unlike the surrounding status text they are not localized. Implemented in `src/pnworker/pull.rs` (`SyncReport`), rendered by `run_gitsync` in `src/pnworker/core.rs`. A sync that moved HEAD also bumps the **build** in `build.pandora` and runs any pending [migration scripts](LINK.md#migrations), reporting both on the same reply; the build is what tells every Pandora Mini node to update, so a sync that pulled nothing deliberately leaves it alone rather than restarting the cluster for nothing.
 - `/gitforce` — admin; the same path as `/gitsync`, with two differences. It **resets** the checkout onto origin's branch tip rather than fast-forwarding towards it, and it bumps the build whether or not HEAD moved — then sets a flag on the advertised release so every Pandora Mini node drains, resets onto the same commit, and restarts too. It exists for the two cases a fast-forward cannot serve: a checkout that has diverged, and a rebuild that has to reach the cluster without a new commit. It is a separate command from `/gitsync` precisely so that cost is asked for rather than paid by accident — `/gitsync` is run constantly and must neither discard local state nor restart every node for nothing. **Local working-tree changes are discarded, here and on every node.** The forced flag is recorded against the build it belongs to, so the next ordinary `/gitsync` bumps past it and the reset stops applying. See [LINK.md](LINK.md#gitforce).
 - `/gitquery` — admin; disables new encode jobs, waits for current encode jobs to finish, then runs the same sync/restart path as `/gitsync`, including the same commit listing. The list appears when the sync actually runs, not when the query is armed, because the pulled range is only known after the fetch.
-- `/configure <language> [forgejo] [wrapstyle]` — admin + Discord Server Administrator (Witch bypass); writes `DB/config/<guild_id>/meta.pandora` and records the channel the command was issued in as the announcement channel. `language` is `EN` / `TR` / `JP` (string choice). `forgejo` is optional — leave empty to unset. `wrapstyle` controls ASS WrapStyle normalization (`dont_touch` default, or `0`/`1`/`2`/`3`). `/edit` can update the same field without rewriting the rest of the config; `/edit` also sets server-wide encode preset and concat defaults.
+- `/configure` — admin + Discord Server Administrator (Witch bypass); opens a private, localized setup wizard with optional forms and skippable media uploads. See [interactive setup](#interactive-configure) below. `/edit` remains available for direct changes.
+
 - `/edit ...` — admin + Discord Server Administrator (Witch bypass); edits selected server metadata fields without changing omitted fields. `animecix_fansub`, `openanime_fansub`, and `anizm_fansub` each live-search that site's own fansub directory and store the site's own identifier (an AnimeciX translator template id, an OpenAnime `fansubSecureName`, an Anizm staff-form fansub id) — the sites do not share names or secure names, so each has its own selector and its own `meta.pandora` line. The selectors read the persisted directories in `DB/cache/directories/` (refreshed every 12 hours, or on demand with `/refreshcache`), so a keystroke never waits on a provider; a directory that cannot be loaded reports the reason as a `⚠ <site> lookup failed: …` choice instead of rendering as an empty search result. A submitted value is re-resolved against the directory before it is stored, so a hand-typed name that is not a real identifier is refused; `-` clears one selection and omitting an option keeps it. `drive_only:true` restricts future release uploads for this server to Google Drive, without starting Byse/LuluStream/Voe transfers; `drive_only:false` restores all configured Lumiere providers. Uploads already running are unchanged, while `/backup`, backup-all, and release-font uploads remain Drive-only regardless. Its `concat` field dynamically autocompletes the alphabetized groups registered through `/touchintro` and always includes `Disable concat`; selecting that choice clears the server's line-12 concat setting. Free-text submissions are still checked against the current intro config. Intro groups point to folders; `pnmpeg` retains newly required compatibility variants there and reuses them on later encodes. Its `outro` field is the same selector over the groups registered through `/touchoutro`, clearing the server's line-19 outro setting the same way. The two registries are independent — one group name may exist in both, setting an outro does not require an intro, and a job with both stitches them on in a single stream-copy pass that plays intro, episode, outro. Its `preset` field chooses the server's default encoder and, like `concat`, autocompletes rather than offering a fixed list — the compiled-in presets are `Standard x264`, `Very Slow x264 (CRF 18)` (x264 `-preset veryslow -crf 18` with no `-x264-params` tuning, so AQ stays at libx264's defaults), `GPU`, `AV1 NVENC`, `Pseudo Lossless`, and `DEV`, and every preset file in `DB/config/global/presets/` carrying a name of its own is offered beside them as `<name> (file)`. A file that *replaces* a built-in appears once, under the built-in's label, because it is that preset now. A submitted name is checked against `preset_from_name`, the same table the API payload and `meta.pandora` line 11 resolve through, so a hand-typed name with no preset behind it is refused before anything is written. `720p` and `480p` stay out of the list as they always have. AV1 is accepted when the server is HLS-only or Drive-only; other provider combinations are refused before metadata is written. `hls:true` makes Lumiere HLS the exclusive output for each future release encode: no Google Drive, Byse, LuluStream, or Voe task starts, AV1 uses fMP4/CMAF, and the random 12-hour master capability URL is the job's sole advertised link. `hls:false` restores the normal provider policy. HLS-only takes precedence over `drive_only`; Drive-only backup flows are unchanged. `hls_name` sets the template every file in an HLS release is named after: `%uuid%` is a fresh v4 UUID, `%random%` six random hex characters, and `%res%` the published height as `720p`, so the default `%uuid%_%random%_%res%` produces `<uuid>_a1b2c3_1080p.m3u8` beside `chunk/p0-<uuid>_a1b2c3_1080p.ts`. Everything outside a variable is a literal and may only use letters, digits, `.`, `_`, and `-`; a template with an unknown variable, a path separator, a leading `.` or `-`, or one whose name would end in `_variant` (the media playlist's own suffix) is refused with the reason, before anything is written. `-` restores the default. It applies to the next release encode — a job already running keeps the names it started with. `merge_release_only:` makes `/merge` answer with the release ASS itself as an attachment instead of the embed describing where it went — merge warnings come with it as subtext lines, and a release too large to attach falls back to the embed. `channel_rename:false` stops `/init` and `/attach` from renaming the channel they run in to the anime they attached, for servers that name their channels themselves; `channel_rename:true` — the default, and what every server did before the option existed — restores it.
 - `/gettranslation <language> <key>` — admin; reads one localization entry from `DB/config/<language>.toml` (`language` choices are `en` / `tr` / `jp`) and replies ephemerally with its text and `args` count. Handler: `src/helpers/handlers/translation.rs`.
 - `/touchtranslation <language> <key> <text> [args]` — admin; upserts one localization entry in the selected TOML. Existing keys keep their current `args` count unless `args` is provided; new keys infer `args` from `{}` placeholders when omitted.
@@ -313,7 +314,63 @@ See [TOOLS.md](TOOLS.md) for full `pnass` flags and ASS parsing rules.
 `/tutorial 1` opens a private beginner walkthrough in the server's configured language (English,
 Turkish, or Japanese). It covers `/encode do`, selecting a pack file with `/probe` then
 `/encode pan`, and the shared-channel `/init` → `/job` → `/smartcode` workflow, with command
-examples and explanations of TL, TLC, TS, job IDs, and file indices. The guide is available to everyone, like `/help`, and appears in `/help`. It shows one of four pages at a time, with localized Previous/Next buttons and a page counter.
+examples and explanations of TL, TLC, TS, job IDs, and file indices. The guide is available to everyone, like `/help`, and appears in `/help`. It shows one of five pages at a time, with localized Previous/Next buttons and a page counter.
 Buttons edit the original private message; Previous is disabled on the first page and Next on
 the last. The pages use `TUTORIAL_1_*` translation keys and navigation uses `TUTORIAL_PREVIOUS`
 and `TUTORIAL_NEXT`.
+
+
+`/tutorial 1` also explains saved episode links: once a source has been saved for episode 1,
+`/smartcode do episode:1` can reuse it without `link`. Probe-backed episodes use
+`/smartcode pan episode:1`; an unavailable probe must be refreshed. Each episode and attached
+channel has its own source.
+
+`/tutorial admin` uses the same private pagination for seven pages: starting setup, `/init`
+prerequisites and where to get them, every `/edit` setting, delivery and per-site fansubs,
+intro/outro and watermark commands, `/auth` and access levels, and supporting commands such as
+`/font`, `/cfont`, `/readmebase`, `/attribute`, `/source`, and `/providers`. It is readable by
+anyone; reading the guide grants no administrative capabilities. Admin pages use
+`TUTORIAL_ADMIN_*`, and the saved-link page uses `TUTORIAL_1_SAVED_*`.
+
+## Interactive `/configure`
+
+The slash command takes no options. It opens an eleven-step wizard in the invoking channel:
+language/announcement channel, organization/token, delivery, encoding/wrapping, channel/HLS
+preferences, per-site fansubs, intro, outro, ASS watermark, image logo, and logo placement.
+**Enter details** opens a private form with at most five optional fields. Blank fields preserve
+existing values; **Skip** preserves the entire step. Text fields that support clearing accept `-`,
+while booleans accept `true`/`false`. Each submitted step saves immediately. **Finish** keeps
+completed steps and closes the wizard; there is no pending bulk save to lose.
+
+A new server starts with EN, the standard preset, local Drive preference enabled, channel
+renaming enabled, and the remaining optional settings unset/off. The announcement step can use
+the current channel (`true`) or clear it (`false`). Running setup on an existing server preserves
+omitted fields, including reserved positional slots. Form validation finishes before metadata
+is changed, then the latest file is read and only the submitted fields are replaced; writes use
+a temporary file and rename. The form never pre-fills or displays the saved token.
+
+For `/init`, `forgejo` must be the organization page, such as
+`https://git.example.com/MyTeam`, and `api_key` must be a token for an account allowed to create
+repositories there. The guide explains the Forgejo Settings → Applications token page and the
+`write:organization` / `write:repository` scopes used by the API calls. See the
+[Forgejo token documentation](https://forgejo.org/docs/latest/user/authentication/token-scope/).
+The wizard validates the URL and local setting formats; it does not create a test repository or
+verify remote permissions. Its final message distinguishes missing repository settings from
+saved settings. Branding and delivery settings are optional for `/init`.
+
+During a media step, send exactly one attachment in the same channel, from the person who opened
+the wizard. These uploads are ordinary channel messages and are visible to that channel; all
+setup forms and progress replies stay private. Videos are limited to 100 MiB and watermark/logo
+files to 4 MiB. Intros/outros go through the same variant preparation as `/touchintro` and
+`/touchoutro`, get a generated unique group name, and are selected automatically for this server.
+An existing group can instead be entered in the form. ASS watermarks use the same validator as
+`/touchwatermark`. Logos accept PNG/JPEG/WebP and preserve existing placement; the next form can
+change position, margin, opacity, width, and cadence.
+
+Setup rechecks the caller's rank and Discord administrator permission on component/modal actions
+and uploads. Installing media additionally requires the matching `/touch*` command rank (intro
+and outro installation default to Witch); selecting an existing group remains a settings edit.
+Only one wizard is active per server. Sessions are in memory, expire after ten idle minutes,
+and disappear on restart. Custom IDs include the session and page; stale pages, other users,
+other channels, and duplicate submissions cannot advance the active wizard. Failed input stays
+on the same step for retry. A busy upload cannot be skipped mid-installation.

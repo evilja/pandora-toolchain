@@ -761,3 +761,219 @@ args = 0
 [TUTORIAL_NEXT]
 text = "Next"
 args = 0
+
+[TUTORIAL_1_SAVED_TITLE]
+text = "You only need to give the link once"
+args = 0
+
+[TUTORIAL_1_SAVED_BODY]
+text = "Already made episode 1 with `/smartcode`? Pandora remembers where that episode’s video comes from. After fixing its subtitles with `/job`, simply run `/smartcode do episode:1` again — no need to hunt down and paste the same link. This is remembered separately for each episode in this channel. Give a new episode its own link the first time. If you want to replace the source video, include the new `link`. For a pack saved with `/smartcode pan`, use `/smartcode pan episode:1` again; Pandora also remembers the selected file. If the saved probe has expired, run `/probe` again and supply its new Job ID and index."
+args = 0
+
+[TUTORIAL_ADMIN_START_TITLE]
+text = "Admin guide · Start here"
+args = 0
+
+[TUTORIAL_ADMIN_START_BODY]
+text = "Run `/configure` in the channel where you want to set up the server. It walks you through settings, intro/outro videos, an ASS watermark, and a picture logo. **Enter details** opens a private form. Leave individual boxes empty to keep their values, or use **Skip** for the whole step. Each saved step takes effect immediately; **Finish** stops without undoing it. There is one setup per server, and it expires after 10 idle minutes. Media attachments are posted in that channel, so other members can see them. Tokens belong only in the private form. `/configure` and `/edit` require Pandora Admin access and Discord Server Administrator permission; Witch can bypass the Discord permission check. Reading this guide does not grant access."
+args = 0
+
+[TUTORIAL_ADMIN_INIT_TITLE]
+text = "What /init needs"
+args = 0
+
+[TUTORIAL_ADMIN_INIT_BODY]
+text = "Before `/init`, fill in **forgejo** and **api_key** in the repository step. Everything about intros, logos and delivery can wait.\n• `forgejo`: open your team’s organization page on your Forgejo website and copy its URL, for example `https://git.example.com/MyTeam`. Include `MyTeam`; the website address alone is not enough. Ask the site owner to create an organization and give the token’s account permission to create repositories there.\n• `api_key`: sign in to that account, open Settings → Applications (`/user/settings/applications`), and generate a token. Give it `write:organization` and `write:repository` for Pandora’s organization/repository operations. Copy it into the private setup form. See the [Forgejo token guide](https://forgejo.org/docs/latest/user/authentication/token-scope/).\nThen go to the anime’s channel and run `/init mal:<MyAnimeList anime page>`; add `season:2` for season 2. Pandora creates a public project and episode folders. `language` only chooses the bot’s language. `announcement_channel` is for announcements; neither replaces the organization or token."
+args = 0
+
+[TUTORIAL_ADMIN_EDIT_TITLE]
+text = "Everyday /edit settings"
+args = 0
+
+[TUTORIAL_ADMIN_EDIT_BODY]
+text = "Use `/edit` later to change just a few settings. Omitted fields stay as they are.\n• `language`: EN, TR or JP. `forgejo` and `api_key`: the organization URL and token described on the previous page; `-` clears either.\n• `announcement_channel:true`: use the channel you are typing in for announcements.\n• `preset`: how the video is encoded. Start with `standard`; type in the field to see this installation’s choices. GPU/AV1 need suitable hardware.\n• `wrapstyle`: how subtitles break long lines. `dont_touch` preserves the subtitle author’s choice. Modes 0/3 balance lines, 1 wraps at the edge, 2 avoids automatic wrapping.\n• `concat`: intro group; `outro`: ending group. Pick names installed with `/touchintro` or `/touchoutro`; `-` disables one.\n• `channel_rename`: whether `/init` and `/attach` rename anime channels (default true).\n• `merge_release_only`: true makes `/merge` return the subtitle file directly (default false). None of these optional choices is needed to create a project with `/init`."
+args = 0
+
+[TUTORIAL_ADMIN_DELIVERY_TITLE]
+text = "Where finished videos go"
+args = 0
+
+[TUTORIAL_ADMIN_DELIVERY_BODY]
+text = "• `local_gdrive`: prefer this server’s Drive profile when available. Drive accounts are connected by the bot operator in Lumiere, not by pasting Google secrets into Discord.\n• `drive_only:true`: upload release videos only to Drive. `false`: use the configured providers.\n• `hls:true`: publish only the Lumiere playback link, which lasts 12 hours. This takes priority over `drive_only`. AV1 requires HLS-only or Drive-only delivery.\n• `hls_name`: optional file-name template. `%uuid%`, `%random%`, `%res%` insert an identifier, random text and resolution. Leave it alone unless you need custom names; `-` restores the default.\n• `animecix_fansub`, `openanime_fansub`, `anizm_fansub`: select your group separately on each site using `/edit` autocomplete. The wizard accepts those same IDs. Each site has its own list; a name from one site may not work on another. `-` clears a selection. The bot operator must connect the publishing accounts first. These settings are not prerequisites for `/init`."
+args = 0
+
+[TUTORIAL_ADMIN_MEDIA_TITLE]
+text = "Intros, outros and watermarks"
+args = 0
+
+[TUTORIAL_ADMIN_MEDIA_BODY]
+text = "The `/configure` wizard asks for each file and selects uploaded intro/outro videos automatically. You can also manage them separately:\n• `/touchintro name:my_intro video:<file>` prepares an intro. Then `/edit concat:my_intro` selects it.\n• `/touchoutro name:my_outro video:<file>` prepares an ending. Then `/edit outro:my_outro` selects it. Names use letters, numbers, `_` or `-`. Playback is intro → episode → outro.\n• `/touchwatermark watermark:<file.ass>` adds a styled text watermark. In the ASS editor, `[all]` in a line’s Effect field means the whole episode; `[precise]` or an empty Effect keeps that line’s own timing.\n• `/touchlogo image:<file.png>` adds a picture watermark. PNG, JPEG and WebP work; use transparent PNG if you want no background. `position` chooses a corner/anchor, `margin` is the edge gap, `opacity` is 1–100, `width` is a percentage (0 means original size). `period:5m:20s` shows it for 20 seconds every 5 minutes; `off` shows it continuously. `clear:true` removes it. You can change placement without uploading again.\nThese affect new jobs; already queued jobs retain their settings."
+args = 0
+
+[TUTORIAL_ADMIN_AUTH_TITLE]
+text = "Give your team access"
+args = 0
+
+[TUTORIAL_ADMIN_AUTH_BODY]
+text = "Pandora’s access levels are separate from Discord roles. Ask the bot operator to grant the first administrator access.\nRun `/auth user_id:<Discord user ID> level:<level>`. To copy an ID, enable Discord Settings → Advanced → Developer Mode, then use Copy User ID on that person. Levels in the menu are Authorize, Fansubber, Admin, Upper and Witch. You can grant a level only when your own level is at least that high; `/auth` itself also requires its configured command rank. Grants apply across the bot’s servers, not just this channel.\nUse `/lsauth` to inspect access and `/rm user_id:<ID> level:<level>` to remove it. Having a Discord Administrator role alone does not put someone in Pandora’s access lists. `/configure`, `/edit`, `/touchwatermark` and `/touchlogo` also check Discord Server Administrator permission, with the Witch bypass. Intro/outro installation has its own command rank; ask the operator if refused."
+args = 0
+
+[TUTORIAL_ADMIN_EXTRAS_TITLE]
+text = "Finishing touches"
+args = 0
+
+[TUTORIAL_ADMIN_EXTRAS_BODY]
+text = "• `/font`: install the fonts your subtitles use. `/cfont` chooses the font for preview labels. Missing fonts can change the look of a release.\n• `/readmebase`: set the shared README template for new anime projects. It is optional for `/init`.\n• `/attribute`: set this anime channel’s subtitle styles and credit lines. `/alias choose` sets the name used for encoder credits.\n• `/link set`: redirect supported output to another channel, such as the finished subtitle from `/merge`.\n• `/source`: save or replace an episode’s video link without encoding. `/smartcode` remembers a link once saved, so reruns of the same episode need only its episode number.\n• `/providers`: check the available upload services. Accounts and Drive profiles are managed by the bot operator through Lumiere. Choosing a delivery setting does not connect an account.\nWhen ready, try one episode with `/init`, `/job`, then `/smartcode`; `/tutorial 1` shows that workflow."
+args = 0
+
+[CONFIG_ENTER]
+text = "Enter details"
+args = 0
+
+[CONFIG_SKIP]
+text = "Skip"
+args = 0
+
+[CONFIG_FINISH]
+text = "Finish"
+args = 0
+
+[CONFIG_SKIP_HELP]
+text = "Empty boxes and Skip keep existing values. Saved steps apply immediately. Finish keeps what you have saved."
+args = 0
+
+[CONFIG_OCCUPIED]
+text = "A setup is already open for this server. Finish it, or wait 10 idle minutes and run /configure again."
+args = 0
+
+[CONFIG_EXPIRED]
+text = "This setup step is no longer available, or you do not have permission. Use the latest setup message or run /configure again."
+args = 0
+
+[CONFIG_SAVE_FAILED]
+text = "The settings could not be saved. Try again; if it continues, ask the bot operator."
+args = 0
+
+[CONFIG_INVALID]
+text = "One of the values was not accepted. Check the formats below and try again. Nothing in this form was saved."
+args = 0
+
+[CONFIG_DELIVERY_INVALID]
+text = "This preset needs a compatible delivery choice. AV1 requires hls:true or drive_only:true. Use /edit to change delivery first, then retry."
+args = 0
+
+[CONFIG_LOGO_MISSING]
+text = "Upload a logo first, or skip placement if you do not need one."
+args = 0
+
+[CONFIG_MEDIA_INVALID]
+text = "That upload could not be installed. Send one valid file: video up to 100 MiB, or ASS/logo up to 4 MiB. For logos use PNG, JPEG or WebP; an ASS watermark needs Dialogue events. Try again or Skip."
+args = 0
+
+[CONFIG_PROCESSING]
+text = "Preparing your file. Videos may take a few minutes; the next step will appear here."
+args = 0
+
+[CONFIG_DONE]
+text = "Setup finished. Saved settings are kept; skipped fields are unchanged. You can adjust them later with /edit and the media commands. See /tutorial admin for the full guide."
+args = 0
+
+[CONFIG_INIT_MISSING]
+text = "Before /init can create a project, add both the organization URL (forgejo) and API token (api_key). Optional branding can stay skipped."
+args = 0
+
+[CONFIG_INIT_READY]
+text = "The organization URL and token are saved. You can try /init in an anime channel. The account still needs permission to create repositories there; setup does not test that permission."
+args = 0
+
+[CONFIG_BASICS_TITLE]
+text = "Language and announcements"
+args = 0
+
+[CONFIG_BASICS_BODY]
+text = "Choose `language`: EN (English), TR (Türkçe), JP (日本語). Set `announcement_channel` to true to use this channel for announcements, or false to clear the announcement channel. Empty means keep it. On a new server the default language is EN. This setup closes after 10 idle minutes. See /tutorial admin for help."
+args = 0
+
+[CONFIG_REPO_TITLE]
+text = "Connect your team’s project folder"
+args = 0
+
+[CONFIG_REPO_BODY]
+text = "For /init, enter `forgejo`: your organization page, e.g. https://git.example.com/MyTeam (include MyTeam). Enter `api_key`: a token from that account’s Settings → Applications, with write:organization and write:repository. That account must be allowed to create repositories in the organization. Paste the token only in this private form; it is never displayed back. Empty boxes keep existing values; `-` clears one. If you do not have these yet, skip and ask your Forgejo administrator. /tutorial admin explains the steps."
+args = 0
+
+[CONFIG_DELIVERY_TITLE]
+text = "Choose where videos go"
+args = 0
+
+[CONFIG_DELIVERY_BODY]
+text = "Enter true or false. `local_gdrive`: prefer this server’s Drive profile (default true). `drive_only`: only upload releases to Drive (default false). `hls`: only produce a 12-hour playback link (default false); it overrides Drive-only. Choose delivery before an AV1 preset: AV1 needs Drive-only or HLS. The bot operator connects provider accounts in Lumiere; these switches do not connect accounts."
+args = 0
+
+[CONFIG_ENCODE_TITLE]
+text = "Video and subtitle defaults"
+args = 0
+
+[CONFIG_ENCODE_BODY]
+text = "`preset`: standard is a simple starting point. Other built-ins: veryslow, pseudolossless, gpu, av1, dummy; custom preset names installed by your operator also work. GPU/AV1 need suitable hardware; dummy is for development. `wrapstyle`: dont_touch keeps the subtitle author’s wrapping (default); 0/3 balance lines, 1 wraps at the edge, 2 avoids automatic wrapping. Neither is required for /init."
+args = 0
+
+[CONFIG_CHANNEL_TITLE]
+text = "Channel and file preferences"
+args = 0
+
+[CONFIG_CHANNEL_BODY]
+text = "`channel_rename`: true lets /init and /attach rename channels for their anime (default true). `merge_release_only`: true makes /merge return the subtitle attachment directly (default false). `hls_name`: optional template using %uuid%, %random%, %res%, such as %uuid%_%random%_%res%. Use `-` to reset the template. Leave any box empty to keep its value."
+args = 0
+
+[CONFIG_FANSUB_TITLE]
+text = "Publishing team identities"
+args = 0
+
+[CONFIG_FANSUB_BODY]
+text = "Optional: `animecix_fansub`, `openanime_fansub`, `anizm_fansub` identify your group on each site. Use that site’s ID, not a value copied from another site. To find it easily, use /edit’s search suggestions later; skip this step if unsure. If you already know the IDs, enter them here. `-` clears a selection. The publishing accounts must already be connected by the bot operator."
+args = 0
+
+[CONFIG_INTRO_TITLE]
+text = "Add an intro video"
+args = 0
+
+[CONFIG_INTRO_BODY]
+text = "Send one intro video attachment in this channel (up to 100 MiB). Other channel members can see that upload. Pandora prepares it and automatically selects it for this server. Wait for the next step before sending another file. Or use Enter details to put an existing intro group name in `concat`; `-` disables the intro. Skip keeps the current intro."
+args = 0
+
+[CONFIG_OUTRO_TITLE]
+text = "Add an outro video"
+args = 0
+
+[CONFIG_OUTRO_BODY]
+text = "Send one ending video attachment here (up to 100 MiB; visible to the channel). Pandora prepares and selects it automatically. Playback will be intro → episode → outro. Or enter an existing group in `outro`; `-` disables it. Skip keeps the current ending."
+args = 0
+
+[CONFIG_WATERMARK_TITLE]
+text = "Add a text watermark"
+args = 0
+
+[CONFIG_WATERMARK_BODY]
+text = "Send one .ass watermark file here (up to 4 MiB; visible to the channel). It must contain Dialogue events. Set the Effect field to [all] for the whole episode, or [precise]/empty to keep a line’s timing. This replaces the server’s existing ASS watermark. Skip keeps it as it is. For a picture instead, skip and use the next step."
+args = 0
+
+[CONFIG_LOGO_TITLE]
+text = "Add a picture logo"
+args = 0
+
+[CONFIG_LOGO_BODY]
+text = "Send one PNG, JPEG or WebP here (up to 4 MiB; visible to the channel). A transparent PNG avoids a solid background. This replaces the server logo and keeps its existing placement. A new logo starts top-right, with a 24-pixel margin, full opacity and its original size. The next step lets you change that. Skip keeps the current logo."
+args = 0
+
+[CONFIG_PLACEMENT_TITLE]
+text = "Position your logo"
+args = 0
+
+[CONFIG_PLACEMENT_BODY]
+text = "If you have no logo, skip. `position`: top-left, top-center, top-right, middle-left, middle-center, middle-right, bottom-left, bottom-center or bottom-right. `margin`: pixels from the edge (0–2000). `opacity`: 1–100. `width`: percentage of video width (1–50), or 0 for the image’s own size. `period`: for example 5m:20s shows the logo for 20 seconds every 5 minutes; off shows it continuously. Blank boxes keep their current values. You can also adjust these later with /touchlogo."
+args = 0
+
+[CONFIG_MEDIA_FORBIDDEN]
+text = "Installing this media requires the corresponding /touch command’s access level. Ask the bot operator, select an existing group where available, or Skip."
+args = 0

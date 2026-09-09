@@ -77,94 +77,61 @@ async fn handle_addconcat(
         }
     };
 
-    // Intro and outro groups share a name space per server only within their own kind, so they are
-    // installed under separate roots: two groups both called `summer` must not overwrite each other.
-    let out_dir = PathBuf::from("DB")
-        .join(concat_root(kind))
-        .join(server_id.to_string());
-    let final_dir = out_dir.join(&name);
-    let tmp_dir = PathBuf::from("DB")
-        .join("work")
-        .join(format!("add{}_{}_{}", label, server_id, command.id.get()));
+    match install_concat_upload(server_id, command.id.get(), kind, &name, &bytes, |index, variant| {
+        addintro_response(ctx, command, format!("Encoding variant {}/{} (`{}`)...", index, CONCAT_VARIANTS.len(), variant))
+    }).await {
+        Ok(paths) => {
+            command.edit_response(ctx, EditInteractionResponse::new().content("")
+                .embed(success_embed(command, COMMAND_UPDATED).description(format!(
+                    "Added {} group `{}` with {} variants.", label, name, paths.len()
+                )))).await.ok();
+        }
+        Err(error) => addintro_response(ctx, command, error).await,
+    }
+}
+
+// Shared by slash uploads and the setup wizard, so both install the same compatibility variants.
+pub(super) async fn install_concat_upload<F, Fut>(
+    server_id: u64, operation: u64, kind: ConcatKind, name: &str, bytes: &[u8], mut progress: F,
+) -> Result<Vec<PathBuf>, String>
+where F: FnMut(usize, &'static str) -> Fut, Fut: std::future::Future<Output = ()>
+{
+    if !valid_concat_name(name) { return Err("Invalid group name".into()); }
+    let out_dir = PathBuf::from("DB").join(concat_root(kind)).join(server_id.to_string());
+    let final_dir = out_dir.join(name);
+    let tmp_dir = PathBuf::from("DB").join("work").join(format!("add{}_{}_{}", kind.label(), server_id, operation));
     let encoded_dir = tmp_dir.join("encoded");
-    if let Err(e) = tokio::fs::create_dir_all(&out_dir).await {
-        addintro_response(ctx, command, format!("Failed to create concat dir: {}", e)).await;
-        return;
-    }
-    if let Err(e) = tokio::fs::create_dir_all(&encoded_dir).await {
-        addintro_response(ctx, command, format!("Failed to create temp dir: {}", e)).await;
-        return;
-    }
-
-    let input = tmp_dir.join("input");
-    if let Err(e) = tokio::fs::write(&input, &bytes).await {
-        addintro_response(ctx, command, format!("Failed to write uploaded video: {}", e)).await;
-        cleanup_addintro_tmp(&tmp_dir).await;
-        return;
-    }
-
-    let mut file_names = Vec::new();
-    for (idx, variant) in CONCAT_VARIANTS.iter().enumerate() {
-        addintro_response(ctx, command, format!("Encoding variant {}/{} (`{}`)...", idx + 1, CONCAT_VARIANTS.len(), variant.label)).await;
-        let file_name = format!("{}_{}.mp4", name, variant.label);
-        let tmp_output = encoded_dir.join(&file_name);
-        match encode_concat_variant(&input, &tmp_output, variant).await {
-            Ok(()) => {}
-            Err(e) => {
-                addintro_response(ctx, command, format!("Failed to encode `{}`: {}", variant.label, e)).await;
-                cleanup_addintro_tmp(&tmp_dir).await;
-                return;
-            }
+    let result = async {
+        tokio::fs::create_dir_all(&out_dir).await.map_err(|e| e.to_string())?;
+        tokio::fs::create_dir_all(&encoded_dir).await.map_err(|e| e.to_string())?;
+        let input = tmp_dir.join("input");
+        tokio::fs::write(&input, bytes).await.map_err(|e| e.to_string())?;
+        let mut paths = Vec::new();
+        for (index, variant) in CONCAT_VARIANTS.iter().enumerate() {
+            progress(index + 1, variant.label).await;
+            let file_name = format!("{}_{}.mp4", name, variant.label);
+            encode_concat_variant(&input, &encoded_dir.join(&file_name), variant).await?;
+            paths.push(final_dir.join(file_name));
         }
-        file_names.push(file_name);
-    }
-
-    let previous_dir = out_dir.join(format!(".{}_previous_{}", name, command.id.get()));
-    tokio::fs::remove_dir_all(&previous_dir).await.ok();
-    let had_previous = final_dir.exists();
-    if had_previous {
-        if let Err(e) = tokio::fs::rename(&final_dir, &previous_dir).await {
-            addintro_response(ctx, command, format!("Failed to stage replacement for `{}`: {}", final_dir.display(), e)).await;
-            cleanup_addintro_tmp(&tmp_dir).await;
-            return;
-        }
-    }
-    if let Err(e) = tokio::fs::rename(&encoded_dir, &final_dir).await {
+        let previous = out_dir.join(format!(".{}_previous_{}", name, operation));
+        let had_previous = final_dir.exists();
         if had_previous {
-            tokio::fs::rename(&previous_dir, &final_dir).await.ok();
+            tokio::fs::rename(&final_dir, &previous).await.map_err(|e| e.to_string())?;
         }
-        addintro_response(ctx, command, format!("Failed to install `{}`: {}", final_dir.display(), e)).await;
-        cleanup_addintro_tmp(&tmp_dir).await;
-        return;
-    }
-    if had_previous {
-        tokio::fs::remove_dir_all(&previous_dir).await.ok();
-    }
-
-    match upsert_concat_group(kind, &name, final_dir.display().to_string()).await {
-        Ok(()) => {
-            cleanup_addintro_tmp(&tmp_dir).await;
-            let paths = file_names.iter().map(|file| final_dir.join(file).display().to_string()).collect::<Vec<_>>();
-            let content = format!("Added {} group `{}` with {} variants in `{}`:\n{}", label, name, paths.len(), final_dir.display(), paths.iter().map(|p| format!("`{}`", p)).collect::<Vec<_>>().join("\n"));
-            command
-                .edit_response(
-                    ctx,
-                    EditInteractionResponse::new()
-                        .content("")
-                        .embed(success_embed(command, COMMAND_UPDATED).description(content)),
-                )
-                .await
-                .ok();
+        if let Err(error) = tokio::fs::rename(&encoded_dir, &final_dir).await {
+            if had_previous { tokio::fs::rename(&previous, &final_dir).await.ok(); }
+            return Err(error.to_string());
         }
-        Err(e) => {
-            cleanup_addintro_tmp(&tmp_dir).await;
-            let file = Path::new(kind.config_path())
-                .file_name()
-                .map(|name| name.to_string_lossy().to_string())
-                .unwrap_or_else(|| kind.config_path().to_string());
-            addintro_response(ctx, command, format!("Encoded files, but failed to update {}: {}", file, e)).await;
+        if let Err(error) = upsert_concat_group(kind, name, final_dir.display().to_string()).await {
+            tokio::fs::remove_dir_all(&final_dir).await.ok();
+            if had_previous { tokio::fs::rename(&previous, &final_dir).await.ok(); }
+            return Err(error);
         }
-    }
+        if had_previous { tokio::fs::remove_dir_all(&previous).await.ok(); }
+        Ok(paths)
+    }.await;
+    cleanup_addintro_tmp(&tmp_dir).await;
+    result
 }
 
 // `DB/concat` is where intro groups have always been installed; renaming it would strand every
