@@ -207,3 +207,13 @@ Every tool now writes a **run log**: `ToolLog` in `src/lib/logging/tool.rs`, one
 - **pnp2p** → `PNp2p*<job_id>.log`. Args, client initialisation, probe start/result count, the selection being downloaded, and the terminal result. Previously the torrent path wrote nothing to the job directory, so a stuck download and a download that never started were indistinguishable.
 - **pncurl** → `PNcurl*<job_id>.run.log`. Args, which mode started (scrape / direct / drive upload), and its outcome.
 - **pnass** → `PNass_Inject<job_id>.log`. See [`pnass` flags](#pnass-flags).
+
+## Video output identifier
+
+Newly generated videos carry `SubstitutePandoraIdentifier - Evillja Cloud Solutions` in their
+container metadata. MP4/Matroska use `comment`; MPEG-TS HLS segments use `service_name`.
+The shared output arguments apply the credit after preset options, including custom presets,
+Studio renders and joined outputs. Parallel and ahead-of-time final muxes apply the same credit;
+the shared HLS muxer arguments also cover direct HLS output and broker remuxing. This changes
+metadata only, with no visible text added to the picture. Existing files and unmodified backup
+uploads are not rewritten.

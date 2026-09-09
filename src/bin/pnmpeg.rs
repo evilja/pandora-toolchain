@@ -1,3 +1,4 @@
+use pandora_toolchain::lib::mpeg::core::video_metadata_args;
 use pandora_toolchain::lib::mpeg::{
     core::{
         FFmpeg, FfmpegParams, do_comm_encode_ffmpeg}, preset::{
@@ -1090,6 +1091,7 @@ fn finish_linear_aot(
                 .args(["-i"])
                 .arg(&audio)
                 .args(["-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-movflags", "+faststart", "-y"])
+                .args(video_metadata_args())
                 .arg(&output)
                 .stderr(std::fs::File::create(&mux_errors).map(Stdio::from).unwrap_or_else(|_| Stdio::null()))
                 .status()
@@ -1771,6 +1773,7 @@ async fn main() {
                 workers,
                 encoder,
                 audio_map: audio_index.clone(),
+                output_args: video_metadata_args(),
             },
             |update| {
                 let fps = update.fps.round() as u64;

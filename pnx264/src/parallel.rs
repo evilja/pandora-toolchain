@@ -51,6 +51,8 @@ pub struct ParallelConfig {
     pub workers: usize,
     pub encoder: Config,
     pub audio_map: String,
+    // Additional options for the final output container.
+    pub output_args: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -451,6 +453,7 @@ pub fn encode_aot_chunk(config: AotChunkConfig) -> Result<(), String> {
         workers: 1,
         encoder: config.encoder.clone(),
         audio_map: String::new(),
+        output_args: Vec::new(),
     };
     let source = Source {
         width: config.width,
@@ -698,6 +701,7 @@ where
             "-map", "0:v:0", "-map", "1:a:0", "-c", "copy",
             "-movflags", "+faststart", "-y",
         ])
+        .args(&config.output_args)
         .arg(&config.output)
         .status()
         .map_err(|e| format!("spawn final mux: {e}"))?;

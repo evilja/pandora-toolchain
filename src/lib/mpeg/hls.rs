@@ -265,6 +265,7 @@ impl HlsNames {
                 ]);
             }
         }
+        args.extend(super::core::video_metadata_args());
         args.push(playlist.to_string_lossy().to_string());
         args
     }

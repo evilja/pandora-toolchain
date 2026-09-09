@@ -11,6 +11,14 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc::UnboundedSender;
 use std::collections::HashSet;
 
+// Container credit for every video produced by Pandora.
+pub const VIDEO_IDENTIFIER: &str = "SubstitutePandoraIdentifier - Evillja Cloud Solutions";
+
+pub fn video_metadata_args() -> Vec<String> {
+    vec!["-metadata".into(), format!("comment={VIDEO_IDENTIFIER}"),
+         "-metadata".into(), format!("service_name={VIDEO_IDENTIFIER}")]
+}
+
 pub enum RpbData {
     Progress(u64, u64, u64, u64),
     Warning(String),
@@ -106,7 +114,11 @@ impl Decode for FfmpegParams {
             Self::Overwrite => vec!["-y".to_string()],
             Self::NoOverwrite => vec!["-n".to_string()],
             Self::Progress(a) => vec!["-progress".to_string(), a.to_string()],
-            Self::Output(a) => vec![a.to_string()],
+            Self::Output(a) => {
+                let mut args = video_metadata_args();
+                args.push(a.to_string());
+                args
+            },
             Self::Passthrough(args) => args.clone(),
         }
     }
