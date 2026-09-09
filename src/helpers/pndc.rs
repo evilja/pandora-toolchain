@@ -384,7 +384,7 @@ pub(super) async fn forgejo_config(
         }
     };
     if forgejo_base.is_empty() {
-        command_error(ctx, command, "Error: server has no forgejo org configured. Run `/configure` first.").await;
+        command_error(ctx, command, "Error: server has no repository organization configured. Run `/configure` first.").await;
         return None;
     }
     Some((forgejo_base, api_key))

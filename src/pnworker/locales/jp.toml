@@ -977,3 +977,39 @@ args = 0
 [CONFIG_MEDIA_FORBIDDEN]
 text = "このメディアの登録には対応する /touch コマンドの権限が必要です。運用者に依頼するか、既存グループを選ぶか、スキップしてください。"
 args = 0
+
+[TUTORIAL_ADMIN_GITHUB_INIT_BODY]
+text = "`/init` の前に **github** と **api_key** を設定します。冒頭動画・ロゴ・配信設定は後回しにできます。\n• `github`：チームの組織URL（例：`https://github.com/MyTeam`）。組織ページを開き、アドレスをコピーします。個人プロフィールやリポジトリではなく組織を指定してください。組織の所有者にアカウントの招待とリポジトリ作成権限を依頼します。\n• `api_key`：GitHubのSettings → Developer settings → Personal access tokens → Fine-grained tokensで作成します。Resource ownerに組織を選び、新しく作るプロジェクトにも使えるようAll repositoriesを選択します。Repository permissionsで **Administration: Read and write**（プロジェクト作成）と **Contents: Read and write**（字幕保存）を付けます。承認が必要な組織なら所有者に承認を依頼してください。非公開の設定フォームだけに貼り付けます。[GitHubのトークンガイド](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)。\n次にアニメのチャンネルで `/init mal:<MyAnimeListのアニメページ>` を実行します。第2シーズンは `season:2` を追加。公開プロジェクトと各話のフォルダーが作られます。`language` は表示言語、`announcement_channel` は告知先です。"
+args = 0
+
+[CONFIG_GITHUB_BODY]
+text = "/init 用の `github`：https://github.com/MyTeam のMyTeamをチームの組織名に置き換えます。アカウントはその組織のメンバーで、リポジトリを作成できる必要があります。\n`api_key` はGitHubのSettings → Developer settings → Personal access tokensでfine-grained tokenを作成します。Resource ownerに組織、All repositories、Repository permissions → AdministrationとContents → Read and writeを選びます。必要なら組織の承認を得てください。\nトークンはこの非公開フォームだけに入力し、返信には表示されません。空欄は維持、`-` は消去です。まだない場合はスキップして組織の所有者に相談してください。詳しくは /tutorial admin。"
+args = 0
+
+[FIELD_GITHUB_TOKEN]
+text = "GitHubトークン"
+args = 0
+
+[CONFIG_GITHUB_URL_INVALID]
+text = "https://github.com/MyTeam のようなGitHub組織URLを入力してください。"
+args = 0
+
+[TUTORIAL_ADMIN_GITHUB_INIT_TITLE]
+text = "/init に必要なもの"
+args = 0
+
+[TUTORIAL_ADMIN_GITHUB_EDIT_TITLE]
+text = "日常の /edit 設定"
+args = 0
+
+[TUTORIAL_ADMIN_GITHUB_EDIT_BODY]
+text = "後から一部だけ変更するときは `/edit` を使います。省略した項目は変わりません。\n• `language`：EN、TR、JP。`github` と `api_key` は前のページで説明した組織URLとトークンです。`-` で消去できます。\n• `announcement_channel:true`：今いるチャンネルを告知先にします。\n• `preset`：動画の変換方式です。まずは `standard`。入力すると、この環境の候補が出ます。GPU/AV1には対応する機器が必要です。\n• `wrapstyle`：長い字幕の改行方式です。`dont_touch` は制作者の設定を維持。0/3は行を均等にし、1は端で折り返し、2は自動改行しません。\n• `concat` は冒頭、`outro` は末尾の動画グループ。`/touchintro`・`/touchoutro` で登録した名前を選びます。`-` で無効にできます。\n• `channel_rename`：`/init`・`/attach` がアニメのチャンネル名を変更するか。初期値はtrue。\n• `merge_release_only`：trueなら `/merge` が字幕ファイルを直接返します。初期値はfalse。これらは `/init` でプロジェクトを作るための必須設定ではありません。"
+args = 0
+
+[CONFIG_GITHUB_TITLE]
+text = "チームの作業場所を接続"
+args = 0
+
+[CONFIG_GITHUB_MISSING]
+text = "/init でプロジェクトを作る前に、組織URL（github）とAPIトークン（api_key）の両方を設定してください。装飾は省略できます。"
+args = 0

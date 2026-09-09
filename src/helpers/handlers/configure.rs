@@ -16,7 +16,7 @@ struct Step {
 
 const STEPS: &[Step] = &[
     Step { key: "BASICS", fields: &["language", "announcement_channel"], upload: false },
-    Step { key: "REPO", fields: &["forgejo", "api_key"], upload: false },
+    Step { key: "GITHUB", fields: &["github", "api_key"], upload: false },
     Step { key: "DELIVERY", fields: &["local_gdrive", "drive_only", "hls"], upload: false },
     Step { key: "ENCODE", fields: &["preset", "wrapstyle"], upload: false },
     Step { key: "CHANNEL", fields: &["channel_rename", "merge_release_only", "hls_name"], upload: false },
@@ -83,7 +83,7 @@ fn step_message(setup: &Setup, note: Option<&str>) -> CreateInteractionResponseM
 fn completed(guild: u64) -> CreateInteractionResponseMessage {
     let lang = read_lang(Some(serenity::all::GuildId::new(guild)));
     let meta = ServerMetaFields::parse(&std::fs::read_to_string(server_meta_path(guild)).unwrap_or_default());
-    let readiness = if meta.forgejo.is_empty() || meta.api_key.is_empty() { CONFIG_INIT_MISSING } else { CONFIG_INIT_READY };
+    let readiness = if meta.forgejo.is_empty() || meta.api_key.is_empty() { CONFIG_GITHUB_MISSING } else { CONFIG_INIT_READY };
     CreateInteractionResponseMessage::new().content(format!("{}\n\n{}",
         get_message(CONFIG_DONE, &lang), get_message(readiness, &lang)))
         .embeds(Vec::new()).components(Vec::new())
@@ -240,6 +240,17 @@ async fn update_setup_message(ctx: &Context, token: &str, response: CreateIntera
     true
 }
 
+pub(super) fn github_org_url(value: &str) -> Result<String, &'static str> {
+    let url = reqwest::Url::parse(value).map_err(|_| CONFIG_GITHUB_URL_INVALID)?;
+    let org = url.path().trim_start_matches('/').trim_end_matches('/');
+    if url.scheme() != "https" || url.host_str() != Some("github.com") || url.port().is_some()
+        || !url.username().is_empty() || url.password().is_some() || url.query().is_some() || url.fragment().is_some()
+        || org.is_empty() || !org.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-') {
+        return Err(CONFIG_GITHUB_URL_INVALID);
+    }
+    Ok(format!("https://github.com/{org}"))
+}
+
 fn validated(field: &str, value: &str, channel: u64) -> Result<String, &'static str> {
     if value.contains(['\r', '\n', '\0']) { return Err(CONFIG_INVALID); }
     let value = value.trim();
@@ -248,13 +259,7 @@ fn validated(field: &str, value: &str, channel: u64) -> Result<String, &'static 
             let value = value.to_ascii_uppercase();
             if matches!(value.as_str(), "EN" | "TR" | "JP") { Ok(value) } else { Err(CONFIG_INVALID) }
         }
-        "forgejo" if value != "-" => {
-            let url = reqwest::Url::parse(value).map_err(|_| CONFIG_INVALID)?;
-            if !matches!(url.scheme(), "https" | "http") || url.host_str().is_none()
-                || !url.username().is_empty() || url.password().is_some() || url.query().is_some() || url.fragment().is_some()
-                || Forgejo::new(value.to_string(), "validation".into()).is_err() { return Err(CONFIG_INVALID); }
-            Ok(value.trim_end_matches('/').to_string())
-        }
+        "github" if value != "-" => github_org_url(value),
         "announcement_channel" => match value {
             "true" => Ok(channel.to_string()), "false" => Ok(String::new()), _ => Err(CONFIG_INVALID),
         },
@@ -455,11 +460,12 @@ mod tests {
 
     #[test]
     fn setup_rejects_invalid_values_without_echoing_tokens() {
-        for value in ["https://git.example.com", "https://git.example.com/team/repo",
-                      "https://secret@git.example.com/team", "ftp://git.example.com/team"] {
-            assert_eq!(validated("forgejo", value, 7), Err(CONFIG_INVALID));
+        for value in ["https://github.com", "https://github.com/team/repo",
+                      "https://secret@github.com/team", "http://github.com/team",
+                      "https://github.com.evil.example/team", "https://github.com/team?token=secret"] {
+            assert_eq!(validated("github", value, 7), Err(CONFIG_GITHUB_URL_INVALID));
         }
-        assert_eq!(validated("forgejo", "https://git.example.com/team/", 7).unwrap(), "https://git.example.com/team");
+        assert_eq!(validated("github", "https://github.com/team/", 7).unwrap(), "https://github.com/team");
         assert_eq!(validated("api_key", "secret\ninjected-line", 7), Err(CONFIG_INVALID));
         assert_eq!(validated("language", "tr", 7).unwrap(), "TR");
         assert_eq!(validated("hls", "perhaps", 7), Err(CONFIG_INVALID));
@@ -476,8 +482,9 @@ mod tests {
         fields.set("language", "JP".into()).unwrap();
         let expected = original.replacen("TR\n", "JP\n", 1);
         assert_eq!(compose_server_meta(&fields), expected);
+        fields.set("github", "https://github.com/team".into()).unwrap();
         fields.set("api_key", String::new()).unwrap();
-        assert_eq!(fields.forgejo, "https://git.example.com/team");
+        assert_eq!(fields.forgejo, "https://github.com/team");
         assert_eq!(fields.outro, "outro");
         assert_eq!(fields.channel_rename, "false");
     }

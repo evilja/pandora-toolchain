@@ -44,3 +44,7 @@ The setup wizard uses `CONFIG_*` keys for its steps, navigation, validation and 
 `TUTORIAL_ADMIN_*` supplies the paged administrator guide; `TUTORIAL_1_SAVED_*` explains reusing
 episode links. These are new keys so existing runtime locale files receive the added guidance
 without overwriting custom translations. Input field names retain their `/edit` spellings.
+
+GitHub setup guidance uses new `CONFIG_GITHUB_*`, `TUTORIAL_ADMIN_GITHUB_*`, and
+`FIELD_GITHUB_TOKEN` keys. This ensures existing installations receive the GitHub instructions
+without relying on replacing previously seeded Forgejo wording or overwriting custom entries.

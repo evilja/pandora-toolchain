@@ -61,15 +61,15 @@ Pandora needs **View Channel, Send Messages, Embed Links, Add Reactions** and **
 - `/smartcode keep <episode> [link] [keyword]` — run the same merge/upload/encode flow as `/smartcode do`, but retain the encode locally under a generated or supplied keyword instead of uploading it.
 - `/smartcode pan <episode> [job_id] [index]` — the same merge/upload flow as `/smartcode do`, queued as a `Pancode` job against one file of a probed pack instead of an `Encode` job against whatever the link resolves to. `job_id`/`index` come from a `/probe` result, exactly as `/encode pan` takes them; passing `job_id` without `index` is refused. When both are omitted the probe is read from the `; pandora-probe job=<id> index=<n>` line a probe-form `/source` wrote into `{pad2(episode)}/SOURCE.md`. Naming them writes them back to `SOURCE.md` beside the link, so a pack is pointed at once and paged through. A `pan` that finds a probe in neither place still uploads the release and then encodes nothing, saying so — guessing which file of a pack an episode is would be a silent wrong answer.
 - `/smartcode preview <episode> [link]` — runs the same smartcode merge/upload step, then renders 1-3 TS preview screenshots from `\fn` typeset lines instead of encoding.
-- `/source <episode> [link] [job_id] [index]` — write `{pad2(episode)}/SOURCE.md` to the channel's attached Forgejo repo. Takes either a `link` or a `/probe` job id plus `index`, the same pair `/encode pan` and `/subs` take; passing both, or neither, is refused. A `link` writes `# <link>\n` as it always has. A probe writes the probe job's own link plus a second line, `; pandora-probe job=<id> index=<n>` — a comment every reader of this file already skips, so a `SOURCE.md` written by this version still parses under the one before it, and `/smartcode pan` reads the file index back off it. Requires the channel to be attached and `episode` in `1..=episode_count`. Commit message: `"Set source link"`. No worker, no encoder — pure in-handler Forgejo upsert.
+- `/source <episode> [link] [job_id] [index]` — write `{pad2(episode)}/SOURCE.md` to the channel's attached GitHub repo. Takes either a `link` or a `/probe` job id plus `index`, the same pair `/encode pan` and `/subs` take; passing both, or neither, is refused. A `link` writes `# <link>\n` as it always has. A probe writes the probe job's own link plus a second line, `; pandora-probe job=<id> index=<n>` — a comment every reader of this file already skips, so a `SOURCE.md` written by this version still parses under the one before it, and `/smartcode pan` reads the file index back off it. Requires the channel to be attached and `episode` in `1..=episode_count`. Commit message: `"Set source link"`. No worker, no encoder — pure in-handler repository upsert.
 - `/smartlist` — list every uploaded episode of the channel's attached anime, newest upload per episode, as plain text rather than an embed. Requires the channel to be attached; reads `DB/DATA.db` only, no worker and no Forgejo call. See [`/smartlist`](#smartlist) below.
 - `/attribute set|list|remove|clear` — the styles and credit lines this channel's releases are built with. Requires the channel to be attached; in-handler, no worker. See [`/attribute`](#attribute) below.
 - `/link set|list|clear` — **upper-tier**; run in an attached channel to name another channel that takes one kind of this channel's output. The work still happens in the attached channel; only the output moves. `use` selects which output and defaults to the only one that exists today, `merge`: the release ASS `/merge` answers with when `/edit merge_release_only` is on. Pandora needs View Channel, Send Messages and Attach Files in the linked channel; without them the release is attached to the `/merge` reply as usual and the refusal is printed with it. Stored in `DB/config/<serverid>/<channelid>/links.json`, so a link outlives `/detach` the way the channel's `/attribute` styles do. In-handler, no worker. See [`/link`](#link) below.
 - `/alias choose|force` — the name `%enc%` credits somebody as. `choose` sets the caller's own and is rank 0; `force` sets another user's and needs the admin tier. Aliases are global, one per Discord account, in `DB/config/global/environment/aliases.pandora`. `-` clears one, falling back to the Discord display name.
 - `/attach <mal> <repo> [season]` — fetch MAL metadata via JIKAN (with AniList fallback), then bootstrap an existing Forgejo repo: create per-episode folders (`pad2` for 1..=episode_count, accepting `1`/`01`/`001` as equivalent on existence check), each with an empty `.gitkeep`; create `README.md` at root only if absent (and only if `DB/config/<serverid>/base.md` is present). Requires both `mal` and `repo`. `season` is the 1-based sequel number stored in the channel meta (defaults to 1). Repos are public.
-- `/init <mal> [season]` — same bootstrap, but creates a new public repo at `<forgejo_org>/<slug>` via the Forgejo API first. `season` works the same as `/attach`. Channel reattach to a different MAL id is refused; same MAL id is idempotent. Both commands also rename the channel (or thread) they run in to the anime's name, truncated to Discord's 100-character limit, unless the server has turned that off with `/edit channel_rename:false`.
-- `/detach` — **upper-tier**; removes the channel's `meta.toml` attachment; the Forgejo repo is left untouched. In-handler, no worker. (Also happens automatically when the channel/thread is deleted — see the `meta.toml` note in [PROJECT.md](PROJECT.md).)
-- `/destruct` — **upper-tier**; deletes the channel's Forgejo repo (`delete_repo`) **and** removes the attachment. Irreversible. In-handler, no worker.
+- `/init <mal> [season]` — same bootstrap, but creates a new public repo at `<github_org>/<slug>` via the GitHub API first. `season` works the same as `/attach`. Channel reattach to a different MAL id is refused; same MAL id is idempotent. Both commands also rename the channel (or thread) they run in to the anime's name, truncated to Discord's 100-character limit, unless the server has turned that off with `/edit channel_rename:false`.
+- `/detach` — **upper-tier**; removes the channel's `meta.toml` attachment; the GitHub repo is left untouched. In-handler, no worker. (Also happens automatically when the channel/thread is deleted — see the `meta.toml` note in [PROJECT.md](PROJECT.md).)
+- `/destruct` — **upper-tier**; deletes the channel's GitHub repo (`delete_repo`) **and** removes the attachment. Irreversible. In-handler, no worker.
 - `/hearts` — admin; reports each shrine layer's `alive` / `last_beat_secs` / `reboot_count`.
 - `/workers` — admin; shows a Discord embed diagram with download, core (configured `prw-*` slots plus `enc-main`), and upload columns, plus active-job details and queued/cache-forward waiting work.
 - `/catlogs <job_id>` — **rank 4 (Witch tier)**; finds `DB/work/<job_id>/log` for an active job or `DB/saved_data/<job_id>/log` for an archived job, packs its log files into `pandora-logs-<job_id>.zip`, and returns the archive privately. Empty/missing log directories are reported without an attachment; archives over the Discord-safe 24 MiB limit are rejected. The lookup and the zip live in `lib::joblog`, shared with the API's `/jobs/:id/logs*` routes (see [API.md](API.md#job-logs)) — the handler only adds the Discord wording and that size ceiling.
@@ -349,11 +349,14 @@ omitted fields, including reserved positional slots. Form validation finishes be
 is changed, then the latest file is read and only the submitted fields are replaced; writes use
 a temporary file and rename. The form never pre-fills or displays the saved token.
 
-For `/init`, `forgejo` must be the organization page, such as
-`https://git.example.com/MyTeam`, and `api_key` must be a token for an account allowed to create
-repositories there. The guide explains the Forgejo Settings → Applications token page and the
-`write:organization` / `write:repository` scopes used by the API calls. See the
-[Forgejo token documentation](https://forgejo.org/docs/latest/user/authentication/token-scope/).
+For `/init`, `github` must be a GitHub organization page, such as
+`https://github.com/MyTeam`, and `api_key` must be a token for an organization member allowed to
+create repositories there. The guide walks through GitHub Settings → Developer settings →
+Personal access tokens → Fine-grained tokens, selecting the organization as resource owner and
+all its repositories so new projects are covered. Repository permissions need Administration
+(write) for project creation and Contents (write) for subtitle files, plus organization approval
+when required. See the [GitHub token guide](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)
+and [repository creation API](https://docs.github.com/en/rest/repos/repos#create-an-organization-repository).
 The wizard validates the URL and local setting formats; it does not create a test repository or
 verify remote permissions. Its final message distinguishes missing repository settings from
 saved settings. Branding and delivery settings are optional for `/init`.
@@ -374,3 +377,10 @@ Only one wizard is active per server. Sessions are in memory, expire after ten i
 and disappear on restart. Custom IDs include the session and page; stale pages, other users,
 other channels, and duplicate submissions cannot advance the active wizard. Failed input stays
 on the same step for retry. A busy upload cannot be skipped mid-installation.
+
+
+The wizard and `/edit` expose the organization field as `github`, with GitHub URL validation.
+The positional storage layout is unchanged. Existing saved repository URLs and the legacy
+`forgejo` option in an older registered `/edit` command remain readable; the compatibility client
+still understands both backends. Changing the guide does not migrate existing repositories or
+replace a saved URL/token. Newly registered Discord commands and examples use GitHub.

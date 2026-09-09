@@ -1179,7 +1179,7 @@ fn help_catalog() -> &'static [HelpCommand] {
             name: "source",
             summary: "Write SOURCE.md for an attached episode folder.",
             usage: "/source episode:<n> link:<source_link> | /source episode:<n> job_id:<id> index:<n>",
-            details: "Stores the episode source link in the attached Forgejo repo. Source links can be torrent URLs, magnet links, or Google Drive links. `job_id` and `index` take a `/probe` result instead — the same pair `/encode pan` takes — and record which file of the pack this episode is on a comment line beside the link, which is what `/smartcode pan` reads back. Pass `link` or `job_id`, not both.",
+            details: "Stores the episode source link in the attached GitHub repo. Source links can be torrent URLs, magnet links, or Google Drive links. `job_id` and `index` take a `/probe` result instead — the same pair `/encode pan` takes — and record which file of the pack this episode is on a comment line beside the link, which is what `/smartcode pan` reads back. Pass `link` or `job_id`, not both.",
         },
         HelpCommand {
             section: "repo",
@@ -1290,7 +1290,7 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "admin",
             name: "edit",
             summary: "Edit individual server metadata fields, leaving the rest untouched.",
-            usage: "/edit [language] [forgejo] [api_key] [local_gdrive] [drive_only] [hls] [hls_name] [wrapstyle] [preset] [concat] [announcement_channel]",
+            usage: "/edit [language] [github] [api_key] [local_gdrive] [drive_only] [hls] [hls_name] [wrapstyle] [preset] [concat] [announcement_channel]",
             details: "Directly updates selected settings without opening the /configure wizard; omitted fields keep their current value. Pass `-` to clear a text field. local_gdrive selects whether Lumiere should prefer the deterministic guild Drive profile before the global profile. drive_only:true restricts future release uploads to Google Drive and suppresses Byse, LuluStream, and Voe; false restores all configured Lumiere providers. AV1 requires either drive_only:true or hls:true; HLS uses fMP4/CMAF. hls_name is the template every file in an HLS release is named after — `%uuid%` a fresh v4 UUID, `%random%` six random hex characters, `%res%` the published height as `720p` — defaulting to `%uuid%_%random%_%res%`; pass `-` to restore it. Active uploads are unchanged. Drive credentials and roots are managed only in Lumiere. wrapstyle can be dont_touch or 0-3. preset, concat and outro set server-wide encode defaults; type/search in concat and select a registered `/touchintro` group, or in outro a registered `/touchoutro` group, and select `Disable concat` to clear either. Each dropdown updates from its own global config as groups are added. An intro and an outro are independent: setting one does not require the other, and both are stitched on in one stream-copy pass after the encode. Set announcement_channel:true to point announcements at the current channel. Requires the server to already be configured.",
         },
         HelpCommand {
@@ -1382,7 +1382,7 @@ fn help_catalog() -> &'static [HelpCommand] {
             name: "keyvault",
             summary: "Back up VDS-readable credentials, then purge legacy upload secrets.",
             usage: "/keyvault prepare recipient:<age1...>; decrypt manifest.json; /keyvault confirm backup_id:<id> proof:<proof>",
-            details: "Hard Witch-only two-phase operation. Prepare creates an age-encrypted ZIP containing known Pandora credential files, selected sensitive process variables, and a one-time proof; it purges nothing. Confirm verifies that proof, the retained ciphertext, and an unchanged source snapshot before blanking only legacy Google/streaming-provider values and removing historical gdrive_env.pandora files. Operational Discord, Lumiere, Forgejo, distribution, session, and HTTP API credentials are backed up but retained. Cloudflare Worker bindings cannot be exported.",
+            details: "Hard Witch-only two-phase operation. Prepare creates an age-encrypted ZIP containing known Pandora credential files, selected sensitive process variables, and a one-time proof; it purges nothing. Confirm verifies that proof, the retained ciphertext, and an unchanged source snapshot before blanking only legacy Google/streaming-provider values and removing historical gdrive_env.pandora files. Operational Discord, Lumiere, GitHub, distribution, session, and HTTP API credentials are backed up but retained. Cloudflare Worker bindings cannot be exported.",
         },
         HelpCommand {
             section: "misc",
@@ -1506,21 +1506,21 @@ fn help_catalog() -> &'static [HelpCommand] {
         HelpCommand {
             section: "repo",
             name: "attach",
-            summary: "Attach this channel to an existing Forgejo anime repo.",
-            usage: "/attach mal:<mal_url> repo:<forgejo_repo> [season] [tl] [tlc] [ts] [qc]",
+            summary: "Attach this channel to an existing GitHub anime repo.",
+            usage: "/attach mal:<mal_url> repo:<github_repo> [season] [tl] [tlc] [ts] [qc]",
             details: "Fetches MAL metadata, writes channel metadata, and bootstraps episode folders plus repo helper files.",
         },
         HelpCommand {
             section: "repo",
             name: "init",
-            summary: "Create and attach a new Forgejo repo for an anime.",
+            summary: "Create and attach a new GitHub repo for an anime.",
             usage: "/init mal:<mal_url> [season] [tl] [tlc] [ts] [qc]",
-            details: "Uses the configured Forgejo org, creates a public repo from MAL metadata, bootstraps folders, and attaches this channel.",
+            details: "Uses the configured GitHub org, creates a public repo from MAL metadata, bootstraps folders, and attaches this channel.",
         },
         HelpCommand {
             section: "repo",
             name: "destruct",
-            summary: "Delete the attached Forgejo repo and detach this channel.",
+            summary: "Delete the attached GitHub repo and detach this channel.",
             usage: "/destruct",
             details: "Deletes the repo configured for this channel and removes the channel attachment.",
         },
@@ -1529,7 +1529,7 @@ fn help_catalog() -> &'static [HelpCommand] {
             name: "detach",
             summary: "Detach this channel without deleting the repo.",
             usage: "/detach",
-            details: "Removes this channel's anime attachment metadata. The Forgejo repo is left untouched.",
+            details: "Removes this channel's anime attachment metadata. The GitHub repo is left untouched.",
         },
         HelpCommand {
             section: "admin",
@@ -1930,7 +1930,7 @@ fn pad2(n: u32) -> String {
 fn parse_repo_url(url: &str) -> Result<(String, String), String> {
     let re = regex::Regex::new(r"^https?://[^/]+/([^/]+)/([^/]+)/?$").unwrap();
     let caps = re.captures(url.trim_end_matches('/'))
-        .ok_or_else(|| format!("not a Forgejo repo URL: {}", url))?;
+        .ok_or_else(|| format!("not a GitHub repo URL: {}", url))?;
     let owner = caps.get(1).unwrap().as_str().to_string();
     let repo = caps.get(2).unwrap().as_str().to_string();
     Ok((owner, repo))
@@ -3105,13 +3105,13 @@ impl EventHandler for Handler {
                         .required(true)
                 ),
             CreateCommand::new("attach")
-                .description("Attach a MyAnimeList anime to this channel and bootstrap an existing Forgejo repo")
+                .description("Attach a MyAnimeList anime to this channel and bootstrap an existing GitHub repo")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "mal", "MyAnimeList link (e.g. https://myanimelist.net/anime/52991)")
                         .required(true)
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "repo", "Forgejo repo link (e.g. https://git.einzu.fun/owner/repo)")
+                    CreateCommandOption::new(CommandOptionType::String, "repo", "GitHub repo link (e.g. https://github.com/owner/repo)")
                         .required(true)
                 )
                 .add_option(
@@ -3136,7 +3136,7 @@ impl EventHandler for Handler {
                         .required(false)
                 ),
             CreateCommand::new("init")
-                .description("Attach a MyAnimeList anime to this channel and create a new Forgejo repo for it")
+                .description("Attach a MyAnimeList anime to this channel and create a new GitHub repo for it")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "mal", "MyAnimeList link (e.g. https://myanimelist.net/anime/52991)")
                         .required(true)
@@ -3163,9 +3163,9 @@ impl EventHandler for Handler {
                         .required(false)
                 ),
             CreateCommand::new("destruct")
-                .description("Delete the Forgejo repo of the attached anime and detach this channel"),
+                .description("Delete the GitHub repo of the attached anime and detach this channel"),
             CreateCommand::new("detach")
-                .description("Detach this channel from its attached anime (the Forgejo repo is left untouched)"),
+                .description("Detach this channel from its attached anime (the GitHub repo is left untouched)"),
             CreateCommand::new("smartcode")
                 .description("Merge attached TL/TS subtitles, then encode or preview an episode")
                 .add_option(
@@ -3382,11 +3382,11 @@ impl EventHandler for Handler {
                         .add_string_choice("日本語", "JP")
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "forgejo", "Forgejo base link. Omit to keep, `-` to unset.")
+                    CreateCommandOption::new(CommandOptionType::String, "github", "GitHub organization URL. Omit to keep, `-` to unset.")
                         .required(false)
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "api_key", "Forgejo API token. Omit to keep, `-` to unset.")
+                    CreateCommandOption::new(CommandOptionType::String, "api_key", "GitHub personal access token. Omit to keep, `-` to unset.")
                         .required(false)
                 )
                 .add_option(

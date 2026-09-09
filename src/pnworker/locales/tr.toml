@@ -977,3 +977,39 @@ args = 0
 [CONFIG_MEDIA_FORBIDDEN]
 text = "Bu medyayı kurmak ilgili /touch komutunun erişim seviyesini gerektirir. Bot yöneticisine danışın, varsa mevcut grubu seçin veya Atla kullanın."
 args = 0
+
+[TUTORIAL_ADMIN_GITHUB_INIT_BODY]
+text = "`/init` öncesinde **github** ve **api_key** ayarlarını yapın. Giriş videosu, logo ve yükleme ayarları bekleyebilir.\n• `github`: ekibinizin organizasyon adresi; ör. `https://github.com/MyTeam`. Organizasyon sayfasını açıp adresini kopyalayın. Kişisel profil veya depo değil, organizasyon kullanın. Organizasyon sahibinden hesabınızı davet etmesini ve depo oluşturma izni vermesini isteyin.\n• `api_key`: GitHub Settings → Developer settings → Personal access tokens → Fine-grained tokens bölümünden token oluşturun. Resource owner olarak organizasyonunuzu, yeni projelere de erişebilmesi için All repositories seçin. Repository permissions altında **Administration: Read and write** (proje oluşturma) ve **Contents: Read and write** (altyazı kaydetme) verin. Organizasyon onay istiyorsa sahibinden tokenı onaylamasını isteyin. Yalnızca özel kurulum formuna yapıştırın. [GitHub token rehberi](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).\nSonra animenin kanalında `/init mal:<MyAnimeList anime sayfası>` çalıştırın; ikinci sezon için `season:2` ekleyin. Pandora herkese açık proje ve bölüm klasörlerini oluşturur. `language` bot dilini, `announcement_channel` duyuru yerini seçer."
+args = 0
+
+[CONFIG_GITHUB_BODY]
+text = "/init için `github`: https://github.com/MyTeam; MyTeam yerine ekibinizin organizasyon adını yazın. Hesabınız organizasyon üyesi olmalı ve depo oluşturabilmeli.\n`api_key` için GitHub Settings → Developer settings → Personal access tokens bölümünde fine-grained token oluşturun. Resource owner olarak organizasyonu, All repositories ve Repository permissions → Administration ile Contents → Read and write seçin. Gerekliyse organizasyon onayı alın.\nTokenı yalnızca bu özel forma yapıştırın; yanıt olarak gösterilmez. Boş kutular kayıtlı değerleri korur; `-` temizler. Henüz yoksa Atla kullanıp organizasyon sahibine danışın. Süreç /tutorial admin içinde anlatılır."
+args = 0
+
+[FIELD_GITHUB_TOKEN]
+text = "GitHub tokenı"
+args = 0
+
+[CONFIG_GITHUB_URL_INVALID]
+text = "https://github.com/MyTeam gibi bir GitHub organizasyon adresi girin."
+args = 0
+
+[TUTORIAL_ADMIN_GITHUB_INIT_TITLE]
+text = "/init için gerekenler"
+args = 0
+
+[TUTORIAL_ADMIN_GITHUB_EDIT_TITLE]
+text = "Günlük /edit ayarları"
+args = 0
+
+[TUTORIAL_ADMIN_GITHUB_EDIT_BODY]
+text = "Sonradan yalnızca birkaç ayarı değiştirmek için `/edit` kullanın. Belirtmediğiniz alanlar aynı kalır.\n• `language`: EN, TR veya JP. `github` ve `api_key`: önceki sayfadaki organizasyon adresi ve token; `-` ile temizlenir.\n• `announcement_channel:true`: yazdığınız kanalı duyuru kanalı yapar.\n• `preset`: videonun nasıl kodlanacağı. `standard` ile başlayın; bu kurulumdaki seçenekleri görmek için alana yazın. GPU/AV1 uygun donanım ister.\n• `wrapstyle`: uzun altyazı satırlarının nasıl bölüneceği. `dont_touch`, altyazıyı hazırlayanın seçimini korur. 0/3 satırları dengeler, 1 kenarda böler, 2 otomatik bölmez.\n• `concat`: giriş grubu; `outro`: kapanış grubu. `/touchintro` veya `/touchoutro` ile eklenmiş adları seçin; `-` kapatır.\n• `channel_rename`: `/init` ve `/attach` anime kanallarının adını değiştirsin mi? Varsayılan true.\n• `merge_release_only`: true ise `/merge` doğrudan altyazı dosyasını verir; varsayılan false. Bu isteğe bağlı seçimler `/init` ile proje oluşturmak için gerekli değildir."
+args = 0
+
+[CONFIG_GITHUB_TITLE]
+text = "Ekibin proje alanını bağlayın"
+args = 0
+
+[CONFIG_GITHUB_MISSING]
+text = "/init ile proje oluşturmadan önce organizasyon adresini (github) ve API tokenını (api_key) ekleyin. İsteğe bağlı görsel ayarlar atlanabilir."
+args = 0

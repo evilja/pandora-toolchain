@@ -284,10 +284,18 @@ pub async fn handle_edit(
         None => existing_language.to_string(),
     };
 
-    let forgejo = match option_str(command, "forgejo").map(str::trim) {
+    let github = option_str(command, "github");
+    let forgejo = match github.or_else(|| option_str(command, "forgejo")).map(str::trim) {
         None => existing_forgejo.to_string(),
         Some(CLEAR_SENTINEL) => String::new(),
         Some(u) if u.is_empty() => existing_forgejo.to_string(),
+        Some(u) if github.is_some() => match super::configure::github_org_url(u) {
+            Ok(url) => url,
+            Err(id) => {
+                edit_error(ctx, command, deferred, command_message(command, id)).await;
+                return;
+            }
+        },
         Some(u) if u.starts_with("http://") || u.starts_with("https://") => u.trim_end_matches('/').to_string(),
         Some(other) => {
             edit_error(ctx, command, deferred, format!("Error: forgejo `{}` must be an http(s) URL", other)).await;
@@ -469,7 +477,7 @@ pub async fn handle_edit(
         .description(format!("Server `{}`", server_id))
         .field(command_message(command, FIELD_LANGUAGE), language, true)
         .field(command_message(command, FIELD_REPO), forgejo_display, true)
-        .field(command_message(command, FIELD_API_KEY), api_key_display, true)
+        .field(command_message(command, FIELD_GITHUB_TOKEN), api_key_display, true)
         .field(command_message(command, FIELD_GDRIVE), gdrive_display, true)
         .field(command_message(command, FIELD_GDRIVE_ANONYMOUS), gdrive_anon_display, true)
         .field(command_message(command, FIELD_LOCAL_GDRIVE), local_gdrive_display, true)

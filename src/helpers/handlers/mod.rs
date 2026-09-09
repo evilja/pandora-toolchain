@@ -194,7 +194,7 @@ impl ServerMetaFields {
     fn set(&mut self, field: &str, value: String) -> Result<(), ()> {
         match field {
             "language" => self.language = value,
-            "forgejo" => self.forgejo = value,
+            "github" | "forgejo" => self.forgejo = value,
             "announcement_channel" => self.announcement_channel = value,
             "api_key" => self.api_key = value,
             "wrapstyle" => self.wrap_style = value,
@@ -423,7 +423,7 @@ async fn smartcode_merge_upload(
         Ok(f) => f,
         Err(e) => {
             let _ = response_msg.edit(ctx, EditMessage::new()
-                .content(format!("Forgejo init failed: {}", e))).await;
+                .content(format!("Repository connection failed: {}", e))).await;
             return None;
         }
     };
@@ -849,7 +849,7 @@ async fn run_attach_or_init(
     let fg = match Forgejo::new(forgejo_base.clone(), api_key) {
         Ok(f) => f,
         Err(e) => {
-            let _ = response_msg.edit(ctx, EditMessage::new().content(format!("Forgejo init failed: {}", e))).await;
+            let _ = response_msg.edit(ctx, EditMessage::new().content(format!("Repository connection failed: {}", e))).await;
             return;
         }
     };

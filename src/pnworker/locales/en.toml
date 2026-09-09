@@ -977,3 +977,39 @@ args = 0
 [CONFIG_MEDIA_FORBIDDEN]
 text = "Installing this media requires the corresponding /touch command’s access level. Ask the bot operator, select an existing group where available, or Skip."
 args = 0
+
+[TUTORIAL_ADMIN_GITHUB_INIT_BODY]
+text = "Before `/init`, set **github** and **api_key**. Intros, logos and delivery can wait.\n• `github`: your team’s organization URL, e.g. `https://github.com/MyTeam`. Open the organization page and copy its address. Use an organization, not your personal profile or a repository. Ask an organization owner to invite your account and allow it to create repositories.\n• `api_key`: in GitHub Settings → Developer settings → Personal access tokens → Fine-grained tokens, create a token. Select your organization as Resource owner and All repositories so newly created episode projects are included. Under Repository permissions, give **Administration: Read and write** (create projects) and **Contents: Read and write** (save subtitles). If the organization requires approval, ask an owner to approve the token. Paste it only into the private setup form. [GitHub token guide](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).\nThen run `/init mal:<MyAnimeList anime page>` in the anime channel; add `season:2` for season 2. Pandora creates a public project and episode folders. `language` chooses the bot’s language; `announcement_channel` chooses the announcement destination."
+args = 0
+
+[CONFIG_GITHUB_BODY]
+text = "For /init, enter `github`: https://github.com/MyTeam, using your team’s organization name. Your account must be a member allowed to create repositories there.\nFor `api_key`, create a GitHub fine-grained token in Settings → Developer settings → Personal access tokens. Choose the organization as Resource owner, All repositories, and Repository permissions → Administration and Contents → Read and write. Obtain organization approval if required.\nPaste the token only in this private form; it is never displayed back. Empty boxes keep saved values; `-` clears one. If you do not have these yet, Skip and ask the organization owner. /tutorial admin explains the process."
+args = 0
+
+[FIELD_GITHUB_TOKEN]
+text = "GitHub token"
+args = 0
+
+[CONFIG_GITHUB_URL_INVALID]
+text = "Enter a GitHub organization URL, such as https://github.com/MyTeam."
+args = 0
+
+[TUTORIAL_ADMIN_GITHUB_INIT_TITLE]
+text = "What /init needs"
+args = 0
+
+[TUTORIAL_ADMIN_GITHUB_EDIT_TITLE]
+text = "Everyday /edit settings"
+args = 0
+
+[TUTORIAL_ADMIN_GITHUB_EDIT_BODY]
+text = "Use `/edit` later to change just a few settings. Omitted fields stay as they are.\n• `language`: EN, TR or JP. `github` and `api_key`: the organization URL and token described on the previous page; `-` clears either.\n• `announcement_channel:true`: use the channel you are typing in for announcements.\n• `preset`: how the video is encoded. Start with `standard`; type in the field to see this installation’s choices. GPU/AV1 need suitable hardware.\n• `wrapstyle`: how subtitles break long lines. `dont_touch` preserves the subtitle author’s choice. Modes 0/3 balance lines, 1 wraps at the edge, 2 avoids automatic wrapping.\n• `concat`: intro group; `outro`: ending group. Pick names installed with `/touchintro` or `/touchoutro`; `-` disables one.\n• `channel_rename`: whether `/init` and `/attach` rename anime channels (default true).\n• `merge_release_only`: true makes `/merge` return the subtitle file directly (default false). None of these optional choices is needed to create a project with `/init`."
+args = 0
+
+[CONFIG_GITHUB_TITLE]
+text = "Connect your team’s project folder"
+args = 0
+
+[CONFIG_GITHUB_MISSING]
+text = "Before /init can create a project, add both the organization URL (github) and API token (api_key). Optional branding can stay skipped."
+args = 0
