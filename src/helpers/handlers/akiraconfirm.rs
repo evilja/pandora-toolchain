@@ -3,7 +3,8 @@ use pandora_toolchain::lib::publishlog::log_publish;
 use pandora_toolchain::lib::env::core::get_pandora_env;
 use pandora_toolchain::lib::env::standard::{AKIRA_API, AKIRA_INDEX, AKIRA_TOKEN};
 use pandora_toolchain::lib::http::hyperkira::{
-    AkiraClient, EpisodeCreate, EpisodeLinkWrite, EpisodeListQuery, EpisodeUpdate,
+    AkiraClient, AnimeListQuery, EpisodeCreate, EpisodeLinkWrite, EpisodeListQuery,
+    EpisodeUpdate,
 };
 
 pub async fn handle_akiraconfirm(ctx: &Context, command: &serenity::all::CommandInteraction) {
@@ -147,10 +148,17 @@ pub async fn handle_akiraconfirm(ctx: &Context, command: &serenity::all::Command
             .filter(|slug| !slug.is_empty())
             .map(|slug| slug.to_string())
     });
-    let slug = match resolve_official_akira_slug(
+    let search_title = channel_meta
+        .as_ref()
+        .and_then(|meta| meta.name.as_ref())
+        .map(|name| name.trim())
+        .filter(|name| !name.is_empty())
+        .map(|name| name.to_string());
+    let slug = match resolve_akira_slug(
         &client,
         channel_meta.as_ref().and_then(|meta| meta.mal_id),
         fallback_slug,
+        search_title,
     )
     .await
     {
@@ -230,21 +238,106 @@ pub async fn handle_akiraconfirm(ctx: &Context, command: &serenity::all::Command
     .await;
 }
 
-async fn resolve_official_akira_slug(
+async fn resolve_akira_slug(
     client: &AkiraClient,
     mal_id: Option<u64>,
     fallback_slug: Option<String>,
+    search_title: Option<String>,
 ) -> Result<String, String> {
-    if let Some(mal_id) = mal_id {
-        return client
-            .resolve_anime_by_mal_id(mal_id as i64)
-            .await
-            .map(|resolved| resolved.slug)
-            .map_err(|e| format!("Akira slug resolve failed: {}", e));
+    let Some(mal_id) = mal_id else {
+        return fallback_slug.ok_or_else(|| {
+            "Error: this channel has no MAL id or attached anime slug. Provide `slug` or run `/attach`/`/init` first.".to_string()
+        });
+    };
+    let mal_id = i64::try_from(mal_id)
+        .map_err(|_| "Akira anime resolve failed: channel MAL id is too large.".to_string())?;
+    let fallback_slug = fallback_slug
+        .map(|slug| slug.trim().to_string())
+        .filter(|slug| !slug.is_empty());
+    let search_title = search_title
+        .map(|title| title.trim().to_string())
+        .filter(|title| !title.is_empty());
+    let mut seen_slugs = std::collections::HashSet::new();
+    let mut lookup_errors = Vec::new();
+
+    // A supplied or attached slug is the strongest candidate, but it is never trusted without
+    // checking the catalog's MAL id. This also avoids making publish depend on Akira's separate
+    // id-resolver route when the channel already carries the exact catalog slug.
+    if let Some(slug) = fallback_slug.as_deref() {
+        seen_slugs.insert(slug.to_string());
+        match client.anime(slug).await {
+            Ok(anime) if anime.mal_id == Some(mal_id) => return Ok(anime.item.slug),
+            Ok(_) => {}
+            Err(e) => lookup_errors.push(format!("slug `{}` lookup failed: {}", slug, e)),
+        }
     }
-    fallback_slug.ok_or_else(|| {
-        "Error: this channel has no MAL id or attached anime slug. Provide `slug` or run `/attach`/`/init` first.".to_string()
-    })
+
+    // Akira's search rows deliberately omit provider ids. Load each candidate's detail and accept
+    // only an exact MAL-id match, mirroring Capella's search-based provider resolvers.
+    for query in akira_search_queries(fallback_slug.as_deref(), search_title.as_deref()) {
+        let page = match client
+            .list_animes(&AnimeListQuery {
+                page: Some(1),
+                page_size: Some(100),
+                search: Some(query.clone()),
+                ..Default::default()
+            })
+            .await
+        {
+            Ok(page) => page,
+            Err(e) => {
+                lookup_errors.push(format!("search `{}` failed: {}", query, e));
+                continue;
+            }
+        };
+        for hit in page.items {
+            if !seen_slugs.insert(hit.slug.clone()) {
+                continue;
+            }
+            match client.anime(&hit.slug).await {
+                Ok(anime) if anime.mal_id == Some(mal_id) => return Ok(anime.item.slug),
+                Ok(_) => {}
+                Err(e) => {
+                    lookup_errors.push(format!("candidate `{}` lookup failed: {}", hit.slug, e))
+                }
+            }
+        }
+    }
+
+    let queries = akira_search_queries(fallback_slug.as_deref(), search_title.as_deref());
+    let searched = if queries.is_empty() {
+        "no slug or title was available to search".to_string()
+    } else {
+        format!(
+            "searched {}",
+            queries
+                .iter()
+                .map(|query| format!("`{}`", query))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    let failures = if lookup_errors.is_empty() {
+        String::new()
+    } else {
+        format!(" Lookup errors: {}.", lookup_errors.join("; "))
+    };
+    Err(format!(
+        "Akira anime resolve failed: no catalog entry matched MAL id {} ({}).{}",
+        mal_id, searched, failures
+    ))
+}
+
+fn akira_search_queries(fallback_slug: Option<&str>, search_title: Option<&str>) -> Vec<String> {
+    let mut queries = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for raw in [search_title, fallback_slug].into_iter().flatten() {
+        let query = raw.trim();
+        if !query.is_empty() && seen.insert(query.to_lowercase()) {
+            queries.push(query.to_string());
+        }
+    }
+    queries
 }
 
 async fn akira_episode_exists(
@@ -395,6 +488,30 @@ async fn akiraconfirm_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn akira_search_queries_prefer_title_and_deduplicate() {
+        assert_eq!(
+            akira_search_queries(Some("catalog-slug"), Some("Catalog Title")),
+            vec!["Catalog Title", "catalog-slug"]
+        );
+        assert_eq!(
+            akira_search_queries(Some("CATALOG TITLE"), Some(" catalog title ")),
+            vec!["catalog title"]
+        );
+        assert!(akira_search_queries(Some("  "), None).is_empty());
+    }
+
+    #[tokio::test]
+    async fn akira_slug_without_mal_uses_fallback_without_lookup() {
+        let client = AkiraClient::new("https://example.invalid").expect("client");
+        assert_eq!(
+            resolve_akira_slug(&client, None, Some("catalog-slug".to_string()), None)
+                .await
+                .expect("fallback slug"),
+            "catalog-slug"
+        );
+    }
 
     #[test]
     fn akira_episode_links_skips_upload_progress_placeholders() {

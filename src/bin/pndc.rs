@@ -1416,7 +1416,7 @@ fn help_catalog() -> &'static [HelpCommand] {
             name: "akiraconfirm",
             summary: "Publish a finished encode to Akira.",
             usage: "/akiraconfirm job_id:<id> episode:<number> name:<episode-title> [slug:<akira-slug>] [folder:<index-folder>]",
-            details: "Creates or updates the Akira episode from the uploaded job links. When the channel has a MAL id, Akira's official resolve endpoint supplies the current slug; otherwise slug falls back to the command option or attached channel slug. Drive links are converted to Akira index player URLs instead of publishing raw Google Drive links.",
+            details: "Creates or updates the Akira episode from the uploaded job links. When the channel has a MAL id, an explicit or attached slug is accepted only when Akira records the same id; otherwise Akira's catalog is searched by the attached title and every candidate is verified by MAL id. Without a MAL id, slug falls back to the command option or attached channel slug. Drive links are converted to Akira index player URLs instead of publishing raw Google Drive links.",
         },
         HelpCommand {
             section: "publish",
@@ -3832,7 +3832,7 @@ impl EventHandler for Handler {
                         .required(true)
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "slug", "Akira anime slug fallback when this channel has no MAL id")
+                    CreateCommandOption::new(CommandOptionType::String, "slug", "Akira anime slug; verified against the channel MAL id when present")
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "folder", "Akira index folder; defaults to slug")
