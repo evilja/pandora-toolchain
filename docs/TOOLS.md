@@ -86,6 +86,11 @@ same gate the speculative planners use rather than running it at full speed. See
 encodes ahead with whatever the preset names — libx264, NVENC, AMF — and requires a preset to be
 selected. See [WORKER.md](WORKER.md#parallel-veryslow-encoding).
 
+Release encodes invoke pnmpeg with `--lang jpn`. pnmpeg selects the first audio stream tagged
+`jpn`; when the input has no such tag, it falls back to the first audio stream instead of failing
+the job. This applies to the ordinary, ahead-of-time handoff, and parallel encode paths because all
+three use the same resolved audio map.
+
 The file format and its `hardware` tag are described in [WORKER.md](WORKER.md) and
 [LINK.md](LINK.md#purpose); reference copies of every built-in live in `presets/`.
 

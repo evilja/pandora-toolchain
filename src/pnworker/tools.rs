@@ -117,6 +117,11 @@ pub const PNMPEG_ENCODE: &[CliParam] = &[
     CliParam::OptionalPair("--logo-period", "LOGOPERIOD"),
     CliParam::Literal("--ass"),
     CliParam::Path("ASS"),
+    // Release sources are commonly dual-audio with English marked as the container default.
+    // Ask pnmpeg for Japanese explicitly; it still falls back to the first audio stream when the
+    // source carries no `jpn` language tag.
+    CliParam::Literal("--lang"),
+    CliParam::Literal("jpn"),
     CliParam::Literal("--fontconfig"),
     CliParam::Path("FONTCONFIG"),
     CliParam::Literal("--preset"),
@@ -486,3 +491,17 @@ pub const PNMPEG_EXTRACT_SUBS: &[CliParam] = &[
     CliParam::Literal("--negver"),
     CliParam::NegVer("1"),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::PNMPEG_ENCODE;
+    use crate::pnworker::util::CliParam;
+
+    #[test]
+    fn release_encodes_request_japanese_audio() {
+        assert!(PNMPEG_ENCODE.windows(2).any(|pair| matches!(
+            pair,
+            [CliParam::Literal("--lang"), CliParam::Literal("jpn")]
+        )));
+    }
+}
