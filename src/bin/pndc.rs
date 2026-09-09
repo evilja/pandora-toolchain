@@ -2811,7 +2811,9 @@ impl EventHandler for Handler {
                 _ => {}
             }
         } else if let Interaction::Component(component) = interaction {
-            if component.data.custom_id.starts_with("pnhelp:") {
+            if component.data.custom_id.starts_with("pntutorial:") {
+                handle_tutorial_component(&ctx, &component).await;
+            } else if component.data.custom_id.starts_with("pnhelp:") {
                 handle_help_component(&ctx, &component).await;
             } else if component.data.custom_id.starts_with("pnprobe:") {
                 handle_probe_component(&ctx, &component).await;

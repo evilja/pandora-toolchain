@@ -753,3 +753,11 @@ args = 0
 [TUTORIAL_1_TEAM_BODY]
 text = "Tüm adımları animenin aynı kanalında uygulayın.\n1. **Bir kez kurun:** `/init mal:<MyAnimeList anime bağlantısı>` ortak bir proje klasörü (depo) oluşturur ve bu kanala bağlar. Gerekirse `season` ile sezonu belirtin; varsayılan 1'dir. Kanal zaten hazırsa bu adımı atlayın.\n2. **Altyazıları kaydedin:** `/job type:TL episode:1 subtitle:<dosyanız>` birinci bölümün çevirisini kaydeder. `TLC`, kontrol edilmiş çeviriyi TL'nin yerine kaydeder. `TS`, tabela ve ekran yazılarını kaydeder. Her bölüm ve güncellenen dosya için tekrarlayın. `/job` yalnızca altyazıyı kaydeder; video hazırlamaz.\n3. **Videoyu hazırlayın:** `/smartcode do episode:1 link:<video bağlantısı>` kayıtlı çeviri ve ekran yazılarını birleştirir, videoya işler ve sonucu yükler. Biten videonun bağlantılarını bekleyin. Pandora bağlantıyı hatırladığı için aynı bölümde daha sonra `link` kutusunu boş bırakabilirsiniz.\nPaket için önce `/probe`, ardından `/smartcode pan episode:1 job_id:<iş kimliği> index:<dosya numarası>` kullanın.\nİsteğe bağlı: `/smartcode preview episode:1 link:<video bağlantısı>` video hazırlamadan önce altyazı yerleşimini kontrol edebileceğiniz örnek resimler üretir. Sonraki bölüm için 2–3. adımları tekrarlayın."
 args = 0
+
+[TUTORIAL_PREVIOUS]
+text = "Önceki"
+args = 0
+
+[TUTORIAL_NEXT]
+text = "Sonraki"
+args = 0

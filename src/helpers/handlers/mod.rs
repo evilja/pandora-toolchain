@@ -69,7 +69,7 @@ pub use self::attribute::{handle_attribute, handle_attribute_autocomplete};
 pub use self::link::{handle_link, link_target};
 pub use self::alias::{credited_name, handle_alias};
 pub use self::smartlist::handle_smartlist;
-pub use self::tutorial::handle_tutorial;
+pub use self::tutorial::{handle_tutorial, handle_tutorial_component};
 pub use self::get::handle_get;
 pub use self::init::handle_init;
 pub use self::attach::handle_attach;

@@ -313,4 +313,7 @@ See [TOOLS.md](TOOLS.md) for full `pnass` flags and ASS parsing rules.
 `/tutorial 1` opens a private beginner walkthrough in the server's configured language (English,
 Turkish, or Japanese). It covers `/encode do`, selecting a pack file with `/probe` then
 `/encode pan`, and the shared-channel `/init` → `/job` → `/smartcode` workflow, with command
-examples and explanations of TL, TLC, TS, job IDs, and file indices. The guide is available to everyone, like `/help`, and appears in `/help`. Its four embeds use the `TUTORIAL_1_*` translation keys.
+examples and explanations of TL, TLC, TS, job IDs, and file indices. The guide is available to everyone, like `/help`, and appears in `/help`. It shows one of four pages at a time, with localized Previous/Next buttons and a page counter.
+Buttons edit the original private message; Previous is disabled on the first page and Next on
+the last. The pages use `TUTORIAL_1_*` translation keys and navigation uses `TUTORIAL_PREVIOUS`
+and `TUTORIAL_NEXT`.

@@ -753,3 +753,11 @@ args = 0
 [TUTORIAL_1_TEAM_BODY]
 text = "Use the same anime channel for all these steps.\n1. **Set up once:** `/init mal:<MyAnimeList anime link>` creates a shared project folder (a repository) and connects it to this channel. Add `season` if needed; it defaults to 1. If the channel is already set up, skip this step.\n2. **Save subtitles:** `/job type:TL episode:1 subtitle:<your file>` saves episode 1's translation. `TLC` saves a checked translation and replaces TL. `TS` saves the on-screen signs and lettering. Repeat for each episode and each updated file. `/job` only saves subtitles; it does not make a video.\n3. **Make the video:** `/smartcode do episode:1 link:<video link>` combines the saved translation and signs, adds them to the video, and uploads the result. Wait for the finished links. Later you can omit `link` for this episode because Pandora remembers it.\nFor a pack, first use `/probe`, then `/smartcode pan episode:1 job_id:<Job ID> index:<file index>`.\nOptional: `/smartcode preview episode:1 link:<video link>` makes sample pictures to check subtitle placement before encoding. Repeat steps 2–3 for the next episode."
 args = 0
+
+[TUTORIAL_PREVIOUS]
+text = "Previous"
+args = 0
+
+[TUTORIAL_NEXT]
+text = "Next"
+args = 0

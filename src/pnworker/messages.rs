@@ -709,6 +709,9 @@ pub fn get_stage_text(stage: Stage, lang: &str) -> String {
 }
 
 
+pub const TUTORIAL_PREVIOUS: &str = "TUTORIAL_PREVIOUS";
+pub const TUTORIAL_NEXT: &str = "TUTORIAL_NEXT";
+
 pub const TUTORIAL_1_INTRO_TITLE: &str = "TUTORIAL_1_INTRO_TITLE";
 
 pub const TUTORIAL_1_INTRO_BODY: &str = "TUTORIAL_1_INTRO_BODY";
@@ -810,8 +813,8 @@ mod tests {
     fn tutorial_translations_fit_discord_embeds() {
         for locale in [EN_LOCALE, TR_LOCALE, JP_LOCALE] {
             let entries = parse_entries(locale).unwrap();
-            let mut total = 0;
             for section in ["INTRO", "ENCODE", "PROBE", "TEAM"] {
+                let mut total = 0;
                 for (suffix, limit) in [("TITLE", 256), ("BODY", 4096)] {
                     let entry = &entries[&format!("TUTORIAL_1_{section}_{suffix}")];
                     let length = entry.text.encode_utf16().count();
@@ -819,8 +822,8 @@ mod tests {
                     assert_eq!(entry.args, 0);
                     total += length;
                 }
+                assert!(total + 16 <= 6000, "tutorial page exceeds Discord's embed limit");
             }
-            assert!(total <= 6000, "tutorial exceeds Discord's combined embed limit");
         }
     }
 
