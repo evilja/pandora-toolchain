@@ -721,3 +721,35 @@ args = 1
 [LINK_NO_NODE_LEFT]
 text = "No Pandora Mini node could run this job after {} attempt(s), and this coordinator runs no encodes of its own. Nodes tried: {}"
 args = 2
+
+[TUTORIAL_1_INTRO_TITLE]
+text = "Tutorial 1 · Make your first video"
+args = 0
+
+[TUTORIAL_1_INTRO_BODY]
+text = "Pandora takes a video and a subtitle file, puts the subtitles onto the picture, and gives you the finished video's links. Choose one of the three routes below. Type the command in Discord, then fill in the named boxes; replace the example values with your own. If a command says you do not have permission, ask your server's administrator for access."
+args = 0
+
+[TUTORIAL_1_ENCODE_TITLE]
+text = "1 · One video + your subtitles: /encode"
+args = 0
+
+[TUTORIAL_1_ENCODE_BODY]
+text = "Have a video link and the matching subtitle file ready.\n1. Choose `/encode do`.\n2. In `torrent`, paste the video's link (a torrent, magnet, Google Drive, or direct video link). Despite its name, this box accepts more than torrents.\n3. In `subtitle`, attach your subtitle file, preferably `.ass`. Text files such as `.srt` also work, but conversion does not preserve a custom styled appearance.\n4. Send it. Pandora downloads, adds the subtitles, and uploads the result. Wait for the finished links in its progress message.\nExample: `/encode do torrent:<video link> subtitle:<your file>`\nUse this route when your link already points to the video you want."
+args = 0
+
+[TUTORIAL_1_PROBE_TITLE]
+text = "2 · Pick one video from a pack: /probe → /encode pan"
+args = 0
+
+[TUTORIAL_1_PROBE_BODY]
+text = "A pack is a download containing several files, such as a whole season.\n1. Run `/probe torrent:<pack link>` and wait for Pandora's file list.\n2. Find the episode you want. Copy the **Job ID** and that file's **index** exactly as shown. The index is a file number, not necessarily the episode number; it can be 0.\n3. Choose `/encode pan`, fill in `job_id` and `index`, and attach the matching file in `subtitle`.\nExample: `/encode pan job_id:<Job ID> index:0 subtitle:<your file>`\nPandora uses the chosen file, adds your subtitles, and returns the finished links. Keep the probe details handy; if the probe is no longer available, run `/probe` again."
+args = 0
+
+[TUTORIAL_1_TEAM_TITLE]
+text = "3 · Work as a team: /init → /job → /smartcode"
+args = 0
+
+[TUTORIAL_1_TEAM_BODY]
+text = "Use the same anime channel for all these steps.\n1. **Set up once:** `/init mal:<MyAnimeList anime link>` creates a shared project folder (a repository) and connects it to this channel. Add `season` if needed; it defaults to 1. If the channel is already set up, skip this step.\n2. **Save subtitles:** `/job type:TL episode:1 subtitle:<your file>` saves episode 1's translation. `TLC` saves a checked translation and replaces TL. `TS` saves the on-screen signs and lettering. Repeat for each episode and each updated file. `/job` only saves subtitles; it does not make a video.\n3. **Make the video:** `/smartcode do episode:1 link:<video link>` combines the saved translation and signs, adds them to the video, and uploads the result. Wait for the finished links. Later you can omit `link` for this episode because Pandora remembers it.\nFor a pack, first use `/probe`, then `/smartcode pan episode:1 job_id:<Job ID> index:<file index>`.\nOptional: `/smartcode preview episode:1 link:<video link>` makes sample pictures to check subtitle placement before encoding. Repeat steps 2–3 for the next episode."
+args = 0

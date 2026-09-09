@@ -721,3 +721,35 @@ args = 1
 [LINK_NO_NODE_LEFT]
 text = "{} denemeden sonra hiçbir Pandora Mini düğümü bu işi çalıştıramadı ve bu koordinatör kendisi kodlama yapmıyor. Denenen düğümler: {}"
 args = 2
+
+[TUTORIAL_1_INTRO_TITLE]
+text = "Rehber 1 · İlk videonuzu hazırlayın"
+args = 0
+
+[TUTORIAL_1_INTRO_BODY]
+text = "Pandora, video ile altyazı dosyanızı alır, altyazıyı görüntüye işler ve biten videonun bağlantılarını verir. Aşağıdaki üç yoldan birini seçin. Komutu Discord'da yazıp adı geçen kutuları doldurun; örnek değerleri kendi bilgilerinizle değiştirin. Yetkiniz olmadığı söylenirse sunucu yöneticinizden erişim isteyin."
+args = 0
+
+[TUTORIAL_1_ENCODE_TITLE]
+text = "1 · Tek video + altyazınız: /encode"
+args = 0
+
+[TUTORIAL_1_ENCODE_BODY]
+text = "Video bağlantısını ve ona uygun altyazı dosyasını hazırlayın.\n1. `/encode do` komutunu seçin.\n2. `torrent` kutusuna video bağlantısını yapıştırın: torrent, magnet, Google Drive veya doğrudan video bağlantısı olabilir. Kutunun adı torrent olsa da diğerlerini de kabul eder.\n3. `subtitle` kutusuna altyazınızı ekleyin. Tercihen `.ass` kullanın. `.srt` gibi metin altyazıları da çalışır, ancak dönüştürme özel görsel biçimlendirmeyi korumaz.\n4. Gönderin. Pandora videoyu indirir, altyazıyı işler ve sonucu yükler. İlerleme mesajında biten videonun bağlantılarını bekleyin.\nÖrnek: `/encode do torrent:<video bağlantısı> subtitle:<dosyanız>`\nBağlantınız istediğiniz videoyu doğrudan gösteriyorsa bu yolu kullanın."
+args = 0
+
+[TUTORIAL_1_PROBE_TITLE]
+text = "2 · Paketten bir video seçin: /probe → /encode pan"
+args = 0
+
+[TUTORIAL_1_PROBE_BODY]
+text = "Paket, sezonun tamamı gibi birden fazla dosya içeren indirmedir.\n1. `/probe torrent:<paket bağlantısı>` komutunu gönderip dosya listesini bekleyin.\n2. İstediğiniz bölümü bulun. **İş kimliğini (Job ID)** ve dosyanın **index** değerini aynen kopyalayın. Index dosyanın listedeki numarasıdır; bölüm numarasıyla aynı olmak zorunda değildir ve 0 olabilir.\n3. `/encode pan` seçin, `job_id` ve `index` kutularını doldurun, o bölüme uygun altyazıyı `subtitle` kutusuna ekleyin.\nÖrnek: `/encode pan job_id:<iş kimliği> index:0 subtitle:<dosyanız>`\nPandora seçilen dosyaya altyazıyı işler ve biten videonun bağlantılarını verir. Probe bilgilerini saklayın; sonuç artık kullanılamıyorsa yeniden `/probe` çalıştırın."
+args = 0
+
+[TUTORIAL_1_TEAM_TITLE]
+text = "3 · Ekipçe çalışın: /init → /job → /smartcode"
+args = 0
+
+[TUTORIAL_1_TEAM_BODY]
+text = "Tüm adımları animenin aynı kanalında uygulayın.\n1. **Bir kez kurun:** `/init mal:<MyAnimeList anime bağlantısı>` ortak bir proje klasörü (depo) oluşturur ve bu kanala bağlar. Gerekirse `season` ile sezonu belirtin; varsayılan 1'dir. Kanal zaten hazırsa bu adımı atlayın.\n2. **Altyazıları kaydedin:** `/job type:TL episode:1 subtitle:<dosyanız>` birinci bölümün çevirisini kaydeder. `TLC`, kontrol edilmiş çeviriyi TL'nin yerine kaydeder. `TS`, tabela ve ekran yazılarını kaydeder. Her bölüm ve güncellenen dosya için tekrarlayın. `/job` yalnızca altyazıyı kaydeder; video hazırlamaz.\n3. **Videoyu hazırlayın:** `/smartcode do episode:1 link:<video bağlantısı>` kayıtlı çeviri ve ekran yazılarını birleştirir, videoya işler ve sonucu yükler. Biten videonun bağlantılarını bekleyin. Pandora bağlantıyı hatırladığı için aynı bölümde daha sonra `link` kutusunu boş bırakabilirsiniz.\nPaket için önce `/probe`, ardından `/smartcode pan episode:1 job_id:<iş kimliği> index:<dosya numarası>` kullanın.\nİsteğe bağlı: `/smartcode preview episode:1 link:<video bağlantısı>` video hazırlamadan önce altyazı yerleşimini kontrol edebileceğiniz örnek resimler üretir. Sonraki bölüm için 2–3. adımları tekrarlayın."
+args = 0

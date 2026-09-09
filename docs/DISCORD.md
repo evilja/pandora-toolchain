@@ -307,3 +307,10 @@ The merge summary is printed to the bot's stdout (e.g. `smartcode merge: <TL> + 
 - Drawing-mode events in the secondary are kept as-is. Override blocks are honored (the secondary is loaded with `adv_parsing=true`).
 
 See [TOOLS.md](TOOLS.md) for full `pnass` flags and ASS parsing rules.
+
+## `/tutorial`
+
+`/tutorial 1` opens a private beginner walkthrough in the server's configured language (English,
+Turkish, or Japanese). It covers `/encode do`, selecting a pack file with `/probe` then
+`/encode pan`, and the shared-channel `/init` → `/job` → `/smartcode` workflow, with command
+examples and explanations of TL, TLC, TS, job IDs, and file indices. The guide is available to everyone, like `/help`, and appears in `/help`. Its four embeds use the `TUTORIAL_1_*` translation keys.

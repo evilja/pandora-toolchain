@@ -708,6 +708,23 @@ pub fn get_stage_text(stage: Stage, lang: &str) -> String {
     get_message(id, lang)
 }
 
+
+pub const TUTORIAL_1_INTRO_TITLE: &str = "TUTORIAL_1_INTRO_TITLE";
+
+pub const TUTORIAL_1_INTRO_BODY: &str = "TUTORIAL_1_INTRO_BODY";
+
+pub const TUTORIAL_1_ENCODE_TITLE: &str = "TUTORIAL_1_ENCODE_TITLE";
+
+pub const TUTORIAL_1_ENCODE_BODY: &str = "TUTORIAL_1_ENCODE_BODY";
+
+pub const TUTORIAL_1_PROBE_TITLE: &str = "TUTORIAL_1_PROBE_TITLE";
+
+pub const TUTORIAL_1_PROBE_BODY: &str = "TUTORIAL_1_PROBE_BODY";
+
+pub const TUTORIAL_1_TEAM_TITLE: &str = "TUTORIAL_1_TEAM_TITLE";
+
+pub const TUTORIAL_1_TEAM_BODY: &str = "TUTORIAL_1_TEAM_BODY";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -786,6 +803,24 @@ mod tests {
         for (id, entry) in en {
             assert_eq!(Some(entry.args), tr.get(&id).map(|value| value.args), "{}", id);
             assert_eq!(Some(entry.args), jp.get(&id).map(|value| value.args), "{}", id);
+        }
+    }
+
+    #[test]
+    fn tutorial_translations_fit_discord_embeds() {
+        for locale in [EN_LOCALE, TR_LOCALE, JP_LOCALE] {
+            let entries = parse_entries(locale).unwrap();
+            let mut total = 0;
+            for section in ["INTRO", "ENCODE", "PROBE", "TEAM"] {
+                for (suffix, limit) in [("TITLE", 256), ("BODY", 4096)] {
+                    let entry = &entries[&format!("TUTORIAL_1_{section}_{suffix}")];
+                    let length = entry.text.encode_utf16().count();
+                    assert!(length > 0 && length <= limit);
+                    assert_eq!(entry.args, 0);
+                    total += length;
+                }
+            }
+            assert!(total <= 6000, "tutorial exceeds Discord's combined embed limit");
         }
     }
 

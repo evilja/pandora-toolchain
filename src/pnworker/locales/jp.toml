@@ -721,3 +721,35 @@ args = 1
 [LINK_NO_NODE_LEFT]
 text = "{} 回試みましたが、どの Pandora Mini ノードもこのジョブを実行できませんでした。このコーディネーターは自身でエンコードを行いません。試行したノード: {}"
 args = 2
+
+[TUTORIAL_1_INTRO_TITLE]
+text = "チュートリアル1 · 初めての動画作成"
+args = 0
+
+[TUTORIAL_1_INTRO_BODY]
+text = "Pandoraは動画と字幕ファイルを受け取り、字幕を映像に焼き付けて、完成した動画のリンクを返します。以下の3つから目的に合う方法を選んでください。Discordでコマンドを選び、指定された入力欄を埋めます。例の値は自分のものに置き換えてください。権限がないと表示された場合は、サーバー管理者に利用許可をお願いしてください。"
+args = 0
+
+[TUTORIAL_1_ENCODE_TITLE]
+text = "1 · 動画1本と字幕：/encode"
+args = 0
+
+[TUTORIAL_1_ENCODE_BODY]
+text = "動画のリンクと、その動画に合った字幕ファイルを用意します。\n1. `/encode do` を選びます。\n2. `torrent` に動画のリンクを貼ります。torrent、magnet、Google Drive、動画への直接リンクが使えます。欄の名前はtorrentですが、それ以外も利用できます。\n3. `subtitle` に字幕を添付します。おすすめは `.ass` です。`.srt` などのテキスト字幕も使えますが、変換すると独自の装飾は保たれません。\n4. 送信します。Pandoraがダウンロード、字幕の焼き付け、アップロードを行います。進捗メッセージに完成リンクが出るまで待ちます。\n例：`/encode do torrent:<動画リンク> subtitle:<字幕ファイル>`\nリンク先が使いたい動画そのものである場合に、この方法を選びます。"
+args = 0
+
+[TUTORIAL_1_PROBE_TITLE]
+text = "2 · まとめパックから1本選ぶ：/probe → /encode pan"
+args = 0
+
+[TUTORIAL_1_PROBE_BODY]
+text = "パックとは、1シーズン分など複数のファイルが入ったダウンロードです。\n1. `/probe torrent:<パックのリンク>` を実行し、ファイル一覧を待ちます。\n2. 使いたい話を探し、**ジョブID（Job ID）** とそのファイルの **index** を表示どおりに控えます。indexはファイルの番号で、話数とは限りません。0の場合もあります。\n3. `/encode pan` を選び、`job_id` と `index` を入力して、その話に合った字幕を `subtitle` に添付します。\n例：`/encode pan job_id:<ジョブID> index:0 subtitle:<字幕ファイル>`\nPandoraが選んだ動画に字幕を焼き付け、完成リンクを返します。Probeの情報は控えておき、結果が利用できなくなった場合は `/probe` をやり直してください。"
+args = 0
+
+[TUTORIAL_1_TEAM_TITLE]
+text = "3 · チームで作業：/init → /job → /smartcode"
+args = 0
+
+[TUTORIAL_1_TEAM_BODY]
+text = "すべて同じアニメ用チャンネルで行います。\n1. **最初に一度だけ準備：** `/init mal:<MyAnimeListのアニメリンク>` で共有の作業フォルダー（リポジトリ）を作り、このチャンネルに接続します。必要なら `season` でシーズン番号を指定します。初期値は1です。設定済みのチャンネルなら、この手順は不要です。\n2. **字幕を保存：** `/job type:TL episode:1 subtitle:<字幕ファイル>` で第1話の翻訳を保存します。`TLC` は確認済みの翻訳でTLを置き換え、`TS` は看板などの画面上の文字用字幕を保存します。各話や修正版ごとに繰り返します。`/job` は字幕を保存するだけで、動画は作りません。\n3. **動画を作成：** `/smartcode do episode:1 link:<動画リンク>` で保存した翻訳と看板字幕をまとめて動画に焼き付け、アップロードします。完成リンクを待ってください。リンクは記憶されるため、同じ話では次回から `link` を省略できます。\nパックを使う場合は、先に `/probe` を実行し、続けて `/smartcode pan episode:1 job_id:<ジョブID> index:<ファイル番号>` を使います。\n任意：`/smartcode preview episode:1 link:<動画リンク>` で確認用の画像を作り、動画を作成する前に字幕の位置を確認できます。次の話も手順2〜3を繰り返します。"
+args = 0

@@ -829,6 +829,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("release", 0),
     ("source", 0),
     ("smartlist", 0),
+    ("tutorial", 0),
     ("attribute", 0),
     ("alias", 0),
     ("get", 0),
@@ -898,7 +899,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
 ];
 
 fn public_command(part: &str) -> bool {
-    matches!(part, "help" | "providers")
+    matches!(part, "help" | "providers" | "tutorial")
 }
 
 fn parse_command_ranks(contents: &str) -> HashMap<String, u8> {
@@ -1200,6 +1201,13 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "The name you are credited under in releases.",
             usage: "/alias choose name:<name> | /alias force user:<user> name:<name>",
             details: "Sets what %enc% resolves to in an /attribute credit line. `choose` sets your own name and is open to everyone; `force` sets somebody else's and needs the admin tier. An alias is global — one name per person across every server — and `-` clears it, falling back to the Discord display name.",
+        },
+        HelpCommand {
+            section: "misc",
+            name: "tutorial",
+            summary: "A beginner walkthrough in the server's language.",
+            usage: "/tutorial 1",
+            details: "Walks through /encode do, /probe then /encode pan, and /init, /job, /smartcode with examples.",
         },
         HelpCommand {
             section: "repo",
@@ -2708,6 +2716,9 @@ impl EventHandler for Handler {
                 "source" => {
                     handle_source(&ctx, &command).await;
                 }
+                "tutorial" => {
+                    handle_tutorial(&ctx, &command).await;
+                }
                 "smartlist" => {
                     handle_smartlist(&ctx, &command).await;
                 }
@@ -3318,6 +3329,15 @@ impl EventHandler for Handler {
                             CreateCommandOption::new(CommandOptionType::String, "name", "The name to credit them as, or - to use their Discord name")
                                 .required(true)
                         )
+                ),
+            CreateCommand::new("tutorial")
+                .description("Step-by-step guides for getting started")
+                .description_localized("tr", "Başlamak için adım adım rehberler")
+                .description_localized("ja", "初めての方向けのステップガイド")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::SubCommand, "1", "Your first video: encode, probe, and team workflows")
+                        .description_localized("tr", "İlk videonuz: encode, probe ve ekip iş akışları")
+                        .description_localized("ja", "初めての動画：encode・probe・チーム作業")
                 ),
             CreateCommand::new("smartlist")
                 .description("List every uploaded episode of this channel's anime with its links"),
