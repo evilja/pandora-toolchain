@@ -69,6 +69,64 @@ setting.
 **Node** — `link_coordinator_url`, `link_node_name`, `link_node_token` (all required),
 `link_max_jobs`. Choosing the node role also writes `pandora_mode|pntools|mini`.
 
+## Native ffmpeg
+
+Pandora runs whatever `ffmpeg`/`ffprobe` pair `DB/bin` holds, and by default that is a portable
+download compiled for the x86-64 baseline so it runs on any machine. `scripts/build-ffmpeg.sh`
+compiles one for *this* machine instead: ffmpeg, x264, x265 (8/10/12-bit) and libass from pinned
+sources, with `-march=native` on Linux and `-mcpu=native` on Apple silicon, so the compiler uses
+every instruction the CPU has — AVX2/FMA/BMI2 on an i9-9900K, NEON and the Apple extensions on an
+M-series Mac — in ffmpeg's own code: swscale, the filters, the AAC encoder, the muxers. x264, x265
+and libass carry hand-written assembly with runtime dispatch already, so what a native build buys
+them is the C around those loops; what it buys ffmpeg is everything.
+
+Three ways to run it, all the same build:
+
+```bash
+scripts/build-ffmpeg.sh            # from the checkout; --clean discards the work tree first
+pndc --build-ffmpeg [--clean]      # the copy embedded in the binary, for a box with no checkout
+/build-ffmpeg [clean:true]         # from Discord, rank 4; the reply updates when it finishes
+```
+
+and one way to make startup do it: `ffmpeg_build|pntools|native` in `env.pandora`. With that set,
+a startup that finds no pair in `DB/bin` builds one rather than downloading, a portable pair
+already there is rebuilt over, and startup waits for the build — which is minutes on a fast
+machine and longer on a small node. Without it, nothing changes for an existing deployment.
+
+The script checks its prerequisites first and names the package-manager line that installs the
+missing ones (a C/C++ toolchain, make, cmake, pkg-config, curl, xz, git, nasm on x86, and the
+development packages for freetype, fontconfig, harfbuzz and fribidi — those four are linked from
+the system because fontconfig's configuration belongs to the machine; everything else is built and
+linked statically). It smoke-tests the result — a libx264 encode through the `ass` filter and a
+10-bit libx265 encode — before installing it, so a failed build leaves the previous pair in place.
+It writes `DB/bin/ffmpeg.build` beside the binaries: what was built, with which flags, on which
+CPU, and startup prints that so a node's `/lsnode` line and its log agree about what it runs.
+Component versions are pinned in the script so two machines that run it get the same ffmpeg,
+which is what a Pandora Mini node needs to produce the same frames as its coordinator; bump them
+together. NVENC/NVDEC support is compiled in on Linux (header-only, no driver needed to build),
+and VAAPI, Intel VPL, dav1d and SVT-AV1 are taken when their development packages are present.
+
+**A native build must not be copied to another machine.** It is tuned to the CPU that built it and
+may not start on another; `DB/bin` is per-machine and gitignored for this reason. Windows keeps the
+portable download whatever the key says.
+
+Under Docker nothing is installed on the host and nothing has to be typed there either:
+`docker-compose.yml` sets `FFMPEG_NATIVE=1` by default, so the image rebuild the gitsync watcher
+runs after a `/gitsync` is the whole deployment — the first rebuild after this lands takes the
+extra ten-odd minutes the compile costs, later ones hit the cached layer. The build arg runs the
+same script in its own image stage — the compiler and the development packages live there and
+never reach the host or the runtime image — and the runtime image then carries that pair on PATH
+in place of Debian's `ffmpeg` package, with the record at `/usr/local/share/pandora/ffmpeg.build`
+so startup reports it. Build the image on the machine that runs it: the pair is tuned to the CPU
+that built it. The layer is cached on the script's content, so a `/gitsync`-triggered rebuild only
+recompiles ffmpeg when `scripts/build-ffmpeg.sh` changed; `FFMPEG_NATIVE=0` in the compose `.env`
+opts out. If the ffmpeg stage fails, the image build fails and the watcher's `up` brings the
+previous image back, so the bot returns on the old code rather than not at all — a `/gitsync`
+whose commits do not show up is the symptom, and the watcher's console has the compiler output. `FFMPEG_TOOLCHAIN=1` is the separate, optional arg that adds the
+compiler to the runtime image so `docker compose exec pndc pndc --build-ffmpeg` or `/build-ffmpeg`
+can rebuild into the mounted `./DB/bin` without an image rebuild; `DB/bin` wins over PATH when both
+hold a pair.
+
 ## Migrations on a new install
 
 A new install records every [migration](LINK.md#migrations) as already run, without running any. It

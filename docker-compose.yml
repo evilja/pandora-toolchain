@@ -2,6 +2,16 @@ services:
   pndc:
     build:
       context: .
+      args:
+        # On by default: the image compiles ffmpeg for this machine's CPU while it builds and
+        # ships it in place of Debian's, so the /gitsync-triggered rebuild the watcher runs is
+        # all it takes — nobody has to log in. The layer is cached on the script's content, so
+        # only a change to scripts/build-ffmpeg.sh recompiles it. Build the image on the machine
+        # that runs it; the binary is tuned to that CPU. FFMPEG_NATIVE=0 in .env opts out.
+        FFMPEG_NATIVE: ${FFMPEG_NATIVE:-1}
+        # 1 adds the compiler toolchain so `docker compose exec pndc pndc --build-ffmpeg` (or
+        # /build-ffmpeg from Discord) can rebuild into ./DB/bin without an image rebuild.
+        FFMPEG_TOOLCHAIN: ${FFMPEG_TOOLCHAIN:-0}
     restart: unless-stopped
     # No published ports: cloudflared reaches it over the internal network only.
     # The bot binds 0.0.0.0:8787 (set api_port|pntools|8787 in env.pandora).

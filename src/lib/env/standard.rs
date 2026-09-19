@@ -55,6 +55,15 @@ pub const ACCOUNTS_PATH: &str = "DB/config/global/environment/accounts.json";
 pub const SESSIONS_PATH: &str = "DB/config/global/environment/sessions.json";
 pub const FLAVOR_PATH: &str = "DB/config/global/environment/flavor.pandora";
 
+// Where ffmpeg comes from when `DB/bin` has none. Absent or anything but `native`: the portable
+// download `lib::bin` has always done. `native`: `scripts/build-ffmpeg.sh` (embedded in the
+// binary) compiles ffmpeg, x264, x265 and libass on this machine with `-march=native`, so the
+// result uses every instruction the CPU has rather than the x86-64 baseline a portable build is
+// held to. The build takes a while and a startup that needs it waits for it; `pndc --build-ffmpeg`
+// and `/build-ffmpeg` run the same build on demand, and a downloaded pair already in `DB/bin` is
+// replaced when this is set, since the setting is the request for that.
+pub const FFMPEG_BUILD: &str = "ffmpeg_build";
+
 // Encoder presets as editable files. A name with no file here falls back to the built-in table, so
 // an untouched deployment encodes exactly as it did before presets became configurable and an
 // operator opts one preset at a time out of the binary.

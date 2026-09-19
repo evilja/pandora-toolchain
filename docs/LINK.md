@@ -29,7 +29,9 @@ pndc --mini            # or `pandora_mode|pntools|mini` in env.pandora
 ```
 
 Mini mode runs the same startup as a coordinator — config migration, `ensure_startup_binaries`
-(which bootstraps portable ffmpeg/ffprobe into `DB/bin`), the font cache, localisation — creates the
+(which bootstraps ffmpeg/ffprobe into `DB/bin`: the portable download, or a build tuned to the
+node's own CPU when its `env.pandora` says `ffmpeg_build|pntools|native`; see
+[SETUP.md](SETUP.md#native-ffmpeg)), the font cache, localisation — creates the
 same worker queue, spawns `pn_worker`, and then starts the link client **instead of** the Discord
 client. No `discord_token` is needed, and **no HTTP API is served**: a node has no inbound surface
 by design, and its `env.pandora` is very often a copy of the coordinator's with the link keys added,
