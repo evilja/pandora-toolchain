@@ -1013,3 +1013,23 @@ args = 0
 [CONFIG_GITHUB_MISSING]
 text = "/init ile proje oluşturmadan önce organizasyon adresini (github) ve API tokenını (api_key) ekleyin. İsteğe bağlı görsel ayarlar atlanabilir."
 args = 0
+
+[RESTART_PROGRESS]
+text = "Aktif işler durduruluyor ve Pandora yeniden başlatılıyor…"
+args = 0
+
+[BUILD_FFMPEG_STARTED]
+text = "ffmpeg bu makine için yerel olarak derleniyor. Bu biraz sürer; bittiğinde bu mesaj güncellenir. Log: `{}`"
+args = 1
+
+[BUILD_FFMPEG_BUSY]
+text = "Zaten bir yerel ffmpeg derlemesi çalışıyor. Log: `{}`"
+args = 1
+
+[BUILD_FFMPEG_DONE]
+text = "Yerel ffmpeg {} dakikada kuruldu: `{}`\nBundan sonra başlayan her encode bunu kullanır; eskisini tutan bir şey kalmasın diye `/restart` at."
+args = 2
+
+[BUILD_FFMPEG_FAIL]
+text = "Yerel ffmpeg derlemesi başarısız oldu. Mevcut ffmpeg kullanılmaya devam ediyor.\n{}"
+args = 1

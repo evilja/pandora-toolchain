@@ -54,6 +54,7 @@ mod watermark;
 mod studio;
 mod catlogs;
 mod refreshcache;
+mod build_ffmpeg;
 #[allow(unused_imports)]
 pub use self::message::handle_message;
 pub use self::probe::{handle_probe, handle_probe_component};
@@ -109,6 +110,7 @@ pub use self::watermark::handle_touchwatermark;
 pub use self::studio::handle_studio;
 pub use self::catlogs::handle_catlogs;
 pub use self::refreshcache::handle_refreshcache;
+pub use self::build_ffmpeg::handle_build_ffmpeg;
 
 use pandora_toolchain::pnworker::messages::*;
 use pandora_toolchain::pnworker::core::Concat;

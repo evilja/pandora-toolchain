@@ -1013,3 +1013,23 @@ args = 0
 [CONFIG_GITHUB_MISSING]
 text = "/init でプロジェクトを作る前に、組織URL（github）とAPIトークン（api_key）の両方を設定してください。装飾は省略できます。"
 args = 0
+
+[RESTART_PROGRESS]
+text = "実行中の処理を停止してPandoraを再起動しています…"
+args = 0
+
+[BUILD_FFMPEG_STARTED]
+text = "このマシン向けにffmpegをネイティブビルドしています。時間がかかります。完了時にこのメッセージを更新します。ログ: `{}`"
+args = 1
+
+[BUILD_FFMPEG_BUSY]
+text = "ネイティブffmpegのビルドはすでに実行中です。ログ: `{}`"
+args = 1
+
+[BUILD_FFMPEG_DONE]
+text = "ネイティブffmpegを{}分でインストールしました: `{}`\n以後に開始するエンコードはこれを使用します。古いものを保持するものが残らないよう `/restart` を実行してください。"
+args = 2
+
+[BUILD_FFMPEG_FAIL]
+text = "ネイティブffmpegのビルドに失敗しました。既存のffmpegを引き続き使用します。\n{}"
+args = 1

@@ -1013,3 +1013,23 @@ args = 0
 [CONFIG_GITHUB_MISSING]
 text = "Before /init can create a project, add both the organization URL (github) and API token (api_key). Optional branding can stay skipped."
 args = 0
+
+[RESTART_PROGRESS]
+text = "Stopping active work and restarting Pandora…"
+args = 0
+
+[BUILD_FFMPEG_STARTED]
+text = "Building ffmpeg natively for this machine. This takes a while; this message is updated when it ends. Log: `{}`"
+args = 1
+
+[BUILD_FFMPEG_BUSY]
+text = "A native ffmpeg build is already running. Log: `{}`"
+args = 1
+
+[BUILD_FFMPEG_DONE]
+text = "Native ffmpeg installed in {} minute(s): `{}`\nEvery encode started from now on uses it; run `/restart` so nothing still holds the old one."
+args = 2
+
+[BUILD_FFMPEG_FAIL]
+text = "The native ffmpeg build failed. The ffmpeg that was already here stays in use.\n{}"
+args = 1

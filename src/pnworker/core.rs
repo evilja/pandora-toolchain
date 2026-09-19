@@ -1655,6 +1655,9 @@ async fn handle_half_job(
         JobType::GitForce => {
             run_gitsync(halfjob.frontend, shrine, true).await;
         }
+        JobType::Restart => {
+            run_restart(halfjob.frontend, shrine).await;
+        }
         JobType::GitQuery => {
             let mut frontend = halfjob.frontend.clone();
             if gitquery.is_some() {
@@ -1731,6 +1734,25 @@ async fn run_gitsync(mut frontend: Frontend, shrine: &mut TypedShrine<WorkerMsg>
     }
     // Nothing was pulled, so there is nothing new to build: exit into the restart loop without
     // asking a Docker host to rebuild an image whose source did not change.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    std::process::exit(0);
+}
+
+// `/restart`: everything `/gitsync` does to the running process, and nothing it does to the
+// checkout. The shrine is killed, unfinished jobs' logs are kept and `DB/work` is cleared exactly
+// as a sync would, and the exit is a plain 0 into `start.sh` / Docker's restart policy. No build
+// bump and no rebuild request: the source did not move, so the nodes have nothing to update to
+// and a Docker host has nothing to rebuild — the binary that comes back is the one that left.
+//
+// What it is for is picking up state that only startup reads: a native ffmpeg that `/build-ffmpeg`
+// just installed, a preset file, an `env.pandora` edit — without paying for a pull that would
+// otherwise be the only way to get there.
+async fn run_restart(mut frontend: Frontend, shrine: &mut TypedShrine<WorkerMsg>) {
+    frontend.notify_recompiling();
+    shrine.kill().await;
+    frontend.set_text("Aktif işler durduruldu.\nBot yeniden başlatılıyor.").await;
+    preserve_work_logs().await;
+    let _ = remove_dir_all(PathBuf::from("DB").join("work")).await;
     tokio::time::sleep(Duration::from_secs(1)).await;
     std::process::exit(0);
 }
@@ -1948,6 +1970,7 @@ fn job_type_label(job_type: JobType) -> &'static str {
         JobType::Batch => "batch",
         JobType::Subs => "subs",
         JobType::GitForce => "gitforce",
+        JobType::Restart => "restart",
     }
 }
 
@@ -4352,6 +4375,7 @@ pub enum JobType {
     Batch = 016,
     Subs = 017,
     GitForce = 018,
+    Restart = 019,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -4529,6 +4553,29 @@ impl HalfJob {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or(Duration::from_secs(0)),
             job_type: JobType::GitQuery,
+            frontend: Frontend::discord(context, msg),
+            any_author: false,
+        }
+    }
+    // `/restart`. The shutdown half of `/gitsync` with the git half left out: the shrine is
+    // stopped, the work tree is cleared and the process exits into its restart loop, on the
+    // checkout it already has. A separate job type because "restart" and "pull then restart"
+    // must not be one command with a flag that decides whether the source moves.
+    pub fn new_restart(
+        author: u64,
+        channel_id: u64,
+        job_id: u64,
+        context: Context,
+        msg: Message,
+    ) -> Self {
+        Self {
+            author,
+            channel_id,
+            job_id,
+            requested_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or(Duration::from_secs(0)),
+            job_type: JobType::Restart,
             frontend: Frontend::discord(context, msg),
             any_author: false,
         }

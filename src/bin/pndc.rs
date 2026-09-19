@@ -8,7 +8,7 @@ use pandora_toolchain::lib::p2p::nyaaise::{display_source_link, nyaaise, Torrent
 use pandora_toolchain::pnworker::core::{
     DriveDeleteRequest, HalfJob, Job, JobClass, JobType, KeepRequest, KeycodeRequest,
 };
-use pandora_toolchain::pnworker::messages::{COMMAND_LIST, COMMAND_UPDATED};
+use pandora_toolchain::pnworker::messages::{COMMAND_LIST, COMMAND_UPDATED, RESTART_PROGRESS};
 use pandora_toolchain::pnworker::util::{CliParam, PathValue, ToolResult, run_tool};
 use pandora_toolchain::pnworker::tools::PNASS_JOB;
 use pandora_toolchain::pnworker::tools::PNASS_MERGE;
@@ -863,6 +863,8 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("gitsync", 3),
     ("gitforce", 3),
     ("gitquery", 3),
+    ("restart", 3),
+    ("build-ffmpeg", 4),
     ("gentoken", 3),
     ("genwitchtoken", 4),
     ("exportdrive", 4),
@@ -1278,6 +1280,20 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Sync git after current encodes finish.",
             usage: "/gitquery",
             details: "Disables new encode jobs immediately, waits for current encode jobs to finish, then runs the same git sync workflow as /gitsync.",
+        },
+        HelpCommand {
+            section: "workers",
+            name: "restart",
+            summary: "Restart the bot without touching git.",
+            usage: "/restart",
+            details: "Stops the shrine, keeps unfinished jobs' logs, clears DB/work and exits into the restart loop on the checkout it already has — no pull, no build bump, no node update. Use it to pick up what only startup reads: a native ffmpeg from /build-ffmpeg, a preset file, an env.pandora edit. Rank 3.",
+        },
+        HelpCommand {
+            section: "workers",
+            name: "build-ffmpeg",
+            summary: "Compile ffmpeg for this machine's CPU.",
+            usage: "/build-ffmpeg [clean:<true|false>]",
+            details: "Builds ffmpeg, x264, x265 and libass from source with -march=native into DB/bin, replacing the portable download. Runs in the background and edits its message when done; clean:true discards the previous work tree first. Encodes started afterwards use it at once; /restart makes sure nothing still holds the old one. Linux and macOS only. Rank 4 only.",
         },
         HelpCommand {
             section: "admin",
@@ -2777,6 +2793,23 @@ impl EventHandler for Handler {
                         response_msg,
                     ))).await.ok();
                 }
+                "restart" => {
+                    let text = command_message(&command, RESTART_PROGRESS);
+                    let response_msg = match working_response(&ctx, &command, &text).await {
+                        Some(m) => m,
+                        None => return,
+                    };
+                    self.tx.send(JobClass::HalfJob(HalfJob::new_restart(
+                        command.user.id.get(),
+                        command.channel_id.get(),
+                        response_msg.id.get(),
+                        ctx.clone(),
+                        response_msg,
+                    ))).await.ok();
+                }
+                "build-ffmpeg" => {
+                    handle_build_ffmpeg(&ctx, &command).await;
+                }
                 _ => {}
             }
         } else if let Interaction::Autocomplete(autocomplete) = interaction {
@@ -3082,6 +3115,14 @@ impl EventHandler for Handler {
                 .description("Reset onto origin, bump the build, and make every node reset too"),
             CreateCommand::new("gitquery")
                 .description("Disable new encodes, then sync git after current encodes finish"),
+            CreateCommand::new("restart")
+                .description("Restart the bot on its current checkout, without a git sync"),
+            CreateCommand::new("build-ffmpeg")
+                .description("Compile ffmpeg for this machine's CPU into DB/bin")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Boolean, "clean", "Discard the previous build tree first")
+                        .required(false)
+                ),
             CreateCommand::new("backup")
                 .description("Download torrent and upload MKV to GDrive without release")
                 .add_option(
@@ -4161,6 +4202,26 @@ fn refresh_pandora_fonts() -> std::pin::Pin<Box<dyn std::future::Future<Output =
 
 #[tokio::main]
 async fn main() {
+    // `pndc --build-ffmpeg [--clean]`: compile ffmpeg for this CPU into DB/bin and exit. Handled
+    // before configuration is even read, so a fresh box can build its ffmpeg before it has a
+    // Discord token — and so a build never has to wait behind a bot that is otherwise starting.
+    if std::env::args().any(|arg| arg == "--build-ffmpeg") {
+        let clean = std::env::args().any(|arg| arg == "--clean");
+        match pandora_toolchain::lib::bin::build_native_ffmpeg(clean).await {
+            Ok(build) => {
+                println!(
+                    "[Pandora] native ffmpeg installed in DB/bin after {}m: {}",
+                    build.elapsed.as_secs() / 60,
+                    build.version
+                );
+                std::process::exit(0);
+            }
+            Err(error) => {
+                eprintln!("[Pandora] native ffmpeg build failed: {}", error);
+                std::process::exit(1);
+            }
+        }
+    }
     migrate_pandora_files().await;
     // Before anything reads configuration, and before the role is cached anywhere: a first run has
     // none, and every step below assumes some. Exits with EX_CONFIG rather than starting into a

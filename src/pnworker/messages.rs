@@ -20,6 +20,12 @@ pub const GITSYNC_PROGRESS: &str = "GITSYNC_PROGRESS";
 pub const GITSYNC_SUCCESS: &str = "GITSYNC_SUCCESS";
 pub const GITSYNC_FAIL: &str = "GITSYNC_FAIL";
 pub const GITQUERY_BLOCKED: &str = "GITQUERY_BLOCKED";
+pub const RESTART_PROGRESS: &str = "RESTART_PROGRESS";
+// `/build-ffmpeg`: the build runs in the background and edits its own message when it ends.
+pub const BUILD_FFMPEG_STARTED: &str = "BUILD_FFMPEG_STARTED";
+pub const BUILD_FFMPEG_BUSY: &str = "BUILD_FFMPEG_BUSY";
+pub const BUILD_FFMPEG_DONE: &str = "BUILD_FFMPEG_DONE";
+pub const BUILD_FFMPEG_FAIL: &str = "BUILD_FFMPEG_FAIL";
 pub const CTORRENT_DONE: &str = "CTORRENT_DONE";
 pub const CTORRENT_FAIL: &str = "CTORRENT_FAIL";
 pub const TORRENT_PROG: &str = "TORRENT_PROG";
