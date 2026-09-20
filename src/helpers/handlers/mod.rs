@@ -356,44 +356,10 @@ fn credit_value(value: &str) -> String {
     }
 }
 
-// The `job_id`/`index` pair a probe-taking subcommand carries, resolved against the job DB into
-// the link that probe ran on. `Ok(None)` means the command has no such options or left them empty;
-// `Err(())` means it had them and they did not resolve, and the person has already been told why.
-async fn resolve_command_probe(
-    ctx: &Context,
-    command: &serenity::all::CommandInteraction,
-    response_msg: &mut Message,
-) -> Result<Option<(String, ProbeRef)>, ()> {
-    let Some(raw) = option_str(command, "job_id").map(str::trim).filter(|id| !id.is_empty()) else {
-        return Ok(None);
-    };
-    let reason = match raw.parse::<u64>() {
-        Err(_) => "Error: job_id must be a number.".to_string(),
-        Ok(job_id) => match option_i64(command, "index") {
-            Some(index) if index >= 0 => match JobDb::new().await {
-                Err(e) => format!("Error: failed to open job DB: {}", e),
-                Ok(db) => match db.get_job(job_id).await {
-                    Ok(Some(row)) => {
-                        return Ok(Some((
-                            row.link,
-                            ProbeRef { job_id, file_index: index as u64 },
-                        )));
-                    }
-                    Ok(None) => "Error: probe job was not found.".to_string(),
-                    Err(e) => format!("Error: failed to read probe job: {}", e),
-                },
-            },
-            _ => "Error: `index` is required with `job_id`.".to_string(),
-        },
-    };
-    let _ = response_msg.edit(ctx, EditMessage::new().content(reason)).await;
-    Err(())
-}
-
 struct SmartMergeResult {
     link: String,
-    // The probe the link came out of, when it came out of one: either from this command's own
-    // `job_id`/`index`, or from the `SOURCE.md` a `/source` of a pack wrote. `/smartcode do` is
+    // The probe the link came out of, when it came out of one: the `SOURCE.md` a `/source` of a
+    // pack wrote names the listing and the file that was chosen from it. `/smartcode do` is
     // the only caller that needs it — the rest encode whatever the link resolves to.
     probe: Option<ProbeRef>,
     merged_bytes: Vec<u8>,
@@ -464,17 +430,9 @@ async fn smartcode_merge_upload(
         }
     };
 
-    // A subcommand that takes a probe (`job_id`/`index` options) resolves its link out of the probe job,
-    // and is treated as having been given one: the probe is written into `SOURCE.md` beside the
-    // link so the next run of the same episode needs neither option again.
-    let probe_opt = match resolve_command_probe(ctx, command, response_msg).await {
-        Ok(probe) => probe,
-        Err(()) => return None,
-    };
-    let (link, probe, source_from_argument) = match (link_opt.as_ref(), probe_opt) {
-        (Some(link), _) => (link.clone(), None, true),
-        (None, Some((link, probe))) => (link, Some(probe), true),
-        (None, None) => {
+    let (link, probe, source_from_argument) = match link_opt.as_ref() {
+        Some(link) => (link.clone(), None, true),
+        None => {
             let source_md_path = format!("{}/SOURCE.md", folder);
             let b64 = match fg.get_file_content(&owner_repo, &source_md_path).await {
                 Ok(Some((b, _))) => b,
