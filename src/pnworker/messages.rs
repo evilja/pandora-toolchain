@@ -67,6 +67,8 @@ pub const PROBE_FAIL: &str = "PROBE_FAIL";
 pub const PROBE_ROW: &str = "PROBE_ROW";
 pub const PROBE_PAGE: &str = "PROBE_PAGE";
 pub const PROBE_PAGE_EXPIRED: &str = "PROBE_PAGE_EXPIRED";
+pub const PICK_PROMPT: &str = "PICK_PROMPT";
+pub const PICK_TIMEOUT: &str = "PICK_TIMEOUT";
 pub const SUBS_DONE: &str = "SUBS_DONE";
 pub const SUBS_NONE: &str = "SUBS_NONE";
 pub const SUBS_FAIL: &str = "SUBS_FAIL";
@@ -446,7 +448,8 @@ pub fn create_job_embed(job: &Job, payload: &MessagePayload) -> CreateEmbed {
     }
 
     let colour = stage_colour(job.ready);
-    let title = get_job_type_text(job.job_type, lang);
+    // An encode listing its source first is still the encode its requester asked for.
+    let title = get_job_type_text(job.pick_then.unwrap_or(job.job_type), lang);
     let footer = format_message(EMBED_FOOTER, lang, &[PKGVER.to_string()]);
     let mut embed = CreateEmbed::new()
         .title(title)
@@ -498,9 +501,24 @@ pub fn create_job_embed(job: &Job, payload: &MessagePayload) -> CreateEmbed {
             false,
         );
     }
+    if asks_for_a_file(job, payload) {
+        embed = embed.description(get_message(PICK_PROMPT, lang));
+    }
     embed
         .footer(CreateEmbedFooter::new(footer))
         .timestamp(serenity::model::Timestamp::now())
+}
+
+// Whether this render is the file list of an encode that has to be told which file it is for. A
+// list of one is not a question — the job carries on by itself a moment later — so it is shown
+// without the prompt rather than asking for an answer nobody will get to give.
+fn asks_for_a_file(job: &Job, payload: &MessagePayload) -> bool {
+    let MessagePayload::Progress(id, args) = payload else {
+        return false;
+    };
+    job.pick_then.is_some()
+        && *id == PROBE_ROW
+        && args.first().map(|list| list.lines().count()).unwrap_or(0) > 1
 }
 
 fn job_details(job: &Job, payload: &MessagePayload) -> String {
@@ -789,6 +807,14 @@ pub const CONFIG_LOGO_BODY: &str = "CONFIG_LOGO_BODY";
 pub const CONFIG_PLACEMENT_TITLE: &str = "CONFIG_PLACEMENT_TITLE";
 pub const CONFIG_PLACEMENT_BODY: &str = "CONFIG_PLACEMENT_BODY";
 
+// The pack pages, under new keys for the reason the GitHub ones are: a runtime locale file keeps
+// whatever text it already holds for a key, and the old pages taught `/encode pan`.
+pub const TUTORIAL_1_PACK_TITLE: &str = "TUTORIAL_1_PACK_TITLE";
+pub const TUTORIAL_1_PACK_BODY: &str = "TUTORIAL_1_PACK_BODY";
+pub const TUTORIAL_1_TEAMWORK_TITLE: &str = "TUTORIAL_1_TEAMWORK_TITLE";
+pub const TUTORIAL_1_TEAMWORK_BODY: &str = "TUTORIAL_1_TEAMWORK_BODY";
+pub const TUTORIAL_1_REUSE_TITLE: &str = "TUTORIAL_1_REUSE_TITLE";
+pub const TUTORIAL_1_REUSE_BODY: &str = "TUTORIAL_1_REUSE_BODY";
 pub const TUTORIAL_ADMIN_GITHUB_INIT_BODY: &str = "TUTORIAL_ADMIN_GITHUB_INIT_BODY";
 pub const CONFIG_GITHUB_BODY: &str = "CONFIG_GITHUB_BODY";
 pub const FIELD_GITHUB_TOKEN: &str = "FIELD_GITHUB_TOKEN";
@@ -864,6 +890,9 @@ mod tests {
             link_cancelled: false,
             link_return_output: false,
             link_drive_only: None,
+            pick_then: None,
+            pick_files: None,
+            pick_keep: None,
         }
     }
 
@@ -884,7 +913,7 @@ mod tests {
     fn tutorial_translations_fit_discord_embeds() {
         for locale in [EN_LOCALE, TR_LOCALE, JP_LOCALE] {
             let entries = parse_entries(locale).unwrap();
-            for section in ["INTRO", "ENCODE", "PROBE", "TEAM"] {
+            for section in ["INTRO", "ENCODE", "PACK", "TEAMWORK", "REUSE"] {
                 let mut total = 0;
                 for (suffix, limit) in [("TITLE", 256), ("BODY", 4096)] {
                     let entry = &entries[&format!("TUTORIAL_1_{section}_{suffix}")];
@@ -896,6 +925,37 @@ mod tests {
                 assert!(total + 16 <= 6000, "tutorial page exceeds Discord's embed limit");
             }
         }
+    }
+
+    fn embed_json(job: &Job, payload: &MessagePayload) -> serde_json::Value {
+        serde_json::to_value(create_job_embed(job, payload)).unwrap()
+    }
+
+    #[test]
+    fn an_encode_listing_a_pack_asks_for_an_index_under_its_own_title() {
+        let mut job = test_job(JobType::Probe, "https://nyaa.si/view/1");
+        job.pick_then = Some(JobType::Encode);
+        job.ready = Stage::Probed;
+        let pack = MessagePayload::Progress(
+            PROBE_ROW,
+            vec!["`0` — E01\n`1` — E02".to_string(), "[]".to_string()],
+        );
+        let embed = embed_json(&job, &pack);
+        assert_eq!(embed["title"], get_job_type_text(JobType::Encode, "en"));
+        assert_eq!(embed["description"], get_message(PICK_PROMPT, "en"));
+
+        // One video is not a question; the job carries on by itself.
+        let single = MessagePayload::Progress(
+            PROBE_ROW,
+            vec!["`0` — E01".to_string(), "[]".to_string()],
+        );
+        assert!(embed_json(&job, &single).get("description").is_none());
+
+        // A bare `/probe` is a lookup and asks nothing.
+        job.pick_then = None;
+        let embed = embed_json(&job, &pack);
+        assert_eq!(embed["title"], get_job_type_text(JobType::Probe, "en"));
+        assert!(embed.get("description").is_none());
     }
 
     #[test]

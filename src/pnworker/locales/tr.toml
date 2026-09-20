@@ -154,6 +154,14 @@ args = 2
 text = "Bu dosya listesi artık mevcut değil."
 args = 0
 
+[PICK_PROMPT]
+text = "Bu kaynakta birden fazla video var; lütfen numarasını bu kanala yazarak bir indeks seçin."
+args = 0
+
+[PICK_TIMEOUT]
+text = "Zamanında bir dosya seçilmediği için iş iptal edildi."
+args = 0
+
 [PREVIEW_DONE]
 text = "{} kare eklendi."
 args = 1
@@ -768,6 +776,30 @@ args = 0
 
 [TUTORIAL_1_SAVED_BODY]
 text = "1. bölümü daha önce `/smartcode` ile hazırladınız mı? Pandora o bölümün videosunu nereden alacağını hatırlar. Altyazıyı `/job` ile düzelttikten sonra sadece `/smartcode do episode:1` yazın. Aynı bağlantıyı tekrar arayıp yapıştırmanıza gerek yok. Bu bilgi, bu kanaldaki her bölüm için ayrı tutulur. Yeni bir bölümün bağlantısını ilk seferde verin. Kaynak videoyu değiştirmek isterseniz yeni `link` ekleyin. Paketi `/smartcode pan` ile kaydettiyseniz tekrar `/smartcode pan episode:1` kullanın; seçtiğiniz dosya da hatırlanır. Kayıtlı probe artık kullanılamıyorsa yeniden `/probe` çalıştırıp yeni iş kimliği ve index değerini verin."
+args = 0
+
+[TUTORIAL_1_PACK_TITLE]
+text = "2 · Paketten bir video seçin: /encode do"
+args = 0
+
+[TUTORIAL_1_PACK_BODY]
+text = "Paket, sezonun tamamı gibi birden fazla dosya içeren indirmedir. Tek video için kullandığınız komutun aynısını kullanırsınız.\n1. `/encode do torrent:<paket bağlantısı> subtitle:<dosyanız>` komutunu gönderin.\n2. Pandora paketi fark eder, dosya listesini gösterir ve hangi dosyayı istediğinizi sorar. Uzun listelerde ◀ / ▶ düğmeleri bulunur.\n3. Bölümünüzü bulun ve **index** değerini aynı kanala düz bir mesaj olarak gönderin, örneğin `5`. Index, dosyanın önünde görünen numaradır; bölüm numarasıyla aynı olmak zorunda değildir ve 0 olabilir.\nPandora aynı mesajı normal encode işine çevirir ve biten videonun bağlantılarını verir. Yalnızca komutu çalıştıran kişi yanıt verebilir ve soru üç dakika sonra kapanır; kapanırsa komutu yeniden çalıştırmanız yeterlidir."
+args = 0
+
+[TUTORIAL_1_TEAMWORK_TITLE]
+text = "3 · Ekipçe çalışın: /init → /job → /smartcode"
+args = 0
+
+[TUTORIAL_1_TEAMWORK_BODY]
+text = "Tüm adımları animenin aynı kanalında uygulayın.\n1. **Bir kez kurun:** `/init mal:<MyAnimeList anime bağlantısı>` ortak bir proje klasörü (depo) oluşturur ve bu kanala bağlar. Gerekirse `season` ile sezonu belirtin; varsayılan 1'dir. Kanal zaten hazırsa bu adımı atlayın.\n2. **Altyazıları kaydedin:** `/job type:TL episode:1 subtitle:<dosyanız>` birinci bölümün çevirisini kaydeder. `TLC`, kontrol edilmiş çeviriyi TL'nin yerine kaydeder. `TS`, tabela ve ekran yazılarını kaydeder. Her bölüm ve güncellenen dosya için tekrarlayın. `/job` yalnızca altyazıyı kaydeder; video hazırlamaz.\n3. **Videoyu hazırlayın:** `/smartcode do episode:1 link:<video bağlantısı>` kayıtlı çeviri ve ekran yazılarını birleştirir, videoya işler ve sonucu yükler. Biten videonun bağlantılarını bekleyin. Pandora bağlantıyı hatırladığı için aynı bölümde daha sonra `link` kutusunu boş bırakabilirsiniz.\nPaket için de aynı komutu kullanın: Pandora dosya listesini gösterir, siz de dosyanın index değerini kanala düz bir mesaj olarak yazarsınız.\nİsteğe bağlı: `/smartcode preview episode:1 link:<video bağlantısı>` video hazırlamadan önce altyazı yerleşimini kontrol edebileceğiniz örnek resimler üretir. Sonraki bölüm için 2–3. adımları tekrarlayın."
+args = 0
+
+[TUTORIAL_1_REUSE_TITLE]
+text = "Bağlantıyı bir kez vermeniz yeterli"
+args = 0
+
+[TUTORIAL_1_REUSE_BODY]
+text = "1. bölümü daha önce `/smartcode` ile hazırladınız mı? Pandora o bölümün videosunu nereden alacağını hatırlar. Altyazıyı `/job` ile düzelttikten sonra sadece `/smartcode do episode:1` yazın. Aynı bağlantıyı tekrar arayıp yapıştırmanıza gerek yok. Bu bilgi, bu kanaldaki her bölüm için ayrı tutulur. Yeni bir bölümün bağlantısını ilk seferde verin. Kaynak videoyu değiştirmek isterseniz yeni `link` ekleyin. Pakette Pandora dosya index değerini her seferinde yeniden sorar; dosyanın hatırlanmasını isterseniz paketi bir kez `/probe` ile inceleyip `/source episode:1 job_id:<iş kimliği> index:<dosya numarası>` ile kaydedin."
 args = 0
 
 [TUTORIAL_ADMIN_START_TITLE]

@@ -24,9 +24,9 @@ use tokio::fs::{create_dir_all, rename};
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::time::{Duration, Instant, sleep};
 
-// The index list is empty for a whole-torrent download, one entry for `/encode pan`, and one entry
-// per episode for a batch — a batch runs as a single pnp2p process because the info-hash lock
-// admits exactly one downloader per torrent.
+// The index list is empty for a whole-torrent download, one entry for a file picked out of a pack,
+// and one entry per episode for a batch — a batch runs as a single pnp2p process because the
+// info-hash lock admits exactly one downloader per torrent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DownloadAot {
     // The canonical preset name, passed straight to `pnmpeg --preset`. Naming the preset rather

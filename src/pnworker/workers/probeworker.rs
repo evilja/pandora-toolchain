@@ -805,7 +805,7 @@ fn format_probe_rows(rows: &[ProbeFile]) -> Vec<String> {
         .collect();
     // Torrents list their files in whatever order they were packed, so an episode-numbered release
     // arrives shuffled (E10 before E2, specials in the middle). Sort by the detected number and
-    // keep the torrent's own index in the label — that index is what `/encode pan` selects with.
+    // keep the torrent's own index in the label — that index is what a pick typed in chat, `/encode batch` and `/subs` select with.
     if detected {
         listed.sort_by_key(|(_, _, token)| match token {
             Some(token) => (0, token_number(token).unwrap_or(u64::MAX), token_version(token)),

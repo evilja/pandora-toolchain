@@ -331,6 +331,9 @@ mod tests {
             link_cancelled: false,
             link_return_output: false,
             link_drive_only: None,
+            pick_then: None,
+            pick_files: None,
+            pick_keep: None,
         }
     }
 

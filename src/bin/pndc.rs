@@ -6,7 +6,7 @@ use serenity::{
 };
 use pandora_toolchain::lib::p2p::nyaaise::{display_source_link, nyaaise, TorrentType};
 use pandora_toolchain::pnworker::core::{
-    DriveDeleteRequest, HalfJob, Job, JobClass, JobType, KeepRequest, KeycodeRequest,
+    DriveDeleteRequest, HalfJob, Job, JobClass, JobType, KeepRequest, KeycodeRequest, PickRequest,
 };
 use pandora_toolchain::pnworker::messages::{COMMAND_LIST, COMMAND_UPDATED, RESTART_PROGRESS};
 use pandora_toolchain::pnworker::util::{CliParam, PathValue, ToolResult, run_tool};
@@ -119,52 +119,9 @@ async fn handle_encode_command(
                 if subcommand == "keep" {
                     job.keep = Some(KeepRequest::new(option_trimmed(command, "keyword")));
                 }
-                tx.send(JobClass::Job(job)).await.unwrap();
-            }
-        }
-        "pan" => {
-            let probe_job_id = match option_str(command, "job_id").and_then(|id| id.parse::<u64>().ok()) {
-                Some(id) => id,
-                None => {
-                    command_error(ctx, command, "Error: job_id must be a number").await;
-                    return;
-                }
-            };
-            let file_index = match option_i64(command, "index") {
-                Some(index) if index >= 0 => index as u64,
-                _ => {
-                    command_error(ctx, command, "Error: file index is required").await;
-                    return;
-                }
-            };
-            let db = match JobDb::new().await {
-                Ok(db) => db,
-                Err(e) => {
-                    command_error(ctx, command, format!("Error: failed to open job DB: {}", e)).await;
-                    return;
-                }
-            };
-            let probe_source = match db.get_job(probe_job_id).await {
-                Ok(Some(row)) => row.link,
-                Ok(None) => {
-                    command_error(ctx, command, "Error: probe job was not found.").await;
-                    return;
-                }
-                Err(e) => {
-                    command_error(ctx, command, format!("Error: failed to read probe job: {}", e)).await;
-                    return;
-                }
-            };
-            if let Some(mut job) = handle_interaction(ctx, command, String::new()).await {
-                job.job_type = JobType::Pancode;
-                job.torrent = nyaaise(&probe_source);
-                job.display_link = Some(format!(
-                    "{} • file #{}",
-                    display_source_link(&probe_source),
-                    file_index
-                ));
-                job.probe_job_id = Some(probe_job_id);
-                job.probe_file_index = Some(file_index);
+                // A torrent may be one episode or a pack of them, and only its file list says
+                // which. The job lists it first and asks in chat when there is a choice to make.
+                job.pick_file_first();
                 tx.send(JobClass::Job(job)).await.unwrap();
             }
         }
@@ -173,7 +130,8 @@ async fn handle_encode_command(
                 Some(url) => url,
                 None => return,
             };
-            if let Some(job) = handle_gitcode(ctx, command, torrent_url).await {
+            if let Some(mut job) = handle_gitcode(ctx, command, torrent_url).await {
+                job.pick_file_first();
                 tx.send(JobClass::Job(job)).await.unwrap();
             }
         }
@@ -1054,8 +1012,8 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "encode",
             name: "encode",
             summary: "Encode, locally keep, or join video outputs.",
-            usage: "/encode do|pan|batch|link|keep|key ... (preset, intro and outro come from /edit)",
-            details: "`do` encodes with an attached ASS; `pan` selects a file from `/probe`; `batch` pairs a `/probe` selection with a subtitle zip in order and encodes every episode after you confirm the pairing; `link` fetches the ASS from a URL; `keep` encodes an attachment and stores the output under a keyword; `key` joins kept keyword outputs.",
+            usage: "/encode do|batch|link|keep|key ... (preset, intro and outro come from /edit)",
+            details: "`do` encodes with an attached ASS. When the torrent holds more than one video, `do`, `link` and `keep` show its file list first — paged like `/probe` — and wait three minutes for you to send the index you want as a plain number in the channel; a torrent with one video encodes straight away. `batch` pairs a `/probe` selection with a subtitle zip in order and encodes every episode after you confirm the pairing; `link` fetches the ASS from a URL; `keep` encodes an attachment and stores the output under a keyword; `key` joins kept keyword outputs.",
         },
         HelpCommand {
             section: "encode",
@@ -1076,7 +1034,7 @@ fn help_catalog() -> &'static [HelpCommand] {
             name: "probe",
             summary: "Inspect a torrent and list selectable files.",
             usage: "/probe torrent:<link>",
-            details: "Downloads and probes a torrent or magnet link, then returns file indexes. Use the resulting job id and index with `/encode pan` or `/backup`. Google Drive links are not supported here.",
+            details: "Downloads and probes a torrent or magnet link, then returns file indexes. Use the resulting job id and index with `/encode batch`, `/subs`, `/source` or `/backup`. `/encode do` lists a pack by itself, so a probe is not needed just to pick one episode. Google Drive links are not supported here.",
         },
         HelpCommand {
             section: "encode",
@@ -1159,8 +1117,8 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "repo",
             name: "smartcode",
             summary: "Merge attached repo subtitles, then encode or preview an episode.",
-            usage: "/smartcode do|keep episode:<n> [link], /smartcode pan episode:<n> [job_id] [index], or /smartcode preview episode:<n> [link] [cooldown]",
-            details: "Requires this channel to be attached to an anime repo. `do` reads TL/TS files, uploads the release ASS, then encodes using the source link or SOURCE.md. `keep` runs the same flow and retains the encode locally under a generated or supplied keyword. `pan` runs the same merge and then encodes one probed file out of a pack: `job_id` and `index` come from a `/probe` result, and when both are omitted they are read from the probe a `/source episode:<n> job_id:<id> index:<n>` wrote into SOURCE.md. Naming them writes them back to SOURCE.md, so an episode is pointed at a pack once. A `pan` with no probe from either place uploads the release and encodes nothing, rather than guessing which file the episode is. `preview` performs the merge/upload step, then renders up to three stamp-first, cluster-ranked previews. Cooldown defaults to 90 seconds; set it to 0 to disable cooldown.",
+            usage: "/smartcode do|keep episode:<n> [link] or /smartcode preview episode:<n> [link] [cooldown]",
+            details: "Requires this channel to be attached to an anime repo. `do` reads TL/TS files, uploads the release ASS, then encodes using the source link or SOURCE.md. `keep` runs the same flow and retains the encode locally under a generated or supplied keyword. When the source is a pack, `do` and `keep` encode the file a `/source episode:<n> job_id:<id> index:<n>` recorded in SOURCE.md; with none recorded they show the pack's file list and wait three minutes for you to send the index as a plain number in the channel. `preview` performs the merge/upload step, then renders up to three stamp-first, cluster-ranked previews. Cooldown defaults to 90 seconds; set it to 0 to disable cooldown.",
         },
         HelpCommand {
             section: "repo",
@@ -1181,7 +1139,7 @@ fn help_catalog() -> &'static [HelpCommand] {
             name: "source",
             summary: "Write SOURCE.md for an attached episode folder.",
             usage: "/source episode:<n> link:<source_link> | /source episode:<n> job_id:<id> index:<n>",
-            details: "Stores the episode source link in the attached GitHub repo. Source links can be torrent URLs, magnet links, or Google Drive links. `job_id` and `index` take a `/probe` result instead — the same pair `/encode pan` takes — and record which file of the pack this episode is on a comment line beside the link, which is what `/smartcode pan` reads back. Pass `link` or `job_id`, not both.",
+            details: "Stores the episode source link in the attached GitHub repo. Source links can be torrent URLs, magnet links, or Google Drive links. `job_id` and `index` take a `/probe` result instead — the same pair `/subs` takes — and record which file of the pack this episode is on a comment line beside the link, which is what `/smartcode do` reads back instead of asking. Pass `link` or `job_id`, not both.",
         },
         HelpCommand {
             section: "repo",
@@ -2370,6 +2328,23 @@ impl EventHandler for Handler {
         if handle_configure_upload(&context, &msg).await { return; }
         let parts: Vec<&str> = msg.content.split_whitespace().collect();
         if parts.is_empty() { return; }
+        // A bare number is how somebody answers an encode that listed a pack and asked which file.
+        // Whether anything is actually waiting on this person in this channel is the queue's to
+        // say, so every such message is passed along and nearly all of them match nothing. No
+        // authorization check: the number can only select for a job its author already queued.
+        if parts.len() == 1 && !msg.author.bot {
+            if let Ok(index) = parts[0].parse::<u64>() {
+                self.tx
+                    .send(JobClass::Pick(PickRequest {
+                        author: msg.author.id.get(),
+                        channel_id: msg.channel_id.get(),
+                        index,
+                    }))
+                    .await
+                    .ok();
+                return;
+            }
+        }
         if !is_authorized(parts[0], msg.author.id.get()) { return; }
 
         match parts[0] {
@@ -2709,11 +2684,6 @@ impl EventHandler for Handler {
                                 self.tx.send(JobClass::Job(job)).await.unwrap();
                             }
                         }
-                        "pan" => {
-                            if let Some(job) = handle_smartcode_pan(&ctx, &command).await {
-                                self.tx.send(JobClass::Job(job)).await.unwrap();
-                            }
-                        }
                         "preview" | "exp" => {
                             if let Some(job) = handle_smartcode_preview(&ctx, &command).await {
                                 self.tx.send(JobClass::Job(job)).await.unwrap();
@@ -2901,21 +2871,6 @@ impl EventHandler for Handler {
                 CreateCommandOption::new(CommandOptionType::SubCommand, "do", "Encode with an attached subtitle file")
                     .add_sub_option(
                         CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent URL, magnet link, or Google Drive link")
-                            .required(true)
-                    )
-                    .add_sub_option(
-                        CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "Subtitle file (.ass, .srt, .vtt, .ssa, ...; converted to ASS)")
-                            .required(true)
-                    )
-            )
-            .add_option(
-                CreateCommandOption::new(CommandOptionType::SubCommand, "pan", "Encode using a previously probed torrent")
-                    .add_sub_option(
-                        CreateCommandOption::new(CommandOptionType::String, "job_id", "Job ID from /probe result")
-                            .required(true)
-                    )
-                    .add_sub_option(
-                        CreateCommandOption::new(CommandOptionType::Integer, "index", "File index from probe results")
                             .required(true)
                     )
                     .add_sub_option(
@@ -3233,23 +3188,6 @@ impl EventHandler for Handler {
                                 .required(false)
                         )
                         .add_sub_option(keyword_option.clone())
-                )
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::SubCommand, "pan", "Merge subtitles, then encode a previously probed file")
-                        .add_sub_option(
-                            CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (1-based)")
-                                .required(true)
-                                .min_int_value(1)
-                        )
-                        .add_sub_option(
-                            CreateCommandOption::new(CommandOptionType::String, "job_id", "Job ID from /probe result. Falls back to SOURCE.md if omitted.")
-                                .required(false)
-                        )
-                        .add_sub_option(
-                            CreateCommandOption::new(CommandOptionType::Integer, "index", "File index from probe results; required with job_id")
-                                .required(false)
-                                .min_int_value(0)
-                        )
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::SubCommand, "preview", "Render 1-3 typeset preview screenshots")

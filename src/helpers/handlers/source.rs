@@ -3,9 +3,9 @@ use super::*;
 use pandora_toolchain::lib::source_doc::{compose as compose_source, ProbeRef};
 
 // `/source` takes either a source link or a `/probe` result plus a file index, the same pair
-// `/encode pan` and `/subs` take. A season pack has no single "the" episode in it, so a link on its
-// own cannot say which file episode 3 is — the probe form writes that down beside the link, and
-// `/smartcode pan` reads it back.
+// `/subs` takes. A season pack has no single "the" episode in it, so a link on its own cannot say
+// which file episode 3 is — the probe form writes that down beside the link, and `/smartcode do`
+// reads it back instead of asking in chat.
 pub async fn handle_source(ctx: &Context, command: &serenity::all::CommandInteraction) {
     let episode = match positive_u32_option(ctx, command, "episode").await {
         Some(n) => n,

@@ -61,7 +61,7 @@ pub use self::probe::{handle_probe, handle_probe_component};
 pub use self::batch::{handle_batch, handle_batch_component};
 pub use self::subs::handle_subs;
 pub use self::backup::handle_backup;
-pub use self::smartcode::{handle_smartcode, handle_smartcode_pan, handle_smartcode_preview};
+pub use self::smartcode::{handle_smartcode, handle_smartcode_preview};
 pub use self::cfont::{handle_cfont, handle_cfont_autocomplete, refresh_font_name_choices, resolve_preview_watermark_font_path, warm_font_name_cache};
 pub use self::merge::handle_merge;
 pub use self::release::handle_release;
@@ -388,7 +388,7 @@ async fn resolve_command_probe(
 struct SmartMergeResult {
     link: String,
     // The probe the link came out of, when it came out of one: either from this command's own
-    // `job_id`/`index`, or from the `SOURCE.md` a probe-form `/source` wrote. `/smartcode pan` is
+    // `job_id`/`index`, or from the `SOURCE.md` a probe-form `/source` wrote. `/smartcode do` is
     // the only caller that needs it — the rest encode whatever the link resolves to.
     probe: Option<ProbeRef>,
     merged_bytes: Vec<u8>,
@@ -459,7 +459,7 @@ async fn smartcode_merge_upload(
         }
     };
 
-    // A subcommand that takes a probe (`/smartcode pan`) resolves its link out of the probe job,
+    // A subcommand that takes a probe (`job_id`/`index` options) resolves its link out of the probe job,
     // and is treated as having been given one: the probe is written into `SOURCE.md` beside the
     // link so the next run of the same episode needs neither option again.
     let probe_opt = match resolve_command_probe(ctx, command, response_msg).await {

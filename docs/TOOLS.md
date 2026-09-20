@@ -45,7 +45,7 @@ For JSON downloaded from the trace lab, call `trace_json_to_ass(&json, &options)
 
 ## `pnp2p` selection flags
 
-- `--select <index>` downloads exactly one file of the torrent; unchanged, and still what `/encode pan` and `/backup` use.
+- `--select <index>` downloads exactly one file of the torrent; unchanged, and still what a file picked out of a pack, a probe-backed `/smartcode do`, and `/backup` use.
 - `--selects <a,b,c>` downloads a whole selection in **one** process — the info-hash lock allows only one downloader per torrent, so a batch cannot be several `pnp2p` calls. Whitespace is tolerated, duplicates and unparsable entries are dropped, and `--select` may be combined with it. In this mode `pnp2p` emits opcode `6` (`["6", [index, name]]`) the moment a file's last piece is written and flushed, before the rest of the selection finishes; opcodes `0`/`1`/`2`/`3`/`5` keep their usual meanings. `--probe` and the whole-torrent mode are unaffected.
 
 ## `pncurl` flags

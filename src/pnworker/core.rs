@@ -157,6 +157,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
         // After `do_link_things`, so a job a node just gave back is offered again on the same pass
         // rather than waiting for the next one.
         do_link_waiting_things(&db, &mut queue).await;
+        do_pick_things(&db, &mut queue, &mut shrine).await;
         do_probe_timeout_things(&db, &mut queue).await;
         do_encode_stall_things(&db, &mut queue, &mut shrine).await;
         check_encode_reboot_epoch(&shrine, &mut encode_reboot_epoch, &mut queue);
@@ -205,7 +206,7 @@ async fn do_queue_things(
     };
     match jobclass {
         JobClass::Job(mut job) => {
-            if gitquery.is_some() && is_encode_job_type(job.job_type) {
+            if gitquery.is_some() && is_encode_job_type(job.pick_then.unwrap_or(job.job_type)) {
                 decline_gitquery_blocked_encode(&mut job).await;
                 return true;
             }
@@ -230,49 +231,9 @@ async fn do_queue_things(
                 }
                 return true;
             }
-            // A job whose only route to its input is the `.torrent` its probe saved here used to be
-            // refused a node for having no fetchable source. Reading it now is what lets it travel.
-            let source_extras = crate::pnworker::link::coordinator::LeaseSource {
-                torrent_file: read_job_torrent_file(&job).await,
-                probe_job_id: None,
-            };
-            match try_link_offload(db, &mut job, source_extras).await {
-                LinkOffload::Offered => {
-                    if let Err(e) = db.insert_job(&job).await {
-                        eprintln!("[Pandora] job {} insert failed: {}", job.job_id, e);
-                        decline_job_setup(&mut job, "internal error").await;
-                        crate::pnworker::link::board::release(job.job_id);
-                        return true;
-                    }
-                    queue.push(job);
-                    return true;
-                }
-                // Held for a node. The row and the message are this machine's exactly as a leased
-                // job's are; only the dispatch is somewhere that does not exist yet.
-                LinkOffload::Waiting => {
-                    if let Err(e) = db.insert_job(&job).await {
-                        eprintln!("[Pandora] job {} insert failed: {}", job.job_id, e);
-                        decline_job_setup(&mut job, "internal error").await;
-                        return true;
-                    }
-                    render_link_waiting(&mut job).await;
-                    queue.push(job);
-                    return true;
-                }
-                LinkOffload::Declined => return true,
-                LinkOffload::Local => {}
-            }
-            if queue_new_job(db, queue, shrine, &mut job).await {
+            if admit_job(db, queue, shrine, job).await {
                 return true;
             }
-            if let Err(e) = db.insert_job(&job).await {
-                eprintln!("[Pandora] job {} insert failed: {}", job.job_id, e);
-                decline_job_setup(&mut job, "internal error").await;
-                return true;
-            }
-            persist_keep_reserved(db, &job).await;
-            persist_batch_progress(db, &job).await;
-            queue.push(job);
         }
         JobClass::HalfJob(halfjob) => {
             handle_half_job(db, queue, shrine, halfjob, gitquery).await;
@@ -283,7 +244,70 @@ async fn do_queue_things(
                 handle_drive_delete(&db, request).await;
             });
         }
+        JobClass::Pick(request) => {
+            return handle_pick(db, queue, shrine, request).await;
+        }
     }
+    false
+}
+
+// Where a job that has been accepted goes: to a node when one should have it, and into this
+// machine's own pipeline otherwise. Split out of the intake because a job is admitted twice when
+// its source had to be listed first — once as the listing, and again as the encode it becomes —
+// and the second time must take exactly the route the first did, without the queue-length and
+// orchestrator refusals that were already answered. Returns whether the loop should start over.
+async fn admit_job(
+    db: &JobDb,
+    queue: &mut Vec<Job>,
+    shrine: &mut TypedShrine<WorkerMsg>,
+    mut job: Job,
+) -> bool {
+    if job.pick_then.is_some() {
+        job.pick_keep = job.keep.take();
+    }
+    // A job whose only route to its input is the `.torrent` its probe saved here used to be
+    // refused a node for having no fetchable source. Reading it now is what lets it travel.
+    let source_extras = crate::pnworker::link::coordinator::LeaseSource {
+        torrent_file: read_job_torrent_file(&job).await,
+        probe_job_id: None,
+    };
+    match try_link_offload(db, &mut job, source_extras).await {
+        LinkOffload::Offered => {
+            if let Err(e) = db.insert_job(&job).await {
+                eprintln!("[Pandora] job {} insert failed: {}", job.job_id, e);
+                decline_job_setup(&mut job, "internal error").await;
+                crate::pnworker::link::board::release(job.job_id);
+                return true;
+            }
+            queue.push(job);
+            return true;
+        }
+        // Held for a node. The row and the message are this machine's exactly as a leased
+        // job's are; only the dispatch is somewhere that does not exist yet.
+        LinkOffload::Waiting => {
+            if let Err(e) = db.insert_job(&job).await {
+                eprintln!("[Pandora] job {} insert failed: {}", job.job_id, e);
+                decline_job_setup(&mut job, "internal error").await;
+                return true;
+            }
+            render_link_waiting(&mut job).await;
+            queue.push(job);
+            return true;
+        }
+        LinkOffload::Declined => return true,
+        LinkOffload::Local => {}
+    }
+    if queue_new_job(db, queue, shrine, &mut job).await {
+        return true;
+    }
+    if let Err(e) = db.insert_job(&job).await {
+        eprintln!("[Pandora] job {} insert failed: {}", job.job_id, e);
+        decline_job_setup(&mut job, "internal error").await;
+        return true;
+    }
+    persist_keep_reserved(db, &job).await;
+    persist_batch_progress(db, &job).await;
+    queue.push(job);
     false
 }
 
@@ -336,7 +360,10 @@ fn is_encode_job_type(job_type: JobType) -> bool {
 }
 
 fn encode_jobs_active(queue: &[Job]) -> bool {
-    queue.iter().any(|job| is_encode_job_type(job.job_type))
+    // An encode still listing its source is an encode that has not started yet, not a probe.
+    queue
+        .iter()
+        .any(|job| is_encode_job_type(job.pick_then.unwrap_or(job.job_type)))
 }
 
 async fn decline_gitquery_blocked_encode(job: &mut Job) {
@@ -815,7 +842,9 @@ async fn queue_encode_job(
         queue.push(job.clone());
         return true;
     }
-    queue_download_job(db, queue, shrine, job, Vec::new(), false).await
+    // Empty for every encode that names its source outright. An index is only here when the source
+    // turned out to be a pack and the requester picked a file out of its listing.
+    queue_download_job(db, queue, shrine, job, job.probe_file_index.into_iter().collect(), false).await
 }
 
 async fn queue_probe_job(
@@ -2795,6 +2824,123 @@ async fn requeue_link_job(
     }
 }
 
+// The file indices a finished listing offered. Read back from the job's stored progress because
+// that is the one place both kinds of probe leave it: a local probe and one a node answered each
+// go through `persist_side_effects`, and only the local one ever has the payload in hand here.
+async fn listed_file_indices(db: &JobDb, job_id: u64) -> Option<Vec<u64>> {
+    let row = db.get_job(job_id).await.ok()??;
+    let value: serde_json::Value = serde_json::from_str(row.progress.as_deref()?).ok()?;
+    if value.get("type").and_then(|kind| kind.as_str()) != Some("probe") {
+        return None;
+    }
+    Some(
+        value
+            .get("files")?
+            .as_array()?
+            .iter()
+            .filter_map(|file| file.get("index").and_then(|index| index.as_u64()))
+            .collect(),
+    )
+}
+
+// An encode that listed its source first has its answer. One video means there was never a
+// question, so the job carries on as the encode it was submitted as, downloading exactly what it
+// would have without the listing. More than one leaves the list on screen and records what it
+// offered, which is what `handle_pick` checks a number typed in chat against.
+async fn do_pick_things(db: &JobDb, queue: &mut Vec<Job>, shrine: &mut TypedShrine<WorkerMsg>) {
+    let listed: Vec<u64> = queue
+        .iter()
+        .filter(|job| {
+            job.pick_then.is_some()
+                && job.pick_files.is_none()
+                && job.ready == Stage::Probed
+                // A node's lease on the listing is released a moment after its report lands.
+                && job.link_node.is_none()
+        })
+        .map(|job| job.job_id)
+        .collect();
+    for job_id in listed {
+        let files = listed_file_indices(db, job_id).await.unwrap_or_default();
+        if files.len() > 1 {
+            if let Some(job) = queue.iter_mut().find(|job| job.job_id == job_id) {
+                job.pick_files = Some(files);
+            }
+            continue;
+        }
+        // A listing that cannot be read back is treated as a single video too: the unselected
+        // download is what this command always did, and it is a better answer than a prompt
+        // offering nothing to choose from.
+        promote_picked_job(db, queue, shrine, job_id, None).await;
+    }
+}
+
+// A number typed in chat, matched against what is waiting. It selects only for the person who
+// asked for the encode, only in the channel they asked in, and only when it is an index the
+// listing actually offered — anything else is somebody typing a number, and is left alone. The
+// newest waiting job wins, since that is the list the person is looking at.
+async fn handle_pick(
+    db: &JobDb,
+    queue: &mut Vec<Job>,
+    shrine: &mut TypedShrine<WorkerMsg>,
+    request: PickRequest,
+) -> bool {
+    let Some(job_id) = pick_target(queue, &request) else {
+        return false;
+    };
+    promote_picked_job(db, queue, shrine, job_id, Some(request.index)).await
+}
+
+fn pick_target(queue: &[Job], request: &PickRequest) -> Option<u64> {
+    queue
+        .iter()
+        .rev()
+        .find(|job| {
+            job.author == request.author
+                && job.channel_id == request.channel_id
+                && job.ready == Stage::Probed
+                && job.pick_then.is_some()
+                && job
+                    .pick_files
+                    .as_ref()
+                    .is_some_and(|files| files.contains(&request.index))
+        })
+        .map(|job| job.job_id)
+}
+
+// Turns the listing back into the job it was submitted as and admits it a second time, on the same
+// message and under the same id. The work directory carries over, so a `.torrent` the listing
+// fetched is the one the download selects against — the index means what the list said it meant.
+async fn promote_picked_job(
+    db: &JobDb,
+    queue: &mut Vec<Job>,
+    shrine: &mut TypedShrine<WorkerMsg>,
+    job_id: u64,
+    index: Option<u64>,
+) -> bool {
+    let Some(pos) = queue.iter().position(|job| job.job_id == job_id) else {
+        return false;
+    };
+    let Some(job_type) = queue[pos].pick_then else {
+        return false;
+    };
+    let mut job = queue.remove(pos);
+    job.job_type = job_type;
+    job.pick_then = None;
+    job.pick_files = None;
+    job.keep = job.pick_keep.take();
+    job.probe_file_index = index;
+    if let Some(index) = index {
+        job.display_link = Some(format!(
+            "{} • file #{}",
+            crate::lib::p2p::nyaaise::display_source_link(&job.torrent.get()),
+            index
+        ));
+    }
+    job.ready = Stage::Queued;
+    job.probed_at = None;
+    admit_job(db, queue, shrine, job).await
+}
+
 // How long a file list stays on screen waiting for somebody to pick an episode out of it.
 const PROBE_SELECTION_TIMEOUT: Duration = Duration::from_secs(180);
 
@@ -2830,7 +2976,20 @@ async fn do_probe_timeout_things(db: &JobDb, queue: &mut Vec<Job>) {
             let directory = queue[pos].directory.clone();
             let frontend = queue[pos].frontend.clone();
 
-            frontend.delete().await;
+            // A bare probe's list is only a lookup, and removing it is all its timeout ever meant.
+            // An encode waiting on an index is a request somebody made: deleting that would leave
+            // them with a command that ran and a channel with no trace of what became of it.
+            if queue[pos].pick_then.is_some() {
+                queue[pos].ready = Stage::Cancelled;
+                db.update_stage(id, Stage::Cancelled).await.ok();
+                render(
+                    &mut queue[pos],
+                    MessagePayload::Static(crate::pnworker::messages::PICK_TIMEOUT),
+                )
+                .await;
+            } else {
+                frontend.delete().await;
+            }
 
             cleanup_job(
                 &directory,
@@ -4408,6 +4567,17 @@ pub enum JobClass {
     Job(Job),
     HalfJob(HalfJob),
     DriveDelete(DriveDeleteRequest),
+    Pick(PickRequest),
+}
+
+// A bare number somebody typed in a channel. It means something only if that person has an encode
+// holding a file list open in that channel, which is for the queue to say: the Discord side sends
+// every such message and knows nothing about what is waiting.
+#[derive(Clone, Debug)]
+pub struct PickRequest {
+    pub author: u64,
+    pub channel_id: u64,
+    pub index: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -4792,6 +4962,39 @@ pub struct Job {
     // no `meta.pandora` for that guild, so without this it would publish to streaming hosts the
     // server had deliberately switched off. `None` on every local job, which reads the file.
     pub link_drive_only: Option<bool>,
+    // What this job becomes once its source has been listed. A Discord encode of a torrent runs
+    // as a probe first, because nothing but the file list says whether the source is one video or
+    // a pack of them: one video carries straight on as the job named here, and a pack holds at
+    // `Probed` with its list on screen until the requester answers with an index in chat. While it
+    // is set the job *is* a probe to everything that moves it — the queue, the preview pool, a
+    // node's lease — which is what lets the listing reuse that whole path unchanged.
+    pub pick_then: Option<JobType>,
+    // The file indices the listing offered, once it has been read. `None` until then, which is
+    // also what stops the listing from being evaluated twice.
+    pub pick_files: Option<Vec<u64>>,
+    // The job's keep request, set aside while it is only a listing. A keyword is reserved the
+    // moment a keep is admitted — locally or on its way to a node — and a listing that reserved it
+    // would leave the encode it turns into refused its own keyword.
+    pub pick_keep: Option<KeepRequest>,
+}
+
+impl Job {
+    // Has this encode list its source before it runs, so a pack of episodes becomes a question
+    // instead of a guess. Only where there is somebody to ask and something to list: a web submit
+    // has no chat to answer in, and a Drive or direct link is one file by construction — the
+    // prober refuses them for that reason.
+    pub fn pick_file_first(&mut self) {
+        if self.job_type != JobType::Encode
+            || self.pick_then.is_some()
+            || !matches!(self.frontend, Frontend::Discord { .. })
+            || !matches!(self.torrent, TorrentType::Link(_) | TorrentType::Magnet(_))
+            || self.torrent.get().trim().is_empty()
+        {
+            return;
+        }
+        self.pick_then = Some(self.job_type);
+        self.job_type = JobType::Probe;
+    }
 }
 
 impl PartialEq for Job {
@@ -4900,6 +5103,9 @@ impl Job {
             link_cancelled: false,
             link_return_output: false,
             link_drive_only: None,
+            pick_then: None,
+            pick_files: None,
+            pick_keep: None,
         }
     }
 
@@ -5002,6 +5208,9 @@ impl Job {
             link_cancelled: false,
             link_return_output: false,
             link_drive_only: None,
+            pick_then: None,
+            pick_files: None,
+            pick_keep: None,
         }
     }
 }
@@ -5084,6 +5293,75 @@ mod tests {
         assert!(witch.may_cancel(8));
         assert_eq!(witch.job_id, 99);
         assert!(matches!(witch.job_type, JobType::Cancel));
+    }
+
+    // An encode holding a pack's file list open, as `do_pick_things` leaves it.
+    fn waiting_pick(job_id: u64, author: u64, channel_id: u64, files: &[u64]) -> Job {
+        let mut job = Job::new_api(
+            author,
+            channel_id,
+            JobType::Encode,
+            TorrentType::Link("https://nyaa.si/view/1".to_string()),
+            Vec::new(),
+            "en".to_string(),
+            None,
+        );
+        job.job_id = job_id;
+        job.pick_then = Some(JobType::Encode);
+        job.job_type = JobType::Probe;
+        job.ready = Stage::Probed;
+        job.pick_files = Some(files.to_vec());
+        job
+    }
+
+    #[test]
+    fn a_number_in_chat_selects_only_for_its_author_in_its_channel() {
+        let queue = vec![waiting_pick(10, 1, 100, &[0, 3, 5])];
+        let pick = |author, channel_id, index| PickRequest { author, channel_id, index };
+        assert_eq!(pick_target(&queue, &pick(1, 100, 5)), Some(10));
+        assert_eq!(pick_target(&queue, &pick(2, 100, 5)), None);
+        assert_eq!(pick_target(&queue, &pick(1, 101, 5)), None);
+        // A number the list never offered is somebody typing a number.
+        assert_eq!(pick_target(&queue, &pick(1, 100, 4)), None);
+    }
+
+    #[test]
+    fn a_number_answers_the_newest_list_and_nothing_that_is_not_asking() {
+        let mut listing = waiting_pick(11, 1, 100, &[0, 1]);
+        // Still being listed: there is no list on screen to answer yet.
+        listing.pick_files = None;
+        let mut plain_probe = waiting_pick(12, 1, 100, &[0, 1]);
+        plain_probe.pick_then = None;
+        let queue = vec![
+            waiting_pick(10, 1, 100, &[0, 1]),
+            waiting_pick(13, 1, 100, &[0, 1]),
+            listing,
+            plain_probe,
+        ];
+        let request = PickRequest { author: 1, channel_id: 100, index: 1 };
+        assert_eq!(pick_target(&queue, &request), Some(13));
+    }
+
+    #[test]
+    fn an_encode_listing_its_source_still_counts_as_an_encode() {
+        assert!(encode_jobs_active(&[waiting_pick(10, 1, 100, &[0, 1])]));
+    }
+
+    #[test]
+    fn only_a_discord_torrent_encode_lists_its_source_first() {
+        // A web submit has no chat to answer in, so it keeps the unselected download it always had.
+        let mut job = Job::new_api(
+            1,
+            100,
+            JobType::Encode,
+            TorrentType::Link("https://nyaa.si/view/1".to_string()),
+            Vec::new(),
+            "en".to_string(),
+            None,
+        );
+        job.pick_file_first();
+        assert_eq!(job.job_type, JobType::Encode);
+        assert!(job.pick_then.is_none());
     }
 
     fn dispatched_encode(now: Duration) -> Job {
