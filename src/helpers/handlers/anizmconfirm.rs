@@ -40,12 +40,8 @@ pub async fn handle_anizmconfirm_autocomplete(
 }
 
 pub async fn handle_anizmconfirm(ctx: &Context, command: &serenity::all::CommandInteraction) {
-    let job_id = match option_str(command, "job_id").and_then(|s| s.trim().parse::<u64>().ok()) {
-        Some(id) => id,
-        None => {
-            command_error(ctx, command, "Error: `job_id` must be a numeric job id.").await;
-            return;
-        }
+    let Some(job_id) = resolve_job_option(ctx, command, true).await else {
+        return;
     };
     log_publish(job_id, "/anizmconfirm", format!("invoked by user {} in channel {}", command.user.id, command.channel_id)).await;
     let episode = match option_f64(command, "episode") {
@@ -457,7 +453,7 @@ async fn anizm_response(
     // The command defers before it talks to the provider, so a lost reply edit leaves the
     // ephemeral stuck on "thinking" with no trace anywhere else. Record it either way.
     if let Err(e) = command
-        .edit_response(ctx, EditInteractionResponse::new().content(content))
+        .edit_response(ctx, EditInteractionResponse::new().content(with_job_note(command, content)))
         .await
     {
         eprintln!("[/anizmconfirm] response edit failed: {}", e);

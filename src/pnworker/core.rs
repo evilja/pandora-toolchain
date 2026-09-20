@@ -2843,6 +2843,31 @@ async fn listed_file_indices(db: &JobDb, job_id: u64) -> Option<Vec<u64>> {
     )
 }
 
+// What the chosen file is called in the torrent — or the only file, when nothing had to be chosen.
+// The listing is the one moment a coordinator that leases its downloads to a node ever sees the
+// name, so it is taken from here as well as from the downloader.
+async fn listed_file_name(db: &JobDb, job_id: u64, index: Option<u64>) -> Option<String> {
+    let row = db.get_job(job_id).await.ok()??;
+    let value: serde_json::Value = serde_json::from_str(row.progress.as_deref()?).ok()?;
+    let files = value.get("files")?.as_array()?;
+    let file = match index {
+        Some(index) => files
+            .iter()
+            .find(|file| file.get("index").and_then(|i| i.as_u64()) == Some(index))?,
+        None if files.len() == 1 => &files[0],
+        None => return None,
+    };
+    file.get("name")
+        .and_then(|name| name.as_str())
+        .map(source_file_name)
+        .filter(|name| !name.is_empty())
+}
+
+// A torrent lists its files by path; the name worth showing somebody is the last component.
+pub fn source_file_name(path: &str) -> String {
+    path.rsplit(['/', '\\']).next().unwrap_or(path).trim().to_string()
+}
+
 // An encode that listed its source first has its answer. One video means there was never a
 // question, so the job carries on as the encode it was submitted as, downloading exactly what it
 // would have without the listing. More than one leaves the list on screen and records what it
@@ -2926,6 +2951,10 @@ async fn promote_picked_job(
     let Some(job_type) = queue[pos].pick_then else {
         return false;
     };
+    // Read before the job is re-admitted: admission rewrites the progress the list lives in.
+    if let Some(name) = listed_file_name(db, job_id, index).await {
+        db.set_source_name(job_id, &name).await.ok();
+    }
     let mut job = queue.remove(pos);
     job.job_type = job_type;
     job.pick_then = None;
@@ -5377,6 +5406,13 @@ mod tests {
     #[test]
     fn an_encode_listing_its_source_still_counts_as_an_encode() {
         assert!(encode_jobs_active(&[waiting_pick(10, 1, 100, &[0, 1])]));
+    }
+
+    #[test]
+    fn a_source_is_named_by_the_last_component_of_its_torrent_path() {
+        assert_eq!(source_file_name("Season 1/[Group] Show - 05.mkv"), "[Group] Show - 05.mkv");
+        assert_eq!(source_file_name("Pack\\Show - 05.mkv"), "Show - 05.mkv");
+        assert_eq!(source_file_name("Show - 05.mkv"), "Show - 05.mkv");
     }
 
     #[test]

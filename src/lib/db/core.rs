@@ -12,7 +12,7 @@ macro_rules! job_query {
             "SELECT job_id, author, channel_id, response_id, requested_at, ",
             "started_at, ended_at, cancel_reason, ",
             "job_type, preset_type, preset_name, candidates, outro, link, directory, stage, archived, ",
-            "progress, uploaded_links, acix_pending, server_id, episode, ",
+            "progress, uploaded_links, acix_pending, server_id, episode, source_name, ",
             "COALESCE(worker, 'que-main') AS worker FROM jobs ",
             $tail
         )
@@ -153,6 +153,12 @@ impl JobDb {
         ).await?;
         self.add_column_if_missing(
             "ALTER TABLE jobs ADD COLUMN cancel_reason TEXT"
+        ).await?;
+        // The file a job encoded, by the name it had in the torrent. The downloader renames it
+        // to `input.mkv` and the work directory is cleared when the job ends, so afterwards the
+        // only way to learn it again is to fetch the torrent — which is why it is written down.
+        self.add_column_if_missing(
+            "ALTER TABLE jobs ADD COLUMN source_name TEXT"
         ).await?;
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_jobs_server ON jobs(server_id);")
             .execute(&self.pool)
@@ -369,6 +375,15 @@ impl JobDb {
         Ok(())
     }
 
+    pub async fn set_source_name(&self, job_id: u64, name: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE jobs SET source_name = ? WHERE job_id = ?")
+            .bind(name)
+            .bind(job_id as i64)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn update_links(&self, job_id: u64, links: &str) -> Result<(), sqlx::Error> {
         sqlx::query("UPDATE jobs SET uploaded_links = ? WHERE job_id = ?")
             .bind(links)
@@ -521,6 +536,16 @@ impl JobDb {
         .await
     }
 
+    // The newest jobs a channel has seen, whatever became of them — what `/catlogs` offers, since
+    // the job somebody wants the logs of is usually the one that just failed.
+    pub async fn get_recent_jobs_by_channel(&self, channel_id: u64, limit: i64) -> Result<Vec<JobRow>, sqlx::Error> {
+        sqlx::query_as::<_, JobRow>(job_query!("WHERE channel_id = ? ORDER BY requested_at DESC LIMIT ?"))
+            .bind(channel_id as i64)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+    }
+
     pub async fn get_jobs_by_author(&self, author: u64) -> Result<Vec<JobRow>, sqlx::Error> {
         sqlx::query_as::<_, JobRow>(job_query!("WHERE author = ? ORDER BY requested_at DESC"))
             .bind(author as i64)
@@ -553,6 +578,7 @@ pub struct JobRow {
     pub acix_pending:    Option<String>,
     pub server_id:       Option<i64>,
     pub episode:         Option<i64>,
+    pub source_name:     Option<String>,
     pub worker:          String,
 }
 
@@ -753,6 +779,18 @@ pub fn stage_to_int(stage: Stage) -> i64 {
     }
 }
 
+// The way back, for anything that shows a stored job's stage to a person. `None` for an integer
+// no stage writes, rather than guessing one.
+pub fn stage_from_int(stage: i64) -> Option<Stage> {
+    [
+        Stage::Queued, Stage::Probing, Stage::Probed, Stage::Downloading, Stage::Downloaded,
+        Stage::Encoding, Stage::Encoded, Stage::Uploading, Stage::Uploaded, Stage::Failed,
+        Stage::Declined, Stage::Cancelled,
+    ]
+    .into_iter()
+    .find(|candidate| stage_to_int(*candidate) == stage)
+}
+
 fn is_terminal_stage(stage: Stage) -> bool {
     matches!(stage, Stage::Uploaded | Stage::Failed | Stage::Declined | Stage::Cancelled)
 }
@@ -792,8 +830,17 @@ mod tests {
             acix_pending: acix_pending.map(str::to_string),
             server_id: None,
             episode,
+            source_name: None,
             worker: "que-main".to_string(),
         }
+    }
+
+    #[test]
+    fn a_stored_stage_reads_back_as_the_stage_that_wrote_it() {
+        for stage in [Stage::Queued, Stage::Probed, Stage::Encoding, Stage::Uploaded, Stage::Cancelled] {
+            assert!(stage_from_int(stage_to_int(stage)) == Some(stage));
+        }
+        assert!(stage_from_int(99).is_none());
     }
 
     #[test]

@@ -1205,7 +1205,7 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "workers",
             name: "catlogs",
             summary: "Download a job's worker logs.",
-            usage: "/catlogs job_id:<id>",
+            usage: "/catlogs [job]",
             details: "Packs the job's active or archived log directory into one private ZIP attachment. Witch tier only.",
         },
         HelpCommand {
@@ -1380,43 +1380,43 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "publish",
             name: "acixconfirm",
             summary: "Publish a finished encode to AnimeciX.",
-            usage: "/acixconfirm job_id:<id> [tl] [tlc] [ts] [qc] [extra]",
+            usage: "/acixconfirm [job] [tl] [tlc] [ts] [qc] [extra]",
             details: "Publishes Drive through multishare and all completed host links through multiple. Role overrides keep omitted credits and use `-` to clear; `extra` replaces the full field and cannot be combined with role fields. Default credits are joined with ` & `. Retries skip whichever publish half already succeeded.",
         },
         HelpCommand {
             section: "publish",
             name: "acixunpublish",
             summary: "Reset local AnimeciX publication state.",
-            usage: "/acixunpublish job_id:<id> scope:<multiple|multishare|both>",
+            usage: "/acixunpublish job:<pick> scope:<multiple|multishare|both>",
             details: "Reopens the selected local publish half so `/acixconfirm` can send it again. It preserves credits and uploaded links and does not delete any existing AnimeciX videos, so republishing may create duplicates.",
         },
         HelpCommand {
             section: "publish",
             name: "akiraconfirm",
             summary: "Publish a finished encode to Akira.",
-            usage: "/akiraconfirm job_id:<id> episode:<number> name:<episode-title> [slug:<akira-slug>] [folder:<index-folder>]",
+            usage: "/akiraconfirm episode:<number> name:<episode-title> [job] [slug:<akira-slug>] [folder:<index-folder>]",
             details: "Creates or updates the Akira episode from the uploaded job links. When the channel has a MAL id, an explicit or attached slug is accepted only when Akira records the same id; otherwise Akira's catalog is searched by the attached title and every candidate is verified by MAL id. Without a MAL id, slug falls back to the command option or attached channel slug. Drive links are converted to Akira index player URLs instead of publishing raw Google Drive links.",
         },
         HelpCommand {
             section: "publish",
             name: "openanimeconfirm",
             summary: "Publish a finished encode to OpenAnime.",
-            usage: "/openanimeconfirm job_id:<id> episode:<number> [season:<number>] [slug:<openanime-slug>] [resolutions:<set>] [contributors:<text>]",
+            usage: "/openanimeconfirm episode:<number> [job] [season:<number>] [slug:<openanime-slug>] [resolutions:<set>] [contributors:<text>]",
             details: "Publishes the job's uploaded links as OpenAnime episode sources under this server's `/edit openanime_fansub:` secure name. The catalog entry is accepted only when its malID equals the channel's MAL id, the season/episode must already exist, and upload hosts without a documented OpenAnime player adapter are reported as skipped instead of being published through a guessed adapter.",
         },
         HelpCommand {
             section: "publish",
             name: "anizmconfirm",
             summary: "Publish a finished encode to Anizm.",
-            usage: "/anizmconfirm job_id:<id> episode:<number> anime:<search> [embed:<url>] [translator] [encoder] [type] [bluray] [create_episode]",
+            usage: "/anizmconfirm episode:<number> anime:<search> [job] [embed:<url>] [translator] [encoder] [type] [bluray] [create_episode]",
             details: "Adds the job's public streaming links as Anizm players under this server's `/edit anizm_fansub:` selection. Anizm exposes no MyAnimeList id, so the anime is selected from the staff panel's own option list and re-verified by id; the episode id must resolve to exactly one option unless `create_episode:true` is passed, and the fansub's translation relation is created when missing. Drive links are not published because Anizm players are website embeds.",
         },
         HelpCommand {
             section: "publish",
             name: "publish",
             summary: "Publish a finished encode to AnimeciX, OpenAnime and Anizm at once.",
-            usage: "/publish job_id:<id> [anime:<search>] [season:<number>] [episode:<number>] [extra:<text>] [animecix_fansub] [openanime_fansub] [anizm_fansub]",
-            details: "Runs the three site publishes from one command and reports each as published, skipped, or failed. A smartcode job already recorded its anime, season, and episode, so only `job_id` is needed; anything else takes `anime` from the OpenAnime search plus `season`/`episode`. OpenAnime is then addressed by the exact slug that was picked, and the MyAnimeList id read off that entry resolves AnimeciX by searching each of the entry's title aliases; Anizm is matched by title and skipped when that match is not unique. `extra` replaces the complete credit line on every site — AnimeciX's Extra, OpenAnime's contributors, and Anizm's translator — and `-` clears it; the TL/TLC/TS/QC role fields stay on `/acixconfirm`. Anizm's encoder is always `Pandora`. The three `*_fansub` options publish one site under a fansub other than this server's `/edit` selection, and naming any of them skips every site left unnamed — an override releases exactly the sites it lists.",
+            usage: "/publish [job] [anime:<search>] [season:<number>] [episode:<number>] [extra:<text>] [animecix_fansub] [openanime_fansub] [anizm_fansub]",
+            details: "Runs the three site publishes from one command and reports each as published, skipped, or failed. A smartcode job already recorded its anime, season, and episode, so nothing else is needed — `job` itself defaults to the newest finished job in the channel; anything else takes `anime` from the OpenAnime search plus `season`/`episode`. OpenAnime is then addressed by the exact slug that was picked, and the MyAnimeList id read off that entry resolves AnimeciX by searching each of the entry's title aliases; Anizm is matched by title and skipped when that match is not unique. `extra` replaces the complete credit line on every site — AnimeciX's Extra, OpenAnime's contributors, and Anizm's translator — and `-` clears it; the TL/TLC/TS/QC role fields stay on `/acixconfirm`. Anizm's encoder is always `Pandora`. The three `*_fansub` options publish one site under a fansub other than this server's `/edit` selection, and naming any of them skips every site left unnamed — an override releases exactly the sites it lists.",
         },
         HelpCommand {
             section: "fonts",
@@ -2779,6 +2779,10 @@ impl EventHandler for Handler {
                 ).await.ok();
                 return;
             }
+            // The `job` option means the same thing on every command that has it.
+            if handle_job_autocomplete(&ctx, &autocomplete).await {
+                return;
+            }
             match command_name {
                 "gentoken" => handle_gentoken_autocomplete(&ctx, &autocomplete).await,
                 "cfont" => handle_cfont_autocomplete(&ctx, &autocomplete).await,
@@ -3675,8 +3679,9 @@ impl EventHandler for Handler {
             CreateCommand::new("catlogs")
                 .description("Download a job's logs as a ZIP (Witch only)")
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "job_id", "Job ID from a Pandora job message")
-                        .required(true)
+                    CreateCommandOption::new(CommandOptionType::String, "job", "Job to get the logs of; pick from the list. Defaults to the newest in this channel")
+                        .required(false)
+                        .set_autocomplete(true)
                 ),
             CreateCommand::new("lsauth")
                 .description("List authorized users in one rank level")
@@ -3704,8 +3709,9 @@ impl EventHandler for Handler {
             CreateCommand::new("acixconfirm")
                 .description("Confirm and publish an encode to AnimeciX")
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "job_id", "The job id (from the upload message)")
-                        .required(true)
+                    CreateCommandOption::new(CommandOptionType::String, "job", "Finished job to use; pick from the list. Defaults to the newest in this channel")
+                        .required(false)
+                        .set_autocomplete(true)
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "extra", "Replace the full Extra field; `-` clears it. Cannot combine with role overrides.")
@@ -3725,8 +3731,9 @@ impl EventHandler for Handler {
             CreateCommand::new("acixunpublish")
                 .description("Reset local AnimeciX publish state; does not delete remote videos")
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "job_id", "The job id whose local publish state should be reset")
+                    CreateCommandOption::new(CommandOptionType::String, "job", "Finished job whose local publish state should be reset; pick from the list")
                         .required(true)
+                        .set_autocomplete(true)
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "scope", "Which local AnimeciX publish state to reset")
@@ -3738,10 +3745,6 @@ impl EventHandler for Handler {
             CreateCommand::new("akiraconfirm")
                 .description("[BETA-TESTING] Create/update an Akira episode from uploaded job links")
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "job_id", "The job id (from the upload message)")
-                        .required(true)
-                )
-                .add_option(
                     CreateCommandOption::new(CommandOptionType::Integer, "episode", "Akira episode number")
                         .required(true)
                         .min_int_value(0)
@@ -3749,6 +3752,11 @@ impl EventHandler for Handler {
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "name", "Episode title / index file name")
                         .required(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "job", "Finished job to use; pick from the list. Defaults to the newest in this channel")
+                        .required(false)
+                        .set_autocomplete(true)
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "slug", "Akira anime slug; verified against the channel MAL id when present")
@@ -3759,13 +3767,14 @@ impl EventHandler for Handler {
             CreateCommand::new("openanimeconfirm")
                 .description("[BETA-TESTING] Publish uploaded job links as OpenAnime episode sources")
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "job_id", "The job id (from the upload message)")
-                        .required(true)
-                )
-                .add_option(
                     CreateCommandOption::new(CommandOptionType::Integer, "episode", "OpenAnime episode number")
                         .required(true)
                         .min_int_value(1)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "job", "Finished job to use; pick from the list. Defaults to the newest in this channel")
+                        .required(false)
+                        .set_autocomplete(true)
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::Integer, "season", "OpenAnime season number; defaults to the attached channel season")
@@ -3788,10 +3797,6 @@ impl EventHandler for Handler {
             CreateCommand::new("anizmconfirm")
                 .description("[BETA-TESTING] Publish uploaded job links as Anizm episode players")
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "job_id", "The job id (from the upload message)")
-                        .required(true)
-                )
-                .add_option(
                     CreateCommandOption::new(CommandOptionType::Number, "episode", "Anizm episode number")
                         .required(true)
                         .min_number_value(0.001)
@@ -3799,6 +3804,11 @@ impl EventHandler for Handler {
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "anime", "Type to search the Anizm staff panel anime list")
                         .required(true)
+                        .set_autocomplete(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "job", "Finished job to use; pick from the list. Defaults to the newest in this channel")
+                        .required(false)
                         .set_autocomplete(true)
                 )
                 .add_option(
@@ -3827,8 +3837,9 @@ impl EventHandler for Handler {
             CreateCommand::new("publish")
                 .description("[BETA-TESTING] Publish a finished encode to AnimeciX, OpenAnime and Anizm")
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "job_id", "The job id (from the upload message)")
-                        .required(true)
+                    CreateCommandOption::new(CommandOptionType::String, "job", "Finished job to use; pick from the list. Defaults to the newest in this channel")
+                        .required(false)
+                        .set_autocomplete(true)
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "anime", "Type to search OpenAnime; only needed when the job did not record one")

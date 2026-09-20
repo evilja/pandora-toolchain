@@ -14,12 +14,8 @@ pub async fn handle_catlogs(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,
 ) {
-    let job_id = match option_str(command, "job_id").and_then(|value| value.parse::<u64>().ok()) {
-        Some(job_id) => job_id,
-        None => {
-            command_error(ctx, command, "Error: `job_id` must be a number.").await;
-            return;
-        }
+    let Some(job_id) = resolve_job_option(ctx, command, true).await else {
+        return;
     };
 
     command
@@ -37,7 +33,7 @@ pub async fn handle_catlogs(
         Ok(None) => {
             let text = command_format(command, CATLOGS_NO_LOGS, &[job_id.to_string()]);
             command
-                .edit_response(ctx, EditInteractionResponse::new().content(text))
+                .edit_response(ctx, EditInteractionResponse::new().content(with_job_note(command, text)))
                 .await
                 .ok();
             return;
@@ -49,7 +45,7 @@ pub async fn handle_catlogs(
                 &[job_id.to_string(), error],
             );
             command
-                .edit_response(ctx, EditInteractionResponse::new().content(text))
+                .edit_response(ctx, EditInteractionResponse::new().content(with_job_note(command, text)))
                 .await
                 .ok();
             return;
@@ -69,7 +65,7 @@ pub async fn handle_catlogs(
             ],
         );
         command
-            .edit_response(ctx, EditInteractionResponse::new().content(text))
+            .edit_response(ctx, EditInteractionResponse::new().content(with_job_note(command, text)))
             .await
             .ok();
         return;
@@ -106,7 +102,7 @@ pub async fn handle_catlogs(
         .edit_response(
             ctx,
             EditInteractionResponse::new()
-                .content("")
+                .content(with_job_note(command, String::new()))
                 .embed(embed)
                 .new_attachment(attachment),
         )

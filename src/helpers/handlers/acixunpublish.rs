@@ -6,12 +6,8 @@ pub async fn handle_acixunpublish(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,
 ) {
-    let job_id = match option_str(command, "job_id").and_then(|value| value.trim().parse::<u64>().ok()) {
-        Some(job_id) => job_id,
-        None => {
-            command_error(ctx, command, "Error: `job_id` must be a numeric job id.").await;
-            return;
-        }
+    let Some(job_id) = resolve_job_option(ctx, command, false).await else {
+        return;
     };
     log_publish(job_id, "/acixunpublish", format!("invoked by user {} in channel {}", command.user.id, command.channel_id)).await;
     let scope = match option_str(command, "scope").and_then(AcixResetScope::parse) {

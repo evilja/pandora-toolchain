@@ -1058,6 +1058,22 @@ args = 0
 text = "実行中の処理を停止してPandoraを再起動しています…"
 args = 0
 
+[JOB_PICK_INVALID]
+text = "エラー: `job` オプションの一覧からジョブを選ぶか、数値のジョブIDを貼り付けてください。"
+args = 0
+
+[JOB_PICK_REQUIRED]
+text = "エラー: ここでは `job` が必須です。オプションの一覧からジョブを選んでください。"
+args = 0
+
+[JOB_PICK_NONE]
+text = "エラー: このチャンネルには対象のジョブがありません。`job` オプションで選ぶか、ジョブを投入したチャンネルで実行してください。"
+args = 0
+
+[JOB_PICK_DEFAULTED]
+text = "ジョブ: **{}**(このチャンネルで最新のもの。別のジョブは `job` オプションで指定)"
+args = 1
+
 [BUILD_FFMPEG_STARTED]
 text = "このマシン向けにffmpegをネイティブビルドしています。時間がかかります。完了時にこのメッセージを更新します。ログ: `{}`"
 args = 1

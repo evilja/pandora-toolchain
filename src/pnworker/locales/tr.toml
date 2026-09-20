@@ -1058,6 +1058,22 @@ args = 0
 text = "Aktif işler durduruluyor ve Pandora yeniden başlatılıyor…"
 args = 0
 
+[JOB_PICK_INVALID]
+text = "Hata: işi `job` seçeneğinin sunduğu listeden seçin ya da sayısal bir iş kimliği yapıştırın."
+args = 0
+
+[JOB_PICK_REQUIRED]
+text = "Hata: burada `job` zorunlu. İşi seçeneğin sunduğu listeden seçin."
+args = 0
+
+[JOB_PICK_NONE]
+text = "Hata: bu kanalda kullanılabilecek bir iş yok. `job` seçeneğiyle birini seçin ya da komutu işin kuyruğa alındığı kanalda çalıştırın."
+args = 0
+
+[JOB_PICK_DEFAULTED]
+text = "İş: **{}** (bu kanaldaki en yenisi; başkası için `job` seçeneğini kullanın)"
+args = 1
+
 [BUILD_FFMPEG_STARTED]
 text = "ffmpeg bu makine için yerel olarak derleniyor. Bu biraz sürer; bittiğinde bu mesaj güncellenir. Log: `{}`"
 args = 1

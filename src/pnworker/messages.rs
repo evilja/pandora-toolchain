@@ -22,6 +22,10 @@ pub const GITSYNC_FAIL: &str = "GITSYNC_FAIL";
 pub const GITQUERY_BLOCKED: &str = "GITQUERY_BLOCKED";
 pub const RESTART_PROGRESS: &str = "RESTART_PROGRESS";
 // `/build-ffmpeg`: the build runs in the background and edits its own message when it ends.
+pub const JOB_PICK_INVALID: &str = "JOB_PICK_INVALID";
+pub const JOB_PICK_REQUIRED: &str = "JOB_PICK_REQUIRED";
+pub const JOB_PICK_NONE: &str = "JOB_PICK_NONE";
+pub const JOB_PICK_DEFAULTED: &str = "JOB_PICK_DEFAULTED";
 pub const BUILD_FFMPEG_STARTED: &str = "BUILD_FFMPEG_STARTED";
 pub const BUILD_FFMPEG_BUSY: &str = "BUILD_FFMPEG_BUSY";
 pub const BUILD_FFMPEG_DONE: &str = "BUILD_FFMPEG_DONE";

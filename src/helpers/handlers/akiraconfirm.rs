@@ -8,12 +8,8 @@ use pandora_toolchain::lib::http::hyperkira::{
 };
 
 pub async fn handle_akiraconfirm(ctx: &Context, command: &serenity::all::CommandInteraction) {
-    let job_id = match option_str(command, "job_id").and_then(|s| s.trim().parse::<u64>().ok()) {
-        Some(id) => id,
-        None => {
-            command_error(ctx, command, "Error: `job_id` must be a numeric job id.").await;
-            return;
-        }
+    let Some(job_id) = resolve_job_option(ctx, command, true).await else {
+        return;
     };
     log_publish(job_id, "/akiraconfirm", format!("invoked by user {} in channel {}", command.user.id, command.channel_id)).await;
     let episode = match option_i64(command, "episode") {
@@ -475,7 +471,7 @@ async fn akiraconfirm_response(
     // never sees: the ephemeral reply keeps saying the bot is thinking. Report it here or the whole
     // run leaves no trace anywhere.
     if let Err(e) = command
-        .edit_response(ctx, EditInteractionResponse::new().content(content))
+        .edit_response(ctx, EditInteractionResponse::new().content(with_job_note(command, content)))
         .await
     {
         eprintln!("[akiraconfirm] response edit failed: {}", e);

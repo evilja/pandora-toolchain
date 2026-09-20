@@ -304,6 +304,23 @@ async fn record_total_frames(directory: &std::path::Path, source: &std::path::Pa
     }
 }
 
+// The name the file had in the torrent, kept in the job DB because the next line of the caller
+// renames it to `input.mkv` and nothing on disk says what it was afterwards. It is what a finished
+// job is recognised by when somebody has to pick one out of a list.
+async fn record_source_name(job_id: u64, source: &std::path::Path) {
+    let Some(name) = source.file_name().map(|name| name.to_string_lossy().to_string()) else {
+        return;
+    };
+    match crate::lib::db::core::JobDb::new().await {
+        Ok(db) => {
+            if let Err(e) = db.set_source_name(job_id, &name).await {
+                eprintln!("[Pandora Downloader] could not record the source name of {}: {}", job_id, e);
+            }
+        }
+        Err(e) => eprintln!("[Pandora Downloader] could not open the job DB for {}: {}", job_id, e),
+    }
+}
+
 async fn finish_download_planner(planner: &mut Option<DownloadPlanner>, job_id: u64, success: bool) {
     let Some(mut planner) = planner.take() else {
         return;
@@ -980,6 +997,7 @@ async fn run_download_job(
             // unresolvable on the production bind mount, and the encoder that adopts the AOT is
             // then unable to probe anything at all for the progress total it reports.
             record_total_frames(&directory, &final_source).await;
+            record_source_name(job_id, &final_source).await;
             rename(&final_source, &target).await.unwrap();
 
             if let Some(parent) = source_parent {

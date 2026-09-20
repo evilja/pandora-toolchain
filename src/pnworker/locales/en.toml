@@ -1058,6 +1058,22 @@ args = 0
 text = "Stopping active work and restarting Pandora…"
 args = 0
 
+[JOB_PICK_INVALID]
+text = "Error: pick the job from the list the `job` option offers, or paste a numeric job id."
+args = 0
+
+[JOB_PICK_REQUIRED]
+text = "Error: `job` is required here. Pick the job from the list the option offers."
+args = 0
+
+[JOB_PICK_NONE]
+text = "Error: this channel has no job to use. Pick one with the `job` option, or run the command in the channel the job was queued in."
+args = 0
+
+[JOB_PICK_DEFAULTED]
+text = "Job: **{}** (the newest in this channel; use the `job` option for another)"
+args = 1
+
 [BUILD_FFMPEG_STARTED]
 text = "Building ffmpeg natively for this machine. This takes a while; this message is updated when it ends. Log: `{}`"
 args = 1
