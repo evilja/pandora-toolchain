@@ -62,6 +62,101 @@ pub fn native_ffmpeg_build_running() -> bool {
     FFMPEG_BUILD_RUNNING.load(Ordering::SeqCst)
 }
 
+// Why a build cannot even start here, known without running the script. The one case worth
+// telling apart is a container with no compiler: the script's answer to that is four
+// package-manager lines, none of which means anything inside an image, and the image usually
+// carries a native pair already — which is what whoever ran the command was after.
+pub enum NativeBuildBlocker {
+    // No compiler, and the ffmpeg in use is already a native build. `record` is the path of the
+    // build record describing it: `DB/bin`'s own, or the one baked into the image.
+    NoCompilerNativeInUse { built_at: String, tuning: String, record: String },
+    // No compiler, the image carries a native pair, and a downloaded pair in `DB/bin` wins over it.
+    NoCompilerNativeShadowed,
+    // No compiler and no native pair anywhere.
+    NoCompiler,
+}
+
+pub fn native_build_blocker() -> Option<NativeBuildBlocker> {
+    let image_record = std::fs::read_to_string(IMAGE_FFMPEG_BUILD_RECORD)
+        .ok()
+        .filter(|record| !record.trim().is_empty());
+    let in_container = image_record.is_some() || Path::new("/.dockerenv").exists();
+    if !in_container || on_path("cc") || on_path("gcc") || on_path("clang") {
+        return None;
+    }
+    let local = local_binary_available("ffmpeg") && local_binary_available("ffprobe");
+    let in_use = if local {
+        native_ffmpeg_record().map(|record| (record, FFMPEG_BUILD_RECORD))
+    } else {
+        image_record.clone().map(|record| (record, IMAGE_FFMPEG_BUILD_RECORD))
+    };
+    Some(match in_use {
+        Some((record, path)) => NativeBuildBlocker::NoCompilerNativeInUse {
+            built_at: build_record_value(&record, "built_at"),
+            tuning: build_record_value(&record, "tuning"),
+            record: path.to_string(),
+        },
+        None if local && image_record.is_some() => NativeBuildBlocker::NoCompilerNativeShadowed,
+        None => NativeBuildBlocker::NoCompiler,
+    })
+}
+
+fn build_record_value(record: &str, key: &str) -> String {
+    record
+        .lines()
+        .find_map(|line| line.strip_prefix(key).and_then(|rest| rest.strip_prefix('=')))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "?".to_string())
+}
+
+// Whether PATH holds an executable of that name. `command_available` cannot answer this for a
+// compiler: it runs `-version`, which ffmpeg understands and `cc` exits non-zero on.
+fn on_path(name: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| dir.join(name).is_file())
+}
+
+// One milestone of a running build: which of the script's steps it belongs to, and the line the
+// script wrote. The script reports no percentage — a compile has none to give — so the step is
+// the only measure of how far along it is.
+pub struct FfmpegBuildProgress {
+    pub step: u8,
+    pub line: String,
+}
+
+pub const FFMPEG_BUILD_STEPS: u8 = 5;
+
+// The step a line of the script's own narrative belongs to: x264, x265, libass, ffmpeg (with the
+// NVENC headers it is configured against), then the smoke test and install. `None` for the
+// header lines before anything is built and for anything the script did not write itself — a
+// compiler's output in a failure tail names these libraries too and is not a milestone.
+pub fn ffmpeg_build_step(line: &str) -> Option<(u8, &str)> {
+    let text = line.trim().strip_prefix("[build-ffmpeg]")?.trim();
+    if ["host:", "tuning:", "versions:", "output:", "cleaning "]
+        .iter()
+        .any(|header| text.starts_with(header))
+    {
+        return None;
+    }
+    let step = if text.starts_with("smoke test") || text.starts_with("installed ") || text.starts_with("record:") {
+        5
+    } else if text.contains("nv-codec-headers") || text.contains(" ffmpeg") {
+        4
+    } else if text.contains("libass") {
+        3
+    } else if text.contains("x265") {
+        2
+    } else if text.contains("x264") {
+        1
+    } else {
+        return None;
+    };
+    Some((step, text))
+}
+
 pub struct NativeFfmpegBuild {
     // The first line of `ffmpeg -version` from the pair that was installed.
     pub version: String,
@@ -73,20 +168,27 @@ pub struct NativeFfmpegBuild {
 // to this process's stdout. One build at a time: a second caller is told the first is running
 // rather than being queued behind twenty minutes of compiling it did not know about. `clean`
 // throws the work tree away first; without it a rebuild after a version bump only redoes the
-// component that changed.
-pub async fn build_native_ffmpeg(clean: bool) -> Result<NativeFfmpegBuild, String> {
+// component that changed. `progress` is handed each milestone as the script reaches it, for a
+// caller with somewhere to show it; the log and stdout get every line either way.
+pub async fn build_native_ffmpeg(
+    clean: bool,
+    progress: Option<tokio::sync::mpsc::UnboundedSender<FfmpegBuildProgress>>,
+) -> Result<NativeFfmpegBuild, String> {
     if cfg!(windows) {
         return Err("building ffmpeg natively is not supported on Windows; the portable download stays in use".to_string());
     }
     if FFMPEG_BUILD_RUNNING.swap(true, Ordering::SeqCst) {
         return Err(format!("a native ffmpeg build is already running; its log is {}", FFMPEG_BUILD_LOG));
     }
-    let result = run_native_ffmpeg_build(clean).await;
+    let result = run_native_ffmpeg_build(clean, progress).await;
     FFMPEG_BUILD_RUNNING.store(false, Ordering::SeqCst);
     result
 }
 
-async fn run_native_ffmpeg_build(clean: bool) -> Result<NativeFfmpegBuild, String> {
+async fn run_native_ffmpeg_build(
+    clean: bool,
+    progress: Option<tokio::sync::mpsc::UnboundedSender<FfmpegBuildProgress>>,
+) -> Result<NativeFfmpegBuild, String> {
     use tokio::io::{AsyncWriteExt, BufReader};
 
     tokio::fs::create_dir_all(FFMPEG_BUILD_DIR)
@@ -138,6 +240,12 @@ async fn run_native_ffmpeg_build(clean: bool) -> Result<NativeFfmpegBuild, Strin
         println!("[ffmpeg-build] {}", line);
         let _ = log.write_all(line.as_bytes()).await;
         let _ = log.write_all(b"\n").await;
+        if let Some(progress) = &progress {
+            let plain = strip_ansi(line.clone());
+            if let Some((step, text)) = ffmpeg_build_step(&plain) {
+                let _ = progress.send(FfmpegBuildProgress { step, line: text.to_string() });
+            }
+        }
         if tail.len() == 12 {
             tail.pop_front();
         }
@@ -263,7 +371,7 @@ pub async fn ensure_startup_binaries() {
             "Runtime binary check: building ffmpeg natively for this CPU ({}={}); this takes a while and Pandora starts when it is done",
             FFMPEG_BUILD, "native"
         );
-        match build_native_ffmpeg(false).await {
+        match build_native_ffmpeg(false, None).await {
             Ok(build) => println!("Runtime binary check: native ffmpeg installed in DB/bin ({})", build.version),
             Err(e) => {
                 eprintln!("Warning: the native ffmpeg build failed: {}", e);
@@ -525,4 +633,47 @@ fn make_executable(path: &Path) -> Result<(), std::io::Error> {
 #[cfg(not(unix))]
 fn make_executable(_path: &Path) -> Result<(), std::io::Error> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_build_script_narrative_maps_onto_its_steps() {
+        for (line, step) in [
+            ("[build-ffmpeg] cloning x264 (stable) from https://code.videolan.org/videolan/x264.git", 1),
+            ("[build-ffmpeg] x264 stable already built", 1),
+            ("[build-ffmpeg] building x265 (12-bit, 10-bit, then 8-bit with both linked in)", 2),
+            ("[build-ffmpeg] downloading libass from https://github.com/libass/libass/releases/x.tar.xz", 3),
+            ("[build-ffmpeg] installing nv-codec-headers", 4),
+            ("[build-ffmpeg] downloading ffmpeg from https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz", 4),
+            ("[build-ffmpeg] configuring ffmpeg: --prefix=/x --enable-libx264 --enable-libx265", 4),
+            ("[build-ffmpeg] building ffmpeg with 16 jobs", 4),
+            ("[build-ffmpeg] smoke test: libx265 main10", 5),
+            ("[build-ffmpeg] installed /app/DB/bin/ffmpeg and /app/DB/bin/ffprobe", 5),
+        ] {
+            assert_eq!(ffmpeg_build_step(line).map(|(step, _)| step), Some(step), "{}", line);
+        }
+    }
+
+    #[test]
+    fn headers_and_compiler_output_are_not_milestones() {
+        for line in [
+            "[build-ffmpeg] versions: ffmpeg 8.1.2, x264 stable, x265 4.1, libass 0.17.5",
+            "[build-ffmpeg] output: /app/DB/bin, work tree: /app/DB/bin/build",
+            "[build-ffmpeg] missing tools: cc c++ make cmake pkg-config xz git nasm",
+            "libavcodec/libx264.c:123: error: something about x264",
+        ] {
+            assert!(ffmpeg_build_step(line).is_none(), "{}", line);
+        }
+    }
+
+    #[test]
+    fn a_build_record_gives_up_its_values() {
+        let record = "built_at=2026-09-01T10:00:00Z\ncpu=Some CPU\ntuning=-march=native\n";
+        assert_eq!(build_record_value(record, "built_at"), "2026-09-01T10:00:00Z");
+        assert_eq!(build_record_value(record, "tuning"), "-march=native");
+        assert_eq!(build_record_value(record, "lto"), "?");
+    }
 }

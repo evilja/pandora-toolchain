@@ -1073,3 +1073,19 @@ args = 2
 [BUILD_FFMPEG_FAIL]
 text = "The native ffmpeg build failed. The ffmpeg that was already here stays in use.\n{}"
 args = 1
+
+[BUILD_FFMPEG_PROGRESS]
+text = "Building ffmpeg natively for this machine — step {}/{}: `{}`\n{} minute(s) so far; this message is updated when it ends. Log: `{}`"
+args = 5
+
+[BUILD_FFMPEG_NO_COMPILER_NATIVE]
+text = "Nothing to build: the ffmpeg in use is already a native build (built `{}`, `{}`; record: `{}`).\nThis container has no compiler, so it cannot build another one. To be able to, set `FFMPEG_TOOLCHAIN=1` in the compose `.env` and rebuild the image."
+args = 3
+
+[BUILD_FFMPEG_NO_COMPILER_SHADOWED]
+text = "This container has no compiler, so ffmpeg cannot be built in it. The image already ships a native ffmpeg, but the downloaded pair in `DB/bin` wins over it: delete `DB/bin/ffmpeg` and `DB/bin/ffprobe`, then `/restart`."
+args = 0
+
+[BUILD_FFMPEG_NO_COMPILER]
+text = "This container has no compiler, so ffmpeg cannot be built in it. Rebuild the image with `FFMPEG_NATIVE=1` (the compose default) to ship a native ffmpeg in it, or with `FFMPEG_TOOLCHAIN=1` so this command can build one into `DB/bin`."
+args = 0

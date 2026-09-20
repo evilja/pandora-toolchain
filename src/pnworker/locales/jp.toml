@@ -1073,3 +1073,19 @@ args = 2
 [BUILD_FFMPEG_FAIL]
 text = "ネイティブffmpegのビルドに失敗しました。既存のffmpegを引き続き使用します。\n{}"
 args = 1
+
+[BUILD_FFMPEG_PROGRESS]
+text = "このマシン向けにffmpegをネイティブビルドしています — ステップ {}/{}: `{}`\n経過 {} 分。完了時にこのメッセージを更新します。ログ: `{}`"
+args = 5
+
+[BUILD_FFMPEG_NO_COMPILER_NATIVE]
+text = "ビルドするものはありません。使用中のffmpegはすでにネイティブビルドです(ビルド日時: `{}`、`{}`、記録: `{}`)。\nこのコンテナにはコンパイラがないため、新しくビルドすることはできません。ビルドできるようにするには、composeの `.env` に `FFMPEG_TOOLCHAIN=1` を設定してイメージを再ビルドしてください。"
+args = 3
+
+[BUILD_FFMPEG_NO_COMPILER_SHADOWED]
+text = "このコンテナにはコンパイラがないため、ffmpegをビルドできません。イメージにはネイティブffmpegが含まれていますが、`DB/bin` のダウンロード版が優先されています。`DB/bin/ffmpeg` と `DB/bin/ffprobe` を削除してから `/restart` を実行してください。"
+args = 0
+
+[BUILD_FFMPEG_NO_COMPILER]
+text = "このコンテナにはコンパイラがないため、ffmpegをビルドできません。ネイティブffmpegを含めるには `FFMPEG_NATIVE=1`(composeの既定値)で、このコマンドで `DB/bin` にビルドできるようにするには `FFMPEG_TOOLCHAIN=1` でイメージを再ビルドしてください。"
+args = 0

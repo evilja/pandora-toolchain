@@ -1073,3 +1073,19 @@ args = 2
 [BUILD_FFMPEG_FAIL]
 text = "Yerel ffmpeg derlemesi başarısız oldu. Mevcut ffmpeg kullanılmaya devam ediyor.\n{}"
 args = 1
+
+[BUILD_FFMPEG_PROGRESS]
+text = "ffmpeg bu makine için yerel olarak derleniyor — adım {}/{}: `{}`\nŞu ana kadar {} dakika; bittiğinde bu mesaj güncellenir. Log: `{}`"
+args = 5
+
+[BUILD_FFMPEG_NO_COMPILER_NATIVE]
+text = "Derlenecek bir şey yok: kullanılan ffmpeg zaten yerel bir derleme (derlenme: `{}`, `{}`; kayıt: `{}`).\nBu konteynerde derleyici yok, o yüzden yenisini derleyemez. Derleyebilmesi için compose `.env` dosyasına `FFMPEG_TOOLCHAIN=1` yazıp imajı yeniden oluştur."
+args = 3
+
+[BUILD_FFMPEG_NO_COMPILER_SHADOWED]
+text = "Bu konteynerde derleyici yok, o yüzden içinde ffmpeg derlenemez. İmaj zaten yerel bir ffmpeg ile geliyor ama `DB/bin` içindeki indirilmiş çift onun önüne geçiyor: `DB/bin/ffmpeg` ve `DB/bin/ffprobe` dosyalarını sil, sonra `/restart` at."
+args = 0
+
+[BUILD_FFMPEG_NO_COMPILER]
+text = "Bu konteynerde derleyici yok, o yüzden içinde ffmpeg derlenemez. İmajı, yerel ffmpeg ile gelmesi için `FFMPEG_NATIVE=1` (compose varsayılanı) ile ya da bu komutun `DB/bin` içine derleyebilmesi için `FFMPEG_TOOLCHAIN=1` ile yeniden oluştur."
+args = 0

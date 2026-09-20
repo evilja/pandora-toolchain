@@ -4097,7 +4097,11 @@ async fn main() {
     // Discord token — and so a build never has to wait behind a bot that is otherwise starting.
     if std::env::args().any(|arg| arg == "--build-ffmpeg") {
         let clean = std::env::args().any(|arg| arg == "--clean");
-        match pandora_toolchain::lib::bin::build_native_ffmpeg(clean).await {
+        if pandora_toolchain::lib::bin::native_build_blocker().is_some() {
+            eprintln!("[Pandora] this container has no compiler: build the image with FFMPEG_NATIVE=1 to ship a native ffmpeg, or with FFMPEG_TOOLCHAIN=1 to be able to build one in here");
+            std::process::exit(1);
+        }
+        match pandora_toolchain::lib::bin::build_native_ffmpeg(clean, None).await {
             Ok(build) => {
                 println!(
                     "[Pandora] native ffmpeg installed in DB/bin after {}m: {}",

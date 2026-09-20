@@ -85,7 +85,7 @@ Three ways to run it, all the same build:
 ```bash
 scripts/build-ffmpeg.sh            # from the checkout; --clean discards the work tree first
 pndc --build-ffmpeg [--clean]      # the copy embedded in the binary, for a box with no checkout
-/build-ffmpeg [clean:true]         # from Discord, rank 4; the reply updates when it finishes
+/build-ffmpeg [clean:true]         # from Discord, rank 4; the reply shows the step it is on
 ```
 
 and one way to make startup do it: `ffmpeg_build|pntools|native` in `env.pandora`. With that set,
@@ -125,7 +125,10 @@ previous image back, so the bot returns on the old code rather than not at all â
 whose commits do not show up is the symptom, and the watcher's console has the compiler output. `FFMPEG_TOOLCHAIN=1` is the separate, optional arg that adds the
 compiler to the runtime image so `docker compose exec pndc pndc --build-ffmpeg` or `/build-ffmpeg`
 can rebuild into the mounted `./DB/bin` without an image rebuild; `DB/bin` wins over PATH when both
-hold a pair.
+hold a pair. Without that arg the runtime image has no compiler, and both `/build-ffmpeg` and
+`pndc --build-ffmpeg` say so up front instead of running the script into its prerequisite check â€”
+`/build-ffmpeg` also says whether the ffmpeg in use is already the image's native pair, which with
+the compose default it is.
 
 ## Migrations on a new install
 
