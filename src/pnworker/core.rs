@@ -3952,11 +3952,11 @@ async fn do_job_progression_things(
                         job.server_id,
                         job.server_watermark.clone(),
                         job.smartcode_drive_name.is_some(),
-                        // The same three conditions the upload worker publishes HLS under, asked
-                        // before the encode instead of after it: a kept job needs its MP4 on disk,
-                        // and a Dummy encode is never released.
+                        // The same conditions the upload worker publishes HLS under, asked before
+                        // the encode instead of after it: a kept job needs its MP4 on disk. A Dummy
+                        // encode is included — HLS-only is the server's delivery policy, and it
+                        // outranks the Drive-only upload a Dummy job gets everywhere else.
                         job.keep.is_none()
-                            && !matches!(job.preset, Preset::Dummy(_))
                             && crate::pnworker::server_config::server_hls_enabled(job.server_id)
                                 .await,
                         gated,
@@ -4034,7 +4034,17 @@ async fn do_job_progression_things(
                         true
                     } else {
                         match job.preset {
-                            Preset::Dummy(_) => false,
+                            // A Dummy encode goes to Drive alone, except on an HLS-only server:
+                            // there it is published as HLS like any other release, since that
+                            // policy replaces Drive rather than adding to it. A Studio preview is
+                            // a scratch file and stays a plain Drive upload.
+                            Preset::Dummy(_) => {
+                                !matches!(job.job_type, JobType::StudioPreview)
+                                    && crate::pnworker::server_config::server_hls_enabled(
+                                        job.server_id,
+                                    )
+                                    .await
+                            }
                             _ => true,
                         }
                     },
