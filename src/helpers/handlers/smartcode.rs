@@ -58,7 +58,18 @@ pub async fn handle_smartcode(
                 probe.file_index
             ));
         }
-        None => job.pick_file_first(),
+        None => {
+            job.pick_file_first();
+            if job.pick_then.is_some() {
+                job.pick_answer = Some(remember_picked_file(
+                    result.fg,
+                    result.owner_repo.clone(),
+                    result.source_path.clone(),
+                    result.link.clone(),
+                    job.job_id,
+                ));
+            }
+        }
     }
     job.smartcode_drive_name = Some(
         pandora_toolchain::pnworker::core::SmartcodeDriveName::new(
@@ -70,6 +81,43 @@ pub async fn handle_smartcode(
     job.gdrive_folder_global = Some(result.gdrive_folder_global);
     job.gdrive_folder_local = Some(result.gdrive_folder_local);
     Some(job)
+}
+
+// A pack named by `link:` is written into `SOURCE.md` before anyone knows which file of it the
+// episode is, so the file the job then asks for has to be written back afterwards — otherwise
+// every re-encode of the episode reads a bare link and asks the same question again. The job id
+// goes in beside the index as it does for `/source`: while that job's work directory exists the
+// next run adopts its `.torrent`, and once it is gone the link is fetched again.
+//
+// The wait ends by itself: the worker drops its end when the torrent turns out to hold one video,
+// when nobody answers, and when the job is cancelled.
+fn remember_picked_file(
+    fg: Forgejo,
+    owner_repo: String,
+    source_path: String,
+    link: String,
+    job_id: u64,
+) -> tokio::sync::mpsc::UnboundedSender<u64> {
+    let (answer, mut answered) = tokio::sync::mpsc::unbounded_channel::<u64>();
+    tokio::spawn(async move {
+        let Some(file_index) = answered.recv().await else {
+            return;
+        };
+        let content = pandora_toolchain::lib::source_doc::compose(
+            &display_source_link(&link),
+            Some(ProbeRef { job_id, file_index }),
+        );
+        match fg
+            .upsert_file(&owner_repo, &source_path, &base64_encode(&content), "Smartcode source file")
+            .await
+        {
+            Ok(()) => println!("[smartcode] remembered file #{} in {}/{}", file_index, owner_repo, source_path),
+            // The encode is already running on the right file; all a failure costs is being asked
+            // again next time, so it is logged and nothing is shown.
+            Err(e) => println!("[smartcode] could not remember file #{} in {}/{}: {}", file_index, owner_repo, source_path, e),
+        }
+    });
+    answer
 }
 
 pub async fn handle_smartcode_preview(

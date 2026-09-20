@@ -899,6 +899,7 @@ mod tests {
             pick_then: None,
             pick_files: None,
             pick_keep: None,
+            pick_answer: None,
         }
     }
 

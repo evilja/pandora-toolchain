@@ -2932,7 +2932,13 @@ async fn promote_picked_job(
     job.pick_files = None;
     job.keep = job.pick_keep.take();
     job.probe_file_index = index;
+    // Taken either way: a torrent with one video asked nothing, and dropping the sender is how
+    // whoever is listening learns there is no answer to remember.
+    let pick_answer = job.pick_answer.take();
     if let Some(index) = index {
+        if let Some(pick_answer) = pick_answer {
+            let _ = pick_answer.send(index);
+        }
         job.display_link = Some(format!(
             "{} • file #{}",
             crate::lib::p2p::nyaaise::display_source_link(&job.torrent.get()),
@@ -4985,6 +4991,10 @@ pub struct Job {
     // moment a keep is admitted — locally or on its way to a node — and a listing that reserved it
     // would leave the encode it turns into refused its own keyword.
     pub pick_keep: Option<KeepRequest>,
+    // Told which file was chosen, when a person chose one. The command that queued the job owns
+    // the other end: `/smartcode` writes the answer into the episode's `SOURCE.md`, so the same
+    // pack is asked about once and not on every re-encode. The worker knows nothing of repos.
+    pub pick_answer: Option<tokio::sync::mpsc::UnboundedSender<u64>>,
 }
 
 impl Job {
@@ -5116,6 +5126,7 @@ impl Job {
             pick_then: None,
             pick_files: None,
             pick_keep: None,
+            pick_answer: None,
         }
     }
 
@@ -5221,6 +5232,7 @@ impl Job {
             pick_then: None,
             pick_files: None,
             pick_keep: None,
+            pick_answer: None,
         }
     }
 }

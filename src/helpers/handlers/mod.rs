@@ -369,6 +369,9 @@ struct SmartMergeResult {
     owner_repo: String,
     release_path: String,
     source_path: String,
+    // The repo connection the merge used, kept so `/smartcode do` can write a file choice back
+    // into `SOURCE.md` after the job has asked for it.
+    fg: Forgejo,
     gdrive_folder_global: String,
     gdrive_folder_local: String,
     warnings: Vec<String>,
@@ -704,6 +707,7 @@ async fn smartcode_merge_upload(
         owner_repo,
         release_path: uploaded_release_path,
         source_path,
+        fg,
         warnings,
     })
 }
