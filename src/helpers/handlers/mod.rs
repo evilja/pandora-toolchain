@@ -58,7 +58,7 @@ mod refreshcache;
 mod build_ffmpeg;
 #[allow(unused_imports)]
 pub use self::message::handle_message;
-pub use self::probe::{handle_probe, handle_probe_component};
+pub use self::probe::handle_probe_component;
 pub use self::batch::{handle_batch_component, handle_batch_link, is_subtitle_archive};
 pub use self::listing::{
     await_pending_answer, await_pending_pick, is_listable_source, list_source, take_pending_answer,

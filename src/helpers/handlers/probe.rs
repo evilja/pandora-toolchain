@@ -7,29 +7,10 @@ use pandora_toolchain::pnworker::probe_pages::{
 use serenity::all::{ComponentInteraction, Embed};
 use serenity::builder::CreateEmbedFooter;
 
-pub async fn handle_probe(
-    ctx: &Context,
-    command: &serenity::all::CommandInteraction,
-    torrent_url: String,
-) -> Option<Job> {
-    let response_msg = working_response(ctx, command, "...").await?;
-
-    Some(Job::new(
-        command.user.id.get(),
-        command.channel_id.get(),
-        response_msg.id.get(),
-        JobType::Probe,
-        response_msg.id.get(),
-        nyaaise(&torrent_url),
-        vec![],                // no attachment
-        ctx.clone(),
-        response_msg,
-        read_lang(command.guild_id),
-        command.guild_id.map(|g| g.get()),
-    ))
-}
-
-// The probe message only ever holds one page of the file list, so a page button re-reads the whole
+// There is no `/probe` command any more: every command that needs a pack's file list runs the
+// listing itself and asks for the index in chat. What is left here is the paging of that list.
+//
+// The message only ever holds one page of the file list, so a page button re-reads the whole
 // list from the job's stored progress and rewrites the embed it was clicked on. Nothing about the
 // job is kept in memory for this, which is what lets it survive a `pndc` restart mid-probe.
 pub async fn handle_probe_component(ctx: &Context, component: &ComponentInteraction) {

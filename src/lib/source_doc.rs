@@ -1,5 +1,5 @@
 // `SOURCE.md` in an episode folder records where that episode is encoded from. It has always been
-// one line — `# <link>` — and that is enough for a single-episode torrent, but a `/probe` result is
+// one line — `# <link>` — and that is enough for a single-episode torrent, but a pack is
 // two facts and not one: the torrent, and which file inside it is the episode. The second fact
 // rides on a `;` comment line, which every reader of this file has always skipped, so a repo
 // written by this version still parses under the one before it.

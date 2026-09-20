@@ -957,7 +957,7 @@ mod tests {
         );
         assert!(embed_json(&job, &single).get("description").is_none());
 
-        // A bare `/probe` is a lookup and asks nothing.
+        // A bare probe — the API's, or a command's own listing — is a lookup and asks nothing.
         job.pick_then = None;
         let embed = embed_json(&job, &pack);
         assert_eq!(embed["title"], get_job_type_text(JobType::Probe, "en"));

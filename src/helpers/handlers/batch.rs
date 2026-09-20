@@ -524,7 +524,7 @@ fn parse_batch_component_id(id: &str) -> Option<(u64, BatchAction)> {
     Some((message_id, action))
 }
 
-// `/probe` already renders its rows episode-sorted, so reading that stored list back keeps the
+// The probe worker already renders its rows episode-sorted, so reading that stored list back keeps the
 // pairing in the order the user was shown rather than the order the torrent packed its files.
 pub(super) fn probe_rows(progress: Option<&str>) -> Vec<(u64, String)> {
     let Some(progress) = progress else {

@@ -783,7 +783,6 @@ const COMMAND_RANKS_PATH: &str = "DB/config/global/environment/command_ranks.pan
 const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("encode", 0),
     ("studio", 0),
-    ("probe", 0),
     ("subs", 0),
     ("backup", 0),
     ("backupall", 0),
@@ -1018,7 +1017,7 @@ fn help_catalog() -> &'static [HelpCommand] {
             name: "encode",
             summary: "Encode, locally keep, or join video outputs.",
             usage: "/encode do|link|keep|key ... (preset, intro and outro come from /edit)",
-            details: "`do` encodes with an attached ASS. When the torrent holds more than one video, `do`, `link` and `keep` show its file list first — paged like `/probe` — and wait three minutes for you to send the index you want as a plain number in the channel; a torrent with one video encodes straight away. Attach a `.zip` of several subtitles to `do` instead and it becomes a batch: the pack is listed, its files are paired with the subtitles in order, and every episode encodes after you confirm the pairing. When the pack holds more videos than the archive holds subtitles, it asks which files first: answer in the channel with their indexes, like `1,3,5-9`. `link` fetches the ASS from a URL; `keep` encodes an attachment and stores the output under a keyword; `key` joins kept keyword outputs.",
+            details: "`do` encodes with an attached ASS. When the torrent holds more than one video, `do`, `link` and `keep` show its file list first, paged, and wait three minutes for you to send the index you want as a plain number in the channel; a torrent with one video encodes straight away. Attach a `.zip` of several subtitles to `do` instead and it becomes a batch: the pack is listed, its files are paired with the subtitles in order, and every episode encodes after you confirm the pairing. When the pack holds more videos than the archive holds subtitles, it asks which files first: answer in the channel with their indexes, like `1,3,5-9`. `link` fetches the ASS from a URL; `keep` encodes an attachment and stores the output under a keyword; `key` joins kept keyword outputs.",
         },
         HelpCommand {
             section: "encode",
@@ -1033,13 +1032,6 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Extract the subtitle tracks embedded in a video.",
             usage: "/subs torrent:<link>",
             details: "Downloads the video and writes every text subtitle track it carries to a file, named by track ordinal, language, and title. One track comes back on its own; several come back as a zip. Image-based tracks (PGS, VobSub) are reported as skipped because they hold bitmaps rather than text. When the torrent holds more than one video, its file list is shown first and you pick one by sending its index as a plain number in the channel, exactly as `/encode do` asks.",
-        },
-        HelpCommand {
-            section: "encode",
-            name: "probe",
-            summary: "Inspect a torrent and list selectable files.",
-            usage: "/probe torrent:<link>",
-            details: "Downloads and probes a torrent or magnet link, then returns file indexes. `/encode do`, `/subs`, `/source` and `/backup` list a pack by themselves, so a probe is only for looking inside a torrent before you decide Google Drive links are not supported here.",
         },
         HelpCommand {
             section: "encode",
@@ -1172,7 +1164,7 @@ fn help_catalog() -> &'static [HelpCommand] {
             name: "tutorial",
             summary: "A beginner walkthrough in the server's language.",
             usage: "/tutorial 1 | /tutorial admin",
-            details: "The beginner lesson covers /encode, /probe and team workflows, including reusing saved episode links. The admin lesson explains guided /configure, every /edit field, /init prerequisites, permissions and branding.",
+            details: "The beginner lesson covers /encode, picking a video out of a pack, and team workflows, including reusing saved episode links. The admin lesson explains guided /configure, every /edit field, /init prerequisites, permissions and branding.",
         },
         HelpCommand {
             section: "repo",
@@ -2440,16 +2432,6 @@ impl EventHandler for Handler {
                 "studio" => {
                     handle_studio(&ctx, &command, &self.tx).await;
                 }
-                "probe" => {
-                    let torrent_url = match required_trimmed_option(&ctx, &command, "torrent", "Torrent URL").await {
-                        Some(url) => url,
-                        None => return,
-                    };
-
-                    if let Some(job) = handle_probe(&ctx, &command, torrent_url).await {
-                        self.tx.send(JobClass::Job(job)).await.unwrap();
-                    }
-                }
                 "subs" => {
                     if let Some(mut job) = handle_subs(&ctx, &command).await {
                         job.pick_file_first();
@@ -3021,12 +3003,6 @@ impl EventHandler for Handler {
                 .description("Check the health of all worker threads"),
             CreateCommand::new("workers")
                 .description("Show active worker slots and assigned jobs"),
-            CreateCommand::new("probe")
-                .description("Download and ffprobe a torrent. Then can be used to encode with its own subtitle.")
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent URL or magnet link")
-                        .required(true)
-                ),
             CreateCommand::new("subs")
                 .description("Extract the subtitle tracks embedded in a video")
                 .add_option(

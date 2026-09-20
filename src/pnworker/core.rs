@@ -2979,7 +2979,8 @@ async fn do_probe_timeout_things(db: &JobDb, queue: &mut Vec<Job>) {
             let directory = queue[pos].directory.clone();
             let frontend = queue[pos].frontend.clone();
 
-            // A bare probe's list is only a lookup, and removing it is all its timeout ever meant.
+            // A bare probe's list is only a lookup — the API's, or a command's own listing, neither
+            // of which has a message — and removing it is all its timeout ever meant.
             // An encode waiting on an index is a request somebody made: deleting that would leave
             // them with a command that ran and a channel with no trace of what became of it.
             if queue[pos].pick_then.is_some() {

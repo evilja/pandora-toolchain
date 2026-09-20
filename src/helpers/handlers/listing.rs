@@ -9,7 +9,7 @@ use tokio::sync::oneshot;
 // What a torrent turned out to hold, for a command that has to know before it can act and has no
 // worker job of its own to do the asking: `/source` writes a file and queues nothing, and a
 // subtitle archive handed to `/encode do` needs the file list to pair against before there is a
-// batch to queue. Both used to make the user run `/probe` first and copy its job id across.
+// batch to queue. Both used to make the user run a `/probe` command first and copy its job id across.
 pub struct SourceListing {
     // The probe that produced the list. It stays in the queue at `Probed` for its usual window, so
     // a batch or a `Pancode` naming it adopts the `.torrent` it fetched rather than fetching again.
@@ -34,7 +34,7 @@ pub fn is_listable_source(link: &str) -> bool {
 }
 
 // Runs an ordinary probe with no message of its own and waits for its answer in the job DB. The
-// probe goes through the same queue a `/probe` does — preview pool, a node's lease, the lot — so
+// probe goes through the same queue every other job does — preview pool, a node's lease, the lot — so
 // nothing about listing is reimplemented here; this only submits it and reads what it persisted.
 pub async fn list_source(
     tx: &Sender<JobClass>,
