@@ -3,6 +3,7 @@ use super::*;
 mod message;
 mod probe;
 mod batch;
+mod listing;
 mod subs;
 mod backup;
 mod smartcode;
@@ -58,7 +59,9 @@ mod build_ffmpeg;
 #[allow(unused_imports)]
 pub use self::message::handle_message;
 pub use self::probe::{handle_probe, handle_probe_component};
-pub use self::batch::{handle_batch, handle_batch_component};
+pub use self::batch::{handle_batch, handle_batch_component, handle_batch_link, is_subtitle_archive};
+pub use self::listing::{await_pending_pick, is_listable_source, list_source, take_pending_pick};
+use self::batch::probe_rows;
 pub use self::subs::handle_subs;
 pub use self::backup::handle_backup;
 pub use self::smartcode::{handle_smartcode, handle_smartcode_preview};
@@ -388,7 +391,7 @@ async fn resolve_command_probe(
 struct SmartMergeResult {
     link: String,
     // The probe the link came out of, when it came out of one: either from this command's own
-    // `job_id`/`index`, or from the `SOURCE.md` a probe-form `/source` wrote. `/smartcode do` is
+    // `job_id`/`index`, or from the `SOURCE.md` a `/source` of a pack wrote. `/smartcode do` is
     // the only caller that needs it — the rest encode whatever the link resolves to.
     probe: Option<ProbeRef>,
     merged_bytes: Vec<u8>,

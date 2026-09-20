@@ -43,7 +43,7 @@ pub async fn handle_smartcode(
         command.guild_id.map(|g| g.get()),
     );
     job.acix = build_acix_publish(ctx, command).await;
-    // A season pack has no single "the" episode in it. When a probe-form `/source` wrote down which
+    // A season pack has no single "the" episode in it. When `/source` was given the pack and wrote down which
     // file this episode is, that file is encoded as a `Pancode` against the recorded probe — the
     // pack is named once and paged through. With nothing recorded the job lists the source itself
     // and asks in chat, which for a single-video torrent is no question at all.

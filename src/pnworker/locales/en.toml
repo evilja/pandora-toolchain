@@ -154,6 +154,10 @@ args = 2
 text = "This file list is no longer available."
 args = 0
 
+[COMMAND_SOURCE_PICK]
+text = "Which file is this episode?"
+args = 0
+
 [PICK_PROMPT]
 text = "This is a source with multiple videos in it; please select an index by sending its number in this channel."
 args = 0
@@ -794,12 +798,12 @@ args = 0
 text = "Use the same anime channel for all these steps.\n1. **Set up once:** `/init mal:<MyAnimeList anime link>` creates a shared project folder (a repository) and connects it to this channel. Add `season` if needed; it defaults to 1. If the channel is already set up, skip this step.\n2. **Save subtitles:** `/job type:TL episode:1 subtitle:<your file>` saves episode 1's translation. `TLC` saves a checked translation and replaces TL. `TS` saves the on-screen signs and lettering. Repeat for each episode and each updated file. `/job` only saves subtitles; it does not make a video.\n3. **Make the video:** `/smartcode do episode:1 link:<video link>` combines the saved translation and signs, adds them to the video, and uploads the result. Wait for the finished links. Later you can omit `link` for this episode because Pandora remembers it.\nFor a pack, use the same command: Pandora shows the file list and you answer with the file's index as a plain message in the channel.\nOptional: `/smartcode preview episode:1 link:<video link>` makes sample pictures to check subtitle placement before encoding. Repeat steps 2–3 for the next episode."
 args = 0
 
-[TUTORIAL_1_REUSE_TITLE]
+[TUTORIAL_1_RECALL_TITLE]
 text = "You only need to give the link once"
 args = 0
 
-[TUTORIAL_1_REUSE_BODY]
-text = "Already made episode 1 with `/smartcode`? Pandora remembers where that episode’s video comes from. After fixing its subtitles with `/job`, simply run `/smartcode do episode:1` again — no need to hunt down and paste the same link. This is remembered separately for each episode in this channel. Give a new episode its own link the first time. If you want to replace the source video, include the new `link`. For a pack, Pandora asks for the file index again each time; to make it remember the file, run `/probe` on the pack once and save it with `/source episode:1 job_id:<Job ID> index:<file index>`."
+[TUTORIAL_1_RECALL_BODY]
+text = "Already made episode 1 with `/smartcode`? Pandora remembers where that episode’s video comes from. After fixing its subtitles with `/job`, simply run `/smartcode do episode:1` again — no need to hunt down and paste the same link. This is remembered separately for each episode in this channel. Give a new episode its own link the first time. If you want to replace the source video, include the new `link`. For a pack, Pandora asks for the file index again each time; to make it remember the file, run `/source episode:1 link:<pack link>` once and answer its file list the same way."
 args = 0
 
 [TUTORIAL_ADMIN_START_TITLE]

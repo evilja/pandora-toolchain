@@ -104,6 +104,125 @@ pub async fn handle_batch(ctx: &Context, command: &serenity::all::CommandInterac
         }
     };
 
+    let Some(response) = working_response(ctx, command, "...").await else {
+        return;
+    };
+    stage_batch(ctx, command, response, probe_job_id, source, selection, subtitles).await;
+}
+
+// A subtitle archive handed to `/encode do`. The archive is the whole of what makes this a batch:
+// several subtitles can only mean several episodes, so the source is listed here and paired
+// against them, and the confirmation that follows is the one `/encode batch` has always shown.
+// An archive holding a single subtitle is just a subtitle that arrived zipped, and is encoded as
+// one.
+pub async fn handle_batch_link(
+    ctx: &Context,
+    command: &serenity::all::CommandInteraction,
+    tx: &Sender<JobClass>,
+    torrent_url: String,
+) {
+    let Some(attachment) = option_attachment(command, "subtitle") else {
+        command_error(ctx, command, "Error: Subtitle file is required").await;
+        return;
+    };
+    let archive = match attachment.download().await {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            command_error(ctx, command, format!("Failed to download subtitles: {}", e)).await;
+            return;
+        }
+    };
+    // Answered before the archive is unpacked: converting a zip of SRTs runs ffmpeg once per entry,
+    // and an interaction that has not been acknowledged within three seconds is gone.
+    let Some(mut response) = working_response(ctx, command, "...").await else {
+        return;
+    };
+    let mut subtitles = match read_subtitle_archive(&archive).await {
+        Ok(subtitles) if !subtitles.is_empty() => subtitles,
+        Ok(_) => {
+            response_error(ctx, &mut response, "Error: the archive holds no subtitle files.").await;
+            return;
+        }
+        Err(reason) => {
+            response_error(ctx, &mut response, &format!("Error: {}", reason)).await;
+            return;
+        }
+    };
+
+    if subtitles.len() == 1 {
+        if let Err(error) = response.react(ctx, '❌').await {
+            report_send_failure("cancel reaction", response.channel_id.get(), &error);
+        }
+        let (_, subtitle) = subtitles.remove(0);
+        let mut job = Job::new(
+            command.user.id.get(),
+            command.channel_id.get(),
+            response.id.get(),
+            JobType::Encode,
+            response.id.get(),
+            nyaaise(&torrent_url),
+            subtitle,
+            ctx.clone(),
+            response,
+            read_lang(command.guild_id),
+            command.guild_id.map(|guild| guild.get()),
+        );
+        job.pick_file_first();
+        tx.send(JobClass::Job(job)).await.unwrap();
+        return;
+    }
+
+    if !is_listable_source(&torrent_url) {
+        response_error(
+            ctx,
+            &mut response,
+            "Error: a subtitle archive encodes several episodes, which needs a torrent or magnet holding them. A Google Drive or direct link is a single video — attach its one subtitle instead.",
+        )
+        .await;
+        return;
+    }
+    let listing = match list_source(tx, command, &torrent_url).await {
+        Ok(listing) => listing,
+        Err(reason) => {
+            response_error(ctx, &mut response, &format!("Error: {}", reason)).await;
+            return;
+        }
+    };
+    stage_batch(
+        ctx,
+        command,
+        response,
+        listing.probe_job_id,
+        torrent_url,
+        listing.rows,
+        subtitles,
+    )
+    .await;
+}
+
+// Whether a `/encode do` subtitle attachment is an archive rather than a subtitle. Decided by name,
+// like every other subtitle format is: the bytes have not been downloaded yet when this is asked.
+pub fn is_subtitle_archive(command: &serenity::all::CommandInteraction) -> bool {
+    option_attachment(command, "subtitle")
+        .map(|attachment| attachment.filename.to_ascii_lowercase().ends_with(".zip"))
+        .unwrap_or(false)
+}
+
+async fn response_error(ctx: &Context, response: &mut Message, text: &str) {
+    let _ = response.edit(ctx, EditMessage::new().content(text)).await;
+}
+
+// Stages a pairing on disk and turns the response into its confirmation. Shared by the probe-id
+// form and the link form, which differ only in where the file list came from.
+async fn stage_batch(
+    ctx: &Context,
+    command: &serenity::all::CommandInteraction,
+    response: Message,
+    probe_job_id: u64,
+    source: String,
+    selection: Vec<(u64, String)>,
+    subtitles: Vec<(String, Vec<u8>)>,
+) {
     let lang = read_lang(command.guild_id);
     let pairs = selection.len().min(subtitles.len());
     let mut notice = String::new();
@@ -123,9 +242,6 @@ pub async fn handle_batch(ctx: &Context, command: &serenity::all::CommandInterac
     }
 
     let listing = pairing_lines(&selection[..pairs], &subtitles[..pairs]).join("\n");
-    let Some(response) = working_response(ctx, command, "...").await else {
-        return;
-    };
 
     let pending = BatchPending {
         author: command.user.id.get(),
@@ -144,9 +260,9 @@ pub async fn handle_batch(ctx: &Context, command: &serenity::all::CommandInterac
             })
             .collect(),
     };
+    let mut response = response;
     if let Err(e) = write_pending(response.id.get(), &pending, &subtitles[..pairs]).await {
-        command_error(ctx, command, format!("Error: {}", e)).await;
-        let _ = response.delete(ctx).await;
+        response_error(ctx, &mut response, &format!("Error: {}", e)).await;
         return;
     }
 
@@ -158,7 +274,6 @@ pub async fn handle_batch(ctx: &Context, command: &serenity::all::CommandInterac
             notice,
             probe_page_body(&listing, 1, &lang),
         ));
-    let mut response = response;
     let _ = response
         .edit(
             ctx,
@@ -397,7 +512,7 @@ fn parse_batch_component_id(id: &str) -> Option<(u64, BatchAction)> {
 
 // `/probe` already renders its rows episode-sorted, so reading that stored list back keeps the
 // pairing in the order the user was shown rather than the order the torrent packed its files.
-fn probe_rows(progress: Option<&str>) -> Vec<(u64, String)> {
+pub(super) fn probe_rows(progress: Option<&str>) -> Vec<(u64, String)> {
     let Some(progress) = progress else {
         return Vec::new();
     };

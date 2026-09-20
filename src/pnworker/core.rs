@@ -4979,12 +4979,13 @@ pub struct Job {
 }
 
 impl Job {
-    // Has this encode list its source before it runs, so a pack of episodes becomes a question
-    // instead of a guess. Only where there is somebody to ask and something to list: a web submit
-    // has no chat to answer in, and a Drive or direct link is one file by construction — the
-    // prober refuses them for that reason.
+    // Has this job list its source before it runs, so a pack of episodes becomes a question
+    // instead of a guess. Every job that works on exactly one video qualifies — an encode, a
+    // subtitle extraction, a backup. Only where there is somebody to ask and something to list: a
+    // web submit has no chat to answer in, and a Drive or direct link is one file by construction
+    // — the prober refuses them for that reason.
     pub fn pick_file_first(&mut self) {
-        if self.job_type != JobType::Encode
+        if !matches!(self.job_type, JobType::Encode | JobType::Subs | JobType::Backup)
             || self.pick_then.is_some()
             || !matches!(self.frontend, Frontend::Discord { .. })
             || !matches!(self.torrent, TorrentType::Link(_) | TorrentType::Magnet(_))

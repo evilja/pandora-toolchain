@@ -1,17 +1,31 @@
 use super::*;
 
 use pandora_toolchain::lib::source_doc::{compose as compose_source, ProbeRef};
+use pandora_toolchain::pnworker::messages::{
+    COMMAND_SOURCE_PICK, FIELD_PROGRESS, PICK_PROMPT, PICK_TIMEOUT,
+};
+use pandora_toolchain::pnworker::probe_pages::{
+    probe_page_body, probe_page_components, probe_page_count,
+};
+use tokio::sync::mpsc::Sender;
 
-// `/source` takes either a source link or a `/probe` result plus a file index, the same pair
-// `/subs` takes. A season pack has no single "the" episode in it, so a link on its own cannot say
-// which file episode 3 is — the probe form writes that down beside the link, and `/smartcode do`
-// reads it back instead of asking in chat.
-pub async fn handle_source(ctx: &Context, command: &serenity::all::CommandInteraction) {
+// How long a pack's file list waits for its index, the same window a queued job's list gets.
+const SOURCE_PICK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
+// `/source` takes a source link. A season pack has no single "the" episode in it, so a link on its
+// own cannot say which file episode 3 is: a torrent is listed first, and when it holds more than
+// one video the file is asked for in chat and written down beside the link, which `/smartcode do`
+// reads back instead of asking again.
+pub async fn handle_source(
+    ctx: &Context,
+    command: &serenity::all::CommandInteraction,
+    tx: &Sender<JobClass>,
+) {
     let episode = match positive_u32_option(ctx, command, "episode").await {
         Some(n) => n,
         None => return,
     };
-    let Some((link, probe)) = resolve_source(ctx, command).await else {
+    let Some(link) = required_trimmed_option(ctx, command, "link", "Source link").await else {
         return;
     };
     let server_id = match command_server_id(ctx, command, "/source").await {
@@ -38,6 +52,10 @@ pub async fn handle_source(ctx: &Context, command: &serenity::all::CommandIntera
                 .content(format!("Forgejo init failed: {}", e))).await;
             return;
         }
+    };
+
+    let Some(probe) = resolve_pack_file(ctx, command, tx, &mut response_msg, &link).await else {
+        return;
     };
 
     let folder = pad2(episode);
@@ -77,11 +95,13 @@ pub async fn handle_source(ctx: &Context, command: &serenity::all::CommandIntera
             if let Some(probe) = probe {
                 embed = embed.field(
                     command_message(command, FIELD_FILE),
-                    format!("`#{}` of probe `{}`", probe.file_index, probe.job_id),
+                    format!("`#{}`", probe.file_index),
                     false,
                 );
             }
-            edit_response_embed(ctx, &mut response_msg, embed).await;
+            let _ = response_msg
+                .edit(ctx, EditMessage::new().content("").embed(embed).components(vec![]))
+                .await;
         }
         Err(e) => {
             let _ = response_msg.edit(ctx, EditMessage::new()
@@ -90,54 +110,75 @@ pub async fn handle_source(ctx: &Context, command: &serenity::all::CommandIntera
     }
 }
 
-// The link a `SOURCE.md` will carry, and the probe it was picked out of when there was one.
-async fn resolve_source(
+// Which file of the link this episode is, when the link is a pack. The outer `None` means the
+// command is over — the listing failed or nobody answered, and the message already says so; the
+// inner one means there was nothing to choose, which is every Drive link, direct link and
+// single-video torrent, and those write the one-line `SOURCE.md` they always have.
+async fn resolve_pack_file(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,
-) -> Option<(String, Option<ProbeRef>)> {
-    let link = option_trimmed(command, "link");
-    let probe_job_id = option_str(command, "job_id").map(str::trim).filter(|id| !id.is_empty());
-
-    if link.is_none() && probe_job_id.is_none() {
-        command_error(ctx, command, "Error: pass either `link` or `job_id` with `index`.").await;
-        return None;
+    tx: &Sender<JobClass>,
+    response_msg: &mut Message,
+    link: &str,
+) -> Option<Option<ProbeRef>> {
+    if !is_listable_source(link) {
+        return Some(None);
     }
-    if link.is_some() && probe_job_id.is_some() {
-        command_error(ctx, command, "Error: pass `link` or `job_id`, not both.").await;
-        return None;
+    let listing = match list_source(tx, command, link).await {
+        Ok(listing) => listing,
+        Err(reason) => {
+            let _ = response_msg
+                .edit(ctx, EditMessage::new().content(format!("Error: {}", reason)))
+                .await;
+            return None;
+        }
+    };
+    if listing.rows.len() < 2 {
+        return Some(None);
     }
 
-    let Some(raw) = probe_job_id else {
-        return Some((link.unwrap_or_default(), None));
-    };
-    let Ok(job_id) = raw.parse::<u64>() else {
-        command_error(ctx, command, "Error: job_id must be a number").await;
-        return None;
-    };
-    let file_index = match option_i64(command, "index") {
-        Some(index) if index >= 0 => index as u64,
-        _ => {
-            command_error(ctx, command, "Error: `index` is required with `job_id`.").await;
-            return None;
+    let lang = read_lang(command.guild_id);
+    let embed = info_embed(command, COMMAND_SOURCE_PICK)
+        .description(get_message(PICK_PROMPT, &lang))
+        .field(
+            get_message(FIELD_PROGRESS, &lang),
+            probe_page_body(&listing.text, 1, &lang),
+            false,
+        );
+    // The page buttons are the probe's own: they re-read the list from its stored progress and
+    // swap it into whichever embed they were clicked on, keeping the prompt above it.
+    let _ = response_msg
+        .edit(
+            ctx,
+            EditMessage::new().content("").embed(embed).components(probe_page_components(
+                listing.probe_job_id,
+                1,
+                probe_page_count(&listing.text),
+            )),
+        )
+        .await;
+
+    let offered = listing.rows.iter().map(|(index, _)| *index).collect();
+    let picked = await_pending_pick(
+        command.user.id.get(),
+        command.channel_id.get(),
+        offered,
+        SOURCE_PICK_TIMEOUT,
+    )
+    .await;
+    match picked {
+        Some(file_index) => Some(Some(ProbeRef { job_id: listing.probe_job_id, file_index })),
+        None => {
+            let _ = response_msg
+                .edit(
+                    ctx,
+                    EditMessage::new()
+                        .content(get_message(PICK_TIMEOUT, &lang))
+                        .embeds(vec![])
+                        .components(vec![]),
+                )
+                .await;
+            None
         }
-    };
-    let db = match JobDb::new().await {
-        Ok(db) => db,
-        Err(e) => {
-            command_error(ctx, command, format!("Error: failed to open job DB: {}", e)).await;
-            return None;
-        }
-    };
-    let link = match db.get_job(job_id).await {
-        Ok(Some(row)) => row.link,
-        Ok(None) => {
-            command_error(ctx, command, "Error: probe job was not found.").await;
-            return None;
-        }
-        Err(e) => {
-            command_error(ctx, command, format!("Error: failed to read probe job: {}", e)).await;
-            return None;
-        }
-    };
-    Some((link, Some(ProbeRef { job_id, file_index })))
+    }
 }

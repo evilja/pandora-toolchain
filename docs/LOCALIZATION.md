@@ -41,12 +41,12 @@ One table per message ID. `text` is the template (use `\n` for newlines), `args`
 The consts intentionally have the same name as the TOML keys, so `pub const X: &str = "X";` is the standard form. `src/pnworker/locales/legacy.toml` is migration data for the old generated table, not a fourth selectable language.
 
 The setup wizard uses `CONFIG_*` keys for its steps, navigation, validation and completion messages.
-`TUTORIAL_ADMIN_*` supplies the paged administrator guide; `TUTORIAL_1_REUSE_*` explains reusing
-episode links. `TUTORIAL_1_PACK_*`, `TUTORIAL_1_TEAMWORK_*` and `TUTORIAL_1_REUSE_*` replaced
+`TUTORIAL_ADMIN_*` supplies the paged administrator guide; `TUTORIAL_1_RECALL_*` explains reusing
+episode links. `TUTORIAL_1_PACK_*`, `TUTORIAL_1_TEAMWORK_*` and `TUTORIAL_1_RECALL_*` replaced
 `TUTORIAL_1_PROBE_*`, `TUTORIAL_1_TEAM_*` and `TUTORIAL_1_SAVED_*` when `/encode pan` and
 `/smartcode pan` were folded into `do`; the old keys stay in the locale files unrendered.
-`PICK_PROMPT` and `PICK_TIMEOUT` are the question an encode asks about a pack and what it says
-when nobody answers. These are new keys so existing runtime locale files receive the added guidance
+`PICK_PROMPT` and `PICK_TIMEOUT` are the question a job asks about a pack and what it says when
+nobody answers; `COMMAND_SOURCE_PICK` titles the same question when `/source` asks it. These are new keys so existing runtime locale files receive the added guidance
 without overwriting custom translations. Input field names retain their `/edit` spellings.
 
 GitHub setup guidance uses new `CONFIG_GITHUB_*`, `TUTORIAL_ADMIN_GITHUB_*`, and

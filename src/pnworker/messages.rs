@@ -67,6 +67,7 @@ pub const PROBE_FAIL: &str = "PROBE_FAIL";
 pub const PROBE_ROW: &str = "PROBE_ROW";
 pub const PROBE_PAGE: &str = "PROBE_PAGE";
 pub const PROBE_PAGE_EXPIRED: &str = "PROBE_PAGE_EXPIRED";
+pub const COMMAND_SOURCE_PICK: &str = "COMMAND_SOURCE_PICK";
 pub const PICK_PROMPT: &str = "PICK_PROMPT";
 pub const PICK_TIMEOUT: &str = "PICK_TIMEOUT";
 pub const SUBS_DONE: &str = "SUBS_DONE";
@@ -813,8 +814,8 @@ pub const TUTORIAL_1_PACK_TITLE: &str = "TUTORIAL_1_PACK_TITLE";
 pub const TUTORIAL_1_PACK_BODY: &str = "TUTORIAL_1_PACK_BODY";
 pub const TUTORIAL_1_TEAMWORK_TITLE: &str = "TUTORIAL_1_TEAMWORK_TITLE";
 pub const TUTORIAL_1_TEAMWORK_BODY: &str = "TUTORIAL_1_TEAMWORK_BODY";
-pub const TUTORIAL_1_REUSE_TITLE: &str = "TUTORIAL_1_REUSE_TITLE";
-pub const TUTORIAL_1_REUSE_BODY: &str = "TUTORIAL_1_REUSE_BODY";
+pub const TUTORIAL_1_RECALL_TITLE: &str = "TUTORIAL_1_RECALL_TITLE";
+pub const TUTORIAL_1_RECALL_BODY: &str = "TUTORIAL_1_RECALL_BODY";
 pub const TUTORIAL_ADMIN_GITHUB_INIT_BODY: &str = "TUTORIAL_ADMIN_GITHUB_INIT_BODY";
 pub const CONFIG_GITHUB_BODY: &str = "CONFIG_GITHUB_BODY";
 pub const FIELD_GITHUB_TOKEN: &str = "FIELD_GITHUB_TOKEN";
@@ -913,7 +914,7 @@ mod tests {
     fn tutorial_translations_fit_discord_embeds() {
         for locale in [EN_LOCALE, TR_LOCALE, JP_LOCALE] {
             let entries = parse_entries(locale).unwrap();
-            for section in ["INTRO", "ENCODE", "PACK", "TEAMWORK", "REUSE"] {
+            for section in ["INTRO", "ENCODE", "PACK", "TEAMWORK", "RECALL"] {
                 let mut total = 0;
                 for (suffix, limit) in [("TITLE", 256), ("BODY", 4096)] {
                     let entry = &entries[&format!("TUTORIAL_1_{section}_{suffix}")];
