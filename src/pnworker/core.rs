@@ -2887,6 +2887,9 @@ async fn handle_pick(
     let Some(job_id) = pick_target(queue, &request) else {
         return false;
     };
+    // Off the queue loop: a delete is a round trip to Discord, and nothing here waits on it.
+    let answered = request.frontend.clone();
+    tokio::spawn(async move { answered.delete().await });
     promote_picked_job(db, queue, shrine, job_id, Some(request.index)).await
 }
 
@@ -4573,11 +4576,16 @@ pub enum JobClass {
 // A bare number somebody typed in a channel. It means something only if that person has an encode
 // holding a file list open in that channel, which is for the queue to say: the Discord side sends
 // every such message and knows nothing about what is waiting.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PickRequest {
     pub author: u64,
     pub channel_id: u64,
     pub index: u64,
+    // The message the number arrived in. Once it has selected a file it is an answer the job's own
+    // embed already reflects, so it is removed to keep the channel to the job messages — where the
+    // bot may manage messages; where it may not, the delete fails and the number simply stays.
+    // Untouched when the number matched nothing, since then it was never an answer.
+    pub frontend: Frontend,
 }
 
 #[derive(Clone, Debug)]
@@ -5318,7 +5326,12 @@ mod tests {
     #[test]
     fn a_number_in_chat_selects_only_for_its_author_in_its_channel() {
         let queue = vec![waiting_pick(10, 1, 100, &[0, 3, 5])];
-        let pick = |author, channel_id, index| PickRequest { author, channel_id, index };
+        let pick = |author, channel_id, index| PickRequest {
+            author,
+            channel_id,
+            index,
+            frontend: Frontend::None,
+        };
         assert_eq!(pick_target(&queue, &pick(1, 100, 5)), Some(10));
         assert_eq!(pick_target(&queue, &pick(2, 100, 5)), None);
         assert_eq!(pick_target(&queue, &pick(1, 101, 5)), None);
@@ -5339,7 +5352,12 @@ mod tests {
             listing,
             plain_probe,
         ];
-        let request = PickRequest { author: 1, channel_id: 100, index: 1 };
+        let request = PickRequest {
+            author: 1,
+            channel_id: 100,
+            index: 1,
+            frontend: Frontend::None,
+        };
         assert_eq!(pick_target(&queue, &request), Some(13));
     }
 

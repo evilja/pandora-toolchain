@@ -2338,6 +2338,9 @@ impl EventHandler for Handler {
         if !msg.author.bot
             && take_pending_answer(msg.author.id.get(), msg.channel_id.get(), msg.content.trim())
         {
+            // The answer now shows in the command's own message, so the one it was typed in goes —
+            // where the bot may manage messages. Where it may not, this fails and the message stays.
+            let _ = msg.delete(&context).await;
             return;
         }
         // A bare number is how somebody answers an encode that listed a pack and asked which file.
@@ -2351,6 +2354,7 @@ impl EventHandler for Handler {
                         author: msg.author.id.get(),
                         channel_id: msg.channel_id.get(),
                         index,
+                        frontend: pandora_toolchain::pnworker::frontend::Frontend::discord(context.clone(), msg.clone()),
                     }))
                     .await
                     .ok();
