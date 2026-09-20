@@ -67,6 +67,7 @@ pub const PROBE_FAIL: &str = "PROBE_FAIL";
 pub const PROBE_ROW: &str = "PROBE_ROW";
 pub const PROBE_PAGE: &str = "PROBE_PAGE";
 pub const PROBE_PAGE_EXPIRED: &str = "PROBE_PAGE_EXPIRED";
+pub const BATCH_PICK_PROMPT: &str = "BATCH_PICK_PROMPT";
 pub const COMMAND_SOURCE_PICK: &str = "COMMAND_SOURCE_PICK";
 pub const PICK_PROMPT: &str = "PICK_PROMPT";
 pub const PICK_TIMEOUT: &str = "PICK_TIMEOUT";

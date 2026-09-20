@@ -188,7 +188,6 @@ async fn handle_encode_command(
             job.keycode = Some(KeycodeRequest { keywords });
             tx.send(JobClass::Job(job)).await.unwrap();
         }
-        "batch" => handle_batch(ctx, command).await,
         other => command_error(ctx, command, format!("Unknown encode subcommand `{}`.", other)).await,
     }
 }
@@ -1018,8 +1017,8 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "encode",
             name: "encode",
             summary: "Encode, locally keep, or join video outputs.",
-            usage: "/encode do|batch|link|keep|key ... (preset, intro and outro come from /edit)",
-            details: "`do` encodes with an attached ASS. When the torrent holds more than one video, `do`, `link` and `keep` show its file list first — paged like `/probe` — and wait three minutes for you to send the index you want as a plain number in the channel; a torrent with one video encodes straight away. Attach a `.zip` of several subtitles to `do` instead and it becomes a batch: the pack is listed, its files are paired with the subtitles in order, and every episode encodes after you confirm the pairing. `batch` is the same thing from a `/probe` job id, with an `indexes` filter; `link` fetches the ASS from a URL; `keep` encodes an attachment and stores the output under a keyword; `key` joins kept keyword outputs.",
+            usage: "/encode do|link|keep|key ... (preset, intro and outro come from /edit)",
+            details: "`do` encodes with an attached ASS. When the torrent holds more than one video, `do`, `link` and `keep` show its file list first — paged like `/probe` — and wait three minutes for you to send the index you want as a plain number in the channel; a torrent with one video encodes straight away. Attach a `.zip` of several subtitles to `do` instead and it becomes a batch: the pack is listed, its files are paired with the subtitles in order, and every episode encodes after you confirm the pairing. When the pack holds more videos than the archive holds subtitles, it asks which files first: answer in the channel with their indexes, like `1,3,5-9`. `link` fetches the ASS from a URL; `keep` encodes an attachment and stores the output under a keyword; `key` joins kept keyword outputs.",
         },
         HelpCommand {
             section: "encode",
@@ -1040,7 +1039,7 @@ fn help_catalog() -> &'static [HelpCommand] {
             name: "probe",
             summary: "Inspect a torrent and list selectable files.",
             usage: "/probe torrent:<link>",
-            details: "Downloads and probes a torrent or magnet link, then returns file indexes. The job id feeds `/encode batch`. `/encode do`, `/subs`, `/source` and `/backup` list a pack by themselves, so a probe is only needed to look before you decide. Google Drive links are not supported here.",
+            details: "Downloads and probes a torrent or magnet link, then returns file indexes. `/encode do`, `/subs`, `/source` and `/backup` list a pack by themselves, so a probe is only for looking inside a torrent before you decide Google Drive links are not supported here.",
         },
         HelpCommand {
             section: "encode",
@@ -2334,16 +2333,19 @@ impl EventHandler for Handler {
         if handle_configure_upload(&context, &msg).await { return; }
         let parts: Vec<&str> = msg.content.split_whitespace().collect();
         if parts.is_empty() { return; }
+        // A command waiting on this person in this channel gets the first look, whatever they sent:
+        // it knows what an answer to its own question looks like and leaves everything else alone.
+        if !msg.author.bot
+            && take_pending_answer(msg.author.id.get(), msg.channel_id.get(), msg.content.trim())
+        {
+            return;
+        }
         // A bare number is how somebody answers an encode that listed a pack and asked which file.
         // Whether anything is actually waiting on this person in this channel is the queue's to
         // say, so every such message is passed along and nearly all of them match nothing. No
         // authorization check: the number can only select for a job its author already queued.
         if parts.len() == 1 && !msg.author.bot {
             if let Ok(index) = parts[0].parse::<u64>() {
-                // `/source` asks from its own handler, since it queues no job to ask for it.
-                if take_pending_pick(msg.author.id.get(), msg.channel_id.get(), index) {
-                    return;
-                }
                 self.tx
                     .send(JobClass::Pick(PickRequest {
                         author: msg.author.id.get(),
@@ -2860,7 +2862,7 @@ impl EventHandler for Handler {
                             .required(true)
                     )
                     .add_sub_option(
-                        CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "Subtitle file (.ass, .srt, .vtt, .ssa, ...; converted to ASS)")
+                        CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "Subtitle file (.ass, .srt, ...), or a .zip of several to encode a whole pack")
                             .required(true)
                     )
             )
@@ -2886,21 +2888,6 @@ impl EventHandler for Handler {
                             .required(true)
                     )
                     .add_sub_option(keyword_option.clone())
-            )
-            .add_option(
-                CreateCommandOption::new(CommandOptionType::SubCommand, "batch", "Encode several probed episodes from one subtitle archive")
-                    .add_sub_option(
-                        CreateCommandOption::new(CommandOptionType::String, "job_id", "Job ID from /probe result")
-                            .required(true)
-                    )
-                    .add_sub_option(
-                        CreateCommandOption::new(CommandOptionType::Attachment, "subtitles", "ZIP of subtitle files, paired with the episodes in order")
-                            .required(true)
-                    )
-                    .add_sub_option(
-                        CreateCommandOption::new(CommandOptionType::String, "indexes", "Probe indexes to encode, e.g. 1,3,5-9; omit for every file")
-                            .required(false)
-                    )
             )
             .add_option(
                 CreateCommandOption::new(CommandOptionType::SubCommand, "key", "Join kept keyword outputs and upload")

@@ -121,55 +121,76 @@ fn probe_list_text(progress: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
-// A number somebody is waited on for, by the command that asked rather than by a queued job. The
-// worker's own picks (`JobClass::Pick`) cover every command that *is* a job; this is for the one
-// that is not. Keyed by who was asked and where, exactly as the worker matches its own.
-struct PendingPick {
-    offered: Vec<u64>,
-    answer: oneshot::Sender<u64>,
+// An answer somebody is waited on for, by the command that asked rather than by a queued job. The
+// worker's own picks (`JobClass::Pick`) cover every command that *is* a job; this is for the ones
+// that are not one yet — `/source`, which never queues anything, and a batch that has to know
+// which files it is for before it exists. Keyed by who was asked and where, exactly as the worker
+// matches its own.
+struct PendingAnswer {
+    // What counts as an answer. Everything else the person types is conversation and is left
+    // alone, so a question being open never swallows the channel.
+    accepts: Box<dyn Fn(&str) -> bool + Send>,
+    answer: oneshot::Sender<String>,
 }
 
-fn pending_picks() -> &'static Mutex<HashMap<(u64, u64), PendingPick>> {
-    static PENDING: OnceLock<Mutex<HashMap<(u64, u64), PendingPick>>> = OnceLock::new();
+fn pending_answers() -> &'static Mutex<HashMap<(u64, u64), PendingAnswer>> {
+    static PENDING: OnceLock<Mutex<HashMap<(u64, u64), PendingAnswer>>> = OnceLock::new();
     PENDING.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-// Offers a bare number typed in chat to whatever command is waiting on that person in that
-// channel. Returns whether it was taken, so the caller knows not to pass it on to the queue.
-pub fn take_pending_pick(author: u64, channel_id: u64, index: u64) -> bool {
-    let mut pending = pending_picks().lock().unwrap();
+// Offers a chat message to whatever command is waiting on that person in that channel. Returns
+// whether it was taken, so the caller knows not to pass it on to the queue.
+pub fn take_pending_answer(author: u64, channel_id: u64, text: &str) -> bool {
+    let mut pending = pending_answers().lock().unwrap();
     let key = (author, channel_id);
-    if !pending.get(&key).is_some_and(|pick| pick.offered.contains(&index)) {
+    if !pending.get(&key).is_some_and(|waiting| (waiting.accepts)(text)) {
         return false;
     }
     match pending.remove(&key) {
-        Some(pick) => pick.answer.send(index).is_ok(),
+        Some(waiting) => waiting.answer.send(text.to_string()).is_ok(),
         None => false,
     }
 }
 
-// Waits for the author to answer with one of the offered indices. A second question to the same
+// Waits for the author to send something `accepts` recognises. A second question to the same
 // person in the same channel replaces the first, whose wait then ends as unanswered.
+pub async fn await_pending_answer(
+    author: u64,
+    channel_id: u64,
+    accepts: impl Fn(&str) -> bool + Send + 'static,
+    timeout: Duration,
+) -> Option<String> {
+    let (answer, receiver) = oneshot::channel();
+    pending_answers().lock().unwrap().insert(
+        (author, channel_id),
+        PendingAnswer { accepts: Box::new(accepts), answer },
+    );
+    match tokio::time::timeout(timeout, receiver).await {
+        Ok(answer) => answer.ok(),
+        // Only a timeout still owns the entry. A wait whose sender was dropped has already been
+        // replaced, and removing the key then would cancel the question that replaced it.
+        Err(_) => {
+            pending_answers().lock().unwrap().remove(&(author, channel_id));
+            None
+        }
+    }
+}
+
+// The single-index form: one of the offered file indices, as a bare number.
 pub async fn await_pending_pick(
     author: u64,
     channel_id: u64,
     offered: Vec<u64>,
     timeout: Duration,
 ) -> Option<u64> {
-    let (answer, receiver) = oneshot::channel();
-    pending_picks()
-        .lock()
-        .unwrap()
-        .insert((author, channel_id), PendingPick { offered, answer });
-    match tokio::time::timeout(timeout, receiver).await {
-        Ok(answer) => answer.ok(),
-        // Only a timeout still owns the entry. A wait whose sender was dropped has already been
-        // replaced, and removing the key then would cancel the question that replaced it.
-        Err(_) => {
-            pending_picks().lock().unwrap().remove(&(author, channel_id));
-            None
-        }
-    }
+    let accepts = move |text: &str| {
+        text.trim()
+            .parse::<u64>()
+            .is_ok_and(|index| offered.contains(&index))
+    };
+    await_pending_answer(author, channel_id, accepts, timeout)
+        .await
+        .and_then(|text| text.trim().parse::<u64>().ok())
 }
 
 #[cfg(test)]
@@ -181,13 +202,15 @@ mod tests {
         let wait = tokio::spawn(await_pending_pick(1, 100, vec![0, 4], Duration::from_secs(5)));
         // Let the wait register before anything is offered to it.
         tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(!take_pending_pick(2, 100, 4));
-        assert!(!take_pending_pick(1, 101, 4));
-        assert!(!take_pending_pick(1, 100, 3));
-        assert!(take_pending_pick(1, 100, 4));
+        assert!(!take_pending_answer(2, 100, "4"));
+        assert!(!take_pending_answer(1, 101, "4"));
+        assert!(!take_pending_answer(1, 100, "3"));
+        // Anything that is not an answer is conversation, and the question stays open.
+        assert!(!take_pending_answer(1, 100, "which one was it again"));
+        assert!(take_pending_answer(1, 100, "4"));
         assert_eq!(wait.await.unwrap(), Some(4));
         // Answered once; the same number again is just a number.
-        assert!(!take_pending_pick(1, 100, 4));
+        assert!(!take_pending_answer(1, 100, "4"));
     }
 
     #[tokio::test]
@@ -196,7 +219,7 @@ mod tests {
             await_pending_pick(7, 700, vec![1], Duration::from_millis(30)).await,
             None
         );
-        assert!(!take_pending_pick(7, 700, 1));
+        assert!(!take_pending_answer(7, 700, "1"));
     }
 
     #[test]

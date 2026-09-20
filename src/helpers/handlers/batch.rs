@@ -2,16 +2,22 @@ use super::*;
 
 use pandora_toolchain::lib::subs::ensure_ass_bytes;
 use pandora_toolchain::pnworker::batch::{BatchEntry, BatchRequest};
+use super::listing::SourceListing;
 use pandora_toolchain::pnworker::messages::{
     BATCH_CANCELLED, BATCH_CONFIRM, BATCH_CONFIRM_BODY, BATCH_CONFIRM_EXPIRED, BATCH_MISMATCH,
+    BATCH_PICK_PROMPT, FIELD_PROGRESS, PICK_TIMEOUT,
 };
-use pandora_toolchain::pnworker::probe_pages::{probe_page_body, probe_page_count};
+use pandora_toolchain::pnworker::probe_pages::{
+    probe_page_body, probe_page_components, probe_page_count,
+};
 use serde::{Deserialize, Serialize};
 use serenity::all::{ButtonStyle, Colour, ComponentInteraction, CreateActionRow, CreateButton};
 use std::path::PathBuf;
 use tokio::sync::mpsc::Sender;
 
 const BATCH_COMPONENT_PREFIX: &str = "pnbatch";
+// How long the file list waits for its index selection, the window every other pick gets.
+const BATCH_PICK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
 
 // The pairing survives the gap between the command and the confirmation click — including a pndc
 // restart — by living on disk rather than in a pending-interaction map.
@@ -40,79 +46,9 @@ fn pending_dir(message_id: u64) -> PathBuf {
         .join(message_id.to_string())
 }
 
-pub async fn handle_batch(ctx: &Context, command: &serenity::all::CommandInteraction) {
-    let Some(probe_job_id) = option_str(command, "job_id").and_then(|id| id.parse::<u64>().ok())
-    else {
-        command_error(ctx, command, "Error: job_id must be a number").await;
-        return;
-    };
-    let Some(attachment) = option_attachment(command, "subtitles") else {
-        command_error(ctx, command, "Error: a subtitle .zip is required").await;
-        return;
-    };
-    let archive = match attachment.download().await {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            command_error(ctx, command, format!("Failed to download subtitles: {}", e)).await;
-            return;
-        }
-    };
-
-    let db = match JobDb::new().await {
-        Ok(db) => db,
-        Err(e) => {
-            command_error(ctx, command, format!("Error: failed to open job DB: {}", e)).await;
-            return;
-        }
-    };
-    let (source, files) = match db.get_job(probe_job_id).await {
-        Ok(Some(row)) => (row.link, probe_rows(row.progress.as_deref())),
-        Ok(None) => {
-            command_error(ctx, command, "Error: probe job was not found.").await;
-            return;
-        }
-        Err(e) => {
-            command_error(ctx, command, format!("Error: failed to read probe job: {}", e)).await;
-            return;
-        }
-    };
-    if files.is_empty() {
-        command_error(ctx, command, "Error: that job has no probed file list.").await;
-        return;
-    }
-    let selection = match select_files(&files, option_trimmed(command, "indexes").as_deref()) {
-        Ok(selection) if !selection.is_empty() => selection,
-        Ok(_) => {
-            command_error(ctx, command, "Error: no file matched that index selection.").await;
-            return;
-        }
-        Err(reason) => {
-            command_error(ctx, command, reason).await;
-            return;
-        }
-    };
-
-    let subtitles = match read_subtitle_archive(&archive).await {
-        Ok(subtitles) if !subtitles.is_empty() => subtitles,
-        Ok(_) => {
-            command_error(ctx, command, "Error: the archive holds no subtitle files.").await;
-            return;
-        }
-        Err(reason) => {
-            command_error(ctx, command, format!("Error: {}", reason)).await;
-            return;
-        }
-    };
-
-    let Some(response) = working_response(ctx, command, "...").await else {
-        return;
-    };
-    stage_batch(ctx, command, response, probe_job_id, source, selection, subtitles).await;
-}
-
 // A subtitle archive handed to `/encode do`. The archive is the whole of what makes this a batch:
 // several subtitles can only mean several episodes, so the source is listed here and paired
-// against them, and the confirmation that follows is the one `/encode batch` has always shown.
+// against them, and nothing is queued until the pairing shown has been confirmed.
 // An archive holding a single subtitle is just a subtitle that arrived zipped, and is encoded as
 // one.
 pub async fn handle_batch_link(
@@ -188,16 +124,95 @@ pub async fn handle_batch_link(
             return;
         }
     };
+    let Some(selection) =
+        ask_which_files(ctx, command, &mut response, &listing, subtitles.len()).await
+    else {
+        return;
+    };
     stage_batch(
         ctx,
         command,
         response,
         listing.probe_job_id,
         torrent_url,
-        listing.rows,
+        selection,
         subtitles,
     )
     .await;
+}
+
+// Which of the pack's files the archive is for. There is only a question when the pack holds more
+// videos than the archive holds subtitles: with as many or fewer, every file is wanted and the
+// confirmation that follows already reports any surplus. Otherwise the file list goes up with its
+// page buttons and the requester answers in chat with an index selection — `1,3,5-9` — the same
+// way a single file is picked. `None` means nobody answered, and the message already says so.
+async fn ask_which_files(
+    ctx: &Context,
+    command: &serenity::all::CommandInteraction,
+    response: &mut Message,
+    listing: &SourceListing,
+    subtitle_count: usize,
+) -> Option<Vec<(u64, String)>> {
+    if listing.rows.len() <= subtitle_count {
+        return Some(listing.rows.clone());
+    }
+    let lang = read_lang(command.guild_id);
+    let embed = info_embed(command, BATCH_CONFIRM)
+        .description(command_format(
+            command,
+            BATCH_PICK_PROMPT,
+            &[listing.rows.len().to_string(), subtitle_count.to_string()],
+        ))
+        .field(
+            get_message(FIELD_PROGRESS, &lang),
+            probe_page_body(&listing.text, 1, &lang),
+            false,
+        );
+    let _ = response
+        .edit(
+            ctx,
+            EditMessage::new().content("").embed(embed).components(probe_page_components(
+                listing.probe_job_id,
+                1,
+                probe_page_count(&listing.text),
+            )),
+        )
+        .await;
+
+    let rows = listing.rows.clone();
+    let answer = await_pending_answer(
+        command.user.id.get(),
+        command.channel_id.get(),
+        move |text| is_index_selection(text) && select_files(&rows, Some(text)).is_ok_and(|files| !files.is_empty()),
+        BATCH_PICK_TIMEOUT,
+    )
+    .await;
+    match answer {
+        Some(text) => select_files(&listing.rows, Some(&text)).ok(),
+        None => {
+            let _ = response
+                .edit(
+                    ctx,
+                    EditMessage::new()
+                        .content(get_message(PICK_TIMEOUT, &lang))
+                        .embeds(vec![])
+                        .components(vec![]),
+                )
+                .await;
+            None
+        }
+    }
+}
+
+// Whether a chat message is an index selection and nothing else. `select_files` skips empty parts,
+// so without this a message of commas — or an ordinary sentence that happened to parse — could be
+// taken for an answer.
+fn is_index_selection(text: &str) -> bool {
+    let text = text.trim();
+    text.chars().any(|character| character.is_ascii_digit())
+        && text
+            .chars()
+            .all(|character| character.is_ascii_digit() || matches!(character, ',' | '-' | ' '))
 }
 
 // Whether a `/encode do` subtitle attachment is an archive rather than a subtitle. Decided by name,
@@ -212,8 +227,7 @@ async fn response_error(ctx: &Context, response: &mut Message, text: &str) {
     let _ = response.edit(ctx, EditMessage::new().content(text)).await;
 }
 
-// Stages a pairing on disk and turns the response into its confirmation. Shared by the probe-id
-// form and the link form, which differ only in where the file list came from.
+// Stages a pairing on disk and turns the response into its confirmation.
 async fn stage_batch(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,
@@ -732,6 +746,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_an_index_selection_answers_the_which_files_question() {
+        assert!(is_index_selection("1,3,5-9"));
+        assert!(is_index_selection(" 4 "));
+        assert!(is_index_selection("1, 2 - 4"));
+        assert!(!is_index_selection(", , -"));
+        assert!(!is_index_selection("episodes 1-3 please"));
+        assert!(!is_index_selection(""));
+    }
+
+    #[test]
     fn probe_rows_keep_the_episode_sorted_order_and_index() {
         let progress = serde_json::json!({
             "type": "probe",
@@ -749,7 +773,7 @@ mod tests {
     }
 
     // The shape a probe actually writes: the rendered lines under `file_text`, with `files` beside
-    // them as the structured array. Reading `files` as a string here is what made `/encode batch`
+    // them as the structured array. Reading `files` as a string here is what made a batch
     // answer "that job has no probed file list" after every probe.
     #[test]
     fn probe_rows_read_the_list_a_probe_writes_today() {

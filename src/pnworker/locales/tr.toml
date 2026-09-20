@@ -154,6 +154,10 @@ args = 2
 text = "Bu dosya listesi artık mevcut değil."
 args = 0
 
+[BATCH_PICK_PROMPT]
+text = "Bu pakette `{}` video, arşivde `{}` altyazı var. Encode edilecek indeksleri bu kanala yazın, örneğin `1,3,5-9`; altyazılarla sırayla eşleştirilirler."
+args = 2
+
 [COMMAND_SOURCE_PICK]
 text = "Bu bölüm hangi dosya?"
 args = 0

@@ -11,7 +11,7 @@ Key consts in `lib::env/standard.rs`:
 - `api_port` enables the API server when set and non-zero;
 - `api_host` is the bind address (defaults to `0.0.0.0`, set `127.0.0.1` to keep it loopback-only behind a proxy);
 - `api_author_id` is the Discord user id stamped as author on API-submitted jobs;
-- `api_public_url` is the public origin Pandora is reachable on (the Cloudflare tunnel hostname, no trailing slash). It is what makes a batch encode a one-message job: with it set, `/encode batch` links its output page instead of posting a Discord message per episode — see [WORKER.md](WORKER.md#batch-encodes);
+- `api_public_url` is the public origin Pandora is reachable on (the Cloudflare tunnel hostname, no trailing slash). It is what makes a batch encode a one-message job: with it set, a batch (`/encode do` with a subtitle archive) links its output page instead of posting a Discord message per episode — see [WORKER.md](WORKER.md#batch-encodes);
 - `api_rate_limit` (`API_RATE_LIMIT`, default `1000`) and `api_rate_window_secs` (`API_RATE_WINDOW_SECS`, default `60`) configure the per-token write-request rate limit.
 
 API bearer tokens live one-per-line in `DB/config/global/environment/api.pandora` (`API_TOKENS_PATH`); blank lines and `;`-prefixed lines are ignored. Mint tokens with `/gentoken`, or `/genwitchtoken` for a privileged one. Not committed.

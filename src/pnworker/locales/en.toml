@@ -154,6 +154,10 @@ args = 2
 text = "This file list is no longer available."
 args = 0
 
+[BATCH_PICK_PROMPT]
+text = "This pack holds `{}` videos and the archive `{}` subtitles. Send the indexes to encode in this channel, for example `1,3,5-9`; they are paired with the subtitles in order."
+args = 2
+
 [COMMAND_SOURCE_PICK]
 text = "Which file is this episode?"
 args = 0
