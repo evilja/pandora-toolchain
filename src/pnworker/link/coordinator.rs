@@ -277,10 +277,6 @@ pub fn worker_label(node: &str) -> String {
     format!("lnk-{}", crate::pnworker::link::board::display_name(node))
 }
 
-pub fn is_link_worker(worker: &str) -> bool {
-    worker.starts_with("lnk-")
-}
-
 pub fn leasable_job_types() -> [JobType; 8] {
     [
         JobType::Encode,
@@ -656,7 +652,7 @@ mod tests {
     #[test]
     fn the_worker_label_carries_the_node_name() {
         let label = worker_label("mini-osaka");
-        assert!(is_link_worker(&label));
+        assert!(label.starts_with("lnk-"));
         assert!(label.contains("mini-osaka"));
     }
 

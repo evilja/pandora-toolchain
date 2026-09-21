@@ -516,11 +516,6 @@ pub fn logo_pixel_width(frame_width: u32, percent: u8) -> u32 {
 // which is what a watermark almost always wants.
 pub const LOGO_EXTENSIONS: [&str; 4] = ["png", "jpg", "jpeg", "webp"];
 
-pub fn logo_extension_is_supported(extension: &str) -> bool {
-    let extension = extension.trim().trim_start_matches('.').to_ascii_lowercase();
-    LOGO_EXTENSIONS.contains(&extension.as_str())
-}
-
 // The extension an uploaded logo is stored under, taken from its file name. `jpeg` is normalised to
 // `jpg` so one server never ends up with two files that are the same picture.
 pub fn logo_extension_from_filename(filename: &str) -> Option<&'static str> {
@@ -899,7 +894,5 @@ mod tests {
         assert_eq!(logo_extension_from_filename("a.b.webp"), Some("webp"));
         assert_eq!(logo_extension_from_filename("logo.ass"), None);
         assert_eq!(logo_extension_from_filename("logo"), None);
-        assert!(logo_extension_is_supported(".PNG"));
-        assert!(!logo_extension_is_supported("gif"));
     }
 }

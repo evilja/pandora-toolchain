@@ -100,10 +100,6 @@ pub struct PreviewWindow {
 }
 
 impl PreviewWindow {
-    pub fn centered(center_ms: u64, total_duration_ms: u64) -> Self {
-        Self::centered_with_duration(center_ms, total_duration_ms, PREVIEW_DEFAULT_DURATION_MS)
-    }
-
     pub fn centered_with_duration(center_ms: u64, total_duration_ms: u64, duration_ms: u64) -> Self {
         let duration_ms = duration_ms.min(total_duration_ms);
         let ideal_start = center_ms.saturating_sub(duration_ms / 2);
@@ -123,14 +119,6 @@ impl PreviewWindow {
         let end_ms = end_ms.min(total_duration_ms);
         let start_ms = end_ms.saturating_sub(duration_ms);
         Self { start_ms, duration_ms: end_ms.saturating_sub(start_ms) }
-    }
-
-    pub fn around_track_start(track_start_ms: u64, total_duration_ms: u64) -> Self {
-        Self::around_track_start_with_duration(
-            track_start_ms,
-            total_duration_ms,
-            PREVIEW_TRACK_DEFAULT_DURATION_MS,
-        )
     }
 
     pub fn around_track_start_with_duration(
@@ -462,16 +450,16 @@ mod tests {
 
     #[test]
     fn preview_window_stays_full_length_at_video_edges() {
-        assert_eq!(PreviewWindow::centered(39_000, 40_000), PreviewWindow { start_ms: 10_000, duration_ms: 30_000 });
-        assert_eq!(PreviewWindow::centered(2_000, 40_000), PreviewWindow { start_ms: 0, duration_ms: 30_000 });
-        assert_eq!(PreviewWindow::centered(2_000, 10_000), PreviewWindow { start_ms: 0, duration_ms: 10_000 });
+        assert_eq!(PreviewWindow::centered_with_duration(39_000, 40_000, PREVIEW_DEFAULT_DURATION_MS), PreviewWindow { start_ms: 10_000, duration_ms: 30_000 });
+        assert_eq!(PreviewWindow::centered_with_duration(2_000, 40_000, PREVIEW_DEFAULT_DURATION_MS), PreviewWindow { start_ms: 0, duration_ms: 30_000 });
+        assert_eq!(PreviewWindow::centered_with_duration(2_000, 10_000, PREVIEW_DEFAULT_DURATION_MS), PreviewWindow { start_ms: 0, duration_ms: 10_000 });
     }
 
     #[test]
     fn track_start_preview_has_two_second_preroll_and_thirty_seconds_after() {
-        assert_eq!(PreviewWindow::around_track_start(5_000, 60_000), PreviewWindow { start_ms: 3_000, duration_ms: 32_000 });
-        assert_eq!(PreviewWindow::around_track_start(1_000, 60_000), PreviewWindow { start_ms: 0, duration_ms: 31_000 });
-        assert_eq!(PreviewWindow::around_track_start(50_000, 60_000), PreviewWindow { start_ms: 48_000, duration_ms: 12_000 });
+        assert_eq!(PreviewWindow::around_track_start_with_duration(5_000, 60_000, PREVIEW_TRACK_DEFAULT_DURATION_MS), PreviewWindow { start_ms: 3_000, duration_ms: 32_000 });
+        assert_eq!(PreviewWindow::around_track_start_with_duration(1_000, 60_000, PREVIEW_TRACK_DEFAULT_DURATION_MS), PreviewWindow { start_ms: 0, duration_ms: 31_000 });
+        assert_eq!(PreviewWindow::around_track_start_with_duration(50_000, 60_000, PREVIEW_TRACK_DEFAULT_DURATION_MS), PreviewWindow { start_ms: 48_000, duration_ms: 12_000 });
     }
 
     #[test]

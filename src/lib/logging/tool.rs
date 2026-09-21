@@ -88,10 +88,6 @@ impl ToolLog {
         self.line(&format!("<- {} ({:.3}s)", what, at.elapsed().as_secs_f64()));
         out
     }
-
-    pub fn is_enabled(&self) -> bool {
-        self.file.is_some()
-    }
 }
 
 fn run_log_path(logfile: &str) -> String {
@@ -123,7 +119,6 @@ mod tests {
     #[test]
     fn a_disabled_log_is_inert() {
         let mut log = ToolLog::open(None);
-        assert!(!log.is_enabled());
         log.line("this goes nowhere");
         assert_eq!(log.step("work", || 21 * 2), 42);
     }
