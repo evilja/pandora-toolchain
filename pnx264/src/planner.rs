@@ -454,10 +454,6 @@ pub fn run_prefix_planner(config: PrefixPlannerConfig) -> Result<PlannerSummary,
     })
 }
 
-pub fn read_partial_plan(path: &Path) -> Result<crate::plan::BoundaryPlan, String> {
-    crate::plan::BoundaryPlan::read(path)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

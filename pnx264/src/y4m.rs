@@ -4,7 +4,7 @@
 // stdout, and y4m is that pipe's format. Reading is incremental so a worker can begin encoding
 // while ffmpeg is still decoding ahead of it.
 
-use std::io::{Read, Seek, SeekFrom};
+use std::io::Read;
 
 pub struct Y4mReader<R: Read> {
     src: R,
@@ -13,10 +13,6 @@ pub struct Y4mReader<R: Read> {
     pub fps_num: u32,
     pub fps_den: u32,
     frame: Vec<u8>,
-    // Byte offset of the first frame header, and the fixed per-frame stride, so a chunk worker
-    // can seek straight to its own range instead of decoding everything before it.
-    body_start: u64,
-    frame_stride: u64,
 }
 
 // Frame planes borrowed from the reader's internal buffer, valid until the next read.
@@ -72,15 +68,9 @@ impl<R: Read> Y4mReader<R> {
         }
         let ysize = width * height;
         let csize = width.div_ceil(2) * height.div_ceil(2);
-        // +1 for the newline terminating the FRAME marker. Frame headers may legally carry
-        // parameters, but nothing in this pipeline emits them; seek_to_frame re-validates the
-        // marker so a stream that does will fail loudly rather than decode garbage.
-        let frame_stride = (ysize + 2 * csize + "FRAME".len() + 1) as u64;
         Ok(Self {
             src, width, height, fps_num, fps_den,
             frame: vec![0u8; ysize + 2 * csize],
-            body_start: (hdr.len() + 1) as u64,
-            frame_stride,
         })
     }
 
@@ -102,15 +92,5 @@ impl<R: Read> Y4mReader<R> {
             stride_y: self.width,
             stride_c: self.width.div_ceil(2),
         }))
-    }
-}
-
-impl<R: Read + Seek> Y4mReader<R> {
-    // Position the reader at a frame index, for chunk workers that own one frame range each.
-    pub fn seek_to_frame(&mut self, index: u64) -> Result<(), String> {
-        self.src
-            .seek(SeekFrom::Start(self.body_start + index * self.frame_stride))
-            .map_err(|e| e.to_string())?;
-        Ok(())
     }
 }
