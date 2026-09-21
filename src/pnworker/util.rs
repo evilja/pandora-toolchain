@@ -39,7 +39,6 @@ pub enum CliParam {
     Literal(&'static str),
     JobId(&'static str),
     Path(&'static str),
-    Flag(&'static str),
     NegVer(&'static str),
     RepeatedPath(&'static str),
     // A flag and its value that are only passed when the caller supplied one: `--hls` is given to
@@ -129,7 +128,6 @@ pub fn tool_args(
     for param in params {
         match param {
             CliParam::Literal(s) => args.push(s.to_string()),
-            CliParam::Flag(s) => args.push(format!("--{}", s)),
             CliParam::JobId(prefix) => args.push(format!("{}{}", prefix, job_id)),
             CliParam::NegVer(v) => args.push(v.to_string()),
             CliParam::Path(key) => match paths.get(key) {
@@ -267,10 +265,6 @@ enum IntroGroupValue {
 }
 
 impl ConcatConfig {
-    pub fn load() -> Self {
-        ConcatConfig::load_kind(ConcatKind::Intro)
-    }
-
     // Only intros ever had the legacy file-list form, so only they are migrated on read. `outros.toml`
     // was born as a folder map and a parse failure there is a broken file, not an old one.
     pub fn load_kind(kind: ConcatKind) -> Self {

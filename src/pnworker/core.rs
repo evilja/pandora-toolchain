@@ -1988,7 +1988,6 @@ fn job_type_label(job_type: JobType) -> &'static str {
         JobType::GitSync => "gitsync",
         JobType::Probe => "probe",
         JobType::Pancode => "pancode",
-        JobType::Scrape => "scrape",
         JobType::Backup => "backup",
         JobType::BackupAll => "backupall",
         JobType::Keycode => "keycode",
@@ -2300,7 +2299,6 @@ fn publish_boot_demand(queue: &[Job]) {
         .map(|job| Demand {
             job_id: job.job_id,
             preset: crate::pnworker::link::spec::preset_name(&job.preset),
-            server: job.server_id,
         })
         .collect();
     crate::pnworker::boot::manager::publish_demand(demand);
@@ -4572,7 +4570,6 @@ pub enum JobType {
     GitSync = 004,
     Probe = 005,
     Pancode = 006,
-    Scrape = 007,
     Backup = 008,
     BackupAll = 009,
     Keycode = 010,
@@ -4646,7 +4643,6 @@ impl DriveDeleteRequest {
 pub struct HalfJob {
     pub author: u64,
     pub channel_id: u64,
-    pub requested_at: Duration,
     pub job_id: u64,
     pub job_type: JobType,
     pub frontend: Frontend,
@@ -4663,9 +4659,6 @@ impl HalfJob {
             author,
             channel_id,
             job_id,
-            requested_at: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or(Duration::from_secs(0)),
             job_type: JobType::Cancel,
             frontend: Frontend::None,
             any_author: false,
@@ -4694,9 +4687,6 @@ impl HalfJob {
             author,
             channel_id,
             job_id,
-            requested_at: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or(Duration::from_secs(0)),
             job_type: JobType::Hearts,
             frontend: Frontend::discord(context, msg),
             any_author: false,
@@ -4713,9 +4703,6 @@ impl HalfJob {
             author,
             channel_id,
             job_id,
-            requested_at: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or(Duration::from_secs(0)),
             job_type: JobType::Workers,
             frontend: Frontend::discord(context, msg),
             any_author: false,
@@ -4732,9 +4719,6 @@ impl HalfJob {
             author,
             channel_id,
             job_id,
-            requested_at: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or(Duration::from_secs(0)),
             job_type: JobType::GitSync,
             frontend: Frontend::discord(context, msg),
             any_author: false,
@@ -4754,9 +4738,6 @@ impl HalfJob {
             author,
             channel_id,
             job_id,
-            requested_at: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or(Duration::from_secs(0)),
             job_type: JobType::GitForce,
             frontend: Frontend::discord(context, msg),
             any_author: false,
@@ -4773,9 +4754,6 @@ impl HalfJob {
             author,
             channel_id,
             job_id,
-            requested_at: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or(Duration::from_secs(0)),
             job_type: JobType::GitQuery,
             frontend: Frontend::discord(context, msg),
             any_author: false,
@@ -4796,9 +4774,6 @@ impl HalfJob {
             author,
             channel_id,
             job_id,
-            requested_at: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or(Duration::from_secs(0)),
             job_type: JobType::Restart,
             frontend: Frontend::discord(context, msg),
             any_author: false,
@@ -4812,9 +4787,6 @@ impl HalfJob {
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_nanos() as u64)
                 .unwrap_or(0),
-            requested_at: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or(Duration::from_secs(0)),
             job_type: JobType::GitSync,
             frontend: Frontend::Web,
             any_author: false,
@@ -4923,8 +4895,6 @@ pub struct Job {
     pub frontend: Frontend,
     pub directory: PathBuf,
     pub ready: Stage,
-    pub probe_files: Option<Vec<(u64, String, u64)>>, // (index, name, size)
-    pub probe_torrent_path: Option<String>,           // saved .torrent path for later
     pub probe_job_id: Option<u64>,
     pub probe_file_index: Option<u64>,
     pub lang: String,
@@ -5113,8 +5083,6 @@ impl Job {
                 .join(format!("{}", job_id)),
             requested_at,
             ready: Stage::Queued,
-            probe_files: None,
-            probe_torrent_path: None,
             probe_job_id: None,
             probe_file_index: None,
             lang,
@@ -5219,8 +5187,6 @@ impl Job {
                 .join(format!("{}", job_id)),
             requested_at,
             ready: Stage::Queued,
-            probe_files: None,
-            probe_torrent_path: None,
             probe_job_id: None,
             probe_file_index: None,
             lang,

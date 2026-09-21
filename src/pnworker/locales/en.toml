@@ -14,22 +14,6 @@ args = 1
 text = ""
 args = 0
 
-[PROBE_TIMEOUT]
-text = "The selection expired after 3 minutes. Run `/probe` again."
-args = 0
-
-[GITSYNC_PROGRESS]
-text = "Stopping active work…"
-args = 0
-
-[GITSYNC_SUCCESS]
-text = "Source updated successfully. Pandora is restarting."
-args = 0
-
-[GITSYNC_FAIL]
-text = "The source update failed. Pandora is restarting anyway."
-args = 0
-
 [GITQUERY_BLOCKED]
 text = "A source update is waiting for current encodes to finish. New encode jobs are paused."
 args = 0
@@ -134,10 +118,6 @@ args = 1
 text = "{}"
 args = 1
 
-[PROBE_DONE]
-text = "Choose a file within 3 minutes."
-args = 0
-
 [PROBE_FAIL]
 text = "The torrent could not be inspected."
 args = 0
@@ -198,20 +178,12 @@ args = 0
 text = "The Studio preview rendered, but its MP4 attachment could not be prepared."
 args = 0
 
-[EMBED_TITLE]
-text = "{}"
-args = 1
-
 [EMBED_FOOTER]
 text = "Pandora Toolchain • v{}"
 args = 1
 
 [FIELD_JOBID]
 text = "Job ID"
-args = 0
-
-[FIELD_AUTHOR]
-text = "Requested by"
 args = 0
 
 [FIELD_WORKER]
@@ -224,10 +196,6 @@ args = 0
 
 [FIELD_PRESET]
 text = "Encode preset"
-args = 0
-
-[FIELD_TORRENT]
-text = "Torrent"
 args = 0
 
 [FIELD_SOURCE]
@@ -320,10 +288,6 @@ args = 0
 
 [FIELD_LANGUAGE]
 text = "Language"
-args = 0
-
-[FIELD_API_KEY]
-text = "Forgejo API key"
 args = 0
 
 [FIELD_GDRIVE]
@@ -442,46 +406,6 @@ args = 0
 text = "Cancelled"
 args = 0
 
-[PRESET_PSEUDOLOSSLESS_INTRO]
-text = "Pseudo-lossless CPU • intro"
-args = 0
-
-[PRESET_PSEUDOLOSSLESS_NOINTRO]
-text = "Pseudo-lossless CPU • no intro"
-args = 0
-
-[PRESET_GPU_INTRO]
-text = "Standard GPU • intro"
-args = 0
-
-[PRESET_GPU_NOINTRO]
-text = "Standard GPU • no intro"
-args = 0
-
-[PRESET_STANDARD_INTRO]
-text = "Standard CPU • intro"
-args = 0
-
-[PRESET_STANDARD_NOINTRO]
-text = "Standard CPU • no intro"
-args = 0
-
-[PRESET_VERYSLOW_INTRO]
-text = "Very slow CPU • intro"
-args = 0
-
-[PRESET_VERYSLOW_NOINTRO]
-text = "Very slow CPU • no intro"
-args = 0
-
-[PRESET_DUMMY]
-text = "Developer"
-args = 0
-
-[PRESET_COPY]
-text = "Video copy with mixed AAC audio"
-args = 0
-
 [JOB_TYPE_ENCODE]
 text = "🎬 Encode job"
 args = 0
@@ -596,10 +520,6 @@ args = 0
 
 [COMMAND_REPO_ATTACHED]
 text = "Anime attached"
-args = 0
-
-[COMMAND_SERVER_CONFIGURED]
-text = "Server configured"
 args = 0
 
 [COMMAND_SERVER_UPDATED]
@@ -754,36 +674,12 @@ args = 0
 text = "Have a video link and the matching subtitle file ready.\n1. Choose `/encode do`.\n2. In `torrent`, paste the video's link (a torrent, magnet, Google Drive, or direct video link). Despite its name, this box accepts more than torrents.\n3. In `subtitle`, attach your subtitle file, preferably `.ass`. Text files such as `.srt` also work, but conversion does not preserve a custom styled appearance.\n4. Send it. Pandora downloads, adds the subtitles, and uploads the result. Wait for the finished links in its progress message.\nExample: `/encode do torrent:<video link> subtitle:<your file>`\nUse this route when your link already points to the video you want."
 args = 0
 
-[TUTORIAL_1_PROBE_TITLE]
-text = "2 · Pick one video from a pack: /probe → /encode pan"
-args = 0
-
-[TUTORIAL_1_PROBE_BODY]
-text = "A pack is a download containing several files, such as a whole season.\n1. Run `/probe torrent:<pack link>` and wait for Pandora's file list.\n2. Find the episode you want. Copy the **Job ID** and that file's **index** exactly as shown. The index is a file number, not necessarily the episode number; it can be 0.\n3. Choose `/encode pan`, fill in `job_id` and `index`, and attach the matching file in `subtitle`.\nExample: `/encode pan job_id:<Job ID> index:0 subtitle:<your file>`\nPandora uses the chosen file, adds your subtitles, and returns the finished links. Keep the probe details handy; if the probe is no longer available, run `/probe` again."
-args = 0
-
-[TUTORIAL_1_TEAM_TITLE]
-text = "3 · Work as a team: /init → /job → /smartcode"
-args = 0
-
-[TUTORIAL_1_TEAM_BODY]
-text = "Use the same anime channel for all these steps.\n1. **Set up once:** `/init mal:<MyAnimeList anime link>` creates a shared project folder (a repository) and connects it to this channel. Add `season` if needed; it defaults to 1. If the channel is already set up, skip this step.\n2. **Save subtitles:** `/job type:TL episode:1 subtitle:<your file>` saves episode 1's translation. `TLC` saves a checked translation and replaces TL. `TS` saves the on-screen signs and lettering. Repeat for each episode and each updated file. `/job` only saves subtitles; it does not make a video.\n3. **Make the video:** `/smartcode do episode:1 link:<video link>` combines the saved translation and signs, adds them to the video, and uploads the result. Wait for the finished links. Later you can omit `link` for this episode because Pandora remembers it.\nFor a pack, first use `/probe`, then `/smartcode pan episode:1 job_id:<Job ID> index:<file index>`.\nOptional: `/smartcode preview episode:1 link:<video link>` makes sample pictures to check subtitle placement before encoding. Repeat steps 2–3 for the next episode."
-args = 0
-
 [TUTORIAL_PREVIOUS]
 text = "Previous"
 args = 0
 
 [TUTORIAL_NEXT]
 text = "Next"
-args = 0
-
-[TUTORIAL_1_SAVED_TITLE]
-text = "You only need to give the link once"
-args = 0
-
-[TUTORIAL_1_SAVED_BODY]
-text = "Already made episode 1 with `/smartcode`? Pandora remembers where that episode’s video comes from. After fixing its subtitles with `/job`, simply run `/smartcode do episode:1` again — no need to hunt down and paste the same link. This is remembered separately for each episode in this channel. Give a new episode its own link the first time. If you want to replace the source video, include the new `link`. For a pack saved with `/smartcode pan`, use `/smartcode pan episode:1` again; Pandora also remembers the selected file. If the saved probe has expired, run `/probe` again and supply its new Job ID and index."
 args = 0
 
 [TUTORIAL_1_PACK_TITLE]
@@ -816,22 +712,6 @@ args = 0
 
 [TUTORIAL_ADMIN_START_BODY]
 text = "Run `/configure` in the channel where you want to set up the server. It walks you through settings, intro/outro videos, an ASS watermark, and a picture logo. **Enter details** opens a private form. Leave individual boxes empty to keep their values, or use **Skip** for the whole step. Each saved step takes effect immediately; **Finish** stops without undoing it. There is one setup per server, and it expires after 10 idle minutes. Media attachments are posted in that channel, so other members can see them. Tokens belong only in the private form. `/configure` and `/edit` require Pandora Admin access and Discord Server Administrator permission; Witch can bypass the Discord permission check. Reading this guide does not grant access."
-args = 0
-
-[TUTORIAL_ADMIN_INIT_TITLE]
-text = "What /init needs"
-args = 0
-
-[TUTORIAL_ADMIN_INIT_BODY]
-text = "Before `/init`, fill in **forgejo** and **api_key** in the repository step. Everything about intros, logos and delivery can wait.\n• `forgejo`: open your team’s organization page on your Forgejo website and copy its URL, for example `https://git.example.com/MyTeam`. Include `MyTeam`; the website address alone is not enough. Ask the site owner to create an organization and give the token’s account permission to create repositories there.\n• `api_key`: sign in to that account, open Settings → Applications (`/user/settings/applications`), and generate a token. Give it `write:organization` and `write:repository` for Pandora’s organization/repository operations. Copy it into the private setup form. See the [Forgejo token guide](https://forgejo.org/docs/latest/user/authentication/token-scope/).\nThen go to the anime’s channel and run `/init mal:<MyAnimeList anime page>`; add `season:2` for season 2. Pandora creates a public project and episode folders. `language` only chooses the bot’s language. `announcement_channel` is for announcements; neither replaces the organization or token."
-args = 0
-
-[TUTORIAL_ADMIN_EDIT_TITLE]
-text = "Everyday /edit settings"
-args = 0
-
-[TUTORIAL_ADMIN_EDIT_BODY]
-text = "Use `/edit` later to change just a few settings. Omitted fields stay as they are.\n• `language`: EN, TR or JP. `forgejo` and `api_key`: the organization URL and token described on the previous page; `-` clears either.\n• `announcement_channel:true`: use the channel you are typing in for announcements.\n• `preset`: how the video is encoded. Start with `standard`; type in the field to see this installation’s choices. GPU/AV1 need suitable hardware.\n• `wrapstyle`: how subtitles break long lines. `dont_touch` preserves the subtitle author’s choice. Modes 0/3 balance lines, 1 wraps at the edge, 2 avoids automatic wrapping.\n• `concat`: intro group; `outro`: ending group. Pick names installed with `/touchintro` or `/touchoutro`; `-` disables one.\n• `channel_rename`: whether `/init` and `/attach` rename anime channels (default true).\n• `merge_release_only`: true makes `/merge` return the subtitle file directly (default false). None of these optional choices is needed to create a project with `/init`."
 args = 0
 
 [TUTORIAL_ADMIN_DELIVERY_TITLE]
@@ -918,10 +798,6 @@ args = 0
 text = "Setup finished. Saved settings are kept; skipped fields are unchanged. You can adjust them later with /edit and the media commands. See /tutorial admin for the full guide."
 args = 0
 
-[CONFIG_INIT_MISSING]
-text = "Before /init can create a project, add both the organization URL (forgejo) and API token (api_key). Optional branding can stay skipped."
-args = 0
-
 [CONFIG_INIT_READY]
 text = "The organization URL and token are saved. You can try /init in an anime channel. The account still needs permission to create repositories there; setup does not test that permission."
 args = 0
@@ -932,14 +808,6 @@ args = 0
 
 [CONFIG_BASICS_BODY]
 text = "Choose `language`: EN (English), TR (Türkçe), JP (日本語). Set `announcement_channel` to true to use this channel for announcements, or false to clear the announcement channel. Empty means keep it. On a new server the default language is EN. This setup closes after 10 idle minutes. See /tutorial admin for help."
-args = 0
-
-[CONFIG_REPO_TITLE]
-text = "Connect your team’s project folder"
-args = 0
-
-[CONFIG_REPO_BODY]
-text = "For /init, enter `forgejo`: your organization page, e.g. https://git.example.com/MyTeam (include MyTeam). Enter `api_key`: a token from that account’s Settings → Applications, with write:organization and write:repository. That account must be allowed to create repositories in the organization. Paste the token only in this private form; it is never displayed back. Empty boxes keep existing values; `-` clears one. If you do not have these yet, skip and ask your Forgejo administrator. /tutorial admin explains the steps."
 args = 0
 
 [CONFIG_DELIVERY_TITLE]

@@ -44,7 +44,9 @@ The setup wizard uses `CONFIG_*` keys for its steps, navigation, validation and 
 `TUTORIAL_ADMIN_*` supplies the paged administrator guide; `TUTORIAL_1_RECALL_*` explains reusing
 episode links. `TUTORIAL_1_PACK_*`, `TUTORIAL_1_TEAMWORK_*` and `TUTORIAL_1_RECALL_*` replaced
 `TUTORIAL_1_PROBE_*`, `TUTORIAL_1_TEAM_*` and `TUTORIAL_1_SAVED_*` when `/encode pan` and
-`/smartcode pan` were folded into `do`; the old keys stay in the locale files unrendered.
+`/smartcode pan` were folded into `do`. The old keys, like every other id no code renders, are gone
+from the built-in tables; startup only ever adds keys, so a runtime locale file that already holds
+them keeps them, unrendered.
 `PICK_PROMPT` and `PICK_TIMEOUT` are the question a job asks about a pack and what it says when
 nobody answers; `COMMAND_SOURCE_PICK` titles the same question when `/source` asks it, and `BATCH_PICK_PROMPT` asks
 which files of a pack a subtitle archive is for. `JOB_PICK_INVALID`, `JOB_PICK_REQUIRED`, `JOB_PICK_NONE` and `JOB_PICK_DEFAULTED` belong to the `job` option of the publishing commands and `/catlogs`: a value that is no job, a missing required job, a channel with no job to default to, and the line naming the job that was assumed. These are new keys so existing runtime locale files receive the added guidance

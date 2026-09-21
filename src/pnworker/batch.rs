@@ -204,7 +204,6 @@ fn base_batch_child(parent: &Job, entry: &BatchEntry) -> Job {
     child.batch_parent = Some(parent.job_id);
     child.probe_job_id = None;
     child.probe_file_index = Some(entry.file_index);
-    child.probe_files = None;
     child.attachment = entry.subtitle.clone();
     child.acix = None;
     child.keep = None;

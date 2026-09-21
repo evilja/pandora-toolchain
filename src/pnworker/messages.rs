@@ -15,10 +15,6 @@ pub const QUEUE_TOO_LONG: &str = "QUEUE_TOO_LONG";
 pub const QUEUED: &str = "QUEUED";
 pub const JOB_SETUP_FAIL: &str = "JOB_SETUP_FAIL";
 pub const JOB_CANCELLED: &str = "JOB_CANCELLED";
-pub const PROBE_TIMEOUT: &str = "PROBE_TIMEOUT";
-pub const GITSYNC_PROGRESS: &str = "GITSYNC_PROGRESS";
-pub const GITSYNC_SUCCESS: &str = "GITSYNC_SUCCESS";
-pub const GITSYNC_FAIL: &str = "GITSYNC_FAIL";
 pub const GITQUERY_BLOCKED: &str = "GITQUERY_BLOCKED";
 pub const RESTART_PROGRESS: &str = "RESTART_PROGRESS";
 // `/build-ffmpeg`: the build runs in the background and edits its own message when it ends.
@@ -70,7 +66,6 @@ pub const KEEP_DONE: &str = "KEEP_DONE";
 pub const KEEP_FAIL: &str = "KEEP_FAIL";
 pub const KEYCODE_WAIT: &str = "KEYCODE_WAIT";
 pub const KEYCODE_FAIL: &str = "KEYCODE_FAIL";
-pub const PROBE_DONE: &str = "PROBE_DONE";
 pub const PROBE_FAIL: &str = "PROBE_FAIL";
 pub const PROBE_ROW: &str = "PROBE_ROW";
 pub const PROBE_PAGE: &str = "PROBE_PAGE";
@@ -90,14 +85,11 @@ pub const STUDIO_PREVIEW_FAIL: &str = "STUDIO_PREVIEW_FAIL";
 pub const PREVIEW_ATTACHMENT_REJECTED: &str = "PREVIEW_ATTACHMENT_REJECTED";
 pub const PREVIEW_ATTACHMENT_MISSING: &str = "PREVIEW_ATTACHMENT_MISSING";
 pub const STUDIO_PREVIEW_ATTACHMENT_MISSING: &str = "STUDIO_PREVIEW_ATTACHMENT_MISSING";
-pub const EMBED_TITLE: &str = "EMBED_TITLE";
 pub const EMBED_FOOTER: &str = "EMBED_FOOTER";
 pub const FIELD_JOBID: &str = "FIELD_JOBID";
-pub const FIELD_AUTHOR: &str = "FIELD_AUTHOR";
 pub const FIELD_WORKER: &str = "FIELD_WORKER";
 pub const FIELD_STATUS: &str = "FIELD_STATUS";
 pub const FIELD_PRESET: &str = "FIELD_PRESET";
-pub const FIELD_TORRENT: &str = "FIELD_TORRENT";
 pub const FIELD_SOURCE: &str = "FIELD_SOURCE";
 pub const FIELD_PROGRESS: &str = "FIELD_PROGRESS";
 pub const FIELD_WARNINGS: &str = "FIELD_WARNINGS";
@@ -121,7 +113,6 @@ pub const FIELD_SLUG: &str = "FIELD_SLUG";
 pub const FIELD_KIND: &str = "FIELD_KIND";
 pub const FIELD_EPISODES: &str = "FIELD_EPISODES";
 pub const FIELD_LANGUAGE: &str = "FIELD_LANGUAGE";
-pub const FIELD_API_KEY: &str = "FIELD_API_KEY";
 pub const FIELD_GDRIVE: &str = "FIELD_GDRIVE";
 pub const FIELD_GDRIVE_ANONYMOUS: &str = "FIELD_GDRIVE_ANONYMOUS";
 pub const FIELD_WRAPSTYLE: &str = "FIELD_WRAPSTYLE";
@@ -151,16 +142,6 @@ pub const STAGE_UPLOADED: &str = "STAGE_UPLOADED";
 pub const STAGE_FAILED: &str = "STAGE_FAILED";
 pub const STAGE_DECLINED: &str = "STAGE_DECLINED";
 pub const STAGE_CANCELLED: &str = "STAGE_CANCELLED";
-pub const PRESET_PSEUDOLOSSLESS_INTRO: &str = "PRESET_PSEUDOLOSSLESS_INTRO";
-pub const PRESET_PSEUDOLOSSLESS_NOINTRO: &str = "PRESET_PSEUDOLOSSLESS_NOINTRO";
-pub const PRESET_GPU_INTRO: &str = "PRESET_GPU_INTRO";
-pub const PRESET_GPU_NOINTRO: &str = "PRESET_GPU_NOINTRO";
-pub const PRESET_STANDARD_INTRO: &str = "PRESET_STANDARD_INTRO";
-pub const PRESET_STANDARD_NOINTRO: &str = "PRESET_STANDARD_NOINTRO";
-pub const PRESET_VERYSLOW_INTRO: &str = "PRESET_VERYSLOW_INTRO";
-pub const PRESET_VERYSLOW_NOINTRO: &str = "PRESET_VERYSLOW_NOINTRO";
-pub const PRESET_DUMMY: &str = "PRESET_DUMMY";
-pub const PRESET_COPY: &str = "PRESET_COPY";
 pub const JOB_TYPE_ENCODE: &str = "JOB_TYPE_ENCODE";
 pub const JOB_TYPE_PANCODE: &str = "JOB_TYPE_PANCODE";
 pub const JOB_TYPE_PROBE: &str = "JOB_TYPE_PROBE";
@@ -192,7 +173,6 @@ pub const COMMAND_FILE_READY: &str = "COMMAND_FILE_READY";
 pub const COMMAND_CHANNEL_DETACHED: &str = "COMMAND_CHANNEL_DETACHED";
 pub const COMMAND_REPO_DELETED: &str = "COMMAND_REPO_DELETED";
 pub const COMMAND_REPO_ATTACHED: &str = "COMMAND_REPO_ATTACHED";
-pub const COMMAND_SERVER_CONFIGURED: &str = "COMMAND_SERVER_CONFIGURED";
 pub const COMMAND_SERVER_UPDATED: &str = "COMMAND_SERVER_UPDATED";
 pub const COMMAND_FONT_CHECK: &str = "COMMAND_FONT_CHECK";
 pub const COMMAND_LOGS_READY: &str = "COMMAND_LOGS_READY";
@@ -754,22 +734,12 @@ pub const TUTORIAL_1_ENCODE_TITLE: &str = "TUTORIAL_1_ENCODE_TITLE";
 
 pub const TUTORIAL_1_ENCODE_BODY: &str = "TUTORIAL_1_ENCODE_BODY";
 
-pub const TUTORIAL_1_PROBE_TITLE: &str = "TUTORIAL_1_PROBE_TITLE";
 
-pub const TUTORIAL_1_PROBE_BODY: &str = "TUTORIAL_1_PROBE_BODY";
 
-pub const TUTORIAL_1_TEAM_TITLE: &str = "TUTORIAL_1_TEAM_TITLE";
 
-pub const TUTORIAL_1_TEAM_BODY: &str = "TUTORIAL_1_TEAM_BODY";
 
-pub const TUTORIAL_1_SAVED_TITLE: &str = "TUTORIAL_1_SAVED_TITLE";
-pub const TUTORIAL_1_SAVED_BODY: &str = "TUTORIAL_1_SAVED_BODY";
 pub const TUTORIAL_ADMIN_START_TITLE: &str = "TUTORIAL_ADMIN_START_TITLE";
 pub const TUTORIAL_ADMIN_START_BODY: &str = "TUTORIAL_ADMIN_START_BODY";
-pub const TUTORIAL_ADMIN_INIT_TITLE: &str = "TUTORIAL_ADMIN_INIT_TITLE";
-pub const TUTORIAL_ADMIN_INIT_BODY: &str = "TUTORIAL_ADMIN_INIT_BODY";
-pub const TUTORIAL_ADMIN_EDIT_TITLE: &str = "TUTORIAL_ADMIN_EDIT_TITLE";
-pub const TUTORIAL_ADMIN_EDIT_BODY: &str = "TUTORIAL_ADMIN_EDIT_BODY";
 pub const TUTORIAL_ADMIN_DELIVERY_TITLE: &str = "TUTORIAL_ADMIN_DELIVERY_TITLE";
 pub const TUTORIAL_ADMIN_DELIVERY_BODY: &str = "TUTORIAL_ADMIN_DELIVERY_BODY";
 pub const TUTORIAL_ADMIN_MEDIA_TITLE: &str = "TUTORIAL_ADMIN_MEDIA_TITLE";
@@ -792,12 +762,9 @@ pub const CONFIG_LOGO_MISSING: &str = "CONFIG_LOGO_MISSING";
 pub const CONFIG_MEDIA_INVALID: &str = "CONFIG_MEDIA_INVALID";
 pub const CONFIG_PROCESSING: &str = "CONFIG_PROCESSING";
 pub const CONFIG_DONE: &str = "CONFIG_DONE";
-pub const CONFIG_INIT_MISSING: &str = "CONFIG_INIT_MISSING";
 pub const CONFIG_INIT_READY: &str = "CONFIG_INIT_READY";
 pub const CONFIG_BASICS_TITLE: &str = "CONFIG_BASICS_TITLE";
 pub const CONFIG_BASICS_BODY: &str = "CONFIG_BASICS_BODY";
-pub const CONFIG_REPO_TITLE: &str = "CONFIG_REPO_TITLE";
-pub const CONFIG_REPO_BODY: &str = "CONFIG_REPO_BODY";
 pub const CONFIG_DELIVERY_TITLE: &str = "CONFIG_DELIVERY_TITLE";
 pub const CONFIG_DELIVERY_BODY: &str = "CONFIG_DELIVERY_BODY";
 pub const CONFIG_ENCODE_TITLE: &str = "CONFIG_ENCODE_TITLE";
@@ -861,8 +828,6 @@ mod tests {
             frontend: Frontend::None,
             directory: PathBuf::from("DB/work/4"),
             ready: Stage::Queued,
-            probe_files: None,
-            probe_torrent_path: None,
             probe_job_id: None,
             probe_file_index: None,
             lang: "en".to_string(),

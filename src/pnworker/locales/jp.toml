@@ -14,22 +14,6 @@ args = 1
 text = ""
 args = 0
 
-[PROBE_TIMEOUT]
-text = "選択期限の3分を過ぎました。もう一度 `/probe` を実行してください。"
-args = 0
-
-[GITSYNC_PROGRESS]
-text = "実行中の処理を停止しています…"
-args = 0
-
-[GITSYNC_SUCCESS]
-text = "ソースを更新しました。Pandoraを再起動します。"
-args = 0
-
-[GITSYNC_FAIL]
-text = "ソースを更新できませんでした。Pandoraは再起動します。"
-args = 0
-
 [GITQUERY_BLOCKED]
 text = "ソース更新は現在のエンコード完了を待っています。新しいエンコードは一時停止中です。"
 args = 0
@@ -134,10 +118,6 @@ args = 1
 text = "{}"
 args = 1
 
-[PROBE_DONE]
-text = "3分以内にファイルを選択してください。"
-args = 0
-
 [PROBE_FAIL]
 text = "Torrentを検査できませんでした。"
 args = 0
@@ -198,20 +178,12 @@ args = 0
 text = "Studioプレビューは完成しましたが、MP4添付ファイルを準備できませんでした。"
 args = 0
 
-[EMBED_TITLE]
-text = "{}"
-args = 1
-
 [EMBED_FOOTER]
 text = "Pandora Toolchain • v{}"
 args = 1
 
 [FIELD_JOBID]
 text = "ジョブID"
-args = 0
-
-[FIELD_AUTHOR]
-text = "依頼者"
 args = 0
 
 [FIELD_WORKER]
@@ -224,10 +196,6 @@ args = 0
 
 [FIELD_PRESET]
 text = "エンコードプリセット"
-args = 0
-
-[FIELD_TORRENT]
-text = "Torrent"
 args = 0
 
 [FIELD_SOURCE]
@@ -320,10 +288,6 @@ args = 0
 
 [FIELD_LANGUAGE]
 text = "言語"
-args = 0
-
-[FIELD_API_KEY]
-text = "Forgejo APIキー"
 args = 0
 
 [FIELD_GDRIVE]
@@ -442,46 +406,6 @@ args = 0
 text = "キャンセル済み"
 args = 0
 
-[PRESET_PSEUDOLOSSLESS_INTRO]
-text = "疑似ロスレス CPU • イントロあり"
-args = 0
-
-[PRESET_PSEUDOLOSSLESS_NOINTRO]
-text = "疑似ロスレス CPU • イントロなし"
-args = 0
-
-[PRESET_GPU_INTRO]
-text = "標準 GPU • イントロあり"
-args = 0
-
-[PRESET_GPU_NOINTRO]
-text = "標準 GPU • イントロなし"
-args = 0
-
-[PRESET_STANDARD_INTRO]
-text = "標準 CPU • イントロあり"
-args = 0
-
-[PRESET_STANDARD_NOINTRO]
-text = "標準 CPU • イントロなし"
-args = 0
-
-[PRESET_VERYSLOW_INTRO]
-text = "超低速 CPU • イントロあり"
-args = 0
-
-[PRESET_VERYSLOW_NOINTRO]
-text = "超低速 CPU • イントロなし"
-args = 0
-
-[PRESET_DUMMY]
-text = "開発用"
-args = 0
-
-[PRESET_COPY]
-text = "映像コピー + AACミックス音声"
-args = 0
-
 [JOB_TYPE_ENCODE]
 text = "🎬 エンコードジョブ"
 args = 0
@@ -596,10 +520,6 @@ args = 0
 
 [COMMAND_REPO_ATTACHED]
 text = "アニメを関連付けました"
-args = 0
-
-[COMMAND_SERVER_CONFIGURED]
-text = "サーバーを設定しました"
 args = 0
 
 [COMMAND_SERVER_UPDATED]
@@ -754,36 +674,12 @@ args = 0
 text = "動画のリンクと、その動画に合った字幕ファイルを用意します。\n1. `/encode do` を選びます。\n2. `torrent` に動画のリンクを貼ります。torrent、magnet、Google Drive、動画への直接リンクが使えます。欄の名前はtorrentですが、それ以外も利用できます。\n3. `subtitle` に字幕を添付します。おすすめは `.ass` です。`.srt` などのテキスト字幕も使えますが、変換すると独自の装飾は保たれません。\n4. 送信します。Pandoraがダウンロード、字幕の焼き付け、アップロードを行います。進捗メッセージに完成リンクが出るまで待ちます。\n例：`/encode do torrent:<動画リンク> subtitle:<字幕ファイル>`\nリンク先が使いたい動画そのものである場合に、この方法を選びます。"
 args = 0
 
-[TUTORIAL_1_PROBE_TITLE]
-text = "2 · まとめパックから1本選ぶ：/probe → /encode pan"
-args = 0
-
-[TUTORIAL_1_PROBE_BODY]
-text = "パックとは、1シーズン分など複数のファイルが入ったダウンロードです。\n1. `/probe torrent:<パックのリンク>` を実行し、ファイル一覧を待ちます。\n2. 使いたい話を探し、**ジョブID（Job ID）** とそのファイルの **index** を表示どおりに控えます。indexはファイルの番号で、話数とは限りません。0の場合もあります。\n3. `/encode pan` を選び、`job_id` と `index` を入力して、その話に合った字幕を `subtitle` に添付します。\n例：`/encode pan job_id:<ジョブID> index:0 subtitle:<字幕ファイル>`\nPandoraが選んだ動画に字幕を焼き付け、完成リンクを返します。Probeの情報は控えておき、結果が利用できなくなった場合は `/probe` をやり直してください。"
-args = 0
-
-[TUTORIAL_1_TEAM_TITLE]
-text = "3 · チームで作業：/init → /job → /smartcode"
-args = 0
-
-[TUTORIAL_1_TEAM_BODY]
-text = "すべて同じアニメ用チャンネルで行います。\n1. **最初に一度だけ準備：** `/init mal:<MyAnimeListのアニメリンク>` で共有の作業フォルダー（リポジトリ）を作り、このチャンネルに接続します。必要なら `season` でシーズン番号を指定します。初期値は1です。設定済みのチャンネルなら、この手順は不要です。\n2. **字幕を保存：** `/job type:TL episode:1 subtitle:<字幕ファイル>` で第1話の翻訳を保存します。`TLC` は確認済みの翻訳でTLを置き換え、`TS` は看板などの画面上の文字用字幕を保存します。各話や修正版ごとに繰り返します。`/job` は字幕を保存するだけで、動画は作りません。\n3. **動画を作成：** `/smartcode do episode:1 link:<動画リンク>` で保存した翻訳と看板字幕をまとめて動画に焼き付け、アップロードします。完成リンクを待ってください。リンクは記憶されるため、同じ話では次回から `link` を省略できます。\nパックを使う場合は、先に `/probe` を実行し、続けて `/smartcode pan episode:1 job_id:<ジョブID> index:<ファイル番号>` を使います。\n任意：`/smartcode preview episode:1 link:<動画リンク>` で確認用の画像を作り、動画を作成する前に字幕の位置を確認できます。次の話も手順2〜3を繰り返します。"
-args = 0
-
 [TUTORIAL_PREVIOUS]
 text = "前へ"
 args = 0
 
 [TUTORIAL_NEXT]
 text = "次へ"
-args = 0
-
-[TUTORIAL_1_SAVED_TITLE]
-text = "リンクを教えるのは一度だけ"
-args = 0
-
-[TUTORIAL_1_SAVED_BODY]
-text = "第1話をすでに `/smartcode` で作りましたか？ Pandoraはその話の動画の場所を覚えています。`/job` で字幕を直したら、もう一度 `/smartcode do episode:1` と入力するだけ。同じリンクを探して貼り直す必要はありません。この情報は、このチャンネルの各話ごとに保存されます。新しい話には初回だけリンクを指定してください。元の動画を変更したいときは、新しい `link` を指定します。パックを `/smartcode pan` で保存した場合は `/smartcode pan episode:1` で再実行でき、選んだファイルも記憶されています。保存したprobeが利用できなくなった場合は `/probe` をやり直し、新しいジョブIDとindexを指定してください。"
 args = 0
 
 [TUTORIAL_1_PACK_TITLE]
@@ -816,22 +712,6 @@ args = 0
 
 [TUTORIAL_ADMIN_START_BODY]
 text = "設定に使うチャンネルで `/configure` を実行します。設定項目、冒頭・末尾の動画、ASS透かし、画像ロゴを順番に案内します。**入力する**で非公開フォームを開きます。空欄は現在の値を維持し、**スキップ**はその手順全体を飛ばします。保存した設定はすぐ反映され、**終了**しても保存済みの内容は残ります。設定はサーバーごとに1人ずつ行い、10分間操作がないと終了します。メディアの添付はチャンネルに投稿され、他のメンバーにも見えます。トークンは非公開フォームだけに入力してください。`/configure` と `/edit` にはPandoraのAdmin権限とDiscordのサーバー管理者権限が必要です。WitchはDiscord権限の確認を省略できます。このガイドを読むだけでは権限は付与されません。"
-args = 0
-
-[TUTORIAL_ADMIN_INIT_TITLE]
-text = "/init に必要なもの"
-args = 0
-
-[TUTORIAL_ADMIN_INIT_BODY]
-text = "`/init` の前に、リポジトリの手順で **forgejo** と **api_key** を設定します。冒頭動画、ロゴ、配信先の設定は後回しにできます。\n• `forgejo`：Forgejoでチームの組織ページを開き、URLをコピーします。例：`https://git.example.com/MyTeam`。`MyTeam` まで必要で、サイトのアドレスだけでは足りません。サイトの管理者に組織の作成と、トークン所有者へのリポジトリ作成権限を依頼してください。\n• `api_key`：そのアカウントでログインし、設定 → アプリケーション（`/user/settings/applications`）でトークンを作成します。Pandoraの組織・リポジトリ操作用に `write:organization` と `write:repository` を付け、非公開の設定フォームに貼り付けます。[Forgejoのトークンガイド](https://forgejo.org/docs/latest/user/authentication/token-scope/)。\n次にアニメのチャンネルで `/init mal:<MyAnimeListのアニメページ>` を実行します。第2シーズンなら `season:2` を追加します。公開プロジェクトと各話のフォルダーが作られます。`language` は表示言語、`announcement_channel` は告知先です。組織やトークンの代わりにはなりません。"
-args = 0
-
-[TUTORIAL_ADMIN_EDIT_TITLE]
-text = "日常の /edit 設定"
-args = 0
-
-[TUTORIAL_ADMIN_EDIT_BODY]
-text = "後から一部だけ変更するときは `/edit` を使います。省略した項目は変わりません。\n• `language`：EN、TR、JP。`forgejo` と `api_key` は前のページで説明した組織URLとトークンです。`-` で消去できます。\n• `announcement_channel:true`：今いるチャンネルを告知先にします。\n• `preset`：動画の変換方式です。まずは `standard`。入力すると、この環境の候補が出ます。GPU/AV1には対応する機器が必要です。\n• `wrapstyle`：長い字幕の改行方式です。`dont_touch` は制作者の設定を維持。0/3は行を均等にし、1は端で折り返し、2は自動改行しません。\n• `concat` は冒頭、`outro` は末尾の動画グループ。`/touchintro`・`/touchoutro` で登録した名前を選びます。`-` で無効にできます。\n• `channel_rename`：`/init`・`/attach` がアニメのチャンネル名を変更するか。初期値はtrue。\n• `merge_release_only`：trueなら `/merge` が字幕ファイルを直接返します。初期値はfalse。これらは `/init` でプロジェクトを作るための必須設定ではありません。"
 args = 0
 
 [TUTORIAL_ADMIN_DELIVERY_TITLE]
@@ -918,10 +798,6 @@ args = 0
 text = "設定を終了しました。保存した設定は残り、スキップした項目は変わりません。後から /edit やメディア用コマンドで変更できます。詳しくは /tutorial admin。"
 args = 0
 
-[CONFIG_INIT_MISSING]
-text = "/init でプロジェクトを作る前に、組織URL（forgejo）とAPIトークン（api_key）の両方を設定してください。装飾は省略できます。"
-args = 0
-
 [CONFIG_INIT_READY]
 text = "組織URLとトークンは保存されています。アニメのチャンネルで /init を試せます。アカウントには組織内でリポジトリを作る権限も必要です。設定時にはその権限をテストしません。"
 args = 0
@@ -932,14 +808,6 @@ args = 0
 
 [CONFIG_BASICS_BODY]
 text = "`language` を選択：EN（英語）、TR（トルコ語）、JP（日本語）。`announcement_channel` はtrueでこのチャンネルを告知先にし、falseで解除します。空欄は維持。新しいサーバーの初期言語はENです。10分間操作がないと設定を終了します。ヘルプ：/tutorial admin。"
-args = 0
-
-[CONFIG_REPO_TITLE]
-text = "チームの作業場所を接続"
-args = 0
-
-[CONFIG_REPO_BODY]
-text = "/init 用に `forgejo`：組織ページ（例：https://git.example.com/MyTeam、MyTeamまで必要）を入力します。`api_key`：そのアカウントの設定 → アプリケーションで作った、write:organization と write:repository 権限付きトークンです。アカウントには組織内でリポジトリを作る権限が必要です。トークンはこの非公開フォームだけに貼り付け、返信には表示されません。空欄は維持、`-` は消去。まだない場合はスキップしてForgejo管理者に相談してください。詳しくは /tutorial admin。"
 args = 0
 
 [CONFIG_DELIVERY_TITLE]

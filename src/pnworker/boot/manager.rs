@@ -41,7 +41,6 @@ const STARTING_GRACE_SECS: u64 = 900;
 pub struct Demand {
     pub job_id: u64,
     pub preset: String,
-    pub server: Option<u64>,
 }
 
 fn demand_store() -> &'static Mutex<Vec<Demand>> {
@@ -585,7 +584,6 @@ mod tests {
         Demand {
             job_id,
             preset: preset.to_string(),
-            server: None,
         }
     }
 
@@ -647,7 +645,6 @@ mod tests {
         publish_demand(vec![Demand {
             job_id: 7,
             preset: "x264-1080p".into(),
-            server: None,
         }]);
         assert_eq!(current_demand().len(), 1);
         publish_demand(Vec::new());

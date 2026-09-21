@@ -292,8 +292,6 @@ mod tests {
             frontend: Frontend::None,
             directory,
             ready: Stage::Downloading,
-            probe_files: None,
-            probe_torrent_path: None,
             probe_job_id: None,
             probe_file_index: None,
             lang: "EN".to_string(),

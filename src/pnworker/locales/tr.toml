@@ -14,22 +14,6 @@ args = 1
 text = ""
 args = 0
 
-[PROBE_TIMEOUT]
-text = "Seçim 3 dakika sonra zaman aşımına uğradı. `/probe` komutunu yeniden çalıştırın."
-args = 0
-
-[GITSYNC_PROGRESS]
-text = "Aktif işler durduruluyor…"
-args = 0
-
-[GITSYNC_SUCCESS]
-text = "Kaynak kod güncellendi. Pandora yeniden başlatılıyor."
-args = 0
-
-[GITSYNC_FAIL]
-text = "Kaynak kod güncellenemedi. Pandora yine de yeniden başlatılıyor."
-args = 0
-
 [GITQUERY_BLOCKED]
 text = "Kaynak güncellemesi mevcut encode işlerinin bitmesini bekliyor. Yeni encode işleri duraklatıldı."
 args = 0
@@ -134,10 +118,6 @@ args = 1
 text = "{}"
 args = 1
 
-[PROBE_DONE]
-text = "3 dakika içinde bir dosya seçin."
-args = 0
-
 [PROBE_FAIL]
 text = "Torrent incelenemedi."
 args = 0
@@ -198,20 +178,12 @@ args = 0
 text = "Studio önizlemesi hazırlandı ancak MP4 eki hazırlanamadı."
 args = 0
 
-[EMBED_TITLE]
-text = "{}"
-args = 1
-
 [EMBED_FOOTER]
 text = "Pandora Toolchain • v{}"
 args = 1
 
 [FIELD_JOBID]
 text = "İş numarası"
-args = 0
-
-[FIELD_AUTHOR]
-text = "İsteyen"
 args = 0
 
 [FIELD_WORKER]
@@ -224,10 +196,6 @@ args = 0
 
 [FIELD_PRESET]
 text = "Encode ayarı"
-args = 0
-
-[FIELD_TORRENT]
-text = "Torrent"
 args = 0
 
 [FIELD_SOURCE]
@@ -320,10 +288,6 @@ args = 0
 
 [FIELD_LANGUAGE]
 text = "Dil"
-args = 0
-
-[FIELD_API_KEY]
-text = "Forgejo API anahtarı"
 args = 0
 
 [FIELD_GDRIVE]
@@ -442,46 +406,6 @@ args = 0
 text = "İptal edildi"
 args = 0
 
-[PRESET_PSEUDOLOSSLESS_INTRO]
-text = "Kayıpsıza yakın CPU • introlu"
-args = 0
-
-[PRESET_PSEUDOLOSSLESS_NOINTRO]
-text = "Kayıpsıza yakın CPU • introsuz"
-args = 0
-
-[PRESET_GPU_INTRO]
-text = "Standart GPU • introlu"
-args = 0
-
-[PRESET_GPU_NOINTRO]
-text = "Standart GPU • introsuz"
-args = 0
-
-[PRESET_STANDARD_INTRO]
-text = "Standart CPU • introlu"
-args = 0
-
-[PRESET_STANDARD_NOINTRO]
-text = "Standart CPU • introsuz"
-args = 0
-
-[PRESET_VERYSLOW_INTRO]
-text = "Çok yavaş CPU • introlu"
-args = 0
-
-[PRESET_VERYSLOW_NOINTRO]
-text = "Çok yavaş CPU • introsuz"
-args = 0
-
-[PRESET_DUMMY]
-text = "Geliştirici"
-args = 0
-
-[PRESET_COPY]
-text = "Video kopyası ve karıştırılmış AAC ses"
-args = 0
-
 [JOB_TYPE_ENCODE]
 text = "🎬 Encode işi"
 args = 0
@@ -596,10 +520,6 @@ args = 0
 
 [COMMAND_REPO_ATTACHED]
 text = "Anime bağlandı"
-args = 0
-
-[COMMAND_SERVER_CONFIGURED]
-text = "Sunucu yapılandırıldı"
 args = 0
 
 [COMMAND_SERVER_UPDATED]
@@ -754,36 +674,12 @@ args = 0
 text = "Video bağlantısını ve ona uygun altyazı dosyasını hazırlayın.\n1. `/encode do` komutunu seçin.\n2. `torrent` kutusuna video bağlantısını yapıştırın: torrent, magnet, Google Drive veya doğrudan video bağlantısı olabilir. Kutunun adı torrent olsa da diğerlerini de kabul eder.\n3. `subtitle` kutusuna altyazınızı ekleyin. Tercihen `.ass` kullanın. `.srt` gibi metin altyazıları da çalışır, ancak dönüştürme özel görsel biçimlendirmeyi korumaz.\n4. Gönderin. Pandora videoyu indirir, altyazıyı işler ve sonucu yükler. İlerleme mesajında biten videonun bağlantılarını bekleyin.\nÖrnek: `/encode do torrent:<video bağlantısı> subtitle:<dosyanız>`\nBağlantınız istediğiniz videoyu doğrudan gösteriyorsa bu yolu kullanın."
 args = 0
 
-[TUTORIAL_1_PROBE_TITLE]
-text = "2 · Paketten bir video seçin: /probe → /encode pan"
-args = 0
-
-[TUTORIAL_1_PROBE_BODY]
-text = "Paket, sezonun tamamı gibi birden fazla dosya içeren indirmedir.\n1. `/probe torrent:<paket bağlantısı>` komutunu gönderip dosya listesini bekleyin.\n2. İstediğiniz bölümü bulun. **İş kimliğini (Job ID)** ve dosyanın **index** değerini aynen kopyalayın. Index dosyanın listedeki numarasıdır; bölüm numarasıyla aynı olmak zorunda değildir ve 0 olabilir.\n3. `/encode pan` seçin, `job_id` ve `index` kutularını doldurun, o bölüme uygun altyazıyı `subtitle` kutusuna ekleyin.\nÖrnek: `/encode pan job_id:<iş kimliği> index:0 subtitle:<dosyanız>`\nPandora seçilen dosyaya altyazıyı işler ve biten videonun bağlantılarını verir. Probe bilgilerini saklayın; sonuç artık kullanılamıyorsa yeniden `/probe` çalıştırın."
-args = 0
-
-[TUTORIAL_1_TEAM_TITLE]
-text = "3 · Ekipçe çalışın: /init → /job → /smartcode"
-args = 0
-
-[TUTORIAL_1_TEAM_BODY]
-text = "Tüm adımları animenin aynı kanalında uygulayın.\n1. **Bir kez kurun:** `/init mal:<MyAnimeList anime bağlantısı>` ortak bir proje klasörü (depo) oluşturur ve bu kanala bağlar. Gerekirse `season` ile sezonu belirtin; varsayılan 1'dir. Kanal zaten hazırsa bu adımı atlayın.\n2. **Altyazıları kaydedin:** `/job type:TL episode:1 subtitle:<dosyanız>` birinci bölümün çevirisini kaydeder. `TLC`, kontrol edilmiş çeviriyi TL'nin yerine kaydeder. `TS`, tabela ve ekran yazılarını kaydeder. Her bölüm ve güncellenen dosya için tekrarlayın. `/job` yalnızca altyazıyı kaydeder; video hazırlamaz.\n3. **Videoyu hazırlayın:** `/smartcode do episode:1 link:<video bağlantısı>` kayıtlı çeviri ve ekran yazılarını birleştirir, videoya işler ve sonucu yükler. Biten videonun bağlantılarını bekleyin. Pandora bağlantıyı hatırladığı için aynı bölümde daha sonra `link` kutusunu boş bırakabilirsiniz.\nPaket için önce `/probe`, ardından `/smartcode pan episode:1 job_id:<iş kimliği> index:<dosya numarası>` kullanın.\nİsteğe bağlı: `/smartcode preview episode:1 link:<video bağlantısı>` video hazırlamadan önce altyazı yerleşimini kontrol edebileceğiniz örnek resimler üretir. Sonraki bölüm için 2–3. adımları tekrarlayın."
-args = 0
-
 [TUTORIAL_PREVIOUS]
 text = "Önceki"
 args = 0
 
 [TUTORIAL_NEXT]
 text = "Sonraki"
-args = 0
-
-[TUTORIAL_1_SAVED_TITLE]
-text = "Bağlantıyı bir kez vermeniz yeterli"
-args = 0
-
-[TUTORIAL_1_SAVED_BODY]
-text = "1. bölümü daha önce `/smartcode` ile hazırladınız mı? Pandora o bölümün videosunu nereden alacağını hatırlar. Altyazıyı `/job` ile düzelttikten sonra sadece `/smartcode do episode:1` yazın. Aynı bağlantıyı tekrar arayıp yapıştırmanıza gerek yok. Bu bilgi, bu kanaldaki her bölüm için ayrı tutulur. Yeni bir bölümün bağlantısını ilk seferde verin. Kaynak videoyu değiştirmek isterseniz yeni `link` ekleyin. Paketi `/smartcode pan` ile kaydettiyseniz tekrar `/smartcode pan episode:1` kullanın; seçtiğiniz dosya da hatırlanır. Kayıtlı probe artık kullanılamıyorsa yeniden `/probe` çalıştırıp yeni iş kimliği ve index değerini verin."
 args = 0
 
 [TUTORIAL_1_PACK_TITLE]
@@ -816,22 +712,6 @@ args = 0
 
 [TUTORIAL_ADMIN_START_BODY]
 text = "Kurulumu yapacağınız kanalda `/configure` çalıştırın. Ayarlar, giriş/kapanış videoları, ASS filigranı ve resim logosu için sırayla yol gösterir. **Bilgileri gir** özel bir form açar. Tek tek kutuları boş bırakırsanız mevcut değerleri korunur; tüm adım için **Atla** kullanın. Kaydedilen her adım hemen uygulanır. **Bitir**, kaydedilenleri geri almadan durur. Sunucuda aynı anda tek kurulum yapılır; 10 dakika işlem yapılmazsa oturum kapanır. Medya dosyaları kanala gönderilir ve diğer üyeler görebilir. Tokenı yalnızca özel forma girin. `/configure` ve `/edit` için Pandora Admin erişimi ve Discord Sunucu Yöneticisi izni gerekir; Witch, Discord izin kontrolünü aşabilir. Bu rehberi okumak yetki vermez."
-args = 0
-
-[TUTORIAL_ADMIN_INIT_TITLE]
-text = "/init için gerekenler"
-args = 0
-
-[TUTORIAL_ADMIN_INIT_BODY]
-text = "`/init` öncesinde depo adımındaki **forgejo** ve **api_key** alanlarını doldurun. Giriş videosu, logo ve yükleme ayarları bekleyebilir.\n• `forgejo`: Forgejo sitenizde ekibin organizasyon sayfasını açıp adresini kopyalayın; örneğin `https://git.example.com/MyTeam`. `MyTeam` dahil olmalı; yalnızca site adresi yetmez. Site sahibinden organizasyon oluşturmasını ve tokenın ait olduğu hesaba burada depo oluşturma izni vermesini isteyin.\n• `api_key`: o hesapla giriş yapıp Ayarlar → Uygulamalar (`/user/settings/applications`) sayfasından token oluşturun. Pandora’nın organizasyon/depo işlemleri için `write:organization` ve `write:repository` izinlerini verin. Tokenı özel kurulum formuna kopyalayın. [Forgejo token rehberi](https://forgejo.org/docs/latest/user/authentication/token-scope/).\nArdından animenin kanalında `/init mal:<MyAnimeList anime sayfası>` çalıştırın; ikinci sezon için `season:2` ekleyin. Pandora herkese açık proje ve bölüm klasörlerini oluşturur. `language` yalnızca bot dilini seçer. `announcement_channel` duyuru içindir; bu alanlar organizasyon ve tokenın yerine geçmez."
-args = 0
-
-[TUTORIAL_ADMIN_EDIT_TITLE]
-text = "Günlük /edit ayarları"
-args = 0
-
-[TUTORIAL_ADMIN_EDIT_BODY]
-text = "Sonradan yalnızca birkaç ayarı değiştirmek için `/edit` kullanın. Belirtmediğiniz alanlar aynı kalır.\n• `language`: EN, TR veya JP. `forgejo` ve `api_key`: önceki sayfadaki organizasyon adresi ve token; `-` ile temizlenir.\n• `announcement_channel:true`: yazdığınız kanalı duyuru kanalı yapar.\n• `preset`: videonun nasıl kodlanacağı. `standard` ile başlayın; bu kurulumdaki seçenekleri görmek için alana yazın. GPU/AV1 uygun donanım ister.\n• `wrapstyle`: uzun altyazı satırlarının nasıl bölüneceği. `dont_touch`, altyazıyı hazırlayanın seçimini korur. 0/3 satırları dengeler, 1 kenarda böler, 2 otomatik bölmez.\n• `concat`: giriş grubu; `outro`: kapanış grubu. `/touchintro` veya `/touchoutro` ile eklenmiş adları seçin; `-` kapatır.\n• `channel_rename`: `/init` ve `/attach` anime kanallarının adını değiştirsin mi? Varsayılan true.\n• `merge_release_only`: true ise `/merge` doğrudan altyazı dosyasını verir; varsayılan false. Bu isteğe bağlı seçimler `/init` ile proje oluşturmak için gerekli değildir."
 args = 0
 
 [TUTORIAL_ADMIN_DELIVERY_TITLE]
@@ -918,10 +798,6 @@ args = 0
 text = "Kurulum bitti. Kaydedilen ayarlar korunur; atlanan alanlar değişmez. Sonradan /edit ve medya komutlarıyla düzenleyebilirsiniz. Tam rehber: /tutorial admin."
 args = 0
 
-[CONFIG_INIT_MISSING]
-text = "/init ile proje oluşturmadan önce organizasyon adresini (forgejo) ve API tokenını (api_key) ekleyin. İsteğe bağlı görsel ayarlar atlanabilir."
-args = 0
-
 [CONFIG_INIT_READY]
 text = "Organizasyon adresi ve token kayıtlı. Bir anime kanalında /init deneyebilirsiniz. Hesabın orada depo oluşturma izni olmalıdır; kurulum bu izni sınamaz."
 args = 0
@@ -932,14 +808,6 @@ args = 0
 
 [CONFIG_BASICS_BODY]
 text = "`language` seçin: EN (English), TR (Türkçe), JP (日本語). Duyurular bu kanala gelsin diye `announcement_channel` alanına true, duyuru kanalını kaldırmak için false yazın. Boşsa aynı kalır. Yeni sunucuda varsayılan dil EN’dir. Kurulum 10 dakika işlem yapılmazsa kapanır. Yardım: /tutorial admin."
-args = 0
-
-[CONFIG_REPO_TITLE]
-text = "Ekibin proje alanını bağlayın"
-args = 0
-
-[CONFIG_REPO_BODY]
-text = "/init için `forgejo`: organizasyon sayfanız; ör. https://git.example.com/MyTeam (MyTeam dahil). `api_key`: o hesabın Ayarlar → Uygulamalar bölümünden alınan, write:organization ve write:repository izinli token. Hesabın organizasyonda depo oluşturma izni olmalı. Tokenı yalnızca bu özel forma yapıştırın; yanıt olarak gösterilmez. Boş kutular mevcut değeri korur; `-` temizler. Henüz yoksa atlayıp Forgejo yöneticinize danışın. Adımlar /tutorial admin içinde."
 args = 0
 
 [CONFIG_DELIVERY_TITLE]

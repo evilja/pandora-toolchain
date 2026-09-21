@@ -252,8 +252,6 @@ mod tests {
             frontend: Frontend::None,
             directory: PathBuf::from("DB/work/1"),
             ready: Stage::Queued,
-            probe_files: None,
-            probe_torrent_path: None,
             probe_job_id: None,
             probe_file_index: None,
             lang: "EN".to_string(),
