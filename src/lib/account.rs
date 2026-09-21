@@ -189,30 +189,47 @@ fn save_sessions(state: &Store) {
 
 // HMAC-SHA256 by hand rather than by dependency: `sha2` is already here for the torrent and
 // keyvault paths, and this is the whole of the construction.
-fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
-    const BLOCK: usize = 64;
-    let mut padded = [0u8; BLOCK];
-    if key.len() > BLOCK {
-        padded[..32].copy_from_slice(&Sha256::digest(key));
-    } else {
-        padded[..key.len()].copy_from_slice(key);
+//
+// The key is absorbed once. Both pads are a full SHA-256 block, so the two hasher states that
+// have swallowed them are all a MAC under this key ever needs; PBKDF2 asks for 210,000 of those
+// under one key, and re-padding it each time doubled the compressions per iteration.
+struct HmacSha256 {
+    inner: Sha256,
+    outer: Sha256,
+}
+
+impl HmacSha256 {
+    fn new(key: &[u8]) -> Self {
+        const BLOCK: usize = 64;
+        let mut padded = [0u8; BLOCK];
+        if key.len() > BLOCK {
+            padded[..32].copy_from_slice(&Sha256::digest(key));
+        } else {
+            padded[..key.len()].copy_from_slice(key);
+        }
+        let mut inner_pad = [0u8; BLOCK];
+        let mut outer_pad = [0u8; BLOCK];
+        for index in 0..BLOCK {
+            inner_pad[index] = padded[index] ^ 0x36;
+            outer_pad[index] = padded[index] ^ 0x5c;
+        }
+        let mut inner = Sha256::new();
+        inner.update(inner_pad);
+        let mut outer = Sha256::new();
+        outer.update(outer_pad);
+        Self { inner, outer }
     }
-    let mut inner = [0u8; BLOCK];
-    let mut outer = [0u8; BLOCK];
-    for index in 0..BLOCK {
-        inner[index] = padded[index] ^ 0x36;
-        outer[index] = padded[index] ^ 0x5c;
+
+    fn mac(&self, message: &[u8]) -> [u8; 32] {
+        let mut hasher = self.inner.clone();
+        hasher.update(message);
+        let inner_digest = hasher.finalize();
+        let mut hasher = self.outer.clone();
+        hasher.update(inner_digest);
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&hasher.finalize());
+        out
     }
-    let mut hasher = Sha256::new();
-    hasher.update(inner);
-    hasher.update(message);
-    let inner_digest = hasher.finalize();
-    let mut hasher = Sha256::new();
-    hasher.update(outer);
-    hasher.update(inner_digest);
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&hasher.finalize());
-    out
 }
 
 // PBKDF2 with a derived key exactly one hash long, so there is a single block and its index is
@@ -221,10 +238,11 @@ fn pbkdf2(password: &[u8], salt: &[u8], iterations: u32) -> [u8; 32] {
     let mut message = Vec::with_capacity(salt.len() + 4);
     message.extend_from_slice(salt);
     message.extend_from_slice(&1u32.to_be_bytes());
-    let mut block = hmac_sha256(password, &message);
+    let hmac = HmacSha256::new(password);
+    let mut block = hmac.mac(&message);
     let mut out = block;
     for _ in 1..iterations.max(1) {
-        block = hmac_sha256(password, &block);
+        block = hmac.mac(&block);
         for index in 0..32 {
             out[index] ^= block[index];
         }
@@ -376,16 +394,28 @@ pub fn authenticate(username: &str, password: &str) -> Result<Account, String> {
     let Ok(name) = normalize_username(username) else {
         return Err(REFUSED.to_string());
     };
-    let mut state = store().lock().unwrap();
-    ensure_loaded(&mut state);
-    let Some(account) = state.accounts.get(&name).cloned() else {
-        return Err(REFUSED.to_string());
+    let account = {
+        let mut state = store().lock().unwrap();
+        ensure_loaded(&mut state);
+        match state.accounts.get(&name).cloned() {
+            Some(account) => account,
+            None => return Err(REFUSED.to_string()),
+        }
     };
+    // The hash runs with the store unlocked. Every session-authenticated request takes that lock
+    // in the auth middleware, so holding it across 210,000 iterations let one sign-in stall the
+    // whole console.
     if !verify_password(password, &account.password) || account.disabled {
         return Err(REFUSED.to_string());
     }
-    if let Some(entry) = state.accounts.get_mut(&name) {
-        entry.last_login = now();
+    let mut state = store().lock().unwrap();
+    // What was verified is the record as it stood before the hash. If it was disabled, removed, or
+    // given a new password in the meantime, that verification no longer speaks for it.
+    match state.accounts.get_mut(&name) {
+        Some(entry) if !entry.disabled && entry.password == account.password => {
+            entry.last_login = now();
+        }
+        _ => return Err(REFUSED.to_string()),
     }
     save_accounts(&state);
     Ok(account)
@@ -581,14 +611,14 @@ mod tests {
     // would still produce a self-consistent — and completely wrong — hash.
     #[test]
     fn hmac_matches_the_published_vector() {
-        let mac = hmac_sha256(&[0x0b; 20], b"Hi There");
+        let mac = HmacSha256::new(&[0x0b; 20]).mac(b"Hi There");
         assert_eq!(
             hex_bytes(&mac),
             "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7",
         );
         // A key longer than the 64-byte block is hashed first; getting that branch wrong is
         // invisible until somebody picks a long password.
-        let mac = hmac_sha256(&[0xaa; 131], b"Test Using Larger Than Block-Size Key - Hash Key First");
+        let mac = HmacSha256::new(&[0xaa; 131]).mac(b"Test Using Larger Than Block-Size Key - Hash Key First");
         assert_eq!(
             hex_bytes(&mac),
             "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54",

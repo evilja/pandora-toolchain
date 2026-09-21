@@ -38,9 +38,13 @@ pub(super) struct LoginReq {
 // is deliberately the same sentence for a wrong password, an unknown name, and a disabled account:
 // three different answers would turn this form into a roster.
 pub(super) async fn login(Json(req): Json<LoginReq>) -> Response {
-    let account = match account::authenticate(&req.username, &req.password) {
-        Ok(account) => account,
-        Err(message) => return (StatusCode::UNAUTHORIZED, message).into_response(),
+    // PBKDF2 is a couple of hundred thousand hashes; off the async workers it goes.
+    let LoginReq { username, password } = req;
+    let verdict = tokio::task::spawn_blocking(move || account::authenticate(&username, &password)).await;
+    let account = match verdict {
+        Ok(Ok(account)) => account,
+        Ok(Err(message)) => return (StatusCode::UNAUTHORIZED, message).into_response(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let (session, expires_at) = match account::open_session(&account.username) {
         Ok(session) => session,
@@ -133,20 +137,27 @@ pub(super) async fn change_password(
     let Some(username) = auth.account.clone() else {
         return bad_request("only a signed-in account has a password".to_string());
     };
-    if account::authenticate(&username, &req.current).is_err() {
-        return (StatusCode::UNAUTHORIZED, "the current password is wrong").into_response();
-    }
-    match account::update(
-        &username,
-        account::Update {
-            privileged: None,
-            server_id: None,
-            disabled: None,
-            password: Some(req.password),
-        },
-    ) {
-        Ok(_) => no_store(Json(json!({ "changed": true }))),
-        Err(message) => bad_request(message),
+    // Two password hashes, one to check and one to store; neither belongs on an async worker.
+    let changed = tokio::task::spawn_blocking(move || {
+        if account::authenticate(&username, &req.current).is_err() {
+            return None;
+        }
+        Some(account::update(
+            &username,
+            account::Update {
+                privileged: None,
+                server_id: None,
+                disabled: None,
+                password: Some(req.password),
+            },
+        ))
+    })
+    .await;
+    match changed {
+        Ok(Some(Ok(_))) => no_store(Json(json!({ "changed": true }))),
+        Ok(Some(Err(message))) => bad_request(message),
+        Ok(None) => (StatusCode::UNAUTHORIZED, "the current password is wrong").into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 
