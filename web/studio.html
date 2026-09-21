@@ -286,7 +286,6 @@ function msAtFrame(frame){return Math.round(Math.max(0,frame||0)*1000/fps())}
 function maxTimelineFrame(){if(!state.studio||!state.studio.total_duration_ms)return 0;var frame=Math.max(0,Math.ceil(state.studio.total_duration_ms*fps()/1000)-1);while(frame>0&&msAtFrame(frame)>=state.studio.total_duration_ms)frame--;return frame}
 function tc(ms){var rate=fps(),total=Math.max(0,ms||0)/1000,h=Math.floor(total/3600),m=Math.floor(total%3600/60),s=Math.floor(total%60),f=Math.floor((total-Math.floor(total))*rate);return[h,m,s,f].map(function(v){return String(v).padStart(2,"0")}).join(":")}
 function sourceUrl(index){return "/studio-media/source/"+index+"?k="+encodeURIComponent(token)}
-function trackUrl(id){return "/api/v1/studios/current/media/tracks/"+id}
 
 async function readyServiceWorker(){
   if(!("serviceWorker" in navigator))throw new Error("This browser cannot stream authenticated Studio media.");

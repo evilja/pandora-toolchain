@@ -118,12 +118,6 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 .pn-nav { flex: 1 1 auto; overflow-y: auto; padding: 8px 0; display: flex; flex-direction: column; }
 
-.pn-navgroup {
-  padding: 16px 22px 6px;
-  font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
-  color: var(--pn-faint);
-}
-
 .pn-navlink {
   position: relative;
   display: flex; align-items: center; gap: 13px;
@@ -306,15 +300,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .pn-link { color: var(--pn-k1-hi); text-decoration: none; font-weight: 500; }
 .pn-link:hover { text-decoration: underline; }
 
-/* ── segmented control & tabs ──────────────────────────────────────────────── */
-
-.pn-seg-ctl { display: inline-flex; border: 1px solid var(--pn-line-2); border-radius: var(--pn-r); overflow: hidden; }
-.pn-seg-ctl button {
-  border: 0; background: var(--pn-panel-2); cursor: pointer;
-  padding: 8px 20px; font-size: 14px; font-weight: 500; color: var(--pn-ink-2);
-}
-.pn-seg-ctl button + button { border-left: 1px solid var(--pn-line-2); }
-.pn-seg-ctl button[aria-pressed="true"] { background: var(--pn-k1); color: var(--pn-k1-ink); font-weight: 600; }
+/* ── tabs ────────────────────────────────────────────────────────────────────── */
 
 .pn-tabs { display: flex; align-items: center; gap: 2px; }
 .pn-tab {
@@ -452,7 +438,6 @@ button, input, select, textarea { font: inherit; color: inherit; }
   overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere;
 }
 
-.pn-rule { height: 1px; background: var(--pn-line); border: 0; margin: 18px 0; }
 
 .pn-spin { display: inline-block; width: 14px; height: 14px; border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: pn-spin 0.7s linear infinite; }
 @keyframes pn-spin { to { transform: rotate(360deg); } }
@@ -479,7 +464,6 @@ button, input, select, textarea { font: inherit; color: inherit; }
   }
   .pn-wordmark { border-bottom: 0; border-right: 1px solid var(--pn-line); padding: 0 18px; }
   .pn-nav { flex-direction: row; padding: 0; overflow: visible; }
-  .pn-navgroup { display: none; }
   .pn-navlink { padding: 19px 14px; white-space: nowrap; }
   .pn-navlink span:not(.pn-navcount) { display: none; }
   .pn-navlink svg { width: 20px; height: 20px; }
