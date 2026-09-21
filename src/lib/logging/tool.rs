@@ -70,12 +70,11 @@ impl ToolLog {
         let Some(file) = self.file.as_mut() else {
             return;
         };
-        let _ = writeln!(
-            file,
-            "[{:>9.3}s] {}",
-            self.started.elapsed().as_secs_f64(),
-            message
-        );
+        // Formatted first and written once. `writeln!` straight onto a `File` is one syscall per
+        // format fragment, which lets a line from the watchdog's handle land in the middle of this
+        // one.
+        let line = format!("[{:>9.3}s] {}\n", self.started.elapsed().as_secs_f64(), message);
+        let _ = file.write_all(line.as_bytes());
         let _ = file.flush();
     }
 

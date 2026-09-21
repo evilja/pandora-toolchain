@@ -105,8 +105,12 @@ pub fn hash_file(path: &Path) -> Option<(String, u64)> {
             return Some((hash.clone(), len));
         }
     }
-    let bytes = std::fs::read(path).ok()?;
-    let hash = format!("{:x}", Sha256::digest(&bytes));
+    // Streamed: an intro or outro is a video, and reading one whole to hash it put the entire file
+    // in memory on the coordinator and again on every node that checks its copy.
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher).ok()?;
+    let hash = format!("{:x}", hasher.finalize());
     lock(hash_cache()).insert(path.to_path_buf(), (mtime, len, hash.clone()));
     Some((hash, len))
 }

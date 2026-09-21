@@ -927,11 +927,18 @@ async fn cached_output_resolution(
     directory: &std::path::Path,
     output_path: &std::path::Path,
 ) -> String {
-    tokio::fs::read_to_string(directory.join("work").join(OUTPUT_RESOLUTION_FILE))
+    let cached = tokio::fs::read_to_string(directory.join("work").join(OUTPUT_RESOLUTION_FILE))
         .await
         .ok()
-        .and_then(|value| valid_resolution_label(&value))
-        .unwrap_or_else(|| resolution_label(&output_path.display().to_string()))
+        .and_then(|value| valid_resolution_label(&value));
+    if let Some(label) = cached {
+        return label;
+    }
+    // The fallback spawns ffprobe and waits on it; keep that off the async worker.
+    let path = output_path.display().to_string();
+    tokio::task::spawn_blocking(move || resolution_label(&path))
+        .await
+        .unwrap_or_else(|_| "1080p".to_string())
 }
 
 fn valid_resolution_label(value: &str) -> Option<String> {

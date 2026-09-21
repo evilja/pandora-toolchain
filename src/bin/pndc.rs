@@ -796,7 +796,6 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("get", 0),
     ("job", 0),
     ("!enc", 0),
-    ("!encode", 0),
     ("attach", 1),
     ("init", 1),
     ("detach", 1),
@@ -819,8 +818,6 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("gettranslationall", 2),
     ("auth", 2),
     ("rm", 2),
-    ("!ban", 2),
-    ("!some", 2),
     ("gitsync", 3),
     ("gitforce", 3),
     ("gitquery", 3),
@@ -2352,6 +2349,10 @@ impl EventHandler for Handler {
                 return;
             }
         }
+        // Only two words are text commands. Everything else anybody types in any channel stops
+        // here, before `is_authorized` reads and parses the ranks file and up to five permission
+        // files for a message that was never going to be dispatched.
+        if !matches!(parts[0], "!enc" | "!ts") { return; }
         if !is_authorized(parts[0], msg.author.id.get()) { return; }
 
         match parts[0] {

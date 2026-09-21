@@ -101,6 +101,5 @@ pub fn get_perm(envfile: String) -> Vec<String> {
     if file.read_to_string(&mut buf).is_err() {
         return vec![];
     }
-    let lines: Vec<String> = buf.lines().map(|line| line.to_string()).collect();
-    lines.clone()
+    buf.lines().map(|line| line.to_string()).collect()
 }

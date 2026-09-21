@@ -203,9 +203,17 @@ pub(crate) async fn store_output(
         .await
         .map_err(|e| format!("failed to keep output: {}", e))?;
 
+    // Two ffprobe runs, each a blocking `Command::output`. This is awaited from the worker loop,
+    // so on its thread they held up every other job's progress for as long as ffprobe took.
     let target_s = target.to_string_lossy().to_string();
-    let fps = ffprobe_framerate(&target_s).map(|(n, d)| format!("{}/{}", n, d));
-    let sample_rate = ffprobe_samplerate(&target_s);
+    let (fps, sample_rate) = tokio::task::spawn_blocking(move || {
+        (
+            ffprobe_framerate(&target_s).map(|(n, d)| format!("{}/{}", n, d)),
+            ffprobe_samplerate(&target_s),
+        )
+    })
+    .await
+    .unwrap_or((None, None));
     let meta = KeepMeta {
         keyword: output_keyword,
         parent_keyword,

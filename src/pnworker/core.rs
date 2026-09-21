@@ -137,10 +137,14 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
         shrine.drain_heartbeats().await;
         check_encode_reboot_epoch(&shrine, &mut encode_reboot_epoch, &mut queue);
         check_idle_encode_reboot_epoch(&shrine, &mut idle_encode_reboot_epoch, &mut queue);
+        // A minute, like the sweeps below. These TTLs are 30 minutes and 5 hours, and every reader of
+        // a keep checks `expires_at` for itself, so sweeping each second bought nothing: it walked
+        // both directories and re-parsed every keep's meta.json 60 times as often as anything could
+        // expire.
         if tokio::time::Instant::now() >= next_cache_cleanup {
             cleanup_expired_input_cache().await;
             cleanup_expired_keeps().await;
-            next_cache_cleanup = tokio::time::Instant::now() + Duration::from_secs(1);
+            next_cache_cleanup = tokio::time::Instant::now() + Duration::from_secs(60);
         }
         if tokio::time::Instant::now() >= next_studio_cleanup {
             cleanup_expired_studios().await;
@@ -3829,48 +3833,57 @@ async fn do_job_progression_things(
     let mut dead: Vec<u64> = vec![];
     let mut forwarded_state_updates: Vec<(u64, Stage, String)> = vec![];
     let mut active_encode_sources: HashMap<String, PathBuf> = HashMap::new();
-    for j in queue
-        .iter()
-        .filter(|j| {
-            j.forward_parent.is_none()
-                // A leased job's input was downloaded on the node, so this machine's copy of its
-                // work directory is empty. Offering it as a duplicate source would hand another
-                // job a path with no video behind it — and a job merely *waiting* for a node has
-                // not downloaded anything anywhere yet, so it is emptier still.
-                && j.link_node.is_none()
-                && !j.link_waiting
-                && j.job_type != JobType::Preview
-                && (j.ready == Stage::Encoding
-                    || (j.ready == Stage::Downloaded && j.encode_dispatched))
-        })
-    {
-        for key in input_cache_keys(j) {
-            active_encode_sources
-                .entry(key)
-                .or_insert_with(|| j.directory.join("contents").join("torrent"));
-        }
-    }
     let mut active_encode_parents: HashMap<String, (u64, Stage, String)> = HashMap::new();
-    for j in queue.iter().filter(|j| {
-        j.forward_parent.is_none()
-            && is_forwardable_encode(j)
-            && (matches!(
-                    j.ready,
-                    Stage::Queued
-                        | Stage::Downloading
-                        | Stage::Encoding
-                        | Stage::Encoded
-                        | Stage::Uploading
+    // Both maps answer one question — is somebody already encoding this? — and only a downloaded
+    // job that has not been dispatched asks it. Filling them hashes each active job's torrent,
+    // subtitle, watermark and logo, and this function runs several times a second for the whole
+    // length of an encode, so they are built only on a pass that has someone to ask.
+    let wants_encode_maps = queue
+        .iter()
+        .any(|j| j.ready == Stage::Downloaded && !j.encode_dispatched);
+    if wants_encode_maps {
+        for j in queue
+            .iter()
+            .filter(|j| {
+                j.forward_parent.is_none()
+                    // A leased job's input was downloaded on the node, so this machine's copy of its
+                    // work directory is empty. Offering it as a duplicate source would hand another
+                    // job a path with no video behind it — and a job merely *waiting* for a node has
+                    // not downloaded anything anywhere yet, so it is emptier still.
+                    && j.link_node.is_none()
+                    && !j.link_waiting
+                    && j.job_type != JobType::Preview
+                    && (j.ready == Stage::Encoding
+                        || (j.ready == Stage::Downloaded && j.encode_dispatched))
+            })
+        {
+            for key in input_cache_keys(j) {
+                active_encode_sources
+                    .entry(key)
+                    .or_insert_with(|| j.directory.join("contents").join("torrent"));
+            }
+        }
+        for j in queue.iter().filter(|j| {
+            j.forward_parent.is_none()
+                && is_forwardable_encode(j)
+                && (matches!(
+                        j.ready,
+                        Stage::Queued
+                            | Stage::Downloading
+                            | Stage::Encoding
+                            | Stage::Encoded
+                            | Stage::Uploading
+                    )
+                    || (j.ready == Stage::Downloaded && j.encode_dispatched)
                 )
-                || (j.ready == Stage::Downloaded && j.encode_dispatched)
-            )
-    }) {
-        for key in encode_forward_keys(j) {
-            active_encode_parents.entry(key).or_insert((
-                j.job_id,
-                j.ready,
-                forwarded_worker_for(&j.worker),
-            ));
+        }) {
+            for key in encode_forward_keys(j) {
+                active_encode_parents.entry(key).or_insert((
+                    j.job_id,
+                    j.ready,
+                    forwarded_worker_for(&j.worker),
+                ));
+            }
         }
     }
     for (idx, job) in queue.iter_mut().enumerate() {

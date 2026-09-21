@@ -1340,7 +1340,15 @@ async fn accept(
     if let Some(preview) = spec.preview.as_ref() {
         let watermark_font = match preview.watermark_font.as_deref() {
             None => None,
-            Some(name) => match find_preview_font(name, spec.server_id.as_deref()) {
+            // The lookup walks the font buckets and the system font folders with a stat per file;
+            // every other caller of it already runs it off the async workers.
+            Some(name) => match {
+                let (font, server) = (name.to_string(), spec.server_id.clone());
+                tokio::task::spawn_blocking(move || find_preview_font(&font, server.as_deref()))
+                    .await
+                    .ok()
+                    .flatten()
+            } {
                 Some(path) => Some(path),
                 None => return decline(format!("watermark font {name} is not on this node")),
             },

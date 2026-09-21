@@ -217,7 +217,10 @@ impl<M: Send + Clone + 'static> TypedShrine<M> {
     }
 
     // Poll all layers for a worker message, waiting up to timeout_ms.
-    // A short sleep prevents the empty poll path from busy-spinning a runtime thread.
+    // The sleep keeps the empty poll path from busy-spinning a runtime thread. A waiting message
+    // is returned before it is ever reached, so its length only bounds how late an idle loop
+    // notices a new one: 5ms is invisible next to a job, and a fifth of the timer wakeups 1ms cost
+    // for every second the bot sits idle.
     pub async fn receive(&mut self, timeout_ms: u64) -> Option<(Worker, CommData)> {
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
 
@@ -247,7 +250,7 @@ impl<M: Send + Clone + 'static> TypedShrine<M> {
                 return None;
             }
 
-            sleep(Duration::from_millis(1)).await;
+            sleep(Duration::from_millis(5)).await;
         }
     }
     pub async fn force_reboot(&mut self, worker: &Worker) {

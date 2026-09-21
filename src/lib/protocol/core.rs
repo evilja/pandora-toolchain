@@ -193,6 +193,12 @@ pub fn escape(input: &str) -> String {
 }
 
 pub fn unescape(input: &str) -> String {
+    // Every escape token opens with `?`. Nearly every field a tool emits is a number or a plain
+    // word, and this runs per field per protocol line, so those skip the two scans and the offset
+    // table entirely.
+    if !input.contains('?') {
+        return input.to_string();
+    }
     let (token_q, token_c, token_s, token_p) = ("?PNquestion?", "?PNcolon?", "?PNslash?", "?PNpercent?");
 
     let mut question_positions: Vec<usize> = Vec::new();
