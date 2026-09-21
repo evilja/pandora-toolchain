@@ -113,14 +113,27 @@ pub(crate) async fn cache_encode_input(job: &Job) {
     if !source.exists() {
         return;
     }
+    // A magnet or link source has two keys, and the input is gigabytes. It is copied once; every
+    // further key gets a hard link to that copy, which costs nothing and is safe because a cached
+    // input is never written in place — it is copied out of, and expired by removing its whole
+    // directory, which leaves the other names intact. The key directories all sit under
+    // `DB/cache/inputs`, so they share a filesystem; where linking fails anyway, it copies.
+    let mut cached: Option<PathBuf> = None;
     for key in input_cache_keys(job) {
         let dir = input_cache_dir(&key);
         create_dir_all(&dir).await.ok();
-        if tokio::fs::copy(&source, input_cache_input(&key))
-            .await
-            .is_ok()
-        {
+        let target = input_cache_input(&key);
+        // A stale entry may be another name for the very file about to be linked or copied from,
+        // and copying a file onto itself truncates it. Unlinking first makes both paths safe and
+        // leaves anyone still reading the old entry with the inode they opened.
+        tokio::fs::remove_file(&target).await.ok();
+        let linked = match cached.as_ref() {
+            Some(first) => tokio::fs::hard_link(first, &target).await.is_ok(),
+            None => false,
+        };
+        if linked || tokio::fs::copy(&source, &target).await.is_ok() {
             touch_input_cache(&key).await;
+            cached.get_or_insert(target);
         }
     }
 }
