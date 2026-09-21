@@ -74,7 +74,4 @@ impl LoggingHandle {
         }
         self.buf.push_str(s);
     }
-    pub async fn clear(&mut self) {
-        self.buf.clear();
-    }
 }

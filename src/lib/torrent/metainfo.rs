@@ -28,7 +28,6 @@ pub struct Metainfo {
     pub trackers: Vec<String>,
     pub total_length: u64,
     pub private: bool,
-    pub(crate) info_bytes: Vec<u8>,
 }
 
 impl Metainfo {
@@ -188,7 +187,6 @@ impl Metainfo {
             trackers,
             total_length: offset,
             private,
-            info_bytes: info_bytes.to_vec(),
         })
     }
 
@@ -235,10 +233,6 @@ impl Metainfo {
             .filter(|file| selected_files.is_none_or(|selected| selected.contains(&file.index)))
             .map(|file| file.length)
             .sum()
-    }
-
-    pub fn info_bytes(&self) -> &[u8] {
-        &self.info_bytes
     }
 }
 

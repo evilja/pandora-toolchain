@@ -4,7 +4,6 @@ use std::path::Path;
 use std::str::FromStr;
 
 pub const MAX_DIM: u32 = 8192;
-pub const MAX_SVG_BYTES: usize = 4 * 1024 * 1024;
 
 pub type ImageResult<T> = Result<T, ImageError>;
 
@@ -13,10 +12,8 @@ pub enum ImageError {
     Dimensions(String),
     Io(std::io::Error),
     InvalidFont(String),
-    Svg(String),
     Decode(String),
     Encode(String),
-    TooLarge(String),
 }
 
 impl fmt::Display for ImageError {
@@ -25,10 +22,8 @@ impl fmt::Display for ImageError {
             ImageError::Dimensions(msg) => write!(f, "image dimensions invalid: {}", msg),
             ImageError::Io(err) => write!(f, "image io failed: {}", err),
             ImageError::InvalidFont(msg) => write!(f, "image font invalid: {}", msg),
-            ImageError::Svg(msg) => write!(f, "svg parse/render failed: {}", msg),
             ImageError::Decode(msg) => write!(f, "png decode failed: {}", msg),
             ImageError::Encode(msg) => write!(f, "png encode failed: {}", msg),
-            ImageError::TooLarge(msg) => write!(f, "image input too large: {}", msg),
         }
     }
 }
@@ -192,10 +187,6 @@ impl Canvas {
         Ok(())
     }
 
-    pub(crate) fn pixmap_mut(&mut self) -> &mut tiny_skia::Pixmap {
-        &mut self.pixmap
-    }
-
     pub(crate) fn blend_pixel(&mut self, x: i32, y: i32, color: Color, coverage: f32) {
         if x < 0 || y < 0 || x >= self.width() as i32 || y >= self.height() as i32 {
             return;
@@ -256,17 +247,6 @@ pub(crate) fn validate_dimensions(width: u32, height: u32) -> ImageResult<()> {
         return Err(ImageError::Dimensions(format!("{}x{} exceeds {}px side cap", width, height, MAX_DIM)));
     }
     Ok(())
-}
-
-pub(crate) fn placement_dimension(label: &str, value: f32) -> ImageResult<u32> {
-    if !value.is_finite() || value <= 0.0 {
-        return Err(ImageError::Dimensions(format!("{} must be positive and finite", label)));
-    }
-    if value > MAX_DIM as f32 {
-        return Err(ImageError::Dimensions(format!("{} {} exceeds {}", label, value, MAX_DIM)));
-    }
-
-    Ok(value.round().max(1.0) as u32)
 }
 
 fn float_to_u8(value: f32) -> u8 {

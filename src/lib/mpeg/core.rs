@@ -66,10 +66,8 @@ pub enum FfmpegParams {
     Safe(Cow<'static, str>),
     Keyframe(Cow<'static, str>),
     Movflags,
-    Stats,
     NoStats,
     Overwrite,
-    NoOverwrite,
     Progress(Cow<'static, str>),
     Output(Cow<'static, str>),
     // Options a caller assembled itself. The HLS muxer's arguments are built from the names of the
@@ -109,10 +107,8 @@ impl Decode for FfmpegParams {
             Self::Safe(a) => vec!["-safe".to_string(), a.to_string()],
             Self::Keyframe(a) => vec!["-g".to_string(), a.to_string()],
             Self::Movflags => vec!["-movflags".to_string(), "+faststart".to_string()],
-            Self::Stats => vec!["-stats".to_string()],
             Self::NoStats => vec!["-nostats".to_string()],
             Self::Overwrite => vec!["-y".to_string()],
-            Self::NoOverwrite => vec!["-n".to_string()],
             Self::Progress(a) => vec!["-progress".to_string(), a.to_string()],
             Self::Output(a) => {
                 let mut args = video_metadata_args();
@@ -126,7 +122,6 @@ impl Decode for FfmpegParams {
 
 pub trait Encode<T> {
     fn insert_param(&mut self, param: T);
-    fn run(&mut self) -> bool;
 }
 
 impl<T> Encode<T> for FFmpeg
@@ -136,10 +131,6 @@ where T: Decode
         for i in param.decode() {
             self.out.arg(i);
         }
-    }
-    fn run(&mut self) -> bool {
-        self.out.status().unwrap();
-        true
     }
 }
 

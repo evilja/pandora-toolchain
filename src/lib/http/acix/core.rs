@@ -148,20 +148,6 @@ impl AnimeCix {
         Self::new(env.get(ANIMECIX).cloned().unwrap_or_default())
     }
 
-    pub fn with_session(
-        bearer_token: String,
-        connect_sid: String,
-        xsrf_token: String,
-    ) -> Result<Self, String> {
-        let client = AnimeciXClient::with_session(bearer_token, connect_sid, xsrf_token)
-            .map_err(|e| e.to_string())?;
-        Ok(Self {
-            client: Mutex::new(client),
-            credentials: None,
-            initialized: Mutex::new(true),
-        })
-    }
-
     async fn plain_client(&self) -> AnimeciXClient {
         self.client.lock().await.clone()
     }

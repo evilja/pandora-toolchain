@@ -97,16 +97,6 @@ pub enum TorrentSource {
     Magnet(String),
 }
 
-impl TorrentSource {
-    pub fn file(path: impl Into<PathBuf>) -> Self {
-        Self::File(path.into())
-    }
-
-    pub fn magnet(value: impl Into<String>) -> Self {
-        Self::Magnet(value.into())
-    }
-}
-
 #[derive(Clone, Debug, Default)]
 pub enum FileSelection {
     #[default]

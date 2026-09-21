@@ -71,12 +71,6 @@ impl DrawingCommand {
             DrawingCommand::CloseBSpline | DrawingCommand::Invalid => {}
         }
     }
-    pub fn stringify(&self) -> String {
-        let mut out = String::new();
-        self.write_into(&mut out);
-        out
-    }
-
     // Appends this command, mode letter included. A traced drawing runs to
     // thousands of commands and each coordinate used to be its own String, so
     // the whole drawing path writes into one buffer instead.

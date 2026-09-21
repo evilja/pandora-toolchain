@@ -36,10 +36,6 @@ pub struct GScrape {
 }
 
 impl GScrape {
-    pub fn new(link: String, log: Option<PathBuf>, cfile: Option<PathBuf>) -> Self {
-        Self { link, log, cfile, prefix_state: None }
-    }
-
     pub fn parse_id(link: &str) -> Option<String> {
         let re = Regex::new(r"/file/d/([a-zA-Z0-9_-]+)").unwrap();
         if let Some(c) = re.captures(link) {

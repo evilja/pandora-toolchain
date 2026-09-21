@@ -192,13 +192,6 @@ fn is_cancelled(cfile: &Option<PathBuf>) -> bool {
 }
 
 impl Req {
-    pub async fn send(&self, path: String) -> bool {
-        matches!(
-            self.send_with_progress(path, None, None).await,
-            DownloadStatus::Success
-        )
-    }
-
     pub async fn send_with_progress(
         &self,
         path: String,
