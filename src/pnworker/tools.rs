@@ -122,8 +122,6 @@ pub const PNMPEG_ENCODE: &[CliParam] = &[
     // source carries no `jpn` language tag.
     CliParam::Literal("--lang"),
     CliParam::Literal("jpn"),
-    CliParam::Literal("--fontconfig"),
-    CliParam::Path("FONTCONFIG"),
     CliParam::Literal("--preset"),
     CliParam::Path("PRESET"),
     CliParam::Literal("--negkey"),

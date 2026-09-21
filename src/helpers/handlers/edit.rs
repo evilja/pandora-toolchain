@@ -284,23 +284,17 @@ pub async fn handle_edit(
         None => existing_language.to_string(),
     };
 
-    let github = option_str(command, "github");
-    let forgejo = match github.or_else(|| option_str(command, "forgejo")).map(str::trim) {
+    let forgejo = match option_str(command, "github").map(str::trim) {
         None => existing_forgejo.to_string(),
         Some(CLEAR_SENTINEL) => String::new(),
         Some(u) if u.is_empty() => existing_forgejo.to_string(),
-        Some(u) if github.is_some() => match super::configure::github_org_url(u) {
+        Some(u) => match super::configure::github_org_url(u) {
             Ok(url) => url,
             Err(id) => {
                 edit_error(ctx, command, deferred, command_message(command, id)).await;
                 return;
             }
         },
-        Some(u) if u.starts_with("http://") || u.starts_with("https://") => u.trim_end_matches('/').to_string(),
-        Some(other) => {
-            edit_error(ctx, command, deferred, format!("Error: forgejo `{}` must be an http(s) URL", other)).await;
-            return;
-        }
     };
 
     let channel = match option_bool(command, "announcement_channel") {

@@ -361,8 +361,8 @@ pub struct LogoConfig {
     pub placement: LogoPlacement,
 }
 
-// A filter-graph value ffmpeg will read back as one token. The same escaping `pnmpeg` applies to a
-// subtitle path, for the same reason: a Windows path or a file with a comma in it would otherwise
+// A filter-graph value ffmpeg will read back as one token. `pnmpeg` uses it for subtitle paths as
+// well as logos, for the same reason: a Windows path or a file with a comma in it would otherwise
 // end the argument early.
 pub fn escape_filter_value(value: &str) -> String {
     let mut out = String::new();

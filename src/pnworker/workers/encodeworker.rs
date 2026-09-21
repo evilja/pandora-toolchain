@@ -212,10 +212,6 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             // A retry of this job may have left a layout from the attempt before it; the upload
             // worker adopts whatever is here, so it cannot be allowed to outlive its encode.
             tokio::fs::remove_dir_all(&hls_directory).await.ok();
-            let fontconfig_dir = PathBuf::from("DB").join("fontconfig").join(
-                server_id.map(|id| id.to_string()).unwrap_or_else(|| "global".to_string())
-            );
-            tokio::fs::create_dir_all(&fontconfig_dir).await.ok();
 
             if job_cancelled(&directory) {
                 tx.send((job_id, MessagePayload::Static(JOB_CANCELLED), Some(Stage::Cancelled))).await.unwrap();
@@ -245,7 +241,6 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     ("INPUT",      PathValue::from(path_to_ffmpeg(directory.join("contents").join("torrent").join("input.mkv").as_path()))),
                     ("OUTPUT",     PathValue::from(path_to_ffmpeg(directory.join("work").join("output_noconcat.mp4").as_path()))),
                     ("ASS",        PathValue::from(path_to_ffmpeg(effects.subtitle.as_path()))),
-                    ("FONTCONFIG", PathValue::from(path_to_ffmpeg(fontconfig_dir.as_path()))),
                     ("PRESET",     PathValue::from(insert.clone())),
                     ("NEGKEY",     PathValue::from("pn-encode-main".to_string())),
                     ("CANCELFILE", PathValue::from(directory.join("CANCEL").display().to_string())),

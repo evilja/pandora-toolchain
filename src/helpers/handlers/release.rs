@@ -86,7 +86,7 @@ pub async fn handle_release(ctx: &Context, command: &serenity::all::CommandInter
                 let _ = tokio::fs::remove_dir_all(&work_dir).await;
                 return;
             }
-            match upload_release_fonts_to_drive(server_id, &safe_name, &zip_path, &zip_name, &work_dir).await {
+            match upload_release_fonts_to_drive(server_id, &safe_name, &zip_path, &zip_name).await {
                 Ok(upload) => format!(
                     "{}\nFolder: `{}`\nFile: `{}`",
                     upload.link,

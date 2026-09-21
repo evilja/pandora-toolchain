@@ -17,7 +17,7 @@ use pandora_toolchain::lib::mpeg::hls::{HlsNames, HlsSegmentType, DEFAULT_NAME_T
 use pandora_toolchain::lib::mpeg::probe::{ffprobe_dimensions, ffprobe_video_codec, ffprobe_video_height};
 use pandora_toolchain::lib::mpeg::logo::{
     DEFAULT_LOGO_MARGIN, DEFAULT_LOGO_OPACITY, LogoPeriod, LogoPlacement, LogoPosition,
-    compose_logo_filter,
+    compose_logo_filter, escape_filter_value,
 };
 use pandora_toolchain::lib::secret::{random_short_id, random_uuid_v4};
 use pandora_toolchain::lib::logging::diag::{exit_reason, memory_line, process_rss_mib, tail_line};
@@ -163,9 +163,6 @@ struct Args {
     /// ASS subtitle file
     #[arg(short, long)]
     ass: Option<String>,
-
-    #[arg(long, alias = "fontdir")]
-    fontconfig: Option<String>,
 
     /// Language to search in input file
     #[arg(short, long)]
@@ -2368,20 +2365,6 @@ fn select_subinput(input: &String, candidates: &Vec<String>, subinput: &Option<S
 
 fn quote_filter_value(value: &str) -> String {
     format!("'{}'", escape_filter_value(value))
-}
-
-fn escape_filter_value(value: &str) -> String {
-    let mut out = String::new();
-    for ch in value.chars() {
-        match ch {
-            '\\' | '\'' | ':' | ',' | '[' | ']' | ';' => {
-                out.push('\\');
-                out.push(ch);
-            }
-            _ => out.push(ch),
-        }
-    }
-    out
 }
 
 #[cfg(test)]

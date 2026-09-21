@@ -1,6 +1,5 @@
 use super::*;
 
-mod message;
 mod probe;
 mod batch;
 mod listing;
@@ -57,8 +56,6 @@ mod catlogs;
 mod refreshcache;
 mod build_ffmpeg;
 mod jobpick;
-#[allow(unused_imports)]
-pub use self::message::handle_message;
 pub use self::probe::handle_probe_component;
 pub use self::jobpick::handle_job_autocomplete;
 use self::jobpick::{resolve_job_option, with_job_note};
@@ -1205,7 +1202,6 @@ async fn upload_release_fonts_to_drive(
     safe_name: &str,
     zip_path: &Path,
     zip_name: &str,
-    _work_dir: &Path,
 ) -> Result<ReleaseFontsDriveUpload, String> {
     let local_folder = format!("{}/fonts", drive_folder_component(safe_name));
     let mut candidates = Vec::new();

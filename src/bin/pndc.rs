@@ -43,7 +43,6 @@ use reqwest;
 #[path = "../helpers/pndc.rs"]
 mod pndc_helpers;
 use pndc_helpers::*;
-#[allow(dead_code)]
 #[path = "../helpers/handlers/mod.rs"]
 mod handlers;
 use handlers::*;
@@ -2647,7 +2646,7 @@ impl EventHandler for Handler {
                 }
                 "smartcode" => {
                     match subcommand_options(&command).map(|(name, _)| name).unwrap_or("do") {
-                        "do" | "run" => {
+                        "do" => {
                             if let Some(job) = handle_smartcode(&ctx, &command).await {
                                 self.tx.send(JobClass::Job(job)).await.unwrap();
                             }
@@ -2658,7 +2657,7 @@ impl EventHandler for Handler {
                                 self.tx.send(JobClass::Job(job)).await.unwrap();
                             }
                         }
-                        "preview" | "exp" => {
+                        "preview" => {
                             if let Some(job) = handle_smartcode_preview(&ctx, &command).await {
                                 self.tx.send(JobClass::Job(job)).await.unwrap();
                             }
