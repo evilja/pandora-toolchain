@@ -1,24 +1,3 @@
-pub fn take_parens(s: &str) -> Option<(&str, &str)> {
-    debug_assert!(s.starts_with('('));
-    let inner_start = 1;
-    let mut depth = 1usize;
-    for (i, c) in s[inner_start..].char_indices() {
-        match c {
-            '(' => depth += 1,
-            ')' => {
-                depth -= 1;
-                if depth == 0 {
-                    let inner = &s[inner_start..inner_start + i];
-                    let rest = &s[inner_start + i + 1..];
-                    return Some((inner, rest));
-                }
-            }
-            _ => {}
-        }
-    }
-    None // unclosed
-}
-
 pub fn parse_parenthesized_args(s: &str) -> Option<(Vec<&str>, &str, bool)> {
     if !s.starts_with('(') {
         return None;
@@ -175,10 +154,4 @@ pub fn parse_hex_val(s: &str) -> (u32, &str) {
         Some((val, consumed)) => (val, &s[consumed..]),
         None => (0, s),
     }
-}
-
-pub fn parse_csv_f32s(s: &str) -> Vec<f32> {
-    s.split(',')
-        .filter_map(|p| p.trim().parse::<f32>().ok())
-        .collect()
 }

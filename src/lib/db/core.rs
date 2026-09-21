@@ -317,15 +317,6 @@ impl JobDb {
         Ok(())
     }
 
-    pub async fn update_response_id(&self, job_id: u64, response_id: u64) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE jobs SET response_id = ? WHERE job_id = ?")
-            .bind(response_id as i64)
-            .bind(job_id as i64)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
     pub async fn update_stage(&self, job_id: u64, stage: Stage) -> Result<(), sqlx::Error> {
         let stage_value = stage_to_int(stage);
         let now = unix_secs();
@@ -545,13 +536,6 @@ impl JobDb {
             .fetch_all(&self.pool)
             .await
     }
-
-    pub async fn get_jobs_by_author(&self, author: u64) -> Result<Vec<JobRow>, sqlx::Error> {
-        sqlx::query_as::<_, JobRow>(job_query!("WHERE author = ? ORDER BY requested_at DESC"))
-            .bind(author as i64)
-            .fetch_all(&self.pool)
-            .await
-    }
 }
 
 #[derive(sqlx::FromRow, Debug)]
@@ -625,12 +609,6 @@ impl JobRow {
             .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
             .and_then(|value| value.pointer("/acix/episode_num").and_then(|num| num.as_i64()))
             .filter(|episode| *episode >= 1)
-    }
-
-    pub fn candidates_as_vec(&self) -> Option<Vec<String>> {
-        self.candidates.as_ref().map(|s| {
-            s.split(',').map(|p| p.to_string()).collect()
-        })
     }
 }
 

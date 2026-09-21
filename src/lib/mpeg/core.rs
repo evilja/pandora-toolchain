@@ -157,17 +157,6 @@ impl FFmpeg {
     }
 }
 
-pub fn do_encode<T, I>(encoder: &mut T, params: Vec::<I>)
-where T: Encode<I>, I: Decode
-{
-    for i in params {
-        encoder.insert_param(i);
-    }
-
-    encoder.run();
-
-}
-
 pub fn run_ffmpeg_params(params: Vec<FfmpegParams>) -> bool {
     let mut encoder = FFmpeg::new();
     for param in params {

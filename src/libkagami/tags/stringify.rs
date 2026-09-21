@@ -92,18 +92,6 @@ pub fn write_overrides(out: &mut String, v: &[ASSOverride]) {
     }
 }
 
-pub fn stringify_override(ov: &ASSOverride) -> String {
-    let mut out = String::new();
-    write_override(&mut out, ov);
-    out
-}
-
-pub fn stringify_overrides(v: &[ASSOverride]) -> String {
-    let mut out = String::new();
-    write_overrides(&mut out, v);
-    out
-}
-
 /// Debug formatter for tests — human readable variant names with values
 pub fn fmt_override(ov: &ASSOverride) -> String {
     match ov {

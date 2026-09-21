@@ -268,7 +268,7 @@ Flow:
    - **Commit message** (block) — `commit_msg`.
    - **Warnings** (block) — a localized `None` value when empty, otherwise a bullet list truncated to the Discord embed-field limit with a localized remaining-count tail.
 
-`/job` intentionally does not run `PNASS_LAYER`; it is a repository upload/header-standardisation path only. The Warnings embed field is `None` unless the upload had to be converted to ASS.
+`/job` intentionally does not layer-normalise the script; it is a repository upload/header-standardisation path only. The Warnings embed field is `None` unless the upload had to be converted to ASS.
 
 ## `/smartcode`
 
@@ -286,7 +286,7 @@ Flow:
    - Otherwise, fetch `{pad2(episode)}/SOURCE.md` from the attached repo via `fg.get_file_content` and base64-decode (`base64_decode_bytes`), then `source_doc::parse` it: the link is the first line that is neither blank nor `;`-prefixed, with a leading `#` stripped; the probe, if any, is the `; pandora-probe job=<id> index=<n>` line a `/source` of a pack wrote. A probe line missing or mangling either field is treated as no probe rather than as a guessed index. Missing file → bail with an error.
 2. Classify the resolved link with `nyaaise(&link)` to pick a `TorrentType`.
 3. Download TL (required) and TS (optional) from `{pad2(episode)}/TL - {safe_name} - E{pad2}.ass` and `{pad2(episode)}/TS - {safe_name} - E{pad2}.ass` via `fg.get_file_content`. Stash them in a per-call temp dir (`temp_dir/pandora_smartcode_{nanos|job_id}/`). If TS is absent, run `PNASS_SPLIT_SIGNS` first: TL events whose style name contains `Sign` are moved, with their used styles, into a generated TS file; TL is updated without those sign events; both files are uploaded back to the repo and a warning/notification is shown.
-4. Run `pnass --merge` (the `PNASS_MERGE` spec when TS is present, `PNASS_MERGE_TL_ONLY` when it isn't) via `pnworker::util::run_tool`. The pnass negkey for this flow is `PNassMerge` (separate from the `PNass` one used by `PNASS_LAYER`), so the tool can detect it's being driven by smartcode. The merge specs pass `--smart-layer 9` and `--wrap-style <server setting>`; only events with no override tags beyond basic bold/italic/underline/strikeout get layer-normalised, and sign-style events keep their existing layer. Output goes to `output.ass` in the same temp dir. Non-`ToolResult::Success` → reply with `"Merge failed: <err>"` and bail.
+4. Run `pnass --merge` (the `PNASS_MERGE` spec when TS is present, `PNASS_MERGE_TL_ONLY` when it isn't) via `pnworker::util::run_tool`. The pnass negkey for this flow is `PNassMerge` (separate from the `PNassJob` one `PNASS_JOB` sends), so the tool can detect it's being driven by smartcode. The merge specs pass `--smart-layer 9` and `--wrap-style <server setting>`; only events with no override tags beyond basic bold/italic/underline/strikeout get layer-normalised, and sign-style events keep their existing layer. Output goes to `output.ass` in the same temp dir. Non-`ToolResult::Success` → reply with `"Merge failed: <err>"` and bail.
 5. Upload the merged ASS as `Release - {safe_name} - E{pad2}.ass` via `fg.upsert_file`, commit message `"Smartcode merge"`.
 6. Resolve the source-link origin:
    - If `link` was supplied as an argument → write `SOURCE.md` with `source_doc::compose` (commit `"Smartcode source"`): `# {link}\n`, plus `; pandora-probe job=<id> index=<n>` when the source came from a probe. A link given on its own replaces any probe line that was there, since the link it described has just been replaced.

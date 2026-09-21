@@ -393,12 +393,6 @@ impl SubstationAlpha {
             pandora_meta,
         }
     }
-    pub fn add_style(&mut self, style: V4pStyle) {
-        self.v4p_styles.push(style);
-    }
-    pub fn add_event(&mut self, event: Event) {
-        self.events.push(event);
-    }
     pub fn font_names(&self) -> Vec<String> {
         let mut out = BTreeSet::new();
         for style in &self.v4p_styles {
@@ -645,10 +639,6 @@ fn scale_effect_part_inverse(parts: &mut [String], index: usize, scale: f32) {
             *part = format_scaled(v / scale);
         }
     }
-}
-
-pub fn find_system_fonts(names: &[String]) -> Vec<PathBuf> {
-    find_fonts_with_roots(names, &[])
 }
 
 pub fn find_fonts_with_roots(names: &[String], extra_roots: &[PathBuf]) -> Vec<PathBuf> {

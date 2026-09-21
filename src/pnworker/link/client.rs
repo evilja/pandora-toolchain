@@ -10,7 +10,6 @@ use crate::lib::env::standard::{
     LINK_AUTO_UPDATE, LINK_COORDINATOR_URL, LINK_MAX_JOBS, LINK_NODE_NAME, LINK_NODE_TOKEN,
     PANDORA_MODE,
 };
-use crate::lib::p2p::nyaaise::TorrentType;
 use crate::lib::sync::lock;
 use crate::pnworker::core::{Concat, HalfJob, Job, JobClass, JobType, Stage};
 use crate::pnworker::frontend::Frontend;
@@ -1454,11 +1453,6 @@ pub fn encode_base64(bytes: &[u8]) -> String {
         });
     }
     out
-}
-
-// Kept for the coordinator side, which builds a spec from a job it already holds.
-pub fn source_kind_of(torrent: &TorrentType) -> String {
-    torrent.get_arg()
 }
 
 // A job type this build cannot execute must never be leased in the first place; the coordinator

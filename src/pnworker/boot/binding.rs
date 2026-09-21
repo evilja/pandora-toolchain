@@ -126,10 +126,6 @@ pub fn all() -> Vec<BootBinding> {
     ensure_loaded(&mut guard).clone()
 }
 
-pub fn for_node(node: &str) -> Option<BootBinding> {
-    all().into_iter().find(|b| b.node == node)
-}
-
 // Writes the whole set through a temporary file, like the roster does. The caller holds no lock
 // across the write: a binding change is an operator action, not something on a hot path. Every
 // caller drops the cache afterwards, because the write moves the mtime the cache is keyed on.

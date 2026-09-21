@@ -253,12 +253,6 @@ impl<M: Send + Clone + 'static> TypedShrine<M> {
     pub async fn force_reboot(&mut self, worker: &Worker) {
         self.reboot(worker).await;
     }
-    pub async fn force_reboot_all(&mut self) {
-        let workers: Vec<Worker> = self.layers.keys().cloned().collect();
-        for worker in &workers {
-            self.reboot(worker).await;
-        }
-    }
     pub fn reboot_epoch(&self, worker: &Worker) -> u32 {
         self.layers
             .get(worker)

@@ -206,61 +206,6 @@ pub fn ffprobe_video_codec(path: &Path) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-pub fn ffprobe_duration_centiseconds(path: &str) -> Option<u64> {
-    let output = Command::new(resolve_runtime_binary("ffprobe"))
-        .args([
-            "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            path,
-        ])
-        .output()
-        .ok()?;
-    duration_to_centiseconds(String::from_utf8(output.stdout).ok()?.trim())
-}
-
-// The async form for callers on the worker's task. `std::process` here would block the whole task
-// with no way out, so this uses tokio's Command with `kill_on_drop`: on timeout the future is
-// dropped and the ffprobe process goes with it, instead of both being stuck forever on an input
-// ffprobe cannot finish reading.
-pub async fn ffprobe_duration_centiseconds_timeout(
-    path: &str,
-    timeout: std::time::Duration,
-) -> Result<Option<u64>, String> {
-    let mut cmd = tokio::process::Command::new(resolve_runtime_binary("ffprobe"));
-    cmd.args([
-        "-v", "error",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        path,
-    ]);
-    cmd.kill_on_drop(true);
-    let output = match tokio::time::timeout(timeout, cmd.output()).await {
-        Ok(Ok(output)) => output,
-        Ok(Err(e)) => return Err(format!("ffprobe could not be started: {}", e)),
-        Err(_) => {
-            return Err(format!(
-                "ffprobe did not answer within {}s",
-                timeout.as_secs()
-            ));
-        }
-    };
-    let text = String::from_utf8(output.stdout).map_err(|e| e.to_string())?;
-    Ok(duration_to_centiseconds(text.trim()))
-}
-
-fn duration_to_centiseconds(value: &str) -> Option<u64> {
-    let seconds = value.parse::<f64>().ok()?;
-    if !seconds.is_finite() || seconds <= 0.0 {
-        return None;
-    }
-    let centiseconds = (seconds * 100.0).ceil() as u64;
-    if centiseconds > 255 * 360_000 + 59 * 6_000 + 59 * 100 + 99 {
-        return None;
-    }
-    Some(centiseconds)
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct MediaProbe {
     pub duration_ms: u64,
@@ -301,19 +246,6 @@ pub fn ffprobe_dimensions(path: &Path) -> Option<(u32, u32)> {
     let text = String::from_utf8(output.stdout).ok()?;
     let mut parts = text.trim().split('x');
     Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
-}
-
-pub fn ffprobe_has_audio_stream(path: &Path) -> bool {
-    let output = Command::new(resolve_runtime_binary("ffprobe"))
-        .args([
-            "-v", "error",
-            "-select_streams", "a:0",
-            "-show_entries", "stream=index",
-            "-of", "csv=p=0",
-            &path.to_string_lossy(),
-        ])
-        .output();
-    output.map(|out| out.status.success() && !out.stdout.is_empty()).unwrap_or(false)
 }
 
 // ffprobe reports a duration as either a JSON string or a number depending on the demuxer, and
@@ -392,7 +324,7 @@ pub fn ffprobe_video_height(path: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{duration_to_centiseconds, ffprobe_lang_from_json, probe_duration_ms};
+    use super::{ffprobe_lang_from_json, probe_duration_ms};
 
     #[test]
     fn probe_language_selects_the_matching_audio_stream() {
@@ -426,18 +358,5 @@ mod tests {
         assert_eq!(probe_duration_ms(Some(&serde_json::json!("N/A"))), None);
         assert_eq!(probe_duration_ms(Some(&serde_json::json!("0"))), None);
         assert_eq!(probe_duration_ms(Some(&serde_json::json!(serde_json::Value::Null))), None);
-    }
-
-    #[test]
-    fn duration_rounds_up_to_ass_centiseconds() {
-        assert_eq!(duration_to_centiseconds("61.2301"), Some(6124));
-        assert_eq!(duration_to_centiseconds("61.23"), Some(6123));
-    }
-
-    #[test]
-    fn duration_rejects_invalid_or_unrepresentable_values() {
-        assert_eq!(duration_to_centiseconds("0"), None);
-        assert_eq!(duration_to_centiseconds("NaN"), None);
-        assert_eq!(duration_to_centiseconds("91800000"), None);
     }
 }

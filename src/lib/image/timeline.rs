@@ -1,6 +1,6 @@
 use crate::lib::image::{Align, Canvas, Color, Font, ImageResult, TextOptions};
 use crate::lib::image::core::MAX_DIM;
-use crate::lib::mpeg::studio::{StudioRenderTrack, StudioTrackMode};
+use crate::lib::mpeg::studio::StudioTrackMode;
 use std::cmp::{max, min};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -20,19 +20,6 @@ pub struct TimelineSpec {
 }
 
 impl TimelineSpec {
-    pub fn from_tracks(duration_ms: u64, tracks: &[StudioRenderTrack]) -> Self {
-        Self {
-            duration_ms,
-            tracks: tracks.iter().map(|track| TimelineTrack {
-                id: track.id,
-                name: track.display_name.clone(),
-                mode: track.mode,
-                volume_percent: track.volume_percent,
-                offset_ms: track.offset_ms,
-                duration_ms: track.duration_ms,
-            }).collect(),
-        }
-    }
 }
 
 pub fn render_timeline(spec: &TimelineSpec) -> ImageResult<Vec<u8>> {

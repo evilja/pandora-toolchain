@@ -37,11 +37,6 @@ impl SvgImage {
             .map_err(|err| ImageError::Svg(err.to_string()))
     }
 
-    pub fn from_path_with_fonts<P: AsRef<Path>>(path: &Path, font_paths: &[P]) -> ImageResult<SvgImage> {
-        let data = read_capped(path)?;
-        SvgImage::from_bytes_with_fonts(&data, font_paths)
-    }
-
     pub fn size(&self) -> (f32, f32) {
         let size = self.tree.size();
         (size.width(), size.height())
