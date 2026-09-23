@@ -21,6 +21,11 @@ pub async fn handle_source(
     command: &serenity::all::CommandInteraction,
     tx: &Sender<JobClass>,
 ) {
+    // Without an episode the link is a whole season's pack, and every episode in it is written.
+    if option_i64(command, "episode").is_none() {
+        handle_source_batch(ctx, command, tx).await;
+        return;
+    }
     let episode = match positive_u32_option(ctx, command, "episode").await {
         Some(n) => n,
         None => return,

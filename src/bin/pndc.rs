@@ -1132,8 +1132,8 @@ fn help_catalog() -> &'static [HelpCommand] {
             section: "repo",
             name: "source",
             summary: "Write SOURCE.md for an attached episode folder.",
-            usage: "/source episode:<n> link:<source_link>",
-            details: "Stores the episode source link in the attached GitHub repo. Source links can be torrent URLs, magnet links, or Google Drive links. When the link is a pack, its file list is shown and you pick the episode's file by sending its index as a plain number in the channel; the choice is recorded on a comment line beside the link, which is what `/smartcode do` reads back instead of asking again.",
+            usage: "/source link:<source_link> [episode:<n>]",
+            details: "Stores the episode source link in the attached GitHub repo. Source links can be torrent URLs, magnet links, or Google Drive links. When the link is a pack, its file list is shown and you pick the episode's file by sending its index as a plain number in the channel; the choice is recorded on a comment line beside the link, which is what `/smartcode do` reads back instead of asking again. Leave `episode` out and a pack is matched to every episode at once: each file's episode number is read from its name, the mapping is shown for you to confirm (or to correct by picking which file is episode 1), and then every episode's SOURCE.md is written with its own file.",
         },
         HelpCommand {
             section: "repo",
@@ -2826,6 +2826,8 @@ impl EventHandler for Handler {
                 handle_batch_component(&ctx, &component, &self.tx).await;
             } else if component.data.custom_id.starts_with("pnwatch:") {
                 handle_watch_component(&ctx, &component).await;
+            } else if component.data.custom_id.starts_with("pnsource:") {
+                handle_source_component(&ctx, &component).await;
             }
         }
     }
@@ -3187,15 +3189,16 @@ impl EventHandler for Handler {
                         .min_int_value(1)
                 ),
             CreateCommand::new("source")
-                .description("Write the SOURCE.md for an episode's folder in the attached repo")
-                .add_option(
-                    CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (1-based)")
-                        .required(true)
-                        .min_int_value(1)
-                )
+                .description("Write the SOURCE.md for an episode's folder, or for every episode of a pack")
+                // Discord lists required options first, so `link` leads now that `episode` is optional.
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "link", "Source link (torrent URL, magnet link, or Google Drive link)")
                         .required(true)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (1-based). Omit to match every episode of a season pack.")
+                        .required(false)
+                        .min_int_value(1)
                 ),
             CreateCommand::new("watch")
                 .description("Watch a release feed and write each new episode's SOURCE.md")

@@ -506,6 +506,68 @@ pub fn typed_episode(typed: u32, episode_count: u32, offset: u32) -> Option<u32>
     (1..=episode_count).contains(&episode).then_some(episode)
 }
 
+// A file of a season pack, as the probe labelled it. The probe finds the number that counts up
+// across the pack's file names and labels each file `E<n>` or `E<n>v<m>`, which is a steadier
+// reading than any one file name gives on its own; a file it could not number keeps its name and
+// is no episode here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PackFile {
+    pub index: u64,
+    pub number: u32,
+    pub version: u32,
+}
+
+pub fn pack_file(index: u64, label: &str) -> Option<PackFile> {
+    let re = regex::Regex::new(r"^E(\d{1,4})(?:v(\d{1,2}))?$").unwrap();
+    let caps = re.captures(label.trim())?;
+    Some(PackFile {
+        index,
+        number: caps[1].parse().ok()?,
+        version: caps.get(2).and_then(|v| v.as_str().parse().ok()).unwrap_or(1),
+    })
+}
+
+// Which file of a pack each episode is, under one offset. A pack's numbers carry no season — the
+// probe reads only the number — so every one of them goes through the offset.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PackPlan {
+    // `(episode, file)`, in episode order.
+    pub episodes: Vec<(u32, PackFile)>,
+    // File numbers that are no episode of this season under the offset.
+    pub outside: Vec<u32>,
+    // Episodes more than one file claimed. The highest version is kept, and between equal
+    // versions the first file, so the plan is the same every time it is drawn.
+    pub duplicates: Vec<u32>,
+}
+
+pub fn plan_pack(files: &[PackFile], episode_count: u32, offset: u32) -> PackPlan {
+    let mut plan = PackPlan::default();
+    for file in files {
+        let bare = ReleaseNumber { number: file.number, season: None, version: file.version };
+        let Some(episode) = map_release(&bare, 0, episode_count, offset) else {
+            if !plan.outside.contains(&file.number) {
+                plan.outside.push(file.number);
+            }
+            continue;
+        };
+        match plan.episodes.iter_mut().find(|(taken, _)| *taken == episode) {
+            Some((_, kept)) => {
+                if !plan.duplicates.contains(&episode) {
+                    plan.duplicates.push(episode);
+                }
+                if file.version > kept.version {
+                    *kept = *file;
+                }
+            }
+            None => plan.episodes.push((episode, *file)),
+        }
+    }
+    plan.episodes.sort_by_key(|(episode, _)| *episode);
+    plan.outside.sort_unstable();
+    plan.duplicates.sort_unstable();
+    plan
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -641,6 +703,25 @@ mod tests {
         assert!(!same_series(&series_words("[G] Long Show Name - 05"), &series_words("[G] Other Thing - 06")));
         // An old watch with no series follows everything.
         assert!(WatchConfig::default().follows("[G] Anything - 01"));
+    }
+
+    #[test]
+    fn a_pack_maps_its_labelled_files_through_the_offset() {
+        let files: Vec<PackFile> = [(0, "E67"), (1, "E68"), (2, "E68v2"), (3, "E86"), (4, "NCOP.mkv (90MB)")]
+            .into_iter()
+            .filter_map(|(index, label)| pack_file(index, label))
+            .collect();
+        assert_eq!(files.len(), 4);
+        let plan = plan_pack(&files, 19, 66);
+        assert_eq!(
+            plan.episodes.iter().map(|(episode, file)| (*episode, file.index)).collect::<Vec<_>>(),
+            vec![(1, 0), (2, 2)]
+        );
+        assert_eq!(plan.duplicates, vec![2]);
+        assert_eq!(plan.outside, vec![86]);
+        // The same files under no offset are all outside a 19-episode season.
+        assert!(plan_pack(&files, 19, 0).episodes.is_empty());
+        assert_eq!(pack_file(9, "E01"), Some(PackFile { index: 9, number: 1, version: 1 }));
     }
 
     #[test]

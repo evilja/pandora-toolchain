@@ -10,6 +10,7 @@ mod cfont;
 mod merge;
 mod release;
 mod source;
+mod source_batch;
 mod attribute;
 mod link;
 mod alias;
@@ -72,6 +73,8 @@ pub use self::cfont::{handle_cfont, handle_cfont_autocomplete, refresh_font_name
 pub use self::merge::handle_merge;
 pub use self::release::handle_release;
 pub use self::source::handle_source;
+use self::source_batch::handle_source_batch;
+pub use self::source_batch::handle_source_component;
 pub use self::watch::{
     handle_watch, handle_watch_component, release_note, start_watch_poller, translate_release_episode,
 };

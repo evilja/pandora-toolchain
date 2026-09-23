@@ -1146,3 +1146,111 @@ args = 2
 [WATCH_OTHER_SHOWS]
 text = "別タイトルのリリース{}件を除外しました（例: `{}`）。そちらがこのチャンネルの作品なら、下から第1話を選んでください。"
 args = 2
+
+[SOURCE_BATCH_TITLE]
+text = "パックのソース"
+args = 0
+
+[SOURCE_BATCH_BODY]
+text = "ソース: {}\nこのパックのファイル{}件に番号を付けました。書き込む前に、どのファイルがどの話になるか確認してください。"
+args = 2
+
+[SOURCE_BATCH_NUMBERING_SAME]
+text = "ファイル番号がそのまま話数です。"
+args = 0
+
+[SOURCE_BATCH_NUMBERING_OFFSET]
+text = "ファイル{}が第1話です。"
+args = 1
+
+[SOURCE_BATCH_ROW]
+text = "**第{}話** ← `{}`（ファイル #{}）"
+args = 3
+
+[SOURCE_BATCH_ROW_REPLACES]
+text = "**第{}話** ← `{}`（ファイル #{}）— 現在のソースを置き換えます"
+args = 3
+
+[SOURCE_BATCH_MORE]
+text = "…ほか{}件。"
+args = 1
+
+[SOURCE_BATCH_NO_EPISODES]
+text = "この番号付けでは今シーズンの話にあたるファイルがありません。下から第1話のファイルを選んでください。"
+args = 0
+
+[SOURCE_BATCH_NOT_IN_PACK]
+text = "このパックにない話: {}。"
+args = 1
+
+[SOURCE_BATCH_OUTSIDE]
+text = "今シーズンの話ではないもの: {}。"
+args = 1
+
+[SOURCE_BATCH_DUPLICATES]
+text = "{}話は複数のファイルがあります。最も新しいバージョンを使います。"
+args = 1
+
+[SOURCE_BATCH_UNNUMBERED]
+text = "話数のないファイル{}件は除外しました。"
+args = 1
+
+[SOURCE_BATCH_WRITE_ALL]
+text = "すべて書き込む（{}）"
+args = 1
+
+[SOURCE_BATCH_WRITE_MISSING]
+text = "未設定のみ（{}）"
+args = 1
+
+[SOURCE_BATCH_CANCEL]
+text = "キャンセル"
+args = 0
+
+[SOURCE_BATCH_PICK_FIRST]
+text = "第1話はどのファイル？"
+args = 0
+
+[SOURCE_BATCH_FIRST_OPTION]
+text = "{}が第1話"
+args = 1
+
+[SOURCE_BATCH_NEEDS_PACK]
+text = "`episode` を省略する場合、リンクはシーズンパックのトレントかマグネットである必要があります。1話分のソースなら `episode` を指定してください。"
+args = 0
+
+[SOURCE_BATCH_ONE_FILE]
+text = "このリンクには動画が1本しかありません。`episode` を指定してその話のソースにしてください。"
+args = 0
+
+[SOURCE_BATCH_NONE_NUMBERED]
+text = "このパックには話数を読み取れるファイルがありません。`/source episode:<n>` で1話ずつ設定してください。"
+args = 0
+
+[SOURCE_BATCH_WRITING]
+text = "{}話分のソースを書き込んでいます…"
+args = 1
+
+[SOURCE_BATCH_DONE]
+text = "{}話分のソースを書き込みました: {}。"
+args = 2
+
+[SOURCE_BATCH_FAILED]
+text = "{} で停止しました。上記の話は書き込み済みです。残りはもう一度コマンドを実行してください。"
+args = 1
+
+[SOURCE_BATCH_CANCELLED]
+text = "キャンセルしました。何も書き込んでいません。"
+args = 0
+
+[SOURCE_BATCH_TIMEOUT]
+text = "応答がなかったため、何も書き込んでいません。"
+args = 0
+
+[SOURCE_BATCH_EXPIRED]
+text = "このプレビューはもう有効ではありません。もう一度 `/source` を実行してください。"
+args = 0
+
+[SOURCE_BATCH_NOT_YOURS]
+text = "この `/source` を実行した人だけが操作できます。"
+args = 0

@@ -1146,3 +1146,111 @@ args = 2
 [WATCH_OTHER_SHOWS]
 text = "{} release(s) of another title are left out, such as `{}`. If that is this channel's show, pick its episode 1 below."
 args = 2
+
+[SOURCE_BATCH_TITLE]
+text = "Pack source"
+args = 0
+
+[SOURCE_BATCH_BODY]
+text = "Source: {}\nI numbered {} files in this pack. Check which file becomes which episode before anything is written."
+args = 2
+
+[SOURCE_BATCH_NUMBERING_SAME]
+text = "File numbers are the episode numbers."
+args = 0
+
+[SOURCE_BATCH_NUMBERING_OFFSET]
+text = "File {} is episode 1."
+args = 1
+
+[SOURCE_BATCH_ROW]
+text = "**Episode {}** ← `{}` (file #{})"
+args = 3
+
+[SOURCE_BATCH_ROW_REPLACES]
+text = "**Episode {}** ← `{}` (file #{}) — replaces its current source"
+args = 3
+
+[SOURCE_BATCH_MORE]
+text = "…and {} more."
+args = 1
+
+[SOURCE_BATCH_NO_EPISODES]
+text = "Under this numbering no file is an episode of this season. Pick which file is episode 1 below."
+args = 0
+
+[SOURCE_BATCH_NOT_IN_PACK]
+text = "Not in this pack: episodes {}."
+args = 1
+
+[SOURCE_BATCH_OUTSIDE]
+text = "Not episodes of this season: {}."
+args = 1
+
+[SOURCE_BATCH_DUPLICATES]
+text = "More than one file for episodes {}: the highest version is used."
+args = 1
+
+[SOURCE_BATCH_UNNUMBERED]
+text = "{} file(s) with no episode number are left out."
+args = 1
+
+[SOURCE_BATCH_WRITE_ALL]
+text = "Write all ({})"
+args = 1
+
+[SOURCE_BATCH_WRITE_MISSING]
+text = "Only missing ones ({})"
+args = 1
+
+[SOURCE_BATCH_CANCEL]
+text = "Cancel"
+args = 0
+
+[SOURCE_BATCH_PICK_FIRST]
+text = "Which file is episode 1?"
+args = 0
+
+[SOURCE_BATCH_FIRST_OPTION]
+text = "{} is episode 1"
+args = 1
+
+[SOURCE_BATCH_NEEDS_PACK]
+text = "Without `episode`, the link has to be a torrent or magnet holding a season pack. Give `episode` to set one episode's source."
+args = 0
+
+[SOURCE_BATCH_ONE_FILE]
+text = "This link holds a single video. Give `episode` to set it as that episode's source."
+args = 0
+
+[SOURCE_BATCH_NONE_NUMBERED]
+text = "No file in this pack has an episode number I could read. Set each episode with `/source episode:<n>` instead."
+args = 0
+
+[SOURCE_BATCH_WRITING]
+text = "Writing the sources of {} episode(s)…"
+args = 1
+
+[SOURCE_BATCH_DONE]
+text = "Wrote the source of {} episode(s): {}."
+args = 2
+
+[SOURCE_BATCH_FAILED]
+text = "Stopped at {}. The episodes above were written; run the command again for the rest."
+args = 1
+
+[SOURCE_BATCH_CANCELLED]
+text = "Cancelled; nothing was written."
+args = 0
+
+[SOURCE_BATCH_TIMEOUT]
+text = "Nobody answered, so nothing was written."
+args = 0
+
+[SOURCE_BATCH_EXPIRED]
+text = "This preview is no longer waiting. Run `/source` again."
+args = 0
+
+[SOURCE_BATCH_NOT_YOURS]
+text = "Only the person who ran this `/source` can answer it."
+args = 0

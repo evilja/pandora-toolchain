@@ -1146,3 +1146,111 @@ args = 2
 [WATCH_OTHER_SHOWS]
 text = "Başka bir isimdeki {} yayın dışarıda bırakıldı (örneğin `{}`). Bu kanalın serisi o ise aşağıdan onun 1. bölümünü seçin."
 args = 2
+
+[SOURCE_BATCH_TITLE]
+text = "Paket kaynağı"
+args = 0
+
+[SOURCE_BATCH_BODY]
+text = "Kaynak: {}\nBu paketteki {} dosyayı numaralandırdım. Bir şey yazılmadan önce hangi dosyanın hangi bölüm olacağını kontrol edin."
+args = 2
+
+[SOURCE_BATCH_NUMBERING_SAME]
+text = "Dosya numaraları bölüm numaralarıyla aynı."
+args = 0
+
+[SOURCE_BATCH_NUMBERING_OFFSET]
+text = "{} dosyası 1. bölüm."
+args = 1
+
+[SOURCE_BATCH_ROW]
+text = "**{}. bölüm** ← `{}` (dosya #{})"
+args = 3
+
+[SOURCE_BATCH_ROW_REPLACES]
+text = "**{}. bölüm** ← `{}` (dosya #{}) — mevcut kaynağın yerine geçer"
+args = 3
+
+[SOURCE_BATCH_MORE]
+text = "…ve {} tane daha."
+args = 1
+
+[SOURCE_BATCH_NO_EPISODES]
+text = "Bu numaralandırmada hiçbir dosya bu sezonun bölümü değil. Aşağıdan 1. bölüm olan dosyayı seçin."
+args = 0
+
+[SOURCE_BATCH_NOT_IN_PACK]
+text = "Bu pakette olmayan bölümler: {}."
+args = 1
+
+[SOURCE_BATCH_OUTSIDE]
+text = "Bu sezonun bölümü olmayanlar: {}."
+args = 1
+
+[SOURCE_BATCH_DUPLICATES]
+text = "{}. bölümler için birden fazla dosya var: en yüksek sürüm kullanılır."
+args = 1
+
+[SOURCE_BATCH_UNNUMBERED]
+text = "Bölüm numarası olmayan {} dosya dışarıda bırakıldı."
+args = 1
+
+[SOURCE_BATCH_WRITE_ALL]
+text = "Hepsini yaz ({})"
+args = 1
+
+[SOURCE_BATCH_WRITE_MISSING]
+text = "Yalnızca eksikler ({})"
+args = 1
+
+[SOURCE_BATCH_CANCEL]
+text = "İptal"
+args = 0
+
+[SOURCE_BATCH_PICK_FIRST]
+text = "Hangi dosya 1. bölüm?"
+args = 0
+
+[SOURCE_BATCH_FIRST_OPTION]
+text = "{} 1. bölüm"
+args = 1
+
+[SOURCE_BATCH_NEEDS_PACK]
+text = "`episode` verilmediğinde bağlantı sezon paketi içeren bir torrent ya da magnet olmalı. Tek bir bölümün kaynağı için `episode` verin."
+args = 0
+
+[SOURCE_BATCH_ONE_FILE]
+text = "Bu bağlantıda tek bir video var. Onu bir bölümün kaynağı yapmak için `episode` verin."
+args = 0
+
+[SOURCE_BATCH_NONE_NUMBERED]
+text = "Bu paketteki hiçbir dosyada okuyabildiğim bir bölüm numarası yok. Bölümleri tek tek `/source episode:<n>` ile ayarlayın."
+args = 0
+
+[SOURCE_BATCH_WRITING]
+text = "{} bölümün kaynağı yazılıyor…"
+args = 1
+
+[SOURCE_BATCH_DONE]
+text = "{} bölümün kaynağı yazıldı: {}."
+args = 2
+
+[SOURCE_BATCH_FAILED]
+text = "{} noktasında durdu. Yukarıdaki bölümler yazıldı; geri kalanlar için komutu tekrar çalıştırın."
+args = 1
+
+[SOURCE_BATCH_CANCELLED]
+text = "İptal edildi; hiçbir şey yazılmadı."
+args = 0
+
+[SOURCE_BATCH_TIMEOUT]
+text = "Yanıt gelmedi, bu yüzden hiçbir şey yazılmadı."
+args = 0
+
+[SOURCE_BATCH_EXPIRED]
+text = "Bu önizleme artık beklemiyor. `/source` komutunu tekrar çalıştırın."
+args = 0
+
+[SOURCE_BATCH_NOT_YOURS]
+text = "Bunu yalnızca bu `/source` komutunu çalıştıran kişi yanıtlayabilir."
+args = 0
