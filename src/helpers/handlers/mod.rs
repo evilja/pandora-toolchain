@@ -56,6 +56,7 @@ mod catlogs;
 mod refreshcache;
 mod build_ffmpeg;
 mod jobpick;
+mod watch;
 pub use self::probe::handle_probe_component;
 pub use self::jobpick::handle_job_autocomplete;
 use self::jobpick::{resolve_job_option, with_job_note};
@@ -71,6 +72,9 @@ pub use self::cfont::{handle_cfont, handle_cfont_autocomplete, refresh_font_name
 pub use self::merge::handle_merge;
 pub use self::release::handle_release;
 pub use self::source::handle_source;
+pub use self::watch::{
+    handle_watch, handle_watch_component, release_note, start_watch_poller, translate_release_episode,
+};
 pub use self::attribute::{handle_attribute, handle_attribute_autocomplete};
 pub use self::link::{handle_link, link_target};
 pub use self::alias::{credited_name, handle_alias};

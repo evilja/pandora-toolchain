@@ -61,6 +61,7 @@ Pandora needs **View Channel, Send Messages, Embed Links, Add Reactions** and **
 - `/smartcode preview <episode> [link]` — runs the same smartcode merge/upload step, then renders 1-3 TS preview screenshots from `\fn` typeset lines instead of encoding.
 - `/source <episode> <link>` — write `{pad2(episode)}/SOURCE.md` to the channel's attached GitHub repo. A Drive link, a direct link, and a torrent holding one video write `# <link>\n` as they always have. A torrent or magnet is listed first (`handlers/listing.rs::list_source` — an ordinary probe submitted with no message of its own and read back from the job DB), and **a pack** turns the response into the prompt plus the `/probe`-style paged file list; the requester answers with the file's index as a plain number in the channel within 180s. `/source` queues no job, so the wait is the handler's own (`await_pending_pick`, over `await_pending_answer`), and pndc's `message` handler offers every message from that person in that channel to it (`take_pending_answer`) before a bare number is passed on to the queue; the waiting command says what counts as an answer, and anything else is left alone. A message that was taken as an answer — here, for a batch's index selection, or by a queued job's pick — is deleted afterwards when the bot has Manage Messages in the channel; without it the message simply stays. The pick is written as a second line, `; pandora-probe job=<id> index=<n>` — a comment every reader of this file already skips, so a `SOURCE.md` written by this version still parses under the one before it — and `/smartcode do` reads the file index back off it instead of asking. `job` is the listing's own probe: a `Pancode` adopts its `.torrent` while it is still around and refetches from the link after. No answer leaves `SOURCE.md` untouched and says so. Requires the channel to be attached and `episode` in `1..=episode_count`. Commit message: `"Set source link"`. No worker, no encoder — pure in-handler repository upsert.
 - `/smartlist` — list every uploaded episode of the channel's attached anime, newest upload per episode, as plain text rather than an embed. Requires the channel to be attached; reads `DB/DATA.db` only, no worker and no Forgejo call. See [`/smartlist`](#smartlist) below.
+- `/watch [feed] [stop]` — **upper-tier**; watch a release feed and write each new episode's `SOURCE.md` as its release appears. `feed` is a Nyaa search, a Nyaa page, or any RSS link. The bot shows which episode each release would become and waits for the numbering to be confirmed. `/watch` alone shows the channel's watch, and `stop:true` ends it. In a watching channel the episode-taking commands also accept a release number. See [`/watch`](#watch).
 - `/attribute set|list|remove|clear` — the styles and credit lines this channel's releases are built with. Requires the channel to be attached; in-handler, no worker. See [`/attribute`](#attribute) below.
 - `/link set|list|clear` — **upper-tier**; run in an attached channel to name another channel that takes one kind of this channel's output. The work still happens in the attached channel; only the output moves. `use` selects which output and defaults to the only one that exists today, `merge`: the release ASS `/merge` answers with when `/edit merge_release_only` is on. Pandora needs View Channel, Send Messages and Attach Files in the linked channel; without them the release is attached to the `/merge` reply as usual and the refusal is printed with it. Stored in `DB/config/<serverid>/<channelid>/links.json`, so a link outlives `/detach` the way the channel's `/attribute` styles do. In-handler, no worker. See [`/link`](#link) below.
 - `/alias choose|force` — the name `%enc%` credits somebody as. `choose` sets the caller's own and is rank 0; `force` sets another user's and needs the admin tier. Aliases are global, one per Discord account, in `DB/config/global/environment/aliases.pandora`. `-` clears one, falling back to the Discord display name.
@@ -241,6 +242,54 @@ in. Run in the attached channel; the work still happens there and only the outpu
   removes one, and the output comes back to the attached channel.
 - A link outlives `/detach`, the way the channel's `/attribute` styles do: `/detach` removes only
   `meta.toml`, so re-attaching the same channel finds the links it had.
+
+## `/watch`
+
+Watching a release feed so an episode's source is written when its release appears, instead of by
+`/source`. Run in an attached channel; `src/helpers/handlers/watch.rs` holds the Discord side, and
+`lib::watch` holds the feed, title and numbering logic.
+
+- **Feed.** `/watch feed:` takes a Nyaa search (searched across all anime as an RSS feed), a Nyaa
+  page (`page=rss` is added), or any other RSS link. The link goes through `sanitize_fetch_url`
+  like every user-supplied URL, redirects are not followed, and anything that is not RSS is
+  refused.
+- **Numbering.** A channel counts its MAL entry's episodes from 1, and a group that numbers the
+  whole franchise straight through calls this season's first episode `64`. The watch keeps an
+  offset (release number minus offset = episode), and nobody types it. Titles that name their
+  season (`S02E05`, SubsPlease's `S2 - 05`, `2nd Season - 05`) skip the offset and are read
+  directly, and the season they agree on is the one watched. For bare numbers the bot guesses the
+  offset: first the episode total of the MAL prequel chain (TV and ONA entries only, over JIKAN
+  `relations`), used when the feed's numbers start after it and fit this season once it is taken
+  off; then `0` when every number fits already; otherwise the lowest number seen minus one.
+- **Confirmation.** Setup posts a preview of the feed's releases and the episode each becomes,
+  with `Looks right`, `Cancel`, and a *Pick which release is episode 1* menu of the feed's own
+  titles. An empty feed of a sequel offers the two possible readings as buttons instead. Nothing
+  is written until the numbering is confirmed, and confirming is also the first check, which fills
+  in episodes already out.
+- **Checking.** Every 10 minutes (and on `Check now`), each confirmed watch reads its feed oldest
+  first and skips items it has handled. A title that is not one episode (a batch, a range, a
+  `12.5`) is ignored. A release that maps to an episode with no `SOURCE.md` gets one, the same
+  single-link file `/source` writes, with the commit message `Set source link (release watch)`,
+  and a line in the channel: `Episode 1 (release 64) — source set from …`. An episode that already
+  has a source is left alone: that is another group, another resolution, or a hand-set source.
+  The one exception is a `v2`-or-later release, which is asked about with `Use this release` /
+  `Ignore`. A release that fits no episode of the season is asked about with a *Use as episode…*
+  menu and `Ignore`, never dropped silently. An item is marked handled only after it was dealt
+  with, so a repo that could not be reached is retried on the next check.
+- **Typed release numbers.** In a channel with a confirmed watch, `/smartcode`, `/merge`,
+  `/release`, `/source`, `/get` and `/job` accept a release number as `episode` when it can only
+  be one: `translate_release_episode` rewrites the option before the handler reads it, and an
+  ephemeral follow-up says `Release 64 was treated as episode 1`. A number inside
+  `1..=episode_count` keeps its old meaning, so where the two ranges overlap nothing changes. The
+  publish commands are left out because they use each site's own numbering.
+- **Changing the numbering** later is the same menu on `/watch`'s status view. Questions asked
+  under the old numbering are withdrawn and their releases looked at again. `Stop watching` or
+  `/watch stop:true` removes the watch.
+- **Buttons** answer anyone who may run `/watch`. Their ids carry the setup message the watch was
+  created from, so buttons left on an older setup's message cannot act on a newer watch.
+- A watch applies only while the channel is attached to the MAL id it was set up for. It is not
+  removed by `/detach`; after a re-attach to another anime it simply stops applying, and
+  `/watch` says so.
 
 ## `/job`
 

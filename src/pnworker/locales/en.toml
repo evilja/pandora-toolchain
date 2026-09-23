@@ -973,3 +973,172 @@ args = 0
 [BUILD_FFMPEG_NO_COMPILER]
 text = "This container has no compiler, so ffmpeg cannot be built in it. Rebuild the image with `FFMPEG_NATIVE=1` (the compose default) to ship a native ffmpeg in it, or with `FFMPEG_TOOLCHAIN=1` so this command can build one into `DB/bin`."
 args = 0
+
+[WATCH_TITLE]
+text = "Release watch"
+args = 0
+
+[WATCH_SETUP_BODY]
+text = "Feed: {}\nWhen a release of a new episode appears, I write that episode's source. Check that the numbering below is right."
+args = 1
+
+[WATCH_ROW]
+text = "`{}` → **Episode {}**"
+args = 2
+
+[WATCH_ROW_OUTSIDE]
+text = "`{}` → not an episode of this season"
+args = 1
+
+[WATCH_NO_RELEASES]
+text = "No releases in this feed yet."
+args = 0
+
+[WATCH_NUMBERING_OFFSET]
+text = "Release {} is episode 1."
+args = 1
+
+[WATCH_NUMBERING_SAME]
+text = "Release numbers are episode numbers."
+args = 0
+
+[WATCH_NUMBERING_SEASON]
+text = "Releases name their season (S{}), so their numbers are read as they are."
+args = 1
+
+
+[WATCH_FIELD_NUMBERING]
+text = "Numbering"
+args = 0
+
+[WATCH_FIELD_LAST_RELEASE]
+text = "Last release"
+args = 0
+
+[WATCH_FIELD_LAST_CHECK]
+text = "Last checked"
+args = 0
+
+[WATCH_FIELD_ERROR]
+text = "Last error"
+args = 0
+
+[WATCH_FIELD_WAITING]
+text = "Waiting for an answer"
+args = 0
+
+[WATCH_NEVER]
+text = "Not yet"
+args = 0
+
+[WATCH_NOT_CONFIRMED]
+text = "The numbering hasn't been confirmed yet, so nothing is written."
+args = 0
+
+[WATCH_BUTTON_OK]
+text = "Looks right"
+args = 0
+
+[WATCH_BUTTON_CANCEL]
+text = "Cancel"
+args = 0
+
+[WATCH_BUTTON_CHECK]
+text = "Check now"
+args = 0
+
+[WATCH_BUTTON_STOP]
+text = "Stop watching"
+args = 0
+
+[WATCH_BUTTON_IGNORE]
+text = "Ignore"
+args = 0
+
+[WATCH_BUTTON_USE]
+text = "Use this release"
+args = 0
+
+[WATCH_BUTTON_CONTINUES]
+text = "Release {} is episode 1"
+args = 1
+
+[WATCH_BUTTON_RESTARTS]
+text = "Release 1 is episode 1"
+args = 0
+
+[WATCH_PICK_FIRST]
+text = "Wrong? Pick which release is episode 1"
+args = 0
+
+[WATCH_PICK_EPISODE]
+text = "Use as episode…"
+args = 0
+
+[WATCH_EPISODE_LABEL]
+text = "Episode {}"
+args = 1
+
+[WATCH_CONFIRMED]
+text = "Watching. I check the feed every 10 minutes and write each new episode's source."
+args = 0
+
+[WATCH_CANCELLED]
+text = "Release watch cancelled."
+args = 0
+
+[WATCH_STOPPED]
+text = "Stopped watching releases in this channel."
+args = 0
+
+[WATCH_NONE]
+text = "This channel isn't watching a release feed. Start one with `/watch feed:` and a Nyaa search, a Nyaa link or an RSS link."
+args = 0
+
+[WATCH_NOT_ALLOWED]
+text = "You can't change this channel's release watch."
+args = 0
+
+[WATCH_STALE]
+text = "This message belongs to an older release watch, so its buttons no longer do anything. Run `/watch` to see the current one."
+args = 0
+
+[WATCH_REATTACHED]
+text = "This channel is attached to a different anime now, so its old release watch no longer applies. Start a new one with `/watch feed:`."
+args = 0
+
+[WATCH_FEED_FAILED]
+text = "Couldn't read the feed: {}"
+args = 1
+
+[WATCH_CHECK_DONE]
+text = "Checked the feed: {} new source(s) written."
+args = 1
+
+[WATCH_SOURCE_SET]
+text = "**Episode {}** (release {}) — source set from `{}`"
+args = 3
+
+[WATCH_SOURCE_SET_SAME]
+text = "**Episode {}** — source set from `{}`"
+args = 2
+
+[WATCH_OUTSIDE]
+text = "`{}` doesn't fit this season's episodes (1–{}). Which episode is it?"
+args = 2
+
+[WATCH_NEW_VERSION]
+text = "`{}` is a new version of **episode {}**, which already has a source."
+args = 2
+
+[WATCH_IGNORED]
+text = "Ignored `{}`."
+args = 1
+
+[WATCH_WRITE_FAILED]
+text = "Couldn't write the source: {}"
+args = 1
+
+[WATCH_TYPED_RELEASE]
+text = "Release {} was treated as episode {}."
+args = 2

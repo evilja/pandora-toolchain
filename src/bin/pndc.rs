@@ -790,6 +790,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("release", 0),
     ("source", 0),
     ("smartlist", 0),
+    ("watch", 1),
     ("tutorial", 0),
     ("attribute", 0),
     ("alias", 0),
@@ -1133,6 +1134,13 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Write SOURCE.md for an attached episode folder.",
             usage: "/source episode:<n> link:<source_link>",
             details: "Stores the episode source link in the attached GitHub repo. Source links can be torrent URLs, magnet links, or Google Drive links. When the link is a pack, its file list is shown and you pick the episode's file by sending its index as a plain number in the channel; the choice is recorded on a comment line beside the link, which is what `/smartcode do` reads back instead of asking again.",
+        },
+        HelpCommand {
+            section: "repo",
+            name: "watch",
+            summary: "Watch a release feed and set each new episode's source automatically.",
+            usage: "/watch feed:<nyaa search|nyaa link|rss link> | /watch | /watch stop:true",
+            details: "Requires an attached anime repo. Reads the feed, shows which episode each release would become, and waits for you to confirm the numbering. If a group numbers the whole franchise straight through (release 64 is this season's episode 1), the bot guesses that from MyAnimeList and you fix it by picking episode 1 from a list. Once confirmed it checks every 10 minutes and writes SOURCE.md for each new episode that has none, posting a line in the channel. A release that fits no episode, or a v2 of an episode that already has a source, is asked about with buttons. In a watching channel, /smartcode, /merge, /release, /source, /get and /job also accept the release number as the episode when it can only be one. `/watch` alone shows the watch; `stop:true` ends it.",
         },
         HelpCommand {
             section: "repo",
@@ -2399,7 +2407,7 @@ impl EventHandler for Handler {
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
-        if let Interaction::Command(command) = interaction {
+        if let Interaction::Command(mut command) = interaction {
             if !is_authorized(command.data.name.as_str(), command.user.id.get()) {
                 println!("[gate] BLOCKED user={} cmd={}", command.user.id.get(), command.data.name.as_str());
                 or_report(command.create_response(&ctx, CreateInteractionResponse::Message(
@@ -2419,6 +2427,9 @@ impl EventHandler for Handler {
                 return;
             }
             println!("[gate] ALLOWED user={} cmd={}", command.user.id.get(), command.data.name.as_str());
+            // A release number typed where an episode goes, in a channel watching a feed, becomes
+            // the episode before any handler reads it.
+            let release_typed = translate_release_episode(&mut command);
             match command.data.name.as_str() {
                 "help" => {
                     handle_help_command(&ctx, &command).await;
@@ -2677,6 +2688,9 @@ impl EventHandler for Handler {
                 "source" => {
                     handle_source(&ctx, &command, &self.tx).await;
                 }
+                "watch" => {
+                    handle_watch(&ctx, &command).await;
+                }
                 "tutorial" => {
                     handle_tutorial(&ctx, &command).await;
                 }
@@ -2756,6 +2770,9 @@ impl EventHandler for Handler {
                 }
                 _ => {}
             }
+            if let Some((typed, episode)) = release_typed {
+                release_note(&ctx, &command, typed, episode).await;
+            }
         } else if let Interaction::Autocomplete(autocomplete) = interaction {
             let command_name = autocomplete.data.name.as_str();
             let allowed = is_authorized(command_name, autocomplete.user.id.get())
@@ -2807,6 +2824,8 @@ impl EventHandler for Handler {
                 handle_probe_component(&ctx, &component).await;
             } else if component.data.custom_id.starts_with("pnbatch:") {
                 handle_batch_component(&ctx, &component, &self.tx).await;
+            } else if component.data.custom_id.starts_with("pnwatch:") {
+                handle_watch_component(&ctx, &component).await;
             }
         }
     }
@@ -2821,6 +2840,7 @@ impl EventHandler for Handler {
             OnlineStatus::Online,
         );
         pandora_toolchain::pnworker::presence::set_global_context(ctx.clone());
+        start_watch_poller(ctx.clone());
 
         let keep_option = CreateCommandOption::new(
             CommandOptionType::Boolean,
@@ -3176,6 +3196,16 @@ impl EventHandler for Handler {
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "link", "Source link (torrent URL, magnet link, or Google Drive link)")
                         .required(true)
+                ),
+            CreateCommand::new("watch")
+                .description("Watch a release feed and write each new episode's SOURCE.md")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "feed", "Nyaa search, Nyaa link, or RSS link. Omit to see this channel's watch.")
+                        .required(false)
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Boolean, "stop", "Stop watching releases in this channel")
+                        .required(false)
                 ),
             CreateCommand::new("attribute")
                 .description("Styles and credit lines this channel's releases are built with")

@@ -23,3 +23,4 @@ pub mod source_doc;
 pub mod subs;
 pub mod sync;
 pub mod torrent;
+pub mod watch;

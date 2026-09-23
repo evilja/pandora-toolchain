@@ -973,3 +973,172 @@ args = 0
 [BUILD_FFMPEG_NO_COMPILER]
 text = "このコンテナにはコンパイラがないため、ffmpegをビルドできません。ネイティブffmpegを含めるには `FFMPEG_NATIVE=1`(composeの既定値)で、このコマンドで `DB/bin` にビルドできるようにするには `FFMPEG_TOOLCHAIN=1` でイメージを再ビルドしてください。"
 args = 0
+
+[WATCH_TITLE]
+text = "リリース監視"
+args = 0
+
+[WATCH_SETUP_BODY]
+text = "フィード: {}\n新しい話数のリリースが出たら、その話数のソースを書き込みます。下の話数の対応が正しいか確認してください。"
+args = 1
+
+[WATCH_ROW]
+text = "`{}` → **第{}話**"
+args = 2
+
+[WATCH_ROW_OUTSIDE]
+text = "`{}` → このシーズンの話数ではありません"
+args = 1
+
+[WATCH_NO_RELEASES]
+text = "このフィードにはまだリリースがありません。"
+args = 0
+
+[WATCH_NUMBERING_OFFSET]
+text = "リリース{}が第1話です。"
+args = 1
+
+[WATCH_NUMBERING_SAME]
+text = "リリース番号がそのまま話数です。"
+args = 0
+
+[WATCH_NUMBERING_SEASON]
+text = "リリースにシーズン(S{})が書かれているため、番号をそのまま使います。"
+args = 1
+
+
+[WATCH_FIELD_NUMBERING]
+text = "話数の対応"
+args = 0
+
+[WATCH_FIELD_LAST_RELEASE]
+text = "最新のリリース"
+args = 0
+
+[WATCH_FIELD_LAST_CHECK]
+text = "最終確認"
+args = 0
+
+[WATCH_FIELD_ERROR]
+text = "直近のエラー"
+args = 0
+
+[WATCH_FIELD_WAITING]
+text = "回答待ち"
+args = 0
+
+[WATCH_NEVER]
+text = "まだありません"
+args = 0
+
+[WATCH_NOT_CONFIRMED]
+text = "話数の対応がまだ確認されていないため、何も書き込みません。"
+args = 0
+
+[WATCH_BUTTON_OK]
+text = "これで正しい"
+args = 0
+
+[WATCH_BUTTON_CANCEL]
+text = "キャンセル"
+args = 0
+
+[WATCH_BUTTON_CHECK]
+text = "今すぐ確認"
+args = 0
+
+[WATCH_BUTTON_STOP]
+text = "監視を停止"
+args = 0
+
+[WATCH_BUTTON_IGNORE]
+text = "無視"
+args = 0
+
+[WATCH_BUTTON_USE]
+text = "このリリースを使う"
+args = 0
+
+[WATCH_BUTTON_CONTINUES]
+text = "リリース{}が第1話"
+args = 1
+
+[WATCH_BUTTON_RESTARTS]
+text = "リリース1が第1話"
+args = 0
+
+[WATCH_PICK_FIRST]
+text = "違う場合は第1話のリリースを選択"
+args = 0
+
+[WATCH_PICK_EPISODE]
+text = "この話数として使う…"
+args = 0
+
+[WATCH_EPISODE_LABEL]
+text = "第{}話"
+args = 1
+
+[WATCH_CONFIRMED]
+text = "監視中です。10分ごとにフィードを確認し、新しい話数のソースを書き込みます。"
+args = 0
+
+[WATCH_CANCELLED]
+text = "リリース監視をキャンセルしました。"
+args = 0
+
+[WATCH_STOPPED]
+text = "このチャンネルのリリース監視を停止しました。"
+args = 0
+
+[WATCH_NONE]
+text = "このチャンネルはリリースを監視していません。`/watch feed:` にNyaaの検索語、Nyaaのリンク、またはRSSリンクを指定して開始してください。"
+args = 0
+
+[WATCH_NOT_ALLOWED]
+text = "このチャンネルのリリース監視を変更する権限がありません。"
+args = 0
+
+[WATCH_STALE]
+text = "このメッセージは以前のリリース監視のもので、ボタンはもう使えません。現在の設定は `/watch` で確認できます。"
+args = 0
+
+[WATCH_REATTACHED]
+text = "このチャンネルは別のアニメに紐付けられたため、以前のリリース監視は無効です。`/watch feed:` で新しく開始してください。"
+args = 0
+
+[WATCH_FEED_FAILED]
+text = "フィードを読み込めませんでした: {}"
+args = 1
+
+[WATCH_CHECK_DONE]
+text = "フィードを確認しました: 新しいソースを{}件書き込みました。"
+args = 1
+
+[WATCH_SOURCE_SET]
+text = "**第{}話**(リリース{})— ソースを `{}` に設定しました"
+args = 3
+
+[WATCH_SOURCE_SET_SAME]
+text = "**第{}話** — ソースを `{}` に設定しました"
+args = 2
+
+[WATCH_OUTSIDE]
+text = "`{}` はこのシーズンの話数(1〜{})に当てはまりません。何話ですか?"
+args = 2
+
+[WATCH_NEW_VERSION]
+text = "`{}` はソース設定済みの**第{}話**の新しいバージョンです。"
+args = 2
+
+[WATCH_IGNORED]
+text = "`{}` を無視しました。"
+args = 1
+
+[WATCH_WRITE_FAILED]
+text = "ソースを書き込めませんでした: {}"
+args = 1
+
+[WATCH_TYPED_RELEASE]
+text = "リリース{}を第{}話として扱いました。"
+args = 2

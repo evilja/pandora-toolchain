@@ -973,3 +973,172 @@ args = 0
 [BUILD_FFMPEG_NO_COMPILER]
 text = "Bu konteynerde derleyici yok, o yüzden içinde ffmpeg derlenemez. İmajı, yerel ffmpeg ile gelmesi için `FFMPEG_NATIVE=1` (compose varsayılanı) ile ya da bu komutun `DB/bin` içine derleyebilmesi için `FFMPEG_TOOLCHAIN=1` ile yeniden oluştur."
 args = 0
+
+[WATCH_TITLE]
+text = "Yayın takibi"
+args = 0
+
+[WATCH_SETUP_BODY]
+text = "Kaynak: {}\nYeni bir bölümün yayını çıktığında o bölümün kaynağını ben yazarım. Aşağıdaki numaralandırmanın doğru olduğunu kontrol edin."
+args = 1
+
+[WATCH_ROW]
+text = "`{}` → **{}. bölüm**"
+args = 2
+
+[WATCH_ROW_OUTSIDE]
+text = "`{}` → bu sezonun bir bölümü değil"
+args = 1
+
+[WATCH_NO_RELEASES]
+text = "Bu kaynakta henüz yayın yok."
+args = 0
+
+[WATCH_NUMBERING_OFFSET]
+text = "{} numaralı yayın 1. bölüm."
+args = 1
+
+[WATCH_NUMBERING_SAME]
+text = "Yayın numaraları bölüm numaralarıyla aynı."
+args = 0
+
+[WATCH_NUMBERING_SEASON]
+text = "Yayınlar sezonlarını belirtiyor (S{}), bu yüzden numaraları olduğu gibi okunur."
+args = 1
+
+
+[WATCH_FIELD_NUMBERING]
+text = "Numaralandırma"
+args = 0
+
+[WATCH_FIELD_LAST_RELEASE]
+text = "Son yayın"
+args = 0
+
+[WATCH_FIELD_LAST_CHECK]
+text = "Son kontrol"
+args = 0
+
+[WATCH_FIELD_ERROR]
+text = "Son hata"
+args = 0
+
+[WATCH_FIELD_WAITING]
+text = "Cevap bekleyen"
+args = 0
+
+[WATCH_NEVER]
+text = "Henüz yok"
+args = 0
+
+[WATCH_NOT_CONFIRMED]
+text = "Numaralandırma henüz onaylanmadı, bu yüzden hiçbir şey yazılmıyor."
+args = 0
+
+[WATCH_BUTTON_OK]
+text = "Doğru görünüyor"
+args = 0
+
+[WATCH_BUTTON_CANCEL]
+text = "İptal"
+args = 0
+
+[WATCH_BUTTON_CHECK]
+text = "Şimdi kontrol et"
+args = 0
+
+[WATCH_BUTTON_STOP]
+text = "Takibi durdur"
+args = 0
+
+[WATCH_BUTTON_IGNORE]
+text = "Yok say"
+args = 0
+
+[WATCH_BUTTON_USE]
+text = "Bu yayını kullan"
+args = 0
+
+[WATCH_BUTTON_CONTINUES]
+text = "{} numaralı yayın 1. bölüm"
+args = 1
+
+[WATCH_BUTTON_RESTARTS]
+text = "1 numaralı yayın 1. bölüm"
+args = 0
+
+[WATCH_PICK_FIRST]
+text = "Yanlış mı? Hangi yayının 1. bölüm olduğunu seçin"
+args = 0
+
+[WATCH_PICK_EPISODE]
+text = "Şu bölüm olarak kullan…"
+args = 0
+
+[WATCH_EPISODE_LABEL]
+text = "{}. bölüm"
+args = 1
+
+[WATCH_CONFIRMED]
+text = "Takip ediliyor. Kaynağı 10 dakikada bir kontrol edip her yeni bölümün kaynağını yazarım."
+args = 0
+
+[WATCH_CANCELLED]
+text = "Yayın takibi iptal edildi."
+args = 0
+
+[WATCH_STOPPED]
+text = "Bu kanaldaki yayın takibi durduruldu."
+args = 0
+
+[WATCH_NONE]
+text = "Bu kanal bir yayın kaynağını takip etmiyor. `/watch feed:` ile bir Nyaa araması, Nyaa bağlantısı ya da RSS bağlantısı vererek başlatın."
+args = 0
+
+[WATCH_NOT_ALLOWED]
+text = "Bu kanalın yayın takibini değiştiremezsiniz."
+args = 0
+
+[WATCH_STALE]
+text = "Bu mesaj eski bir yayın takibine ait, düğmeleri artık çalışmıyor. Güncel takibi görmek için `/watch` kullanın."
+args = 0
+
+[WATCH_REATTACHED]
+text = "Bu kanal artık başka bir animeye bağlı, bu yüzden eski yayın takibi geçerli değil. `/watch feed:` ile yenisini başlatın."
+args = 0
+
+[WATCH_FEED_FAILED]
+text = "Kaynak okunamadı: {}"
+args = 1
+
+[WATCH_CHECK_DONE]
+text = "Kaynak kontrol edildi: {} yeni kaynak yazıldı."
+args = 1
+
+[WATCH_SOURCE_SET]
+text = "**{}. bölüm** ({} numaralı yayın) — kaynak `{}` olarak ayarlandı"
+args = 3
+
+[WATCH_SOURCE_SET_SAME]
+text = "**{}. bölüm** — kaynak `{}` olarak ayarlandı"
+args = 2
+
+[WATCH_OUTSIDE]
+text = "`{}` bu sezonun bölümlerine (1–{}) uymuyor. Hangi bölüm?"
+args = 2
+
+[WATCH_NEW_VERSION]
+text = "`{}`, zaten kaynağı olan **{}. bölümün** yeni bir sürümü."
+args = 2
+
+[WATCH_IGNORED]
+text = "`{}` yok sayıldı."
+args = 1
+
+[WATCH_WRITE_FAILED]
+text = "Kaynak yazılamadı: {}"
+args = 1
+
+[WATCH_TYPED_RELEASE]
+text = "{} numaralı yayın {}. bölüm olarak kabul edildi."
+args = 2
