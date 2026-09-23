@@ -253,17 +253,30 @@ Watching a release feed so an episode's source is written when its release appea
   page (`page=rss` is added), or any other RSS link. The link goes through `sanitize_fetch_url`
   like every user-supplied URL, redirects are not followed, and anything that is not RSS is
   refused.
+- **Which show.** A Nyaa search matches loosely — `re zero subsplease 1080` also finds
+  `Saiyuuki Reload - Zeroin - 01` — so a feed can carry another show's releases. `series_words`
+  reads the show a title names (the words before its episode number, less bracketed tags and
+  season words), and setup picks the feed's show with `pick_series`: the one sharing most words
+  with the anime's name, then the one with the most releases. It is kept as the watch's `series`;
+  releases of another title are left out of the guess, the preview (which counts them and names
+  one), and every check, where they are skipped silently. Titles of the same show match on at
+  least half their words, so a group adding `S4` to its naming mid-season is still followed. A
+  watch saved before `series` existed follows every title.
 - **Numbering.** A channel counts its MAL entry's episodes from 1, and a group that numbers the
   whole franchise straight through calls this season's first episode `64`. The watch keeps an
   offset (release number minus offset = episode), and nobody types it. Titles that name their
   season (`S02E05`, SubsPlease's `S2 - 05`, `2nd Season - 05`) skip the offset and are read
   directly, and the season they agree on is the one watched. For bare numbers the bot guesses the
   offset: first the episode total of the MAL prequel chain (TV and ONA entries only, over JIKAN
-  `relations`), used when the feed's numbers start after it and fit this season once it is taken
+  `relations`, and over AniList's relations keyed by the same MAL ids when JIKAN cannot answer),
+  used when the feed's numbers start after it and fit this season once it is taken
   off; then `0` when every number fits already; otherwise the lowest number seen minus one.
 - **Confirmation.** Setup posts a preview of the feed's releases and the episode each becomes,
   with `Looks right`, `Cancel`, and a *Pick which release is episode 1* menu of the feed's own
-  titles. An empty feed of a sequel offers the two possible readings as buttons instead. Nothing
+  titles — this show's first, then any other title's, since picking one of those is how a person
+  says the watch guessed the wrong show (the choice sets both the offset and `series`). When the
+  prequel total is known and its first release has already left the feed, the menu also offers
+  *Release N is episode 1* for it. An empty feed of a sequel offers the two possible readings as buttons instead. Nothing
   is written until the numbering is confirmed, and confirming is also the first check, which fills
   in episodes already out.
 - **Checking.** Every 10 minutes (and on `Check now`), each confirmed watch reads its feed oldest

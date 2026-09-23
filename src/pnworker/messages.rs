@@ -61,6 +61,7 @@ pub const WATCH_NEW_VERSION: &str = "WATCH_NEW_VERSION";
 pub const WATCH_IGNORED: &str = "WATCH_IGNORED";
 pub const WATCH_WRITE_FAILED: &str = "WATCH_WRITE_FAILED";
 pub const WATCH_TYPED_RELEASE: &str = "WATCH_TYPED_RELEASE";
+pub const WATCH_OTHER_SHOWS: &str = "WATCH_OTHER_SHOWS";
 // `/build-ffmpeg`: the build runs in the background and edits its own message when it ends.
 pub const JOB_PICK_INVALID: &str = "JOB_PICK_INVALID";
 pub const JOB_PICK_REQUIRED: &str = "JOB_PICK_REQUIRED";

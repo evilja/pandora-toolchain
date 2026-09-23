@@ -189,18 +189,28 @@ pub async fn fetch_anime(url: &str) -> Result<AnimeMeta, String> {
 // numbering a franchise straight through starts this entry at that count plus one. Only TV and
 // ONA entries count — a movie or an OVA between seasons takes no number in such a run. `None`
 // whenever any link of the chain cannot be read, including a prequel whose count is unknown,
-// because a partial sum is a confident wrong guess and no guess is only a question.
+// because a partial sum is a confident wrong guess and no guess is only a question. JIKAN is
+// asked first and AniList, keyed by the same MyAnimeList ids, when it cannot answer — the same
+// fallback `fetch_anime` makes, for the same gateway errors.
 pub async fn prequel_episode_total(id: u64) -> Option<u32> {
-    const MAX_HOPS: usize = 12;
     let client = Client::builder()
         .timeout(Duration::from_secs(20))
         .build()
         .ok()?;
+    match jikan_prequel_total(&client, id).await {
+        Some(total) => Some(total),
+        None => anilist_prequel_total(&client, id).await,
+    }
+}
+
+const PREQUEL_MAX_HOPS: usize = 12;
+
+async fn jikan_prequel_total(client: &Client, id: u64) -> Option<u32> {
     let mut total = 0u32;
     let mut current = id;
     let mut visited = vec![id];
-    for _ in 0..MAX_HOPS {
-        let Some(prequel) = jikan_prequel(&client, current).await? else {
+    for _ in 0..PREQUEL_MAX_HOPS {
+        let Some(prequel) = jikan_prequel(client, current).await? else {
             return Some(total);
         };
         if visited.contains(&prequel) {
@@ -209,7 +219,7 @@ pub async fn prequel_episode_total(id: u64) -> Option<u32> {
         visited.push(prequel);
         // JIKAN allows three requests a second; a chain walk is a burst of them.
         tokio::time::sleep(Duration::from_millis(400)).await;
-        let body: Value = jikan_get(&client, &format!("https://api.jikan.moe/v4/anime/{}", prequel)).await?;
+        let body: Value = jikan_get(client, &format!("https://api.jikan.moe/v4/anime/{}", prequel)).await?;
         let data = body.get("data")?;
         let counts = matches!(data.get("type").and_then(|v| v.as_str()), Some("TV") | Some("ONA"));
         if counts {
@@ -220,6 +230,60 @@ pub async fn prequel_episode_total(id: u64) -> Option<u32> {
         tokio::time::sleep(Duration::from_millis(400)).await;
     }
     Some(total)
+}
+
+// The same walk over AniList. One request per hop answers both questions JIKAN needs two for: the
+// prequel's id and its format and episode count ride on the relation edge.
+async fn anilist_prequel_total(client: &Client, id: u64) -> Option<u32> {
+    let query = r#"query ($idMal: Int) {
+        Media(idMal: $idMal, type: ANIME) {
+            relations { edges { relationType node { idMal type format episodes } } }
+        }
+    }"#;
+    let mut total = 0u32;
+    let mut current = id;
+    let mut visited = vec![id];
+    for _ in 0..PREQUEL_MAX_HOPS {
+        let payload = serde_json::json!({ "query": query, "variables": { "idMal": current } });
+        let resp = client.post("https://graphql.anilist.co").json(&payload).send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let body: Value = resp.json().await.ok()?;
+        let Some(prequel) = anilist_prequel_from_relations(&body)? else {
+            return Some(total);
+        };
+        let prequel_id = prequel.get("idMal").and_then(|v| v.as_u64())?;
+        if visited.contains(&prequel_id) {
+            return Some(total);
+        }
+        visited.push(prequel_id);
+        // AniList's `TV_SHORT` is a TV entry on MyAnimeList, which is what JIKAN's walk counts.
+        let counts = matches!(
+            prequel.get("format").and_then(|v| v.as_str()),
+            Some("TV") | Some("TV_SHORT") | Some("ONA")
+        );
+        if counts {
+            let episodes = prequel.get("episodes").and_then(|v| v.as_u64())?;
+            total = total.checked_add(u32::try_from(episodes).ok()?)?;
+        }
+        current = prequel_id;
+    }
+    Some(total)
+}
+
+// The outer `None` is an unreadable answer; the inner one an entry with no prequel.
+fn anilist_prequel_from_relations(body: &Value) -> Option<Option<Value>> {
+    let media = body.get("data")?.get("Media").filter(|media| !media.is_null())?;
+    let edges = media.get("relations")?.get("edges")?.as_array()?;
+    Some(
+        edges
+            .iter()
+            .filter(|edge| edge.get("relationType").and_then(|v| v.as_str()) == Some("PREQUEL"))
+            .filter_map(|edge| edge.get("node"))
+            .find(|node| node.get("type").and_then(|v| v.as_str()) == Some("ANIME"))
+            .cloned(),
+    )
 }
 
 // The outer `None` is a failed request; the inner one an entry with no prequel.
@@ -264,6 +328,20 @@ mod tests {
         });
         assert_eq!(prequel_from_relations(&body), Some(3));
         assert_eq!(prequel_from_relations(&serde_json::json!({ "data": [] })), None);
+    }
+
+    #[test]
+    fn the_anilist_prequel_is_the_anime_under_prequel() {
+        let body = serde_json::json!({ "data": { "Media": { "relations": { "edges": [
+            { "relationType": "ADAPTATION", "node": { "idMal": 1, "type": "MANGA", "format": "MANGA", "episodes": null } },
+            { "relationType": "PREQUEL", "node": { "idMal": 2, "type": "MANGA", "format": "NOVEL", "episodes": null } },
+            { "relationType": "PREQUEL", "node": { "idMal": 54857, "type": "ANIME", "format": "TV", "episodes": 16 } }
+        ] } } } });
+        let prequel = anilist_prequel_from_relations(&body).unwrap().unwrap();
+        assert_eq!(prequel["idMal"], 54857);
+        let first_season = serde_json::json!({ "data": { "Media": { "relations": { "edges": [] } } } });
+        assert_eq!(anilist_prequel_from_relations(&first_season), Some(None));
+        assert_eq!(anilist_prequel_from_relations(&serde_json::json!({ "data": { "Media": null } })), None);
     }
 
     #[test]

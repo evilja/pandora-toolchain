@@ -51,6 +51,11 @@ pub struct WatchConfig {
     pub last_release: Option<String>,
     #[serde(default)]
     pub last_error: Option<String>,
+    // The show this watch follows, as `series_words` reads it off a title. A release naming another
+    // show is not this channel's, whatever its number. Empty follows every title, which is what a
+    // watch saved before this existed does.
+    #[serde(default)]
+    pub series: Vec<String>,
     #[serde(default)]
     pub seen: Vec<String>,
     // Kept last: TOML writes arrays of tables after every plain value.
@@ -103,6 +108,10 @@ impl WatchConfig {
     // was set up for.
     pub fn applies_to(&self, mal_id: Option<u64>) -> bool {
         mal_id == Some(self.mal_id)
+    }
+
+    pub fn follows(&self, title: &str) -> bool {
+        same_series(&self.series, &series_words(title))
     }
 }
 
@@ -307,6 +316,11 @@ pub struct ReleaseNumber {
 // returned for titles that really are not; a title that is an episode but cannot be placed is a
 // question for a person, and that comes from `map_release`, not from here.
 pub fn release_number(title: &str) -> Option<ReleaseNumber> {
+    parse_release(title).map(|(release, _)| release)
+}
+
+// The release number and where it starts in the title: everything before that is the show's name.
+fn parse_release(title: &str) -> Option<(ReleaseNumber, usize)> {
     let lower = title.to_lowercase();
     if lower.contains("batch") || lower.contains("complete") {
         return None;
@@ -324,11 +338,12 @@ pub fn release_number(title: &str) -> Option<ReleaseNumber> {
             if is_range_or_fraction(&title[whole.end()..]) {
                 return None;
             }
-            return Some(ReleaseNumber {
+            let release = ReleaseNumber {
                 number: caps[2].parse().ok()?,
                 season: caps[1].parse().ok(),
                 version: caps.get(3).and_then(|v| v.as_str().parse().ok()).unwrap_or(1),
-            });
+            };
+            return Some((release, whole.start()));
         }
     }
 
@@ -344,11 +359,77 @@ pub fn release_number(title: &str) -> Option<ReleaseNumber> {
     if is_range_or_fraction(&title[whole.end()..]) {
         return None;
     }
-    Some(ReleaseNumber {
+    let release = ReleaseNumber {
         number: caps[1].parse().ok()?,
         season: season_words(&title[..whole.start()]),
         version: caps.get(2).and_then(|v| v.as_str().parse().ok()).unwrap_or(1),
-    })
+    };
+    Some((release, whole.start()))
+}
+
+// The show a release title names, as lowercase words: what comes before its episode number, less
+// the group and quality tags in brackets and the words that only say which season it is. A Nyaa
+// search matches loosely — "re zero" also finds `Saiyuuki Reload - Zeroin` — so a feed can carry
+// another show's releases, and this is what tells them apart. Empty for a title with no episode.
+pub fn series_words(title: &str) -> Vec<String> {
+    let Some((_, start)) = parse_release(title) else {
+        return Vec::new();
+    };
+    let bracketed = regex::Regex::new(r"\[[^\]]*\]|\([^)]*\)|\{[^}]*\}").unwrap();
+    let name = bracketed.replace_all(&title[..start], " ").to_lowercase();
+    let season_word = regex::Regex::new(r"^(?:season|part|cour|s\d{1,2}|\d{1,2}(?:st|nd|rd|th))$").unwrap();
+    let mut words: Vec<String> = Vec::new();
+    for word in name.split(|c: char| !c.is_alphanumeric()) {
+        if word.is_empty() || season_word.is_match(word) || words.iter().any(|seen| seen == word) {
+            continue;
+        }
+        words.push(word.to_string());
+    }
+    words
+}
+
+// Whether two titles name the same show: most of their words in common, so a group adding a word
+// to its naming mid-season (`Show S4`, `Show Season 4`) stays the same show. Nothing known about
+// either side is no evidence against it.
+pub fn same_series(a: &[String], b: &[String]) -> bool {
+    if a.is_empty() || b.is_empty() {
+        return true;
+    }
+    let shared = a.iter().filter(|word| b.contains(word)).count();
+    let union = a.len() + b.len() - shared;
+    shared * 2 >= union
+}
+
+// The show a feed is about, out of the titles it carries: the one sharing the most words with the
+// anime's own name, and among those the one with the most releases. The anime's name is often the
+// English one while the titles are romaji, so the count is usually what decides, and a stray match
+// or two from a loose search never outnumbers the show that was searched for.
+pub fn pick_series(titles: &[&str], anime_name: Option<&str>) -> Vec<String> {
+    let name: Vec<String> = anime_name
+        .unwrap_or("")
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_string)
+        .collect();
+    let mut groups: Vec<(Vec<String>, usize)> = Vec::new();
+    for title in titles {
+        let words = series_words(title);
+        if words.is_empty() {
+            continue;
+        }
+        match groups.iter_mut().find(|(first, _)| same_series(first, &words)) {
+            Some((_, count)) => *count += 1,
+            None => groups.push((words, 1)),
+        }
+    }
+    // `max_by_key` keeps the last of equals; reversed, that is the first seen — the newest release.
+    groups
+        .into_iter()
+        .rev()
+        .max_by_key(|(words, count)| (words.iter().filter(|word| name.contains(word)).count(), *count))
+        .map(|(words, _)| words)
+        .unwrap_or_default()
 }
 
 // `01-12`, `01 ~ 12`, `12.5`: what follows the number says it is not one whole episode.
@@ -524,6 +605,44 @@ mod tests {
         assert_eq!(typed_episode(30, 24, 12), Some(18));
     }
 
+    // The feed that set this up: a search for "re zero" that also matched another show's episode 1,
+    // whose number dragged the offset guess down to 0.
+    #[test]
+    fn another_show_in_the_feed_is_told_apart_and_left_out_of_the_guess() {
+        let titles = [
+            "[SubsPlease] Re Zero kara Hajimeru Isekai Seikatsu - 84 (1080p) [5188BBC4].mkv",
+            "[SubsPlease] Saiyuuki Reload - Zeroin - 01 (1080p) [ABCDEF01].mkv",
+            "[SubsPlease] Re Zero kara Hajimeru Isekai Seikatsu - 83 (1080p) [1D8BC969].mkv",
+            "[SubsPlease] Re Zero kara Hajimeru Isekai Seikatsu - 77 (1080p) [F7DAEC64].mkv",
+        ];
+        let series = pick_series(&titles, Some("Re:ZERO -Starting Life in Another World- Season 4"));
+        assert_eq!(series, ["re", "zero", "kara", "hajimeru", "isekai", "seikatsu"]);
+        let config = WatchConfig { series, ..Default::default() };
+        assert!(config.follows(titles[0]));
+        assert!(!config.follows(titles[1]));
+        let bare: Vec<u32> = titles
+            .iter()
+            .filter(|title| config.follows(title))
+            .filter_map(|title| release_number(title))
+            .map(|release| release.number)
+            .collect();
+        // Season 4 of 19 episodes, after 25 + 13 + 12 + 16.
+        assert_eq!(guess_offset(&bare, 19, Some(66)), 66);
+    }
+
+    #[test]
+    fn series_words_drop_tags_and_season_words_but_keep_the_name() {
+        assert_eq!(series_words("[Erai-raws] Show 2nd Season - 03 [1080p]"), ["show"]);
+        assert_eq!(series_words("[Group] 86 - Eighty Six - 05 [1080p]"), ["86", "eighty", "six"]);
+        assert_eq!(series_words("[SubsPlease] Show S2 - 05 (1080p)"), ["show"]);
+        assert!(series_words("[Group] Show [Batch]").is_empty());
+        // A group adding a season marker mid-run is still the same show.
+        assert!(same_series(&series_words("[G] Long Show Name - 05"), &series_words("[G] Long Show Name S2 - 06")));
+        assert!(!same_series(&series_words("[G] Long Show Name - 05"), &series_words("[G] Other Thing - 06")));
+        // An old watch with no series follows everything.
+        assert!(WatchConfig::default().follows("[G] Anything - 01"));
+    }
+
     #[test]
     fn a_plain_search_becomes_a_nyaa_feed_and_a_nyaa_page_its_own_feed() {
         let search = feed_url("[SubsPlease] Show 1080p").unwrap();
@@ -604,6 +723,7 @@ mod tests {
             confirmed: true,
             created_by: 5,
             setup_message: Some(9),
+            series: vec!["show".to_string(), "name".to_string()],
             ..Default::default()
         };
         config.mark_seen("abc");

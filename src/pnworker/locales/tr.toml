@@ -1142,3 +1142,7 @@ args = 1
 [WATCH_TYPED_RELEASE]
 text = "{} numaralı yayın {}. bölüm olarak kabul edildi."
 args = 2
+
+[WATCH_OTHER_SHOWS]
+text = "Başka bir isimdeki {} yayın dışarıda bırakıldı (örneğin `{}`). Bu kanalın serisi o ise aşağıdan onun 1. bölümünü seçin."
+args = 2

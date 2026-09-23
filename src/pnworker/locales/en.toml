@@ -1142,3 +1142,7 @@ args = 1
 [WATCH_TYPED_RELEASE]
 text = "Release {} was treated as episode {}."
 args = 2
+
+[WATCH_OTHER_SHOWS]
+text = "{} release(s) of another title are left out, such as `{}`. If that is this channel's show, pick its episode 1 below."
+args = 2

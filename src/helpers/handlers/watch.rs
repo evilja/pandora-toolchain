@@ -108,7 +108,15 @@ async fn setup_watch(
         }
     };
 
-    let releases = numbered(&items);
+    // A loose search can carry another show's releases, and one stray `- 01` among `- 77`..`- 84`
+    // is enough to drag the guess to zero. The show is picked first and the rest of setup only
+    // looks at its releases.
+    let titles: Vec<&str> = numbered(&items).iter().map(|(item, _)| item.title.as_str()).collect();
+    let series = watch::pick_series(&titles, meta.name.as_deref());
+    let releases: Vec<(&FeedItem, ReleaseNumber)> = numbered(&items)
+        .into_iter()
+        .filter(|(item, _)| watch::same_series(&series, &watch::series_words(&item.title)))
+        .collect();
     let numbers: Vec<ReleaseNumber> = releases.iter().map(|(_, release)| *release).collect();
     let episode_count = meta.episode_count.unwrap_or(0);
     let season = watch::feed_season(&numbers, meta.season as u32);
@@ -126,6 +134,7 @@ async fn setup_watch(
         feed_url,
         offset: watch::guess_offset(&bare, episode_count, prequel_total),
         season,
+        series,
         confirmed: false,
         created_by: command.user.id.get(),
         setup_message: Some(response.id.get()),
@@ -228,7 +237,8 @@ fn watch_view(
     prequel_total: Option<u32>,
     lang: &str,
 ) -> (CreateEmbed, Vec<CreateActionRow>) {
-    let releases = items.map(numbered).unwrap_or_default();
+    let all = items.map(numbered).unwrap_or_default();
+    let (releases, others): (Vec<_>, Vec<_>) = all.iter().partition(|(item, _)| config.follows(&item.title));
     let numbers: Vec<ReleaseNumber> = releases.iter().map(|(_, release)| *release).collect();
 
     let mut description = format_message(WATCH_SETUP_BODY, lang, &[format!("`{}`", clip(&config.feed, 200))]);
@@ -240,7 +250,7 @@ fn watch_view(
             description.push_str(&get_message(WATCH_NO_RELEASES, lang));
         } else {
             // Oldest first, the order the episodes run in.
-            let mut shown: Vec<&(&FeedItem, ReleaseNumber)> = releases.iter().take(PREVIEW_ROWS).collect();
+            let mut shown: Vec<_> = releases.iter().take(PREVIEW_ROWS).collect();
             shown.reverse();
             let rows: Vec<String> = shown
                 .into_iter()
@@ -253,6 +263,14 @@ fn watch_view(
                 })
                 .collect();
             description.push_str(&rows.join("\n"));
+        }
+        if let Some((example, _)) = others.first() {
+            description.push_str("\n\n");
+            description.push_str(&format_message(
+                WATCH_OTHER_SHOWS,
+                lang,
+                &[others.len().to_string(), clip(&example.title, 80)],
+            ));
         }
     }
     description.push_str("\n\n");
@@ -298,23 +316,37 @@ fn watch_view(
         ]));
     }
 
-    // Picking episode 1 out of the feed's own titles is the whole of changing the numbering. Titles
-    // that name their season never go through it, so they get no picker.
-    let mut firsts: Vec<(u32, String)> = Vec::new();
-    for (item, release) in &releases {
-        if release.season.is_none() && !firsts.iter().any(|(number, _)| *number == release.number) {
-            firsts.push((release.number, item.title.clone()));
+    // Picking episode 1 out of the feed's own titles is the whole of changing the numbering — and,
+    // for a title of another show, of saying the watch was following the wrong one. Titles that
+    // name their season never go through the offset, so they are not offered.
+    let mut firsts: Vec<(bool, u32, Vec<String>, String)> = Vec::new();
+    for (item, release) in &all {
+        let words = watch::series_words(&item.title);
+        let ours = config.follows(&item.title);
+        let known = firsts
+            .iter()
+            .any(|(_, number, seen, _)| *number == release.number && watch::same_series(seen, &words));
+        if release.season.is_none() && !known {
+            firsts.push((ours, release.number, words, item.title.clone()));
         }
     }
-    firsts.sort_by_key(|(number, _)| *number);
+    // A prequel count the feed has no title for yet is still a reading of it: the numbers carried
+    // on from the earlier seasons and the season's first release has already left the feed.
+    if let Some(prequel) = prequel_total.filter(|total| *total > 0) {
+        if !releases.is_empty() && !firsts.iter().any(|(ours, number, _, _)| *ours && *number == prequel + 1) {
+            let label = format_message(WATCH_BUTTON_CONTINUES, lang, &[(prequel + 1).to_string()]);
+            firsts.push((true, prequel + 1, config.series.clone(), label));
+        }
+    }
+    firsts.sort_by_key(|(ours, number, _, _)| (!*ours, *number));
     firsts.truncate(SELECT_LIMIT);
     if !firsts.is_empty() {
         let current = config.offset + 1;
         let options = firsts
             .into_iter()
-            .map(|(number, title)| {
-                CreateSelectMenuOption::new(clip(&title, 100), number.to_string())
-                    .default_selection(number == current)
+            .map(|(ours, number, words, title)| {
+                CreateSelectMenuOption::new(clip(&title, 100), first_value(number, &words))
+                    .default_selection(ours && number == current)
             })
             .collect();
         rows.push(CreateActionRow::SelectMenu(
@@ -335,6 +367,28 @@ fn watch_view(
         }
     }
     (embed, rows)
+}
+
+// A picker value: the release number that is episode 1, and the show it is a release of, as
+// `<number>|<words>`. Discord caps a value at 100 characters, which a show's name rarely reaches;
+// one that does loses its last words, and `same_series` still matches on the rest.
+fn first_value(number: u32, series: &[String]) -> String {
+    let mut value = number.to_string();
+    for (position, word) in series.iter().enumerate() {
+        let separator = if position == 0 { '|' } else { ' ' };
+        if value.chars().count() + 1 + word.chars().count() > 100 {
+            break;
+        }
+        value.push(separator);
+        value.push_str(word);
+    }
+    value
+}
+
+fn parse_first_value(value: &str) -> Option<(u32, Vec<String>)> {
+    let (number, words) = value.split_once('|').unwrap_or((value, ""));
+    let number = number.parse().ok()?;
+    Some((number, words.split_whitespace().map(str::to_string).collect()))
 }
 
 // `pnwatch:<channel>:<revision>:<action>[:<arg>...]`. The revision is the setup message the watch
@@ -470,15 +524,19 @@ pub async fn handle_watch_component(ctx: &Context, component: &ComponentInteract
             component_replace(ctx, component, get_message(WATCH_STOPPED, &lang)).await;
         }
         WatchAction::Confirm | WatchAction::First | WatchAction::Offset(_) => {
-            let offset = match &action {
-                WatchAction::First => selected_value(component)
-                    .and_then(|value| value.parse::<u32>().ok())
-                    .map(|first| first.saturating_sub(1)),
-                WatchAction::Offset(offset) => Some(*offset),
+            let picked = match &action {
+                WatchAction::First => selected_value(component).and_then(parse_first_value),
+                WatchAction::Offset(offset) => Some((offset + 1, config.series.clone())),
                 _ => None,
             };
-            if let Some(offset) = offset.filter(|offset| *offset != config.offset) {
-                config.offset = offset;
+            let changed = picked.filter(|(first, series)| {
+                first.saturating_sub(1) != config.offset || (!series.is_empty() && *series != config.series)
+            });
+            if let Some((first, series)) = changed {
+                config.offset = first.saturating_sub(1);
+                if !series.is_empty() {
+                    config.series = series;
+                }
                 // Questions asked under the old numbering are withdrawn and their releases looked at
                 // again: under the new one most of them are no longer questions at all.
                 for pending in std::mem::take(&mut config.pending) {
@@ -688,8 +746,9 @@ async fn check_watch(ctx: &Context, server_id: u64, channel_id: u64) -> Result<u
         if config.has_seen(&item.key) {
             continue;
         }
-        // Batches, movies and ranges are not episodes, and not questions either.
-        let Some(release) = watch::release_number(&item.title) else {
+        // Batches, movies and ranges are not episodes, and not questions either; nor is another
+        // show's release that a loose search happened to match.
+        let Some(release) = watch::release_number(&item.title).filter(|_| config.follows(&item.title)) else {
             config.mark_seen(&item.key);
             continue;
         };
@@ -890,6 +949,18 @@ mod tests {
 
         let middle = values(episode_choices(30, 0, 50, "en"));
         assert!(middle.contains(&"30".to_string()));
+    }
+
+    #[test]
+    fn a_picker_value_carries_the_first_release_and_its_show() {
+        let words = vec!["re".to_string(), "zero".to_string()];
+        assert_eq!(first_value(67, &words), "67|re zero");
+        assert_eq!(parse_first_value("67|re zero"), Some((67, words)));
+        // A value written before the show rode along is only a number.
+        assert_eq!(parse_first_value("64"), Some((64, Vec::new())));
+        assert_eq!(parse_first_value("x|re"), None);
+        let long: Vec<String> = (0..40).map(|n| format!("word{}", n)).collect();
+        assert!(first_value(1000, &long).chars().count() <= 100);
     }
 
     #[test]
