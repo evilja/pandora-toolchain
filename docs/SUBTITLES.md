@@ -19,7 +19,9 @@ uses the console's signed-in token.
 | `web/subs/ass.test.js` | — | `node web/subs/ass.test.js` runs the core's tests; no dependencies. |
 
 All five routes are unauthenticated page routes, `include_str!`-baked into `pndc` like the other
-consoles; the scripts are served `no-cache`.
+consoles, and served `no-cache`. The page asks for its scripts, manifest and `/console.{css,js}` as
+`?v=<hash of the embedded files>`, so a new build is a new URL: Safari otherwise kept running the
+previous deploy's `app.js` across ordinary reloads.
 
 ## Model
 

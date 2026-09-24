@@ -426,8 +426,39 @@ const SUBS_RENDER_JS: &str = include_str!("../../../../web/subs/render.js");
 const SUBS_APP_JS: &str = include_str!("../../../../web/subs/app.js");
 const SUBS_MANIFEST: &str = include_str!("../../../../web/subs/manifest.webmanifest");
 
-async fn subs_console() -> axum::response::Html<&'static str> {
-    axum::response::Html(SUBS_HTML)
+// The page's script and stylesheet URLs carry a hash of what this binary embeds. `no-cache` alone
+// was not enough: Safari kept running the previous deploy's `app.js` across ordinary reloads, so a
+// fixed editor looked unfixed until a reload-from-origin. A new build is a new URL, which no cache
+// can answer with the old file.
+async fn subs_console() -> Response {
+    static PAGE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let page = PAGE.get_or_init(|| {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for part in [SUBS_HTML, SUBS_ASS_JS, SUBS_RENDER_JS, SUBS_APP_JS, SUBS_MANIFEST, SHELL_CSS, SHELL_JS] {
+            part.hash(&mut hasher);
+        }
+        versioned_subs_page(SUBS_HTML, &format!("{:016x}", hasher.finish()))
+    });
+    (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        page.as_str(),
+    )
+        .into_response()
+}
+
+fn versioned_subs_page(html: &str, version: &str) -> String {
+    let mut out = html.to_string();
+    for asset in [
+        "/subs/ass.js", "/subs/render.js", "/subs/app.js", "/subs/manifest.webmanifest",
+        "/console.css", "/console.js",
+    ] {
+        out = out.replace(&format!("\"{asset}\""), &format!("\"{asset}?v={version}\""));
+    }
+    out
 }
 
 fn subs_script(body: &'static str) -> Response {
@@ -1781,6 +1812,19 @@ pub(super) fn base64_decode_bytes(input: &str) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod tests {
+
+    // Every asset the page loads gets the version, and nothing else in the page is touched — the
+    // bare path appears once per tag, so a miss here would silently leave that file cacheable.
+    #[test]
+    fn the_subs_page_asks_for_this_builds_assets() {
+        let page = versioned_subs_page(SUBS_HTML, "abc");
+        for asset in ["/subs/ass.js", "/subs/render.js", "/subs/app.js", "/subs/manifest.webmanifest", "/console.css", "/console.js"] {
+            assert!(page.contains(&format!("\"{asset}?v=abc\"")), "{asset}");
+            assert!(!page.contains(&format!("\"{asset}\"")), "{asset}");
+        }
+        assert_eq!(page.len(), SUBS_HTML.len() + 6 * "?v=abc".len());
+    }
+
     use super::*;
 
     // Node tokens share the token file with every other kind, so the parser has to keep the three
