@@ -11,6 +11,7 @@ Guidance for coding agents working in this repository.
 - **docs/LOCALIZATION.md** — message IDs, TOML translation files, and how to add new strings.
 - **docs/LINK.md** — Pandora Mini: linked nodes, orchestrator mode, the lease protocol, offload rules, and failure handling.
 - **docs/SETUP.md** — first-run configuration: what triggers it, what it asks, and the no-TTY path.
+- **docs/SUBTITLES.md** — the `/subs` browser subtitle editor: files, model, layout, and tools.
 
 ## `lumiere-internal/` — never commit this
 

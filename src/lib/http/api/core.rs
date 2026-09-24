@@ -329,6 +329,11 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/git", get(git_console))
         .route("/studio", get(studio_console))
         .route("/trace", get(super::trace::index))
+        .route("/subs", get(subs_console))
+        .route("/subs/ass.js", get(subs_ass_js))
+        .route("/subs/render.js", get(subs_render_js))
+        .route("/subs/app.js", get(subs_app_js))
+        .route("/subs/manifest.webmanifest", get(subs_manifest))
         .route("/console.css", get(console_css))
         .route("/console.js", get(console_js))
         .route("/studio-sw.js", get(studio_service_worker))
@@ -406,6 +411,53 @@ async fn studio_service_worker() -> Response {
         ],
         STUDIO_SERVICE_WORKER,
     ).into_response()
+}
+
+// The subtitle editor runs entirely in the browser — files are opened from and saved back to the
+// device — so its page and scripts are public like the other console pages and it never calls the
+// API. The scripts are separate files because ass.js is also loaded by its Node test suite.
+const SUBS_HTML: &str = include_str!("../../../../web/subs.html");
+const SUBS_ASS_JS: &str = include_str!("../../../../web/subs/ass.js");
+const SUBS_RENDER_JS: &str = include_str!("../../../../web/subs/render.js");
+const SUBS_APP_JS: &str = include_str!("../../../../web/subs/app.js");
+const SUBS_MANIFEST: &str = include_str!("../../../../web/subs/manifest.webmanifest");
+
+async fn subs_console() -> axum::response::Html<&'static str> {
+    axum::response::Html(SUBS_HTML)
+}
+
+fn subs_script(body: &'static str) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+async fn subs_ass_js() -> Response {
+    subs_script(SUBS_ASS_JS)
+}
+
+async fn subs_render_js() -> Response {
+    subs_script(SUBS_RENDER_JS)
+}
+
+async fn subs_app_js() -> Response {
+    subs_script(SUBS_APP_JS)
+}
+
+async fn subs_manifest() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "application/manifest+json"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        SUBS_MANIFEST,
+    )
+        .into_response()
 }
 
 const BATCH_HTML: &str = include_str!("../../../../web/batch.html");

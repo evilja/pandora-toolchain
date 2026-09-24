@@ -45,6 +45,11 @@ The pages:
 - **`../kagami-trace/web/index.html`** (`/trace`) — the Kagami Trace Lab. It injects the shell only
   when served at `/trace`, so standalone `pntrace` requests neither asset and the sub-crate stays
   extraction-ready.
+- **`subs.html`** (`/subs`) + **`subs/`** — **Subtitles**, a phone-first Aegisub-style editor that
+  runs entirely in the browser (no token, no API calls; scripts autosave to IndexedDB and are
+  downloaded back). It links `console.css`/`console.js` for tokens, theme and toast but draws its own
+  compact chrome instead of `PN.shell()`. `subs/ass.js` is the DOM-free core with its own Node
+  tests (`node web/subs/ass.test.js`); see [docs/SUBTITLES.md](../docs/SUBTITLES.md).
 
 ## Design
 

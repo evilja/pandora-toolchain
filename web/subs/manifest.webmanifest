@@ -1,0 +1,12 @@
+{
+  "name": "Pandora Subs",
+  "short_name": "Subs",
+  "description": "Subtitle editor for .ass files — styles, timing, HYDRA tagging — that runs in the browser.",
+  "start_url": "/subs",
+  "scope": "/subs",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#05101d",
+  "theme_color": "#05101d",
+  "icons": [{ "src": "/favicon", "sizes": "any" }]
+}
