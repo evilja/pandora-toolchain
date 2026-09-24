@@ -2586,7 +2586,7 @@
       ["Waveform: drag elsewhere", "Scroll; tap to seek; pinch or Ctrl+wheel to zoom"], ["\\pos button, then tap video", "Place the line"],
       ["Ctrl+Z / Ctrl+Y", "Undo / redo"], ["Ctrl+S", "Download .ass"], ["Ctrl+O", "Open a file"],
       ["Ctrl+↑ / Ctrl+↓", "Previous / next line"], ["Space (outside text)", "Play / pause"], ["← / → (outside text)", "Step a frame"],
-      ["Ctrl+P", "Play the line"], ["Ctrl+3 / Ctrl+4", "Start / end at the playhead"], ["Ctrl+D", "Duplicate"],
+      ["Ctrl+P", "Play the line"], ["Ctrl+3 / Ctrl+4", "Start / end at the playhead"], ["Ctrl+D", "Duplicate"], ["Ctrl+\\", "Hide or show the Styles/Tools panel"],
       ["Delete (outside text)", "Delete the selected lines"], ["Ctrl+A (outside text)", "Select every visible line"], ["Ctrl+F", "Filter lines"]
     ];
     openSheet("Shortcuts & gestures", '<ul class="sb-qc">' + rows.map(function (r) { return "<li><b style=\"min-width:40%;font-family:var(--pn-body)\">" + esc(r[0]) + "</b><span style=\"white-space:normal\">" + esc(r[1]) + "</span></li>"; }).join("") + "</ul>" +
@@ -2605,6 +2605,14 @@
       if (v === "lines") { measureRow(); renderList(); if (S.active !== null) ensureRowVisible(S.active); }
       if (v === "styles") renderStyles();
     });
+  }
+  // Wide screens only: folds the Styles/Tools column into a rail so the video and edit box get its
+  // width. Remembered per browser; it is a layout preference, not part of the script.
+  var LAYOUT_KEY = "pandora_subs_layout";
+  function setSideCollapsed(c, restoring) {
+    app.setAttribute("data-sidecollapsed", c ? "1" : "0");
+    if (!restoring) { try { localStorage.setItem(LAYOUT_KEY, JSON.stringify({ sideCollapsed: c })); } catch (e) {} }
+    requestAnimationFrame(function () { fitStage(); renderList(); });
   }
   function setSide(v) {
     S.side = v;
@@ -2627,6 +2635,7 @@
     if (mod && k === "f") { ev.preventDefault(); setView("lines"); $("filter").focus(); return; }
     if (mod && k === "p") { ev.preventDefault(); playLine(); return; }
     if (mod && k === "d") { ev.preventDefault(); duplicateLines(); return; }
+    if (mod && ev.code === "Backslash" && isWide()) { ev.preventDefault(); setSideCollapsed(app.getAttribute("data-sidecollapsed") !== "1"); return; }
     if (mod && k === "3") { ev.preventDefault(); nudge("start="); return; }
     if (mod && k === "4") { ev.preventDefault(); nudge("end="); return; }
     if (mod && ev.key === "ArrowDown") { ev.preventDefault(); nextLine(false); return; }
@@ -2655,6 +2664,20 @@
     $("frameFwd").innerHTML = ic("stepf");
     $("mediaBtn").innerHTML = ic("film");
     $("vCollapse").innerHTML = ic("up");
+    Array.prototype.forEach.call(document.querySelectorAll("[data-sidecollapse]"), function (b) {
+      b.innerHTML = ic("right");
+      b.addEventListener("click", function () { setSideCollapsed(true); });
+    });
+    var rail = $("sideRail").children;
+    rail[0].innerHTML = ic("left"); rail[1].innerHTML = ic("styles"); rail[2].innerHTML = ic("tools");
+    Array.prototype.forEach.call(rail, function (b) {
+      b.addEventListener("click", function () {
+        var v = b.getAttribute("data-sideopen");
+        if (v) setSide(v);
+        setSideCollapsed(false);
+      });
+    });
+    try { setSideCollapsed(!!JSON.parse(localStorage.getItem(LAYOUT_KEY) || "{}").sideCollapsed, true); } catch (e) {}
     $("searchIcon").outerHTML = ic("search");
     $("sortBtn").innerHTML = ic("sort");
     $("selModeBtn").innerHTML = ic("select");

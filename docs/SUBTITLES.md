@@ -47,7 +47,11 @@ previous deploy's `app.js` across ordinary reloads.
   sheets. Inputs are 16px (no iOS zoom-on-focus), touch targets are at least 44px, and the tab bar
   hides while the on-screen keyboard is up.
 - **Desktop (≥ 1100px):** video + waveform top-left, the edit box top-middle, the line grid across
-  the bottom, and Styles/Tools in a right-hand column.
+  the bottom, and Styles/Tools in a right-hand column. The **›** button in that column's header (or
+  Ctrl+\\) folds it into a 52px rail of icons; since the picture is bound by the pane's height, the
+  video row also grows and the timing buttons fold into one row, roughly tripling the picture. The
+  rail's buttons reopen the column, at Styles or Tools. The choice is kept per browser
+  (`localStorage["pandora_subs_layout"]`).
 
 ## Behaviour worth knowing
 

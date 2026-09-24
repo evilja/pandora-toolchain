@@ -225,6 +225,7 @@ input, select, textarea { font-size: 16px; }
 .sb-tool b { font-size: 14.5px; font-weight: 600; }
 .sb-tool span { font-size: 12.5px; color: var(--pn-dim); line-height: 1.35; }
 .sb-sidetabs { display: none; }
+.sb-sidecollapse, .sb-siderail { display: none; }
 .sb-colorrow { display: grid; grid-template-columns: 48px 1fr 72px; gap: 8px; align-items: center; }
 .sb-colorrow input[type="color"] { width: 48px; height: 44px; border: 1px solid var(--pn-line-2); border-radius: 10px; padding: 3px; background: var(--pn-panel-2); }
 .sb-colorrow input[type="range"] { width: 100%; accent-color: var(--pn-k1-hi); }
@@ -303,7 +304,22 @@ input, select, textarea { font-size: 16px; }
   .sb-app[data-side="styles"] [data-pane="styles"], .sb-app[data-side="tools"] [data-pane="tools"] { display: flex; }
   .sb-app:not([data-side="styles"]) [data-pane="styles"], .sb-app:not([data-side="tools"]) [data-pane="tools"] { display: none; }
   .sb-sidetabs { display: flex; }
+  .sb-sidecollapse { display: grid; flex: none; }
   .sb-mobile-only { display: none; }
+  /* Collapsed: the column becomes a rail. The picture is bound by the pane's height, not its width,
+     so the video row also grows and the timing buttons fold into one row — width alone would only
+     add black bars beside it. */
+  .sb-app[data-sidecollapsed="1"] {
+    grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) 52px;
+    grid-template-rows: var(--sb-bar) minmax(0, 1.8fr) minmax(0, 1fr);
+  }
+  .sb-app[data-sidecollapsed="1"] .sb-timingacts { grid-template-columns: repeat(8, minmax(0, 1fr)); padding-bottom: 8px; }
+  .sb-app[data-sidecollapsed="1"] [data-pane="styles"], .sb-app[data-sidecollapsed="1"] [data-pane="tools"] { display: none !important; }
+  .sb-app[data-sidecollapsed="1"] .sb-siderail {
+    display: flex; grid-area: side; flex-direction: column; align-items: center; gap: 6px; padding: 8px 0;
+    border-left: 1px solid var(--pn-line); background: var(--pn-panel);
+  }
+  .sb-siderail [data-sideopen=""] { margin-bottom: 6px; }
   .sb-listhead {
     display: grid; position: sticky; top: 0; z-index: 2; height: 28px; align-items: center;
     grid-template-columns: var(--sb-cols); column-gap: 10px; padding: 0 12px 0 14px;
@@ -412,15 +428,22 @@ input, select, textarea { font-size: 16px; }
 
   <!-- styles -->
   <section class="sb-pane" data-pane="styles" aria-label="Styles">
-    <div class="sb-panehead"><div class="sb-seg sb-sidetabs" style="flex:1"><button data-side="styles" aria-pressed="true">Styles</button><button data-side="tools">Tools</button></div><h2 class="sb-mobile-only">Styles</h2></div>
+    <div class="sb-panehead"><div class="sb-seg sb-sidetabs" style="flex:1"><button data-side="styles" aria-pressed="true">Styles</button><button data-side="tools">Tools</button></div><h2 class="sb-mobile-only">Styles</h2><button class="sb-ibtn sb-sidecollapse" type="button" data-sidecollapse title="Hide this panel (Ctrl+\\)" aria-label="Hide the Styles and Tools panel"></button></div>
     <div class="sb-scroll sb-pad sb-stack" id="stylesBody"></div>
   </section>
 
   <!-- tools -->
   <section class="sb-pane" data-pane="tools" aria-label="Tools">
-    <div class="sb-panehead"><div class="sb-seg sb-sidetabs" style="flex:1"><button data-side="styles">Styles</button><button data-side="tools" aria-pressed="true">Tools</button></div><h2 class="sb-mobile-only">Tools</h2></div>
+    <div class="sb-panehead"><div class="sb-seg sb-sidetabs" style="flex:1"><button data-side="styles">Styles</button><button data-side="tools" aria-pressed="true">Tools</button></div><h2 class="sb-mobile-only">Tools</h2><button class="sb-ibtn sb-sidecollapse" type="button" data-sidecollapse title="Hide this panel (Ctrl+\\)" aria-label="Hide the Styles and Tools panel"></button></div>
     <div class="sb-scroll sb-pad sb-stack" id="toolsBody"></div>
   </section>
+
+  <!-- what the Styles/Tools column shrinks to on a wide screen -->
+  <nav class="sb-siderail" id="sideRail" aria-label="Styles and Tools">
+    <button class="sb-ibtn" type="button" data-sideopen="" title="Show the panel (Ctrl+\\)" aria-label="Show the Styles and Tools panel"></button>
+    <button class="sb-ibtn" type="button" data-sideopen="styles" title="Styles" aria-label="Styles"></button>
+    <button class="sb-ibtn" type="button" data-sideopen="tools" title="Tools" aria-label="Tools"></button>
+  </nav>
 
   <nav class="sb-tabs" role="tablist" id="tabs"></nav>
 </div>
