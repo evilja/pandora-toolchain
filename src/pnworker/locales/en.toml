@@ -642,6 +642,22 @@ args = 0
 text = "💬 Subtitle extraction"
 args = 0
 
+[SUBSMEDIA_PROG]
+text = "Preparing the video for the subtitle editor: {}%"
+args = 1
+
+[SUBSMEDIA_DONE]
+text = "The video is ready in the subtitle editor."
+args = 0
+
+[SUBSMEDIA_FAIL]
+text = "The video could not be prepared for the subtitle editor: {}"
+args = 1
+
+[JOB_TYPE_SUBS_MEDIA]
+text = "🎞️ Subtitle editor video"
+args = 0
+
 [LINK_NODE_FAILED]
 text = "The node running this job reported a failure: {}"
 args = 1

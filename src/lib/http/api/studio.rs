@@ -499,7 +499,7 @@ pub(super) async fn track_media(
     stream_media(track.path.clone(), &headers).await
 }
 
-async fn stream_media(path: PathBuf, headers: &HeaderMap) -> Response {
+pub(super) async fn stream_media(path: PathBuf, headers: &HeaderMap) -> Response {
     let metadata = match tokio::fs::metadata(&path).await {
         Ok(metadata) if metadata.is_file() => metadata,
         Ok(_) => return (StatusCode::NOT_FOUND, "Studio media was not found").into_response(),

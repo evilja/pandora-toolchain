@@ -46,8 +46,9 @@ The pages:
   when served at `/trace`, so standalone `pntrace` requests neither asset and the sub-crate stays
   extraction-ready.
 - **`subs.html`** (`/subs`) + **`subs/`** — **Subtitles**, a phone-first Aegisub-style editor that
-  runs entirely in the browser (no token, no API calls; scripts autosave to IndexedDB and are
-  downloaded back). It links `console.css`/`console.js` for tokens, theme and toast but draws its own
+  runs in the browser (scripts autosave to IndexedDB and are downloaded back; editing needs no
+  token). The one API use is opening a video from a torrent/magnet/nyaa/Drive link, which the
+  server downloads and converts to a playable proxy. It links `console.css`/`console.js` for tokens, theme and toast but draws its own
   compact chrome instead of `PN.shell()`. `subs/ass.js` is the DOM-free core with its own Node
   tests (`node web/subs/ass.test.js`); see [docs/SUBTITLES.md](../docs/SUBTITLES.md).
 

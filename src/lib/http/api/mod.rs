@@ -2,6 +2,7 @@ pub mod core;
 mod account;
 mod logs;
 mod studio;
+mod subs;
 mod token;
 mod workers;
 mod link;

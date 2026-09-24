@@ -231,6 +231,7 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/jobs/gitcode", post(submit_gitcode))
         .route("/jobs/keycode", post(submit_keycode))
         .route("/jobs/:id/cancel", post(cancel_job))
+        .route("/subs/media", post(super::subs::submit_media))
         .route("/workers", get(super::workers::workers))
         .route("/workers/summary", get(super::workers::summary))
         .route("/events", get(super::workers::events))
@@ -334,6 +335,9 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/subs/render.js", get(subs_render_js))
         .route("/subs/app.js", get(subs_app_js))
         .route("/subs/manifest.webmanifest", get(subs_manifest))
+        // Public on purpose: a `<video>` cannot send a bearer header, so the 256-bit token in the
+        // path is the credential, the same as the Lumiere routes below.
+        .route("/subs/media/:token/:file", get(super::subs::media_file))
         .route("/console.css", get(console_css))
         .route("/console.js", get(console_js))
         .route("/studio-sw.js", get(studio_service_worker))
@@ -826,7 +830,7 @@ pub(super) fn require_link(auth: &ApiAuth) -> Result<String, Response> {
     }
 }
 
-fn effective_server_id(auth: &ApiAuth, requested: Option<u64>) -> Option<u64> {
+pub(super) fn effective_server_id(auth: &ApiAuth, requested: Option<u64>) -> Option<u64> {
     auth.local_server_id.or(requested)
 }
 
@@ -889,7 +893,7 @@ async fn visible_rows(
 // Whether one job is in reach. Answered on its own so a job out of reach is a `404` rather than a
 // `403`: telling a caller that a job they cannot see exists is itself a fact about somebody else's
 // work.
-async fn row_is_visible(st: &AppState, auth: &ApiAuth, row: &crate::lib::db::core::JobRow) -> bool {
+pub(super) async fn row_is_visible(st: &AppState, auth: &ApiAuth, row: &crate::lib::db::core::JobRow) -> bool {
     match auth.reach() {
         Reach::Everything => true,
         Reach::Server(server_id) => row.server_id == Some(server_id as i64),
@@ -1264,11 +1268,11 @@ async fn cancel_job(
     if !row_is_visible(&st, &auth, &row).await {
         return (StatusCode::NOT_FOUND, "no such job").into_response();
     }
-    let cancellable = [JobType::Encode, JobType::Studio, JobType::StudioPreview]
+    let cancellable = [JobType::Encode, JobType::Studio, JobType::StudioPreview, JobType::SubsMedia]
         .iter()
         .any(|job_type| row.job_type == *job_type as u16 as i64);
     if !cancellable {
-        return (StatusCode::FORBIDDEN, "only encode and Studio jobs can be cancelled through the API").into_response();
+        return (StatusCode::FORBIDDEN, "only encode, Studio and subtitle-editor video jobs can be cancelled through the API").into_response();
     }
     if row.archived != 0 || matches!(row.stage, 6 | 7 | 8 | 9) {
         return (StatusCode::CONFLICT, "job is already terminal").into_response();
@@ -1599,7 +1603,7 @@ pub(super) async fn record_owner(st: &AppState, auth: &ApiAuth, job_id: u64) {
     }
 }
 
-async fn submit_with_progress(
+pub(super) async fn submit_with_progress(
     st: &AppState,
     auth: &ApiAuth,
     job: Job,

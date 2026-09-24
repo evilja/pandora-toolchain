@@ -2,8 +2,10 @@
 
 `GET /subs` serves a subtitle editor in the spirit of Aegisub, built for phones first and laid out
 like Aegisub on a wide screen. It is a **client-only** page: scripts are opened from the device,
-edited in the browser, autosaved to the browser's IndexedDB, and downloaded or shared back. It never
-calls `/api/v1`, needs no token, and nothing a user opens is uploaded.
+edited in the browser, autosaved to the browser's IndexedDB, and downloaded or shared back. Nothing a
+user opens is uploaded, and editing needs no token. The one server feature is fetching a video from
+a torrent, magnet, nyaa, Drive or direct link — see [Video from a link](#video-from-a-link) — which
+uses the console's signed-in token.
 
 ## Files
 
@@ -12,7 +14,7 @@ calls `/api/v1`, needs no token, and nothing a user opens is uploaded.
 | `web/subs.html` | `GET /subs` | Markup and all CSS. Takes every colour from the shell tokens (`/console.css`) but keeps its own compact chrome instead of `PN.shell()` — the rail and topbar would take a third of a phone screen. |
 | `web/subs/ass.js` | `GET /subs/ass.js` | The pure core (`window.ASS`, or `module.exports` under Node): parse/serialize, tag surgery, HYDRA, timing and line tools, resampling, find/select. No DOM. |
 | `web/subs/render.js` | `GET /subs/render.js` | `window.SubRender.render(canvas, doc, timeMs, opts)` — a canvas approximation of libass for the preview. |
-| `web/subs/app.js` | `GET /subs/app.js` | State, undo history, autosave, and every view and tool sheet. |
+| `web/subs/app.js` | `GET /subs/app.js` | State, undo history, autosave, every view and tool sheet, and the link-to-video flow. |
 | `web/subs/manifest.webmanifest` | `GET /subs/manifest.webmanifest` | Lets the page be added to a phone's home screen as a standalone app. |
 | `web/subs/ass.test.js` | — | `node web/subs/ass.test.js` runs the core's tests; no dependencies. |
 
@@ -59,7 +61,7 @@ consoles; the scripts are served `no-cache`.
 - **Autosave** writes the current script to IndexedDB about 1.5 s after each change and whenever the
   page is hidden, keeps the 20 most recent scripts under *Recent scripts*, and reopens the last one
   on load. The header shows *not downloaded* until the `.ass` is saved out.
-- **Video** is a local file or a direct link; the preview is drawn on a canvas over it at the
+- **Video** is a local file, a direct link, or a link the server fetched (below); the preview is drawn on a canvas over it at the
   script's `PlayRes`. With no video it draws on black and a virtual clock drives playback. The
   `\pos` tag-bar button turns the video into a tap/drag target that writes `\pos` for the line.
 - **Waveform** decodes the media's audio once (`decodeAudioData` at a low sample rate) into 10 ms
@@ -67,6 +69,35 @@ consoles; the scripts are served `no-cache`.
   edges, the playhead, and frames), drag elsewhere to scroll, pinch or Ctrl+wheel to zoom. Files
   over 900 MB are refused — a phone cannot hold them decoded — so a large MKV needs an audio-only
   copy.
+
+## Video from a link
+
+*Open video from a link or torrent* takes what `/encode` takes: a nyaa page, a `.torrent` URL, a
+magnet, a Google Drive link, or any other direct link. A link ending in `.mp4`, `.webm`, `.m3u8` or
+a playable audio extension still opens straight in the `<video>` element; everything else goes to
+the server, because a browser cannot play a torrent and a phone cannot decode the 10-bit HEVC MKV
+behind most of them.
+
+1. Without a token (`localStorage["pandora_token"]`) a sheet explains why and links to `/login`.
+2. A nyaa, `.torrent` or magnet link is probed first (`POST /api/v1/jobs/probe`). With more than
+   one video file in it, the user picks one; the list keeps only video extensions when there are
+   any.
+3. `POST /api/v1/subs/media` with `{ torrent }` or `{ probe_job_id, file_index }` queues a
+   `SubsMedia` job, which downloads through the normal pipeline and then makes a 540p H.264/AAC
+   proxy (`-fps_mode passthrough`, so frame times are the source's), 10 ms waveform peaks, and the
+   file's text subtitle tracks — see [WORKER.md](WORKER.md#subtitle-extraction).
+4. The page polls `GET /api/v1/jobs/:id` every 2 s and shows a progress pill under the header
+   (queue → download → convert). Tapping it offers *Stop*, which cancels the job. The job being
+   followed is kept in `localStorage["pandora_subs_remote"]`, so a phone that drops the tab resumes
+   following it on the next visit.
+5. When it reaches `Uploaded`, `progress.token` names the result. The video plays from
+   `/subs/media/<token>/video.mp4`; `peaks.bin` (one byte per 10 ms, scaled to the loudest) becomes
+   the waveform without decoding anything on the device; the frame rate is taken from the
+   manifest; and if the file carried subtitle tracks, a sheet offers to open one as a new script
+   (also under *Subtitle tracks in this video…* in the menus).
+
+The token is saved with the script in IndexedDB, so reopening the script — or reloading the page —
+reattaches the video while the server still has it (12 hours).
 
 ## Tools
 
@@ -91,4 +122,6 @@ consoles; the scripts are served `no-cache`.
 The preview is an approximation of libass, not libass: fonts come from the browser (a font the
 device does not have falls back), and effects such as `\blur` use the canvas filter rather than a
 true Gaussian on the outline. Final checks belong in a real renderer. Browsers only play codecs they
-support — MKV/HEVC often need a remux to MP4 or WebM.
+support — a local MKV/HEVC often needs a remux to MP4 or WebM, or can be opened from its link
+instead so the server converts it. The server's proxy is 540p: good for timing and typesetting
+positions (the preview scales to `PlayRes`), not for judging fine detail.

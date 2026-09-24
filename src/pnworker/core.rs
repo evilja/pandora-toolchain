@@ -77,6 +77,8 @@ pub enum WorkerMsg {
     Upload(UploadData),
     UploadAll(UploadAllData),
     Subs(SubsData),
+    // The browser editor's copy of a linked video; same payload as `/subs`, different output.
+    SubsMedia(SubsData),
 }
 
 pub const STRUCT: [&str; 3] = ["contents", "work", "log"];
@@ -91,6 +93,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
     cleanup_keep_startup().await;
     cleanup_studios_startup().await;
     cleanup_expired_hls().await;
+    crate::pnworker::subs_media::cleanup_expired_subs_media().await;
 
     let mut queue: Vec<Job> = vec![];
     let mut shrine: TypedShrine<WorkerMsg> = TypedShrine::new();
@@ -149,6 +152,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
         if tokio::time::Instant::now() >= next_studio_cleanup {
             cleanup_expired_studios().await;
             cleanup_expired_hls().await;
+            crate::pnworker::subs_media::cleanup_expired_subs_media().await;
             next_studio_cleanup = tokio::time::Instant::now() + Duration::from_secs(60);
         }
 
@@ -711,7 +715,9 @@ async fn queue_new_job(
     match job.job_type {
         JobType::Encode => queue_encode_job(db, queue, shrine, job).await,
         JobType::Probe => queue_probe_job(db, queue, shrine, job).await,
-        JobType::Subs => queue_subs_job(db, queue, shrine, job).await,
+        // A browser-editor source needs exactly what an extraction does — the one video file —
+        // so it queues the same way and only differs once downloaded.
+        JobType::Subs | JobType::SubsMedia => queue_subs_job(db, queue, shrine, job).await,
         JobType::Pancode => queue_pancode_job(db, queue, shrine, job).await,
         JobType::Batch => queue_batch_job(db, queue, shrine, job).await,
         JobType::Backup => queue_backup_job(db, queue, shrine, job).await,
@@ -2001,6 +2007,7 @@ fn job_type_label(job_type: JobType) -> &'static str {
         JobType::StudioPreview => "studio-preview",
         JobType::Batch => "batch",
         JobType::Subs => "subs",
+        JobType::SubsMedia => "subs-media",
         JobType::GitForce => "gitforce",
         JobType::Restart => "restart",
     }
@@ -3924,13 +3931,19 @@ async fn do_job_progression_things(
         }
 
         if job.ready == Stage::Downloaded {
-            if job.job_type == JobType::Subs {
+            if matches!(job.job_type, JobType::Subs | JobType::SubsMedia) {
                 job.worker = "prw-pending".to_string();
                 db.update_worker(job.job_id, &job.worker).await.ok();
+                let data = (job.directory.clone(), job.job_id);
+                let msg = if job.job_type == JobType::SubsMedia {
+                    WorkerMsg::SubsMedia(data)
+                } else {
+                    WorkerMsg::Subs(data)
+                };
                 if !dispatch_or_kill(
                     shrine,
                     &Worker::Probe,
-                    WorkerMsg::Subs((job.directory.clone(), job.job_id)),
+                    msg,
                     job,
                     db,
                     false,
@@ -4594,6 +4607,7 @@ pub enum JobType {
     Subs = 017,
     GitForce = 018,
     Restart = 019,
+    SubsMedia = 020,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]

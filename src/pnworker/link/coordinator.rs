@@ -118,6 +118,10 @@ pub fn orchestrator_refusal(job: &Job) -> Option<&'static str> {
         JobType::Studio | JobType::StudioPreview => {
             Some("Studio works on media uploaded to the coordinator and streamed back from it, and this coordinator runs no encodes")
         }
+        // The same shape as Studio: the proxy it builds is served to a browser from this machine.
+        JobType::SubsMedia => {
+            Some("The subtitle editor's video is transcoded and served by the coordinator, and this coordinator runs no encodes")
+        }
         _ => None,
     }
 }

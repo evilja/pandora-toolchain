@@ -68,6 +68,7 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     | WorkerMsg::Preview(_)
                     | WorkerMsg::StudioPreview(_)
                     | WorkerMsg::Subs(_)
+                    | WorkerMsg::SubsMedia(_)
             ) {
                 pending.push_back(msg);
             }
@@ -91,7 +92,8 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     WorkerMsg::Probe((_, _, job_id))
                     | WorkerMsg::Preview((_, _, _, _, job_id, _))
                     | WorkerMsg::StudioPreview((_, _, job_id))
-                    | WorkerMsg::Subs((_, job_id)) => *job_id,
+                    | WorkerMsg::Subs((_, job_id))
+                    | WorkerMsg::SubsMedia((_, job_id)) => *job_id,
                     _ => unreachable!(),
                 };
                 tx2.send((
@@ -130,6 +132,9 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     }
                     WorkerMsg::Subs((directory, job_id)) => {
                         run_subs_job(directory, job_id, &pnmpeg_path2, &tx2, &pulse2).await;
+                    }
+                    WorkerMsg::SubsMedia((directory, job_id)) => {
+                        crate::pnworker::subs_media::run_subs_media_job(directory, job_id, &pnmpeg_path2, &tx2).await;
                     }
                     _ => unreachable!(),
                 }
@@ -516,29 +521,27 @@ async fn run_preview_job(
     .ok();
 }
 
-// Extraction runs on the preview pool because it is the same shape of work: a
-// downloaded input, one tool invocation, and files attached back to the message.
-// pnmpeg reports one row per track, so a container whose tracks are all
-// image-based still explains itself instead of failing silently.
-async fn run_subs_job(
-    directory: PathBuf,
+pub struct ExtractedTrack {
+    pub ordinal: String,
+    pub language: String,
+    pub title: String,
+    pub codec: String,
+    // None when pnmpeg reported the track but could not write it (an image-based format, say);
+    // `detail` then says why.
+    pub path: Option<PathBuf>,
+    pub detail: String,
+}
+
+// Writes every text subtitle track of `input` into `out_dir`, reporting each track pnmpeg saw.
+// `/subs` attaches the result to its message; the browser editor's media job serves it.
+pub async fn extract_subtitle_tracks(
+    input: &Path,
+    out_dir: &Path,
     job_id: u64,
     pnmpeg_path: &str,
-    tx: &Sender<CommData>,
-    pulse: &Sender<()>,
-) {
-    if job_cancelled(&directory) {
-        tx.send((job_id, MessagePayload::Static(JOB_CANCELLED), Some(Stage::Cancelled)))
-            .await
-            .ok();
-        return;
-    }
-    let input = directory.join("contents").join("torrent").join("input.mkv");
-    let out_dir = directory.join("work").join("subs");
+) -> (ToolResult, Vec<ExtractedTrack>) {
     let mut proto = Protocol::new(vec![1]);
-    let mut extracted: Vec<(String, PathBuf)> = Vec::new();
-    let mut skipped: Vec<String> = Vec::new();
-
+    let mut tracks: Vec<ExtractedTrack> = Vec::new();
     let result = run_tool(
         pnmpeg_path,
         PNMPEG_EXTRACT_SUBS,
@@ -567,18 +570,15 @@ async fn run_subs_job(
                             .unwrap_or("")
                             .to_string()
                     };
-                    let ordinal = field(0);
-                    let language = field(1);
-                    let title = field(2);
-                    let codec = field(3);
                     let filename = field(4);
-                    let detail = field(5);
-                    let label = subtitle_track_label(&ordinal, &language, &title, &codec);
-                    if filename.is_empty() {
-                        skipped.push(format!("{} — {}", label, detail));
-                    } else {
-                        extracted.push((label, out_dir.join(filename)));
-                    }
+                    tracks.push(ExtractedTrack {
+                        ordinal: field(0),
+                        language: field(1),
+                        title: field(2),
+                        codec: field(3),
+                        path: (!filename.is_empty()).then(|| out_dir.join(&filename)),
+                        detail: field(5),
+                    });
                 }
                 _ => {}
             }
@@ -586,6 +586,38 @@ async fn run_subs_job(
         },
     )
     .await;
+    (result, tracks)
+}
+
+// Extraction runs on the preview pool because it is the same shape of work: a
+// downloaded input, one tool invocation, and files attached back to the message.
+// pnmpeg reports one row per track, so a container whose tracks are all
+// image-based still explains itself instead of failing silently.
+async fn run_subs_job(
+    directory: PathBuf,
+    job_id: u64,
+    pnmpeg_path: &str,
+    tx: &Sender<CommData>,
+    pulse: &Sender<()>,
+) {
+    if job_cancelled(&directory) {
+        tx.send((job_id, MessagePayload::Static(JOB_CANCELLED), Some(Stage::Cancelled)))
+            .await
+            .ok();
+        return;
+    }
+    let input = directory.join("contents").join("torrent").join("input.mkv");
+    let out_dir = directory.join("work").join("subs");
+    let (result, tracks) = extract_subtitle_tracks(&input, &out_dir, job_id, pnmpeg_path).await;
+    let mut extracted: Vec<(String, PathBuf)> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    for track in tracks {
+        let label = subtitle_track_label(&track.ordinal, &track.language, &track.title, &track.codec);
+        match track.path {
+            Some(path) => extracted.push((label, path)),
+            None => skipped.push(format!("{} — {}", label, track.detail)),
+        }
+    }
     pulse.try_send(()).ok();
 
     match result {

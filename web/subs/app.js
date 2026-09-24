@@ -73,7 +73,8 @@
     reading: '<path d="M2 6s3.5-2 10 0 10 0 10 0v12s-3.5 2-10 0-10 0-10 0z"/><path d="M12 6v12"/>',
     abc: '<path d="M3 17l3-10 3 10M4 14h4"/><path d="M11 7v10h3a2.5 2.5 0 0 0 0-5h-3 2.5a2.5 2.5 0 0 0 0-5z"/><path d="M22 9a3 3 0 0 0-5 2v2a3 3 0 0 0 5 2"/>',
     replace: '<circle cx="10" cy="10" r="5.5"/><path d="M14 14l6 6"/><path d="M7.5 10h5"/>',
-    keyboard: '<rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h1M9.5 10h1M13 10h1M16.5 10h1M7 14h10"/>'
+    keyboard: '<rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h1M9.5 10h1M13 10h1M16.5 10h1M7 14h10"/>',
+    magnet: '<path d="M5 4h4v8a3 3 0 0 0 6 0V4h4v8a7 7 0 0 1-14 0z"/><path d="M5 8h4M15 8h4"/>',
   };
   function ic(name, size) {
     return '<svg viewBox="0 0 24 24"' + (size ? ' width="' + size + '" height="' + size + '"' : "") + ' aria-hidden="true">' + (IC[name] || "") + "</svg>";
@@ -862,17 +863,21 @@
     if (key !== lastPlayingKey || full) { lastPlayingKey = key; if (!full) renderList(); }
   }
 
-  function openMedia(file) {
+  // `opts` carries what a server-prepared source adds: its display name, token, expiry and the
+  // subtitle tracks that came inside it.
+  function openMedia(file, opts) {
+    opts = opts || {};
     if (S.media && S.media.url && S.media.url.indexOf("blob:") === 0) URL.revokeObjectURL(S.media.url);
     var url = typeof file === "string" ? file : URL.createObjectURL(file);
-    var name = typeof file === "string" ? file.split("/").pop().split("?")[0] : file.name;
+    var name = opts.name || (typeof file === "string" ? file.split("/").pop().split("?")[0] : file.name);
     var kind = typeof file !== "string" && /^audio\//.test(file.type) || /\.(mka|mp3|aac|m4a|flac|ogg|opus|wav)$/i.test(name) ? "audio" : "video";
-    S.media = { url: url, name: name, kind: kind, file: typeof file === "string" ? null : file };
+    S.media = { url: url, name: name, kind: kind, file: typeof file === "string" ? null : file,
+      token: opts.token || null, expires: opts.expires || 0, tracks: opts.tracks || [] };
     S.wave = null;
     video.src = url;
     video.load();
     $("stageHint").hidden = true;
-    toast("Opened " + name);
+    if (!opts.quiet) toast("Opened " + name);
     if (!isWide() && S.view === "lines") setView("video");
     paintWaveNote();
   }
@@ -1325,7 +1330,8 @@
       (canShare ? menuItem("share", "Share .ass…", "share") : "") +
       "<h4>Video & audio</h4>" +
       menuItem("video", "Open video or audio…", "media") +
-      menuItem("link", "Open video from a link…", "mediaurl") +
+      menuItem("magnet", "Open video from a link or torrent…", "mediaurl") +
+      (S.media && S.media.tracks && S.media.tracks.length ? menuItem("file", "Subtitle tracks in this video…", "tracks") : "") +
       menuItem("wave", "Load waveform from a separate audio file…", "wavefile") +
       (S.media ? menuItem("x", "Close " + esc(S.media.name), "closemedia") : "") +
       "<h4>Script</h4>" +
@@ -1355,6 +1361,7 @@
     else if (m === "mediaurl") openUrl(true);
     else if (m === "wavefile") { $("mediaFile").setAttribute("data-purpose", "wave"); $("mediaFile").click(); }
     else if (m === "closemedia") closeMedia();
+    else if (m === "tracks") openTracks(false);
     else if (m === "props") openProps();
     else if (m === "settings") openSettings();
     else if (m === "help") openHelp();
@@ -1363,10 +1370,11 @@
   function openMediaMenu() {
     openSheet("Video & audio", '<div class="sb-menu">' +
       menuItem("video", "Open video or audio file…", "media") +
-      menuItem("link", "Open from a link…", "mediaurl") +
+      menuItem("magnet", "Open from a link or torrent…", "mediaurl", "nyaa, magnet, Drive") +
+      (S.media && S.media.tracks && S.media.tracks.length ? menuItem("file", "Subtitle tracks in this video…", "tracks") : "") +
       menuItem("wave", "Waveform from a separate audio file…", "wavefile") +
       (S.media ? menuItem("x", "Close " + esc(S.media.name), "closemedia") : "") +
-      '</div><p class="sb-hint">Files stay on this device. Phones play MP4 (H.264/HEVC) and WebM; an MKV usually needs a remux. Without a video, the preview draws the subtitles on black at the script\'s resolution.</p>');
+      '</div><p class="sb-hint">Files you open stay on this device. Phones play MP4 and WebM; for an MKV, a torrent or a Drive link use <b>Open from a link or torrent</b> and the server makes a copy this browser can play. Without a video, the preview draws the subtitles on black at the script\'s resolution.</p>');
     q(".sb-menu").addEventListener("click", function (ev) {
       var b = ev.target.closest("button[data-m]");
       if (!b) return;
@@ -1381,6 +1389,231 @@
     S.media = null; S.wave = null;
     video.removeAttribute("src"); video.load();
     fitStage(); paintWaveNote();
+    scheduleAutosave();
+  }
+
+  // ---- video from a torrent, magnet, nyaa or Drive link ----------------------------------------------
+  // A browser can play none of these, and the MKVs behind them are mostly 10-bit HEVC no phone
+  // decodes. So the server fetches the link with the same pipeline `/encode` uses, then makes a
+  // small H.264 proxy, a waveform and the file's own subtitle tracks, and hands back a token the
+  // `<video>` element plays through `/subs/media/<token>/…`. A pack of episodes is probed first so
+  // the user picks one. The job being followed is kept in localStorage: a phone that kills the tab
+  // during a twenty-minute download picks the job back up on the next visit.
+  var REMOTE_KEY = "pandora_subs_remote";
+  var VIDEO_EXT = /\.(mkv|mp4|m4v|webm|avi|mov|ts|m2ts|wmv|flv)$/i;
+  var R0 = { timer: null, job: null };
+  function isServerLink(u) {
+    if (/^magnet:\?/i.test(u)) return true;
+    if (!/^https?:\/\//i.test(u)) return false;
+    // What the browser can play straight from its source stays on the device's side.
+    if (/\.(mp4|m4v|webm|m3u8|mp3|m4a|ogg|opus|wav)(\?|#|$)/i.test(u)) return false;
+    return true;
+  }
+  function isTorrentLink(u) {
+    return /^magnet:\?/i.test(u) || /nyaa\./i.test(u) || /\.torrent(\?|#|$)/i.test(u);
+  }
+  function saveRemote() {
+    try {
+      if (R0.job) localStorage.setItem(REMOTE_KEY, JSON.stringify(R0.job)); else localStorage.removeItem(REMOTE_KEY);
+    } catch (e) {}
+  }
+  function needToken() {
+    if (PN.getToken()) return false;
+    openSheet("Sign in to fetch links",
+      '<p class="sb-hint" style="font-size:14px">Torrents, magnets and Drive links are downloaded and converted by this Pandora server, ' +
+      "so it needs to know who is asking. Sign in (or paste an API token) on the console, then come back — your script stays here.</p>",
+      [{ label: "Cancel" }, { label: "Sign in", primary: true, onClick: function () { flushAutosave(); location.href = "/login"; } }]);
+    return true;
+  }
+  function apiError(res) {
+    return (PN.rateNote && PN.rateNote(res)) || PN.messageText(res.data, false);
+  }
+  function startServerMedia(link) {
+    if (needToken()) return;
+    stopRemote();
+    var name = linkName(link);
+    if (isTorrentLink(link)) {
+      PN.api("POST", "/api/v1/jobs/probe", { torrent: link }).then(function (res) {
+        if (!(res.status === 202 && res.data && res.data.job_id)) { toast("Could not read the torrent: " + apiError(res), "bad"); return; }
+        R0.job = { phase: "probe", probeId: String(res.data.job_id), link: link, name: name, text: "Reading the torrent…", percent: 0 };
+        saveRemote(); followRemote();
+      }).catch(function (e) { toast("Could not reach the server: " + e.message, "bad"); });
+    } else {
+      submitServerMedia({ torrent: link }, name, link);
+    }
+  }
+  function submitServerMedia(body, name, link) {
+    PN.api("POST", "/api/v1/subs/media", body).then(function (res) {
+      if (!(res.status === 202 && res.data && res.data.job_id)) { toast("The server refused the link: " + apiError(res), "bad"); R0.job = null; saveRemote(); paintRemote(); return; }
+      R0.job = { phase: "job", jobId: String(res.data.job_id), link: link, name: name, text: "Waiting in the queue…", percent: 0 };
+      saveRemote(); followRemote();
+      toast("Fetching " + name + " — you can keep editing");
+    }).catch(function (e) { toast("Could not reach the server: " + e.message, "bad"); });
+  }
+  function linkName(link) {
+    var m = /[?&]dn=([^&]+)/.exec(link);
+    if (m) { try { return decodeURIComponent(m[1].replace(/\+/g, " ")); } catch (e) { return m[1]; } }
+    var last = link.split("#")[0].split("?")[0].split("/").filter(Boolean).pop() || "Linked video";
+    try { return decodeURIComponent(last); } catch (e) { return last; }
+  }
+  function followRemote() {
+    clearTimeout(R0.timer);
+    paintRemote();
+    if (!R0.job) return;
+    var id = R0.job.phase === "probe" ? R0.job.probeId : R0.job.jobId;
+    PN.api("GET", "/api/v1/jobs/" + encodeURIComponent(id)).then(function (res) {
+      if (!R0.job) return;
+      if (res.status === 404 || res.status === 401 || res.status === 403) { remoteFailed(res.status === 404 ? "the server no longer has that job" : "this browser is no longer signed in"); return; }
+      if (res.ok && res.data && res.data.stage) onRemoteStatus(res.data);
+      if (R0.job) R0.timer = setTimeout(followRemote, 2000);
+    }).catch(function () { if (R0.job) R0.timer = setTimeout(followRemote, 5000); });
+  }
+  function onRemoteStatus(d) {
+    var j = R0.job, p = d.progress || {};
+    if (j.phase === "probe") {
+      if (d.stage === "Probed") { clearTimeout(R0.timer); pickProbedFile(p.files || p.file_options || []); return; }
+      if (PN.TERMINAL.indexOf(d.stage) !== -1) { remoteFailed("the torrent could not be read"); return; }
+      j.text = "Reading the torrent…";
+    } else {
+      if (d.stage === "Uploaded" && p.type === "subsmedia" && p.token) { var done = j; stopRemote(); openServerMedia(p.token, done.name, false); return; }
+      if (PN.TERMINAL.indexOf(d.stage) !== -1) {
+        remoteFailed(d.stage === "Cancelled" ? "cancelled" : (p.error || d.cancel_reason || d.stage.toLowerCase()));
+        return;
+      }
+      if (p.type === "download") { j.text = "Downloading"; j.percent = Math.round(Number(p.percent) || 0); }
+      else if (p.type === "subsmedia") { j.text = "Converting for this browser"; j.percent = Math.round(Number(p.percent) || 0); }
+      else if (d.stage === "Queued") { j.text = "Waiting in the queue…"; j.percent = 0; }
+      else if (d.stage === "Downloaded" || d.stage === "Encoding") { j.text = "Converting for this browser"; }
+    }
+    saveRemote(); paintRemote();
+  }
+  function pickProbedFile(files) {
+    var j = R0.job;
+    var all = files.map(function (f) { return { index: f.index, name: String(f.name || f.label || f.index), bytes: Number(f.bytes) || 0 }; });
+    var videos = all.filter(function (f) { return VIDEO_EXT.test(f.name); });
+    var list = videos.length ? videos : all;
+    var go = function (f) {
+      var name = f ? f.name.split("/").pop() : j.name;
+      submitServerMedia(f ? { probe_job_id: j.probeId, file_index: Number(f.index) } : { probe_job_id: j.probeId }, name, j.link);
+    };
+    if (list.length <= 1) { go(list[0] || null); return; }
+    R0.job = null; saveRemote(); paintRemote();
+    var html = '<p class="sb-hint">This torrent holds ' + list.length + " videos. Pick the one to subtitle.</p>" +
+      '<div class="sb-card">' + list.map(function (f, i) {
+        return '<div class="sb-stylerow" data-i="' + i + '" role="button" tabindex="0"><div class="sb-stylemeta"><b>' + esc(f.name.split("/").pop()) +
+          "</b><span>" + (f.bytes ? fmtBytes(f.bytes) + " · " : "") + "file " + esc(f.index) + "</span></div></div>";
+      }).join("") + "</div>";
+    openSheet("Choose a video", html, [{ label: "Cancel" }]);
+    $("sheetBody").addEventListener("click", function onPick(ev) {
+      var row = ev.target.closest("[data-i]");
+      if (!row) return;
+      $("sheetBody").removeEventListener("click", onPick);
+      R0.job = j;
+      closeSheet();
+      go(list[Number(row.getAttribute("data-i"))]);
+    });
+  }
+  function fmtBytes(n) {
+    if (n >= 1073741824) return A.fmtNum(n / 1073741824, 2) + " GB";
+    if (n >= 1048576) return A.fmtNum(n / 1048576, 0) + " MB";
+    return A.fmtNum(n / 1024, 0) + " KB";
+  }
+  function remoteFailed(reason) {
+    var name = R0.job ? R0.job.name : "the link";
+    stopRemote();
+    toast("Could not open " + name + ": " + reason, "bad");
+  }
+  function stopRemote() {
+    clearTimeout(R0.timer); R0.timer = null;
+    R0.job = null; saveRemote(); paintRemote();
+  }
+  function cancelRemote() {
+    var j = R0.job;
+    if (!j) return;
+    if (j.phase === "job") {
+      PN.api("POST", "/api/v1/jobs/" + encodeURIComponent(j.jobId) + "/cancel", { reason: "closed in the subtitle editor" }).catch(function () {});
+    }
+    stopRemote();
+    toast("Stopped fetching " + j.name);
+  }
+  function paintRemote() {
+    var chip = $("remoteChip"), j = R0.job;
+    chip.hidden = !j;
+    if (!j) return;
+    var pct = j.phase === "job" && j.percent > 0 ? " " + j.percent + "%" : "";
+    chip.innerHTML = '<span class="sb-spin"></span><span>' + esc(j.text.replace(/…$/, "")) + pct + "</span>";
+    chip.style.setProperty("--p", (j.percent || 0) + "%");
+  }
+  function openRemoteSheet() {
+    var j = R0.job;
+    if (!j) return;
+    openSheet("Fetching a video",
+      '<div class="sb-card" style="padding:12px"><b style="word-break:break-all">' + esc(j.name) + "</b>" +
+      '<p class="sb-hint">' + esc(j.text) + (j.percent ? " — " + j.percent + "%" : "") + "</p></div>" +
+      '<p class="sb-hint">The server downloads the file and makes a small copy this browser can play, with its waveform and subtitle tracks. ' +
+      "Keep editing meanwhile; closing the page is fine too — it picks the job back up when you return. The copy is kept for 12 hours.</p>",
+      [{ label: "Stop", danger: true, onClick: cancelRemote }, { label: "Keep going", primary: true }]);
+  }
+  // Attaches a prepared source: the proxy plays in the `<video>`, the server's peaks replace the
+  // decode the page would otherwise need, and the frame rate comes from the source rather than a
+  // guess from presented frames.
+  function openServerMedia(token, name, quiet) {
+    var base = "/subs/media/" + token + "/";
+    return fetch(base + "manifest.json", { cache: "no-store" }).then(function (r) {
+      if (!r.ok) throw new Error(r.status === 404 ? "expired" : "HTTP " + r.status);
+      return r.json();
+    }).then(function (m) {
+      openMedia(base + "video.mp4", { name: name, token: token, expires: m.expires_at * 1000, tracks: m.tracks || [], quiet: quiet });
+      var rate = m.fps_den ? m.fps_num / m.fps_den : 0;
+      if (rate > 1 && rate < 200 && Math.abs(rate - settings.fps) > 0.001) { settings.fps = rate; saveSettings(); }
+      if (m.peaks) {
+        S.wave = { loading: true }; paintWaveNote();
+        fetch(base + m.peaks.file).then(function (r) { if (!r.ok) throw new Error(); return r.arrayBuffer(); }).then(function (buf) {
+          if (!S.media || S.media.token !== token) return;
+          var raw = new Uint8Array(buf), peaks = new Float32Array(raw.length);
+          for (var i = 0; i < raw.length; i++) peaks[i] = raw[i] / 255;
+          S.wave = { peaks: peaks, rate: m.peaks.rate || PEAK_RATE, duration: m.duration_ms };
+          paintWaveNote(); drawWave();
+        }).catch(function () { if (S.media && S.media.token === token) { S.wave = null; paintWaveNote(); } });
+      }
+      scheduleAutosave();
+      if (!quiet && S.media.tracks.length) openTracks(true);
+    }).catch(function (e) {
+      if (!quiet) toast(e.message === "expired" ? "That video has expired on the server — open the link again" : "Could not open the video: " + e.message, "bad");
+    });
+  }
+  function trackLabel(t, i) {
+    var bits = [t.title, t.language && t.language !== "und" ? t.language.toUpperCase() : "", (t.codec || "").toUpperCase()].filter(Boolean);
+    return "Track " + (i + 1) + (bits.length ? " — " + bits.join(" · ") : "");
+  }
+  function openTracks(offer) {
+    var tracks = S.media && S.media.tracks || [];
+    if (!tracks.length) { toast("This video has no text subtitle tracks"); return; }
+    var html = '<p class="sb-hint">' + (offer ? "The video carries " + tracks.length + " subtitle track" + (tracks.length > 1 ? "s" : "") + ". Open one to start from it — the current script stays under Recent scripts." :
+      "Open a track that came inside the video. The current script stays under Recent scripts.") + "</p>" +
+      '<div class="sb-card">' + tracks.map(function (t, i) {
+        return '<div class="sb-stylerow" data-t="' + i + '" role="button" tabindex="0"><div class="sb-stylemeta"><b>' + esc(trackLabel(t, i)) + "</b><span>" + esc(t.file) + "</span></div></div>";
+      }).join("") + "</div>";
+    openSheet("Subtitle tracks", html, [{ label: offer ? "Not now" : "Close" }]);
+    $("sheetBody").addEventListener("click", function onPick(ev) {
+      var row = ev.target.closest("[data-t]");
+      if (!row) return;
+      $("sheetBody").removeEventListener("click", onPick);
+      var t = tracks[Number(row.getAttribute("data-t"))], media = S.media;
+      closeSheet();
+      fetch("/subs/media/" + media.token + "/" + t.file).then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.arrayBuffer(); })
+        .then(function (buf) {
+          var base = media.name.replace(/\.[a-z0-9]{2,4}$/i, "");
+          loadText(decodeText(buf), base + (t.language && t.language !== "und" ? "." + t.language : "") + "." + t.file.split(".").pop());
+        })
+        .catch(function (e) { toast("Could not fetch the track: " + e.message, "bad"); });
+    });
+  }
+  function initRemote() {
+    $("remoteChip").addEventListener("click", openRemoteSheet);
+    var saved = null;
+    try { saved = JSON.parse(localStorage.getItem(REMOTE_KEY) || "null"); } catch (e) {}
+    if (saved && (saved.jobId || saved.probeId) && PN.getToken()) { R0.job = saved; followRemote(); }
   }
 
   // ---- files ---------------------------------------------------------------------------------------
@@ -1453,6 +1686,7 @@
     }
   }
   function openUrl(media) {
+    if (media) { openMediaUrl(); return; }
     openSheet(media ? "Open video from a link" : "Open subtitles from a link",
       field("Link", '<input class="sb-input" id="urlIn" type="url" inputmode="url" placeholder="https://…" autocomplete="off">',
         media ? "Direct links to MP4/WebM files or an HLS playlist the browser can play. The server must allow it (CORS) for the waveform."
@@ -1465,6 +1699,25 @@
           .then(function (buf) { loadText(decodeText(buf), decodeURIComponent(u.split("/").pop().split("?")[0]) || "Linked.ass"); })
           .catch(function (e) { toast("Could not fetch: " + e.message, "bad"); });
       } }]);
+  }
+
+  function openMediaUrl() {
+    openSheet("Open video from a link",
+      field("Link", '<input class="sb-input" id="urlIn" type="url" inputmode="url" placeholder="nyaa.si/view/…, magnet:?…, drive.google.com/…" autocomplete="off">',
+        "The links <b>/encode</b> takes — a nyaa page, a magnet, a <code>.torrent</code> or Google Drive link, or any direct video link — are fetched by this Pandora server " +
+        "and turned into a small copy this browser plays, with its waveform and subtitle tracks. You need to be signed in for that. " +
+        "A direct MP4 or WebM link plays straight from its source."),
+      [{ label: "Cancel" }, { label: "Open", primary: true, onClick: function () {
+        var u = q("#urlIn").value.trim();
+        if (/^(www\.)?[a-z0-9-]+\.[a-z]{2,}\//i.test(u)) u = "https://" + u;
+        // After this sheet closes, since starting may open one of its own (sign in, pick a file).
+        if (isServerLink(u)) { setTimeout(function () { startServerMedia(u); }, 30); return; }
+        if (!/^https?:\/\//i.test(u) && u.charAt(0) !== "/") { toast("Enter a link, a magnet or a torrent", "bad"); return false; }
+        openMedia(u);
+      } }]);
+    if (navigator.clipboard && navigator.clipboard.readText) {
+      navigator.clipboard.readText().then(function (t) { t = (t || "").trim(); if (/^(magnet:\?|https?:\/\/)\S+$/i.test(t) && !q("#urlIn").value) q("#urlIn").value = t; }).catch(function () {});
+    }
   }
 
   // ---- autosave (IndexedDB) --------------------------------------------------------------------------
@@ -1508,7 +1761,8 @@
     clearTimeout(saveTimer); saveTimer = null;
     if (!S.projectId) S.projectId = "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
     var p = { id: S.projectId, name: S.name, text: A.serializeAss(S.doc), updated: Date.now(), lines: S.doc.events.length,
-      active: idx(S.active), dirty: S.dirty };
+      active: idx(S.active), dirty: S.dirty,
+      media: S.media && S.media.token ? { token: S.media.token, name: S.media.name, expires: S.media.expires } : null };
     DB.put(p).then(function () {
       try { localStorage.setItem(LAST_KEY, p.id); } catch (e) {}
       pruneProjects();
@@ -1532,6 +1786,11 @@
     var a = doc.events[Math.max(0, Math.min(doc.events.length - 1, p.active || 0))];
     S.active = a ? a.id : null; S.sel = a ? new Set([a.id]) : new Set();
     try { localStorage.setItem(LAST_KEY, p.id); } catch (e) {}
+    // A server-prepared video outlives the tab for as long as the server keeps it, so it comes
+    // back with its script.
+    if (p.media && p.media.token && p.media.expires > Date.now() && !(S.media && S.media.token === p.media.token)) {
+      openServerMedia(p.media.token, p.media.name, true);
+    }
     fitStage(); refresh();
     requestAnimationFrame(function () { if (S.active !== null) ensureRowVisible(S.active); });
   }
@@ -2442,7 +2701,7 @@
   }
 
   function start() {
-    initChrome(); buildEditor(); initList(); initSelBar(); initMedia(); initWave(); initStyles(); renderTools();
+    initChrome(); buildEditor(); initList(); initSelBar(); initMedia(); initWave(); initStyles(); renderTools(); initRemote();
     measureRow();
     paintWaveNote();
     var fresh = function () {

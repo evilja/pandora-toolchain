@@ -642,6 +642,22 @@ args = 0
 text = "💬 Altyazı çıkarma"
 args = 0
 
+[SUBSMEDIA_PROG]
+text = "Video altyazı editörü için hazırlanıyor: %{}"
+args = 1
+
+[SUBSMEDIA_DONE]
+text = "Video altyazı editöründe açılmaya hazır."
+args = 0
+
+[SUBSMEDIA_FAIL]
+text = "Video altyazı editörü için hazırlanamadı: {}"
+args = 1
+
+[JOB_TYPE_SUBS_MEDIA]
+text = "🎞️ Altyazı editörü videosu"
+args = 0
+
 [LINK_NODE_FAILED]
 text = "Bu işi çalıştıran düğüm bir hata bildirdi: {}"
 args = 1

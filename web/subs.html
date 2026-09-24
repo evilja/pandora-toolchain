@@ -335,6 +335,14 @@ input, select, textarea { font-size: 16px; }
 }
 @media (min-width: 1100px) and (max-height: 760px) { .sb-wavewrap { height: 96px; } }
 @media (max-width: 380px) { .sb-editacts .sb-btn { font-size: 12px; } .sb-tab { font-size: 10.5px; } }
+.sb-remote { position: fixed; z-index: 40; left: 50%; transform: translateX(-50%); top: calc(var(--sb-bar) + env(safe-area-inset-top, 0px) + 8px);
+  display: flex; align-items: center; gap: 8px; max-width: calc(100vw - 32px); min-height: 36px; padding: 6px 14px; border-radius: 999px;
+  border: 1px solid var(--pn-k1-line); color: var(--pn-ink); font: inherit; font-size: 13px; white-space: nowrap; cursor: pointer;
+  background: linear-gradient(90deg, var(--pn-k1-soft) var(--p, 0%), var(--pn-panel) var(--p, 0%)); box-shadow: 0 6px 18px rgba(0,0,0,.18); }
+.sb-remote[hidden] { display: none; }
+.sb-remote span:last-child { overflow: hidden; text-overflow: ellipsis; }
+.sb-spin { flex: none; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--pn-k1); border-right-color: transparent; animation: sb-spin .8s linear infinite; }
+@keyframes sb-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
@@ -349,6 +357,7 @@ input, select, textarea { font-size: 16px; }
     <button class="sb-ibtn" id="redoBtn" title="Redo (Ctrl+Y)" aria-label="Redo" disabled></button>
     <button class="sb-ibtn" id="saveBtn" title="Save .ass (Ctrl+S)" aria-label="Save"></button>
   </header>
+  <button class="sb-remote" id="remoteChip" type="button" hidden aria-live="polite"></button>
 
   <!-- video, preview and audio timing -->
   <section class="sb-video" id="videoPane" aria-label="Video and timing">

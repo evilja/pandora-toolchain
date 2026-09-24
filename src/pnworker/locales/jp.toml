@@ -642,6 +642,22 @@ args = 0
 text = "💬 字幕抽出"
 args = 0
 
+[SUBSMEDIA_PROG]
+text = "字幕エディター用に動画を準備中: {}%"
+args = 1
+
+[SUBSMEDIA_DONE]
+text = "字幕エディターで動画を開けます。"
+args = 0
+
+[SUBSMEDIA_FAIL]
+text = "字幕エディター用の動画を準備できませんでした: {}"
+args = 1
+
+[JOB_TYPE_SUBS_MEDIA]
+text = "🎞️ 字幕エディター用動画"
+args = 0
+
 [LINK_NODE_FAILED]
 text = "このジョブを実行したノードが失敗を報告しました: {}"
 args = 1

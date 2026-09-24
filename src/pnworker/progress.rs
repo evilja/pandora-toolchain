@@ -2,7 +2,7 @@ use crate::lib::db::core::JobDb;
 use crate::pnworker::core::Stage;
 use crate::pnworker::estimate::remaining_secs_active;
 use crate::pnworker::messages::{
-    BACKUPALL_PROG, ENCODE_CONCAT_PROG, ENCODE_PROG, MessagePayload, PROBE_ROW, TORRENT_PROG,
+    BACKUPALL_PROG, ENCODE_CONCAT_PROG, SUBSMEDIA_DONE, SUBSMEDIA_FAIL, SUBSMEDIA_PROG, ENCODE_PROG, MessagePayload, PROBE_ROW, TORRENT_PROG,
     TORRENT_PROG_SELECT, UPLOAD_BACKUP_PROG, UPLOAD_DONE, UPLOAD_PROG,
 };
 
@@ -98,6 +98,20 @@ pub(crate) async fn persist_side_effects(
             });
             db.update_progress(job_id, &v.to_string()).await.ok();
         }
+    } else if *id == SUBSMEDIA_PROG {
+        let v = serde_json::json!({
+            "type": "subsmedia",
+            "percent": args.get(0).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0),
+        });
+        db.update_progress(job_id, &v.to_string()).await.ok();
+    } else if *id == SUBSMEDIA_DONE {
+        let v = serde_json::json!({
+            "type": "subsmedia", "percent": 100, "ready": true, "token": args.get(0),
+        });
+        db.update_progress(job_id, &v.to_string()).await.ok();
+    } else if *id == SUBSMEDIA_FAIL {
+        let v = serde_json::json!({ "type": "subsmedia", "error": args.get(0) });
+        db.update_progress(job_id, &v.to_string()).await.ok();
     } else if *id == BACKUPALL_PROG {
         let rows = args.get(0).cloned().unwrap_or_default();
         if stage == Some(Stage::Uploaded) {

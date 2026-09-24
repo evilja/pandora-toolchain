@@ -25,5 +25,6 @@ pub mod snapshot;
 pub mod keep;
 pub mod batch;
 pub mod studio;
+pub mod subs_media;
 pub mod link;
 pub mod boot;

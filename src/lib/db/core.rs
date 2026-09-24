@@ -701,6 +701,7 @@ pub fn job_type_label(job_type: i64) -> &'static str {
         15 => "StudioPreview",
         16 => "Batch",
         17 => "Subs",
+        20 => "SubsMedia",
         _ => "Unknown",
     }
 }
