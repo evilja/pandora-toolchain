@@ -889,7 +889,21 @@
       detectFps();
     });
     video.addEventListener("error", function () {
-      toast("This browser cannot play " + (S.media ? S.media.name : "that file") + " — try an MP4 or WebM copy", "bad");
+      var m = S.media;
+      // A link the browser could not decode — an HEVC MP4, say — is still a link the server can
+      // fetch and convert, so the dead end becomes an offer.
+      if (m && !m.file && !m.token && /^https?:\/\//i.test(m.url)) {
+        var link = m.url;
+        openSheet("This browser cannot play that video",
+          '<p class="sb-hint" style="font-size:14px">The link opened, but its video or audio codec is not one this browser decodes. ' +
+          "The Pandora server can download it and make a copy that plays here, with its waveform.</p>",
+          [{ label: "Cancel" }, { label: "Convert on the server", primary: true, onClick: function () {
+            closeMedia();
+            setTimeout(function () { startServerMedia(link); }, 30);
+          } }]);
+        return;
+      }
+      toast("This browser cannot play " + (m ? m.name : "that file") + " — open it from its link or torrent so the server converts it, or use an MP4 or WebM copy", "bad");
     });
     video.addEventListener("seeked", function () { S.time = now(); paintTime(true); });
     video.addEventListener("play", function () { $("playBtn").innerHTML = ic("pause"); requestAnimationFrame(loop); });
@@ -1451,6 +1465,8 @@
     }).catch(function (e) { toast("Could not reach the server: " + e.message, "bad"); });
   }
   function linkName(link) {
+    var nyaa = /nyaa\.[^/]+\/view\/(\d+)/i.exec(link);
+    if (nyaa) return "nyaa #" + nyaa[1];
     var m = /[?&]dn=([^&]+)/.exec(link);
     if (m) { try { return decodeURIComponent(m[1].replace(/\+/g, " ")); } catch (e) { return m[1]; } }
     var last = link.split("#")[0].split("?")[0].split("/").filter(Boolean).pop() || "Linked video";
@@ -1694,7 +1710,6 @@
       [{ label: "Cancel" }, { label: "Open", primary: true, onClick: function () {
         var u = q("#urlIn").value.trim();
         if (!/^https?:\/\//i.test(u) && u.charAt(0) !== "/") { toast("Enter an http(s) link", "bad"); return false; }
-        if (media) { openMedia(u); return; }
         fetch(u).then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.arrayBuffer(); })
           .then(function (buf) { loadText(decodeText(buf), decodeURIComponent(u.split("/").pop().split("?")[0]) || "Linked.ass"); })
           .catch(function (e) { toast("Could not fetch: " + e.message, "bad"); });
