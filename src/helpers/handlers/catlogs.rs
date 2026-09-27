@@ -31,7 +31,7 @@ pub async fn handle_catlogs(
     let archive = match find_log_archive(job_id).await {
         Ok(Some(archive)) => archive,
         Ok(None) => {
-            let text = command_format(command, CATLOGS_NO_LOGS, &[job_id.to_string()]);
+            let text = command_format(command, CATLOGS_NO_LOGS, &[]);
             command
                 .edit_response(ctx, EditInteractionResponse::new().content(with_job_note(command, text)))
                 .await
@@ -42,7 +42,7 @@ pub async fn handle_catlogs(
             let text = command_format(
                 command,
                 CATLOGS_BUILD_FAIL,
-                &[job_id.to_string(), error],
+                &[error],
             );
             command
                 .edit_response(ctx, EditInteractionResponse::new().content(with_job_note(command, text)))
@@ -57,7 +57,6 @@ pub async fn handle_catlogs(
             command,
             CATLOGS_BUILD_FAIL,
             &[
-                job_id.to_string(),
                 format!(
                     "archive is {:.1} MiB (the Discord-safe limit is 24 MiB)",
                     archive.bytes.len() as f64 / 1024.0 / 1024.0
@@ -80,8 +79,8 @@ pub async fn handle_catlogs(
     let embed = success_embed(command, COMMAND_LOGS_READY)
         .description(description)
         .field(
-            command_message(command, FIELD_JOBID),
-            format!("`{}`", job_id),
+            command_message(command, FIELD_PROVIDER),
+            JOB_PROVIDER,
             true,
         )
         .field(
@@ -96,7 +95,7 @@ pub async fn handle_catlogs(
         );
     let attachment = CreateAttachment::bytes(
         archive.bytes,
-        format!("pandora-logs-{}.zip", job_id),
+        "pandora-logs.zip",
     );
     command
         .edit_response(

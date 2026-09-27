@@ -179,11 +179,11 @@ text = "Studio önizlemesi hazırlandı ancak MP4 eki hazırlanamadı."
 args = 0
 
 [EMBED_FOOTER]
-text = "Pandora Toolchain • v{}"
-args = 1
+text = "Pandora 4 Chiri"
+args = 0
 
-[FIELD_JOBID]
-text = "İş numarası"
+[FIELD_PROVIDER]
+text = "Sağlayıcı"
 args = 0
 
 [FIELD_WORKER]
@@ -475,12 +475,12 @@ text = "Magnet bağlantısı gizlendi"
 args = 0
 
 [SOURCE_PROBE_FILE]
-text = "İnceleme işi `{}` • dosya `#{}`"
-args = 2
+text = "Listelenen kaynak • dosya `#{}`"
+args = 1
 
 [SOURCE_PROBE]
-text = "İnceleme işi `{}`"
-args = 1
+text = "Listelenen kaynak"
+args = 0
 
 [SOURCE_KEYWORDS]
 text = "Saklanan çıktılar: {}"
@@ -555,12 +555,12 @@ text = "{} log dosyası {} iş dizininden paketlendi."
 args = 2
 
 [CATLOGS_NO_LOGS]
-text = "`{}` numaralı iş için log bulunamadı."
-args = 1
+text = "Seçilen iş için log bulunamadı."
+args = 0
 
 [CATLOGS_BUILD_FAIL]
-text = "`{}` numaralı işin logları paketlenemedi: {}"
-args = 2
+text = "Seçilen işin logları paketlenemedi: {}"
+args = 1
 
 [CATLOGS_ACTIVE]
 text = "aktif"
@@ -943,7 +943,7 @@ text = "Aktif işler durduruluyor ve Pandora yeniden başlatılıyor…"
 args = 0
 
 [JOB_PICK_INVALID]
-text = "Hata: işi `job` seçeneğinin sunduğu listeden seçin ya da sayısal bir iş kimliği yapıştırın."
+text = "Hata: işi `job` seçeneğinin sunduğu listeden seçin."
 args = 0
 
 [JOB_PICK_REQUIRED]

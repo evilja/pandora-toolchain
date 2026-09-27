@@ -11,7 +11,7 @@ use std::path::PathBuf;
 #[command(
     name = "pnp2p",
     version = "0.1.1",
-    about = "Pandora Toolchain P2P wrapper",
+    about = "Pandora 4 Chiri P2P wrapper",
     long_about = None
 )]
 struct Args {

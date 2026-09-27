@@ -1,6 +1,6 @@
 [package]
 name = "pandora-toolchain"
-version = "3.5.0-lumiere"
+version = "4.0.0-chiri"
 edition = "2024"
 license = "GPL-3.0-or-later"
 

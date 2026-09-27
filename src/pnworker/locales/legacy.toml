@@ -1,5 +1,5 @@
 [QUEUE_TOO_LONG]
-text = "\n\nŞu anda Pandora Toolchain'de biraz sıra var. \nLütfen daha sonra tekrar deneyin."
+text = "\n\nŞu anda Pandora 4 Chiri'de biraz sıra var. \nLütfen daha sonra tekrar deneyin."
 args = 0
 
 [QUEUED]
@@ -162,8 +162,8 @@ args = 1
 text = "Encode İşlemi ({})"
 args = 1
 
-[FIELD_JOBID]
-text = "İşlem Numarası"
+[FIELD_PROVIDER]
+text = "Sağlayıcı"
 args = 0
 
 [FIELD_AUTHOR]

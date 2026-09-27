@@ -4934,6 +4934,9 @@ pub struct Job {
     pub duplicate_source: Option<PathBuf>,
     pub forward_parent: Option<u64>,
     pub encode_warnings: Vec<String>,
+    // Long-line warnings only describe a problem when the guild selected WrapStyle 2 (no
+    // automatic wrapping). Snapshot it so an existing job does not change with live config.
+    pub warn_long_lines: bool,
     pub encode_dispatched: bool,
     pub encode_dispatch_order: Option<u64>,
     // Unix time of the dispatch and of the last encoder progress frame, plus the Encode layer's
@@ -5122,6 +5125,7 @@ impl Job {
             duplicate_source: None,
             forward_parent: None,
             encode_warnings: Vec::new(),
+            warn_long_lines: settings.warn_long_lines,
             encode_dispatched: false,
             encode_dispatch_order: None,
             encode_dispatched_at: None,
@@ -5226,6 +5230,7 @@ impl Job {
             duplicate_source: None,
             forward_parent: None,
             encode_warnings: Vec::new(),
+            warn_long_lines: settings.warn_long_lines,
             encode_dispatched: false,
             encode_dispatch_order: None,
             encode_dispatched_at: None,

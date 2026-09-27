@@ -184,8 +184,8 @@ pub async fn handle_ts_message(ctx: &Context, msg: &Message, parts: &[&str]) {
             let mut embed = CreateEmbed::new()
                 .title("TS complete")
                 .field("Repo", format!("`{}`", owner_repo), true)
-                .field("File", format!("`{}`", uploaded_path), true)
-                .field("Job", format!("`{}`", job_id), true);
+                .field("Provider", JOB_PROVIDER, true)
+                .field("File", format!("`{}`", uploaded_path), true);
             if let Some(warning) = &conversion_warning {
                 embed = embed.field("Warnings", warning, false);
             }

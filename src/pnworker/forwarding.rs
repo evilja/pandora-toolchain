@@ -264,6 +264,7 @@ mod tests {
             duplicate_source: None,
             forward_parent: None,
             encode_warnings: Vec::new(),
+            warn_long_lines: false,
             encode_dispatched: false,
             encode_dispatch_order: None,
             encode_dispatched_at: None,

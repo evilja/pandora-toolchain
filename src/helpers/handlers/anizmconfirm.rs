@@ -409,7 +409,7 @@ fn anime_choice_label(option: &SelectOption) -> String {
 }
 
 fn summary(
-    job_id: u64,
+    _job_id: u64,
     anime: &SelectOption,
     episode: &SelectOption,
     fansub: &str,
@@ -418,13 +418,12 @@ fn summary(
     failed: &[String],
 ) -> String {
     let mut lines = vec![format!(
-        "{} job `{}` to Anizm `{}` (#{}) episode `{}` as **{}**.",
+        "{} to Anizm `{}` (#{}) episode `{}` as **{}**.",
         if failed.is_empty() {
             "Published"
         } else {
             "Partially published"
         },
-        job_id,
         anime.label,
         anime.id,
         episode.label,

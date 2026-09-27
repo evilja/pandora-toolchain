@@ -51,7 +51,7 @@ pub async fn handle_acixconfirm(
                 ctx,
                 command,
                 job_id,
-                format!("Published job `{}` to AnimeciX multishare and multiple.", job_id),
+                "Published to AnimeciX multishare and multiple.",
             )
             .await;
         }

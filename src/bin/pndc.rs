@@ -1285,7 +1285,7 @@ fn help_catalog() -> &'static [HelpCommand] {
         HelpCommand {
             section: "admin",
             name: "touchapi",
-            summary: "Write or update a toolchain environment token.",
+            summary: "Write or update a Pandora 4 Chiri environment token.",
             usage: "/touchapi key_name:<name> token:<value>",
             details: "Updates the global pntools environment file with the provided token value.",
         },
@@ -3457,7 +3457,7 @@ impl EventHandler for Handler {
                     )
             },
             CreateCommand::new("touchapi")
-                .description("Write or update an API token in the toolchain env file")
+                .description("Write or update an API token in the Pandora 4 Chiri env file")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "key_name", "Env key name (for example `forgejo_api_key`)")
                         .required(true)

@@ -179,11 +179,11 @@ text = "Studioプレビューは完成しましたが、MP4添付ファイルを
 args = 0
 
 [EMBED_FOOTER]
-text = "Pandora Toolchain • v{}"
-args = 1
+text = "Pandora 4 Chiri"
+args = 0
 
-[FIELD_JOBID]
-text = "ジョブID"
+[FIELD_PROVIDER]
+text = "プロバイダー"
 args = 0
 
 [FIELD_WORKER]
@@ -475,12 +475,12 @@ text = "Magnetリンクは非表示です"
 args = 0
 
 [SOURCE_PROBE_FILE]
-text = "検査ジョブ `{}` • ファイル `#{}`"
-args = 2
+text = "一覧化したソース • ファイル `#{}`"
+args = 1
 
 [SOURCE_PROBE]
-text = "検査ジョブ `{}`"
-args = 1
+text = "一覧化したソース"
+args = 0
 
 [SOURCE_KEYWORDS]
 text = "保存済み出力: {}"
@@ -555,12 +555,12 @@ text = "{}個のログファイルを{}ジョブディレクトリからまと�
 args = 2
 
 [CATLOGS_NO_LOGS]
-text = "ジョブ `{}` のログは見つかりませんでした。"
-args = 1
+text = "選択したジョブのログは見つかりませんでした。"
+args = 0
 
 [CATLOGS_BUILD_FAIL]
-text = "ジョブ `{}` のログをまとめられませんでした: {}"
-args = 2
+text = "選択したジョブのログをまとめられませんでした: {}"
+args = 1
 
 [CATLOGS_ACTIVE]
 text = "実行中"
@@ -943,7 +943,7 @@ text = "実行中の処理を停止してPandoraを再起動しています…"
 args = 0
 
 [JOB_PICK_INVALID]
-text = "エラー: `job` オプションの一覧からジョブを選ぶか、数値のジョブIDを貼り付けてください。"
+text = "エラー: `job` オプションの一覧からジョブを選んでください。"
 args = 0
 
 [JOB_PICK_REQUIRED]

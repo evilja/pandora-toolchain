@@ -2,7 +2,7 @@
 
 ## Overview
 
-`db` is a database library for the Pandora Toolchain that provides persistent storage for encoding jobs. It stores all job information as a permanent log, allowing you to track job history, monitor active jobs, and analyze past operations.
+`db` is a database library for Pandora 4 Chiri that provides persistent storage for encoding jobs. It stores all job information as a permanent log, allowing you to track job history, monitor active jobs, and analyze past operations.
 
 ## Features
 
@@ -559,4 +559,4 @@ SELECT ready, COUNT(*) FROM jobs WHERE NOT archived GROUP BY ready;
 
 ## Summary
 
-`db` provides a simple, safe way to persist Pandora Toolchain jobs. Jobs are never deleted, creating a permanent audit log. The API is designed to integrate seamlessly with the existing `pnworker` architecture while adding persistence, crash recovery, and historical analysis capabilities.
+`db` provides a simple, safe way to persist Pandora 4 Chiri jobs. Jobs are never deleted, creating a permanent audit log. The API is designed to integrate seamlessly with the existing `pnworker` architecture while adding persistence, crash recovery, and historical analysis capabilities.

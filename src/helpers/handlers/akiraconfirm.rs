@@ -224,9 +224,8 @@ pub async fn handle_akiraconfirm(ctx: &Context, command: &serenity::all::Command
         command,
         job_id,
         format!(
-            "{} job `{}` to Akira `{}` episode `{}`.",
+            "{} to Akira `{}` episode `{}`.",
             if episode_exists { "Updated" } else { "Published" },
-            job_id,
             slug,
             episode
         ),

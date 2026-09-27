@@ -188,7 +188,7 @@ beside it.
   "nodes": [{
     "node": "mini-osaka", "group": null, "threads": 16, "max_jobs": 1,
     "encoders": ["h264_nvenc", "av1_nvenc"], "drain": false, "drain_reason": null,
-    "last_seen_secs": 4, "jobs": ["4242"], "pandora_version": "3.5.0-lumiere",
+    "last_seen_secs": 4, "jobs": ["4242"], "pandora_version": "4.0.0-chiri",
     "encoder_identity": "x264-165-0.165.x-pandora", "purpose": "gpu", "build": 41,
     "migration_error": null
   }],

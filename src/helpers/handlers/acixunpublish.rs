@@ -45,8 +45,8 @@ pub async fn handle_acixunpublish(
             let status = result.get("status").and_then(|value| value.as_str()).unwrap_or("pending");
             let scope = result.get("scope").and_then(|value| value.as_str()).unwrap_or("selected");
             let content = format!(
-                "Reset local AnimeciX `{}` state for job `{}`. New local status: `{}`. No AnimeciX videos were remotely deleted.",
-                scope, job_id, status,
+                "Reset local AnimeciX `{}` state for the selected job. New local status: `{}`. No AnimeciX videos were remotely deleted.",
+                scope, status,
             );
             log_publish(job_id, "/acixunpublish", &content).await;
             command.edit_response(

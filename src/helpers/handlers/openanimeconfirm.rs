@@ -307,7 +307,7 @@ pub(super) fn link_value(uploaded: &serde_json::Value, key: &str) -> Option<Stri
 
 #[allow(clippy::too_many_arguments)]
 fn summary(
-    job_id: u64,
+    _job_id: u64,
     slug: &str,
     season: u32,
     episode: u32,
@@ -317,13 +317,12 @@ fn summary(
     failed: &[String],
 ) -> String {
     let mut lines = vec![format!(
-        "{} job `{}` to OpenAnime `{}` S{:02}E{:02} as **{}**.",
+        "{} to OpenAnime `{}` S{:02}E{:02} as **{}**.",
         if failed.is_empty() {
             "Published"
         } else {
             "Partially published"
         },
-        job_id,
         slug,
         season,
         episode,

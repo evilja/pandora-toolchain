@@ -88,7 +88,7 @@ fn probe_list_from_progress(progress: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
-// Rebuilt rather than composed from scratch: the status/job id/worker/source fields belong to the
+// Rebuilt rather than composed from scratch: the status/provider/worker/source fields belong to the
 // worker's own render, and the button handler has no `Job` to reproduce them from.
 fn swap_probe_list(embed: &Embed, body: &str) -> Option<CreateEmbed> {
     if !embed.fields.iter().any(|field| is_probe_list_value(&field.value)) {

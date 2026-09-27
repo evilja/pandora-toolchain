@@ -5,7 +5,6 @@ use serenity::all::{Colour, CreateEmbed, CreateEmbedFooter};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
-const PKGVER: &str = env!("CARGO_PKG_VERSION");
 const EN_LOCALE: &str = include_str!("locales/en.toml");
 const TR_LOCALE: &str = include_str!("locales/tr.toml");
 const JP_LOCALE: &str = include_str!("locales/jp.toml");
@@ -163,7 +162,9 @@ pub const PREVIEW_ATTACHMENT_REJECTED: &str = "PREVIEW_ATTACHMENT_REJECTED";
 pub const PREVIEW_ATTACHMENT_MISSING: &str = "PREVIEW_ATTACHMENT_MISSING";
 pub const STUDIO_PREVIEW_ATTACHMENT_MISSING: &str = "STUDIO_PREVIEW_ATTACHMENT_MISSING";
 pub const EMBED_FOOTER: &str = "EMBED_FOOTER";
-pub const FIELD_JOBID: &str = "FIELD_JOBID";
+pub const PRODUCT_NAME: &str = "Pandora 4 Chiri";
+pub const JOB_PROVIDER: &str = "ミシャピー";
+pub const FIELD_PROVIDER: &str = "FIELD_PROVIDER";
 pub const FIELD_WORKER: &str = "FIELD_WORKER";
 pub const FIELD_STATUS: &str = "FIELD_STATUS";
 pub const FIELD_PRESET: &str = "FIELD_PRESET";
@@ -518,7 +519,7 @@ pub fn create_job_embed(job: &Job, payload: &MessagePayload) -> CreateEmbed {
     let colour = stage_colour(job.ready);
     // An encode listing its source first is still the encode its requester asked for.
     let title = get_job_type_text(job.pick_then.unwrap_or(job.job_type), lang);
-    let footer = format_message(EMBED_FOOTER, lang, &[PKGVER.to_string()]);
+    let footer = PRODUCT_NAME;
     let mut embed = CreateEmbed::new()
         .title(title)
         .colour(colour)
@@ -528,8 +529,8 @@ pub fn create_job_embed(job: &Job, payload: &MessagePayload) -> CreateEmbed {
             true,
         )
         .field(
-            get_message(FIELD_JOBID, lang),
-            format!("`{}`", job.job_id),
+            get_message(FIELD_PROVIDER, lang),
+            JOB_PROVIDER,
             true,
         )
         .field(
@@ -555,10 +556,16 @@ pub fn create_job_embed(job: &Job, payload: &MessagePayload) -> CreateEmbed {
             embed = embed.field(get_message(FIELD_OUTPUT, lang), url, false);
         }
     }
-    if !job.encode_warnings.is_empty() {
+    let visible_warnings = job
+        .encode_warnings
+        .iter()
+        .filter(|warning| job.warn_long_lines || !is_character_limit_warning(warning))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !visible_warnings.is_empty() {
         embed = embed.field(
             get_message(FIELD_WARNINGS, lang),
-            warnings_field(&job.encode_warnings, lang),
+            warnings_field(&visible_warnings, lang),
             false,
         );
     }
@@ -671,14 +678,14 @@ fn job_source(job: &Job, lang: &str) -> String {
     if let Some(display) = job.display_link.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         return crate::lib::p2p::nyaaise::display_source_link(display);
     }
-    if let Some(probe_job_id) = job.probe_job_id {
+    if job.probe_job_id.is_some() {
         return match job.probe_file_index {
             Some(index) => format_message(
                 SOURCE_PROBE_FILE,
                 lang,
-                &[probe_job_id.to_string(), index.to_string()],
+                &[index.to_string()],
             ),
-            None => format_message(SOURCE_PROBE, lang, &[probe_job_id.to_string()]),
+            None => format_message(SOURCE_PROBE, lang, &[]),
         };
     }
 
@@ -705,6 +712,23 @@ fn truncate_embed_value(value: &str) -> String {
         return value.to_string();
     }
     value.chars().take(LIMIT - 1).collect::<String>() + "…"
+}
+
+// pnass reports a long visible subtitle line as `<event>: <text>` and collapses consecutive
+// repeats into `<count> more similar warnings`. Keep the distinct leftover-`#` diagnostic visible
+// for every WrapStyle; it is not a line-length warning even though it also starts with an event
+// number.
+pub fn is_character_limit_warning(warning: &str) -> bool {
+    let warning = warning.trim();
+    if let Some(count) = warning.strip_suffix(" more similar warnings") {
+        return !count.is_empty() && count.chars().all(|character| character.is_ascii_digit());
+    }
+    let Some((event, detail)) = warning.split_once(": ") else {
+        return false;
+    };
+    !event.is_empty()
+        && event.chars().all(|character| character.is_ascii_digit())
+        && !detail.starts_with("leftover # character:")
 }
 
 fn active_encode_eta_text(payload: &MessagePayload) -> Option<String> {
@@ -919,6 +943,7 @@ mod tests {
             duplicate_source: None,
             forward_parent: None,
             encode_warnings: Vec::new(),
+            warn_long_lines: false,
             encode_dispatched: false,
             encode_dispatch_order: None,
             encode_dispatched_at: None,
@@ -961,6 +986,11 @@ mod tests {
         for (id, entry) in en {
             assert_eq!(Some(entry.args), tr.get(&id).map(|value| value.args), "{}", id);
             assert_eq!(Some(entry.args), jp.get(&id).map(|value| value.args), "{}", id);
+        }
+        for locale in [EN_LOCALE, TR_LOCALE, JP_LOCALE] {
+            let footer = &parse_entries(locale).unwrap()[EMBED_FOOTER];
+            assert_eq!(footer.text, PRODUCT_NAME);
+            assert_eq!(footer.args, 0);
         }
     }
 
@@ -1084,6 +1114,53 @@ mod tests {
             field.get("name").and_then(|value| value.as_str())
                 == Some(get_message(FIELD_PROGRESS, "en").as_str())
         }));
+        let provider = fields
+            .iter()
+            .find(|field| {
+                field.get("name").and_then(|value| value.as_str())
+                    == Some(get_message(FIELD_PROVIDER, "en").as_str())
+            })
+            .and_then(|field| field.get("value"))
+            .and_then(|value| value.as_str());
+        assert_eq!(provider, Some(JOB_PROVIDER));
+        assert!(!fields.iter().any(|field| {
+            field.get("value").and_then(|value| value.as_str()) == Some("`4`")
+        }));
+    }
+
+    #[test]
+    fn character_limit_warnings_only_render_for_wrap_style_two() {
+        let mut job = test_job(JobType::Encode, "https://example.com/video.mp4");
+        job.encode_warnings = vec![
+            "12: this subtitle line is deliberately longer than fifty characters".to_string(),
+            "13: leftover # character: visible # marker".to_string(),
+        ];
+        let payload = MessagePayload::Static(ENCODE_DONE);
+
+        let hidden = embed_json(&job, &payload);
+        let hidden_warnings = hidden["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|field| field["name"] == get_message(FIELD_WARNINGS, "en"))
+            .unwrap()["value"]
+            .as_str()
+            .unwrap();
+        assert!(!hidden_warnings.contains("deliberately longer"));
+        assert!(hidden_warnings.contains("leftover # character"));
+
+        job.warn_long_lines = true;
+        let shown = embed_json(&job, &payload);
+        let shown_warnings = shown["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|field| field["name"] == get_message(FIELD_WARNINGS, "en"))
+            .unwrap()["value"]
+            .as_str()
+            .unwrap();
+        assert!(shown_warnings.contains("deliberately longer"));
+        assert!(shown_warnings.contains("leftover # character"));
     }
 
     #[test]

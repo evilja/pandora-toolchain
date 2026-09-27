@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 pub struct ServerSettings {
     pub preset: Preset,
     pub watermark: Option<Vec<u8>>,
+    pub warn_long_lines: bool,
     // The image watermark, beside the ASS one. Both are optional and independent: an ASS watermark
     // is text libass draws into the subtitle stream, a logo is a picture the encoder composites over
     // every frame, and a server may configure either, both, or neither.
@@ -67,11 +68,16 @@ fn resolve_concat_line(lines: &[&str], index: usize, kind: ConcatKind) -> Option
     ConcatConfig::load_kind(kind).resolve(group)
 }
 
+fn warn_long_lines(lines: &[&str]) -> bool {
+    lines.get(8).is_some_and(|value| *value == "2")
+}
+
 pub fn load_server_settings(server_id: Option<u64>) -> ServerSettings {
     let Some(server_id) = server_id else {
         return ServerSettings {
             preset: Preset::Standard(Concat::NONE),
             watermark: None,
+            warn_long_lines: false,
             logo: None,
         };
     };
@@ -102,6 +108,7 @@ pub fn load_server_settings(server_id: Option<u64>) -> ServerSettings {
     ServerSettings {
         preset,
         watermark,
+        warn_long_lines: warn_long_lines(&lines),
         logo: load_server_logo(server_id),
     }
 }
@@ -451,6 +458,19 @@ mod tests {
         assert!(matches!(settings.preset, Preset::Standard(_)));
         assert!(settings.preset.concat().is_empty());
         assert!(settings.watermark.is_none());
+        assert!(!settings.warn_long_lines);
+    }
+
+    #[test]
+    fn only_wrap_style_two_enables_long_line_warnings() {
+        for value in ["", "dont_touch", "0", "1", "3"] {
+            let mut lines = vec![""; 9];
+            lines[8] = value;
+            assert!(!warn_long_lines(&lines), "{value}");
+        }
+        let mut lines = vec![""; 9];
+        lines[8] = "2";
+        assert!(warn_long_lines(&lines));
     }
 
     #[test]

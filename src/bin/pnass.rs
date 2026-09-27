@@ -12,7 +12,7 @@ use std::path::PathBuf;
 #[command(
     name = "pnass",
     version = "0.1.1",
-    about = "Pandora Toolchain ASS standardiser",
+    about = "Pandora 4 Chiri ASS standardiser",
     long_about = None
 )]
 struct Args {

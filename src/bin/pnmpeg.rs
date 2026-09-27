@@ -36,7 +36,7 @@ use std::borrow::Cow;
 #[command(
     name = "pnmpeg",
     version = "0.1.1",
-    about = "Pandora Toolchain FFmpeg wrapper",
+    about = "Pandora 4 Chiri FFmpeg wrapper",
     long_about = None
 )]
 struct Args {

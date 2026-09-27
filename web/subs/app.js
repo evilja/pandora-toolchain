@@ -234,7 +234,7 @@
     $("redoBtn").disabled = !H.redo.length;
     $("undoBtn").title = H.undo.length ? "Undo " + H.undo[H.undo.length - 1].label + " (Ctrl+Z)" : "Undo";
     $("redoBtn").title = H.redo.length ? "Redo " + H.redo[H.redo.length - 1].label + " (Ctrl+Y)" : "Redo";
-    document.title = (S.dirty ? "• " : "") + (S.name || "Subtitles") + " — Pandora Subs";
+    document.title = (S.dirty ? "• " : "") + (S.name || "Subtitles") + " — Pandora 4 Chiri Subs";
   }
 
   // ---- line list (virtualised) -----------------------------------------------------------
@@ -896,7 +896,7 @@
         var link = m.url;
         openSheet("This browser cannot play that video",
           '<p class="sb-hint" style="font-size:14px">The link opened, but its video or audio codec is not one this browser decodes. ' +
-          "The Pandora server can download it and make a copy that plays here, with its waveform.</p>",
+          "The Pandora 4 Chiri server can download it and make a copy that plays here, with its waveform.</p>",
           [{ label: "Cancel" }, { label: "Convert on the server", primary: true, onClick: function () {
             closeMedia();
             setTimeout(function () { startServerMedia(link); }, 30);
@@ -1331,7 +1331,7 @@
   }
   function openMenu() {
     var canShare = !!(navigator.canShare && navigator.share);
-    openSheet("Pandora Subs", '<div class="sb-menu">' +
+    openSheet("Pandora 4 Chiri Subs", '<div class="sb-menu">' +
       "<h4>File</h4>" +
       menuItem("folder", "Open subtitle file…", "open", "Ctrl+O") +
       menuItem("paste", "Paste subtitle text…", "paste") +
@@ -1352,7 +1352,7 @@
       menuItem("info", "Script properties…", "props") +
       menuItem("gear", "Settings…", "settings") +
       menuItem("keyboard", "Shortcuts & gestures", "help") +
-      menuItem("home", "Pandora console", "home") +
+      menuItem("home", "Pandora 4 Chiri console", "home") +
       "</div>");
     q(".sb-menu").addEventListener("click", function (ev) {
       var b = ev.target.closest("button[data-m]");
@@ -1434,7 +1434,7 @@
   function needToken() {
     if (PN.getToken()) return false;
     openSheet("Sign in to fetch links",
-      '<p class="sb-hint" style="font-size:14px">Torrents, magnets and Drive links are downloaded and converted by this Pandora server, ' +
+      '<p class="sb-hint" style="font-size:14px">Torrents, magnets and Drive links are downloaded and converted by this Pandora 4 Chiri server, ' +
       "so it needs to know who is asking. Sign in (or paste an API token) on the console, then come back — your script stays here.</p>",
       [{ label: "Cancel" }, { label: "Sign in", primary: true, onClick: function () { flushAutosave(); location.href = "/login"; } }]);
     return true;
@@ -1719,7 +1719,7 @@
   function openMediaUrl() {
     openSheet("Open video from a link",
       field("Link", '<input class="sb-input" id="urlIn" type="url" inputmode="url" placeholder="nyaa.si/view/…, magnet:?…, drive.google.com/…" autocomplete="off">',
-        "The links <b>/encode</b> takes — a nyaa page, a magnet, a <code>.torrent</code> or Google Drive link, or any direct video link — are fetched by this Pandora server " +
+        "The links <b>/encode</b> takes — a nyaa page, a magnet, a <code>.torrent</code> or Google Drive link, or any direct video link — are fetched by this Pandora 4 Chiri server " +
         "and turned into a small copy this browser plays, with its waveform and subtitle tracks. You need to be signed in for that. " +
         "A direct MP4 or WebM link plays straight from its source."),
       [{ label: "Cancel" }, { label: "Open", primary: true, onClick: function () {

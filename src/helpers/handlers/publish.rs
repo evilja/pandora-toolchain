@@ -32,7 +32,7 @@ const ANIME_VALUE_SEPARATOR: char = '|';
 const LOOKUP_FAILED_VALUE: &str = "__lookup_failed__";
 // Anizm's encoder field names the tooling that produced the release, not a person, so it is fixed
 // rather than defaulting to the fansub the way the translator credit does.
-const ANIZM_ENCODER: &str = "Pandora";
+const ANIZM_ENCODER: &str = pandora_toolchain::pnworker::messages::PRODUCT_NAME;
 
 // What the operator picked out of the OpenAnime search. OpenAnime answers a title search but has no
 // MyAnimeList lookup, so its slug is the only handle that addresses its catalog exactly; the id the
@@ -672,8 +672,8 @@ pub async fn handle_publish(ctx: &Context, command: &serenity::all::CommandInter
     .await;
 
     let mut lines = vec![format!(
-        "Publish of job `{}` — **{}** (MAL {}) S{:02}E{:02}",
-        job_id, name, mal_id, season, episode
+        "Publish — **{}** (MAL {}) S{:02}E{:02}",
+        name, mal_id, season, episode
     )];
     lines.push(acix.render("AnimeciX"));
     lines.push(openanime.render("OpenAnime"));

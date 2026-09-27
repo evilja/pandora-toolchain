@@ -179,11 +179,11 @@ text = "The Studio preview rendered, but its MP4 attachment could not be prepare
 args = 0
 
 [EMBED_FOOTER]
-text = "Pandora Toolchain • v{}"
-args = 1
+text = "Pandora 4 Chiri"
+args = 0
 
-[FIELD_JOBID]
-text = "Job ID"
+[FIELD_PROVIDER]
+text = "Provider"
 args = 0
 
 [FIELD_WORKER]
@@ -475,12 +475,12 @@ text = "Magnet link hidden"
 args = 0
 
 [SOURCE_PROBE_FILE]
-text = "Probe job `{}` • file `#{}`"
-args = 2
+text = "Listed source • file `#{}`"
+args = 1
 
 [SOURCE_PROBE]
-text = "Probe job `{}`"
-args = 1
+text = "Listed source"
+args = 0
 
 [SOURCE_KEYWORDS]
 text = "Keep outputs: {}"
@@ -555,12 +555,12 @@ text = "Packed {} log file(s) from the {} job directory."
 args = 2
 
 [CATLOGS_NO_LOGS]
-text = "No logs were found for job `{}`."
-args = 1
+text = "No logs were found for the selected job."
+args = 0
 
 [CATLOGS_BUILD_FAIL]
-text = "The logs for job `{}` could not be packed: {}"
-args = 2
+text = "The selected job's logs could not be packed: {}"
+args = 1
 
 [CATLOGS_ACTIVE]
 text = "active"
@@ -943,7 +943,7 @@ text = "Stopping active work and restarting Pandora…"
 args = 0
 
 [JOB_PICK_INVALID]
-text = "Error: pick the job from the list the `job` option offers, or paste a numeric job id."
+text = "Error: pick the job from the list the `job` option offers."
 args = 0
 
 [JOB_PICK_REQUIRED]

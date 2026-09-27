@@ -4,12 +4,10 @@ use serenity::{
 };
 
 use pandora_toolchain::pnworker::messages::{
-    format_message, get_message, COMMAND_WORKING, EMBED_FOOTER,
+    format_message, get_message, COMMAND_WORKING, PRODUCT_NAME,
 };
 
 use super::{parse_repo_url, read_channel_meta, read_server_meta, ChannelMeta};
-
-const PKGVER: &str = env!("CARGO_PKG_VERSION");
 
 pub(super) fn read_credit_option(command: &serenity::all::CommandInteraction, name: &str) -> String {
     option_str(command, name)
@@ -318,11 +316,7 @@ fn command_embed(
     CreateEmbed::new()
         .title(get_message(title_id, &lang))
         .colour(colour)
-        .footer(CreateEmbedFooter::new(format_message(
-            EMBED_FOOTER,
-            &lang,
-            &[PKGVER.to_string()],
-        )))
+        .footer(CreateEmbedFooter::new(PRODUCT_NAME))
         .timestamp(serenity::model::Timestamp::now())
 }
 

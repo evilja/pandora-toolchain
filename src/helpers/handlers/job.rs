@@ -213,8 +213,8 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
                     true,
                 )
                 .field(
-                    command_message(command, FIELD_JOBID),
-                    format!("`{}`", job_id),
+                    command_message(command, FIELD_PROVIDER),
+                    JOB_PROVIDER,
                     true,
                 )
                 .field(

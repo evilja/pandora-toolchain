@@ -19,7 +19,7 @@ use pandora_toolchain::lib::logging::tool::ToolLog;
 #[command(
     name = "pncurl",
     version = "0.1.1",
-    about = "Pandora Toolchain CURL wrapper",
+    about = "Pandora 4 Chiri CURL wrapper",
     long_about = None
 )]
 struct Args {

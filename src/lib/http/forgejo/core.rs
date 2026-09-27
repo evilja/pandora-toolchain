@@ -25,7 +25,7 @@ impl Forgejo {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
             reqwest::header::USER_AGENT,
-            reqwest::header::HeaderValue::from_static("pandora-toolchain"),
+            reqwest::header::HeaderValue::from_static("pandora-4-chiri"),
         );
         let client = Client::builder()
             .default_headers(headers)

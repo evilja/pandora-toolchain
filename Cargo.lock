@@ -2562,7 +2562,7 @@ dependencies = [
 
 [[package]]
 name = "pandora-toolchain"
-version = "3.5.0-lumiere"
+version = "4.0.0-chiri"
 dependencies = [
  "ab_glyph",
  "age",

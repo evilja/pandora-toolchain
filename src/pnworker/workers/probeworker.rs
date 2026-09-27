@@ -661,7 +661,7 @@ async fn run_subs_job(
     let attachment = if extracted.len() == 1 {
         extracted[0].1.clone()
     } else {
-        let archive = directory.join("work").join(format!("subs-{}.zip", job_id));
+        let archive = directory.join("work").join("subtitles.zip");
         match zip_subtitles(&archive, &extracted).await {
             Ok(()) => archive,
             Err(e) => {

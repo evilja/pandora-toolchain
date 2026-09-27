@@ -412,7 +412,7 @@
     var top = document.createElement("header");
     top.className = "pn-top";
     top.innerHTML =
-      '<h1 class="pn-title">' + esc(opts.title || "Pandora") + "</h1>" +
+      '<h1 class="pn-title">' + esc(opts.title || "Pandora 4 Chiri") + "</h1>" +
       (opts.actions || "") +
       '<div class="pn-topright">' +
       '<button class="pn-conn" id="pn-conn" type="button" data-state="auth" title="Recheck the API connection">' +
