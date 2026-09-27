@@ -28,7 +28,7 @@ pub async fn handle_ts_message(ctx: &Context, msg: &Message, parts: &[&str]) {
         return;
     }
     let max_ep = meta.episode_count.unwrap_or(0);
-    if episode > max_ep {
+    if max_ep != 0 && episode > max_ep {
         msg.reply(ctx, format!("Error: episode must be between 1 and {}.", max_ep)).await.ok();
         return;
     }

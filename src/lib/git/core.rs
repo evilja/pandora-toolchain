@@ -249,7 +249,7 @@ pub async fn set_source(
         return Err("this channel is not attached to an anime. Run /init or /attach first.".to_string());
     }
     let max_ep = meta.episode_count.unwrap_or(0);
-    if episode < 1 || episode > max_ep {
+    if episode < 1 || (max_ep != 0 && episode > max_ep) {
         return Err(format!("`episode` must be between 1 and {}.", max_ep));
     }
     let repo_url = meta.repo_url.clone().filter(|s| !s.is_empty())
@@ -342,7 +342,7 @@ pub async fn smartcode_merge(
         return Err("this channel is not attached to an anime. Run /init or /attach first.".to_string());
     }
     let max_ep = meta.episode_count.unwrap_or(0);
-    if episode < 1 || episode > max_ep {
+    if episode < 1 || (max_ep != 0 && episode > max_ep) {
         return Err(format!("`episode` must be between 1 and {}.", max_ep));
     }
     let repo_url = meta.repo_url.clone().filter(|s| !s.is_empty())
@@ -720,7 +720,7 @@ fn kind_label(k: &AnimeKind) -> &'static str {
 fn count_existing_episodes(existing: &[String], max: u32) -> u32 {
     existing.iter()
         .filter_map(|n| n.trim_start_matches('0').parse::<u32>().ok().filter(|&v| v >= 1))
-        .filter(|&n| n <= max)
+        .filter(|&n| max == 0 || n <= max)
         .count() as u32
 }
 

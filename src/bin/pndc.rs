@@ -2242,7 +2242,7 @@ async fn bootstrap_repo(
 fn count_existing_episodes(existing: &[String], max: u32) -> u32 {
     existing.iter()
         .filter_map(|n| n.trim_start_matches('0').parse::<u32>().ok().filter(|&v| v >= 1))
-        .filter(|&n| n <= max)
+        .filter(|&n| max == 0 || n <= max)
         .count() as u32
 }
 

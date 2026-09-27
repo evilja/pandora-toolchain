@@ -349,7 +349,7 @@ pub(super) async fn attached_repo(
     }
     if let Some(episode) = episode {
         let max_ep = meta.episode_count.unwrap_or(0);
-        if episode < 1 || episode > max_ep {
+        if episode < 1 || (max_ep != 0 && episode > max_ep) {
             command_error(ctx, command, format!("Error: `episode` must be between 1 and {}.", max_ep)).await;
             return None;
         }

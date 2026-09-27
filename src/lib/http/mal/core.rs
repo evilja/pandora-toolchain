@@ -48,9 +48,18 @@ pub fn parse_mal_url(url: &str) -> Result<u64, String> {
 }
 
 fn episode_count(data: &Value, source: &str, id: u64) -> Result<u32, String> {
-    let episodes = data.get("episodes")
-        .and_then(|v| v.as_u64())
-        .ok_or_else(|| format!("{} response missing or null `episodes` for anime {} (likely ongoing — episode count not yet announced)", source, id))?;
+    // Both JIKAN and AniList leave this null for an ongoing anime whose total has not been
+    // announced. Zero is the on-disk/API sentinel for an unknown total: init/attach then create
+    // no numbered folders, and episode-writing commands accept any positive episode so the first
+    // actual source or subtitle creates its folder on demand.
+    let Some(value) = data.get("episodes") else {
+        return Err(format!("{} response missing `episodes` for anime {}", source, id));
+    };
+    if value.is_null() {
+        return Ok(0);
+    }
+    let episodes = value.as_u64()
+        .ok_or_else(|| format!("{} returned an invalid episode count for anime {}", source, id))?;
     if episodes == 0 {
         return Err(format!("{} reports 0 episodes for anime {}", source, id));
     }
@@ -367,6 +376,45 @@ mod tests {
         assert_eq!(meta.year, Some(2026));
         assert_eq!(meta.slug, "i-want-you-to-show-me-your-panties-with-a-disgusted-face-returns");
         assert!(matches!(meta.kind, AnimeKind::MultiEpisode));
+    }
+
+    #[test]
+    fn accepts_anilist_metadata_before_episode_total_is_announced() {
+        let body = serde_json::json!({
+            "data": {
+                "Media": {
+                    "idMal": 64008,
+                    "episodes": null,
+                    "format": "TV",
+                    "title": {
+                        "english": null,
+                        "romaji": "Ongoing Anime"
+                    },
+                    "startDate": { "year": 2026 }
+                }
+            }
+        });
+
+        let meta = meta_from_anilist(64008, &body).unwrap();
+        assert_eq!(meta.name, "Ongoing Anime");
+        assert_eq!(meta.episode_count, 0);
+        assert_eq!(meta.year, Some(2026));
+    }
+
+    #[test]
+    fn accepts_jikan_metadata_before_episode_total_is_announced() {
+        let body = serde_json::json!({
+            "data": {
+                "title": "Ongoing Anime",
+                "episodes": null,
+                "type": "TV",
+                "aired": { "from": "2026-10-01T00:00:00+00:00" }
+            }
+        });
+
+        let meta = meta_from_jikan(64008, &body).unwrap();
+        assert_eq!(meta.episode_count, 0);
+        assert_eq!(meta.year, Some(2026));
     }
 
     #[test]
