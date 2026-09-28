@@ -189,6 +189,7 @@ pub fn build_spec(
         .and_then(|folder| ConcatConfig::load_kind(ConcatKind::Outro).group_for_folder(&folder));
     LinkJobSpec {
         job_id: job.job_id.to_string(),
+        lease_id: String::new(), // assigned by the board when the offer is created
         job_type: job_type_name(job.job_type),
         source_kind,
         source,

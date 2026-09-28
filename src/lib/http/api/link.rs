@@ -245,6 +245,7 @@ pub(super) async fn output(
     Extension(auth): Extension<ApiAuth>,
     Path(job_id): Path<u64>,
     Query(query): Query<OutputQuery>,
+    headers: axum::http::HeaderMap,
     body: Body,
 ) -> Response {
     let node = match require_link(&auth) {
@@ -259,7 +260,8 @@ pub(super) async fn output(
     let limit = (name != DEFAULT_OUTPUT_NAME).then_some(MAX_ARTIFACT_BYTES);
     // A node may only deliver against a lease it actually holds. Without this, any link token
     // could write into any job's work directory.
-    if board::node_for_job(job_id).as_deref() != Some(node.as_str()) {
+    let lease_id = headers.get("x-pandora-lease-id").and_then(|value| value.to_str().ok()).unwrap_or("");
+    if !board::lease_matches(job_id, &node, lease_id) {
         return (StatusCode::CONFLICT, "no such lease for this node").into_response();
     }
     // The same resolution the job's own directory was built from, so the file lands where the
@@ -271,7 +273,7 @@ pub(super) async fn output(
     // Written beside and renamed, so a transfer that dies halfway can never be mistaken for a
     // finished encode by the upload worker that is about to look for exactly this name.
     let target = directory.join(&name);
-    let temporary = directory.join(format!("{name}.link-part"));
+    let temporary = directory.join(format!("{name}.{lease_id}.link-part"));
     let file = match tokio::fs::File::create(&temporary).await {
         Ok(file) => file,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -310,6 +312,10 @@ pub(super) async fn output(
     if written == 0 {
         tokio::fs::remove_file(&temporary).await.ok();
         return (StatusCode::BAD_REQUEST, "empty output").into_response();
+    }
+    if !board::lease_matches(job_id, &node, lease_id) {
+        tokio::fs::remove_file(&temporary).await.ok();
+        return (StatusCode::CONFLICT, "lease ended during output transfer").into_response();
     }
     if let Err(e) = tokio::fs::rename(&temporary, &target).await {
         tokio::fs::remove_file(&temporary).await.ok();

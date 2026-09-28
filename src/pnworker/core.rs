@@ -2706,6 +2706,24 @@ async fn release_probed_job(db: &JobDb, queue: &mut Vec<Job>, job_id: u64, node:
     let Some(pos) = link_job_position(queue, job_id, node) else {
         return;
     };
+    // A successful probe must have delivered its file list before the lease ends. Without it,
+    // marking the row Probed leaves the previous download percentage on screen and offers no file
+    // to select (or promote to an encode). Do not report a green success for a lost final payload.
+    let has_file_list = db.get_job(job_id).await.ok().flatten()
+        .and_then(|row| row.progress)
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .is_some_and(|progress| {
+            progress.get("type").and_then(|value| value.as_str()) == Some("probe")
+                && progress.get("files").and_then(|files| files.as_array()).is_some_and(|files| !files.is_empty())
+        });
+    if !has_file_list {
+        eprintln!("[link] {node} | job {job_id} reported a completed probe without its file list");
+        queue[pos].ready = Stage::Failed;
+        db.update_stage(job_id, Stage::Failed).await.ok();
+        render(&mut queue[pos], MessagePayload::Static(crate::pnworker::messages::PROBE_FAIL)).await;
+        finish_link_job(db, queue, job_id).await;
+        return;
+    }
     queue[pos].link_node = None;
     queue[pos].ready = Stage::Probed;
     db.update_stage(job_id, Stage::Probed).await.ok();

@@ -147,6 +147,10 @@ impl NodePurpose {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LinkJobSpec {
     pub job_id: String,
+    // A fresh identity for each offer, even when a probe is promoted to an encode under the
+    // same job id and sent to the same node. Every response must echo it.
+    #[serde(default)]
+    pub lease_id: String,
     pub job_type: String,
     pub source_kind: String,
     pub source: String,
@@ -274,6 +278,8 @@ pub struct PreviewSpec {
 pub struct LeaseRenew {
     pub node: String,
     #[serde(default)]
+    pub lease_id: String,
+    #[serde(default)]
     pub worker: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reports: Vec<LinkReport>,
@@ -327,6 +333,8 @@ pub struct LeaseControl {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LeaseResult {
     pub node: String,
+    #[serde(default)]
+    pub lease_id: String,
     pub outcome: LinkOutcome,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,

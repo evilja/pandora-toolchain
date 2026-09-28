@@ -56,9 +56,10 @@ const ASSET_TIMEOUT_SECS: u64 = 300;
 // font that is still not found.
 pub type FontRefresh = fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ActiveLease {
     job_id: u64,
+    lease_id: String,
     return_output: bool,
 }
 
@@ -355,6 +356,7 @@ async fn return_attachments(
     client: &reqwest::Client,
     config: &LinkConfig,
     job_id: u64,
+    lease_id: &str,
     reports: &mut [LinkReport],
 ) {
     for report in reports {
@@ -381,7 +383,7 @@ async fn return_attachments(
             eprintln!("[link] job {job_id} produced {name:?}, which is not a name that can travel");
             continue;
         }
-        match put_output(client, config, job_id, &path, Some(&name)).await {
+        match put_output(client, config, job_id, lease_id, &path, Some(&name)).await {
             Delivered::Accepted => {
                 println!("[link] job {job_id} returned {name}");
                 args[index] = name;
@@ -431,6 +433,7 @@ async fn put_output(
     client: &reqwest::Client,
     config: &LinkConfig,
     job_id: u64,
+    lease_id: &str,
     path: &std::path::Path,
     name: Option<&str>,
 ) -> Delivered {
@@ -456,6 +459,7 @@ async fn put_output(
             config.coordinator
         ))
         .bearer_auth(&config.token)
+        .header("x-pandora-lease-id", lease_id)
         .header(reqwest::header::CONTENT_LENGTH, length)
         // Deliberately no timeout: this is a multi-gigabyte upload over whatever link the node has.
         .timeout(Duration::from_secs(u32::MAX as u64))
@@ -686,7 +690,7 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
                 // The lease ends with this result, and with it the only channel these logs have.
                 // Whatever the tools wrote in their last seconds is exactly the part worth reading.
                 let offsets = log_offsets.entry(job_id).or_default();
-                flush_logs(&client, &config, job_id, offsets).await;
+                flush_logs(&client, &config, job_id, &lease.lease_id, offsets).await;
                 // `/subs` and `/preview` end in a file the job's message attaches, and the payload
                 // that ends them names it by a path on this machine. The file goes first and the
                 // payload is rewritten to a bare name, so the coordinator attaches its own copy
@@ -694,7 +698,7 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
                 // the payload naming the path, which the coordinator logs as a failed attach —
                 // the message itself, with everything else it says, still arrives.
                 let mut reports = reports;
-                return_attachments(&client, &config, job_id, &mut reports).await;
+                return_attachments(&client, &config, job_id, &lease.lease_id, &mut reports).await;
                 let outcome = match stage {
                     Stage::Uploaded => LinkOutcome::Uploaded,
                     Stage::Probed => LinkOutcome::Probed,
@@ -704,6 +708,7 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
                 };
                 let mut result = LeaseResult {
                     node: config.node.clone(),
+                    lease_id: lease.lease_id.clone(),
                     outcome,
                     reason: None,
                     reports,
@@ -741,7 +746,7 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
                         .join("work")
                         .join("output.mp4");
                     println!("[link] job {job_id} encoded; returning its output to the coordinator");
-                    match put_output(&client, &config, job_id, &path, None).await {
+                    match put_output(&client, &config, job_id, &lease.lease_id, &path, None).await {
                         Delivered::Accepted => mark_returned(job_id),
                         Delivered::LeaseGone => {
                             retire_lease(job_id, "output was not wanted; the lease is already gone", &mut log_offsets, &mut delivery_attempts, &mut finished);
@@ -761,6 +766,7 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
                 }
                 let mut result = LeaseResult {
                     node: config.node.clone(),
+                    lease_id: lease.lease_id.clone(),
                     outcome: LinkOutcome::Returned,
                     reason: None,
                     reports,
@@ -792,6 +798,7 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
             let (chunks, advanced) = crate::pnworker::link::logs::collect(job_id, offsets).await;
             let body = LeaseRenew {
                 node: config.node.clone(),
+                lease_id: lease.lease_id.clone(),
                 worker,
                 reports,
                 logs: chunks,
@@ -948,15 +955,17 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
             match poll_lease(&client, &config).await {
                 Ok(Some(spec)) => {
                     let return_output = spec.return_output;
+                    let lease_id = spec.lease_id.clone();
                     match accept(&tx, &client, &config, refresh_fonts, spec).await {
                     Ok(job_id) => {
                         println!("[link] job {job_id} leased");
-                        active.push(ActiveLease { job_id, return_output });
+                        active.push(ActiveLease { job_id, lease_id, return_output });
                     }
                     Err((job_id, reason)) => {
                         eprintln!("[link] leased job {job_id} was declined: {reason}");
                         let result = LeaseResult {
                             node: config.node.clone(),
+                            lease_id,
                             outcome: LinkOutcome::Declined,
                             reason: Some(reason),
                             reports: Vec::new(),
@@ -1199,6 +1208,7 @@ async fn flush_logs(
     client: &reqwest::Client,
     config: &LinkConfig,
     job_id: u64,
+    lease_id: &str,
     offsets: &mut HashMap<String, u64>,
 ) {
     for _ in 0..32 {
@@ -1208,6 +1218,7 @@ async fn flush_logs(
         }
         let body = LeaseRenew {
             node: config.node.clone(),
+            lease_id: lease_id.to_string(),
             worker: String::new(),
             reports: Vec::new(),
             logs: chunks,

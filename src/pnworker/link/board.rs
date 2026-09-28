@@ -664,7 +664,7 @@ fn advertises_encoder(encoders: &[String], required: Option<&str>) -> bool {
 // Puts a job under a node's name for it to collect. False when the spec carries a job id this
 // cannot key a lease on — `unwrap_or(0)` used to bucket every such spec under the same id, where
 // the second one silently evicted the first. The caller keeps the job local instead.
-pub fn offer(node: &str, spec: LinkJobSpec) -> bool {
+pub fn offer(node: &str, mut spec: LinkJobSpec) -> bool {
     let Ok(job_id) = spec.job_id.parse::<u64>() else {
         eprintln!("[link] refusing to offer a job whose id is not a number: {:?}", spec.job_id);
         return false;
@@ -675,6 +675,16 @@ pub fn offer(node: &str, spec: LinkJobSpec) -> bool {
     }
     let mut state = lock(board());
     ensure_loaded(&mut state);
+    if state.leases.contains_key(&job_id) {
+        eprintln!("[link] job {job_id} already has a lease; refusing a second offer");
+        return false;
+    }
+    let mut nonce = [0u8; 16];
+    if getrandom::getrandom(&mut nonce).is_err() {
+        eprintln!("[link] could not create a lease identity for job {job_id}");
+        return false;
+    }
+    spec.lease_id = nonce.iter().map(|byte| format!("{byte:02x}")).collect();
     // `pick_node` answered several awaits ago — resolving the server's upload policy and preparing
     // the work directory both happen in between — and the board is written by every link route in
     // the meantime. A node that has since been drained, removed, or filled up would take the offer
@@ -760,7 +770,7 @@ pub fn renew(job_id: u64, request: LeaseRenew) -> LeaseControl {
             drain,
         };
     };
-    if lease.node != request.node {
+    if lease.node != request.node || lease.spec.lease_id != request.lease_id {
         return LeaseControl {
             assets_revision,
             cancel: false,
@@ -793,7 +803,7 @@ pub fn finish(job_id: u64, result: LeaseResult) -> bool {
     let Some(lease) = state.leases.get(&job_id) else {
         return false;
     };
-    if lease.node != result.node {
+    if lease.node != result.node || lease.spec.lease_id != result.lease_id {
         return false;
     }
     state.leases.remove(&job_id);
@@ -984,6 +994,13 @@ pub fn node_for_job(job_id: u64) -> Option<String> {
     state.leases.get(&job_id).map(|lease| lease.node.clone())
 }
 
+pub fn lease_matches(job_id: u64, node: &str, lease_id: &str) -> bool {
+    let state = lock(board());
+    state.leases.get(&job_id).is_some_and(|lease| {
+        !lease_id.is_empty() && lease.node == node && lease.spec.lease_id == lease_id
+    })
+}
+
 // The registered nodes and the jobs each currently holds, name-ordered. Shared by `/lsnode` and the
 // worker snapshot so the two can never disagree about who is in the cluster.
 pub fn roster() -> Vec<(NodeState, Vec<u64>)> {
@@ -1085,6 +1102,7 @@ mod tests {
     fn spec(job_id: u64) -> LinkJobSpec {
         LinkJobSpec {
             job_id: job_id.to_string(),
+            lease_id: String::new(),
             job_type: "Encode".to_string(),
             source_kind: "magnet".to_string(),
             source: "magnet:?xt=urn:btih:abc".to_string(),
@@ -1225,6 +1243,7 @@ mod tests {
             9002,
             LeaseRenew {
                 node: "reclaim-a".to_string(),
+                lease_id: String::new(),
                 worker: "enc-main".to_string(),
                 reports: Vec::new(),
                 logs: Vec::new(),
@@ -1232,6 +1251,41 @@ mod tests {
         );
         assert!(control.abandon);
         remove_node("reclaim-a");
+    }
+
+    #[test]
+    fn a_late_probe_result_cannot_finish_the_encode_lease_with_the_same_job_and_node() {
+        let _order = exclusive();
+        let job_id = 9010;
+        let node = "probe-then-encode";
+        release(job_id);
+        register_test_node(node);
+        assert!(offer(node, spec(job_id)));
+        let probe = claim(node).unwrap();
+        let probe_result = LeaseResult {
+            node: node.to_string(),
+            lease_id: probe.lease_id.clone(),
+            outcome: LinkOutcome::Probed,
+            reason: None,
+            reports: Vec::new(),
+            warnings: Vec::new(),
+        };
+        assert!(finish(job_id, probe_result.clone()));
+        assert!(offer(node, spec(job_id)));
+        let encode = claim(node).unwrap();
+        assert_ne!(probe.lease_id, encode.lease_id);
+        assert!(!finish(job_id, probe_result));
+        let old_renew = renew(job_id, LeaseRenew {
+            node: node.to_string(),
+            lease_id: probe.lease_id,
+            worker: String::new(),
+            reports: Vec::new(),
+            logs: Vec::new(),
+        });
+        assert!(old_renew.abandon);
+        assert!(lease_matches(job_id, node, &encode.lease_id));
+        release(job_id);
+        remove_node(node);
     }
 
     // A renew from the wrong node must not keep somebody else's lease alive.
@@ -1246,6 +1300,7 @@ mod tests {
             9003,
             LeaseRenew {
                 node: "stranger-b".to_string(),
+                lease_id: String::new(),
                 worker: String::new(),
                 reports: Vec::new(),
                 logs: Vec::new(),

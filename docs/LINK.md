@@ -228,16 +228,16 @@ All under `/api/v1/link/`, all requiring a link token.
   `{ accepted, reason?, renew_secs, lease_timeout_secs, assets_revision, purpose, release, drain }`.
   A node repeats it every thirty seconds for as long as it runs — see [Saying hello
   again](#saying-hello-again).
-- `GET /link/lease?node=<name>` — **long poll**, up to 30s. Returns a job spec, or `204` when there
-  is nothing waiting. This is the only dispatch mechanism.
+- `GET /link/lease?node=<name>` — **long poll**, up to 30s. Returns a job spec with a fresh
+  `lease_id`, or `204` when there is nothing waiting. This is the only dispatch mechanism.
 - `POST /link/lease/:id/renew` — heartbeat plus the node's worker output. Returns
-  `{ cancel, abandon, drain }`.
-- `POST /link/lease/:id/result` — the terminal report. `409` when the lease is already gone or
-  belongs to another node, which tells the node to stop retrying without looking like a transport
-  fault.
+  `{ cancel, abandon, drain }`. The body echoes `lease_id`; a mismatched lease is told to abandon.
+- `POST /link/lease/:id/result` — the terminal report, also echoing `lease_id`. `409` when the
+  lease is already gone or its identity differs, which tells the node to stop retrying without
+  looking like a transport fault.
 - `PUT /link/lease/:id/output` — a finished encode coming back for local publication, or, with
   `?name=<file>`, a small artifact the job's message attaches. Streamed straight to disk and
-  accepted only from the node that holds the lease. See
+  accepted only from the node holding the matching `x-pandora-lease-id`. See
   [HLS and returned output](#hls-and-returned-output) and
   [Returned artifacts](#returned-artifacts).
 - `GET /link/release` — what the coordinator is running: `{ version, build, commit, reset, binaries? }`. A node
@@ -924,6 +924,12 @@ skipped rather than rendered as the wrong text.
 
 Repeated ticks of the same message id coalesce on the node, so an encode progress bar does not grow
 a buffer between renews while distinct events are always kept.
+
+A probe can turn into an encode under the same job ID, sometimes on the same node. Each offer has
+its own random `lease_id`, so a delayed probe renewal, result, or output cannot be accepted against
+the encode lease. A successful probe without its file-list payload is failed visibly instead of
+leaving an old download percentage under a misleading `Probed` status. Both coordinator and nodes
+must run this protocol version before taking new leases; restart nodes after updating the coordinator.
 
 The worker label a leased job wears is `lnk-<node>`, which is what `/workers` and the job embed
 render — that is where an operator finds out which machine has their episode. `worker_waiting`
