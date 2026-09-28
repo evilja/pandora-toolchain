@@ -168,6 +168,29 @@ pub(super) async fn release(Extension(auth): Extension<ApiAuth>) -> Response {
     Json(board::local_release()).into_response()
 }
 
+pub(super) async fn binary(
+    Extension(auth): Extension<ApiAuth>,
+    Path((digest, name)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = require_link(&auth) { return response; }
+    let release = board::local_release();
+    let Some(path) = crate::pnworker::link::binaries::published_file(&release.commit, &name, &digest) else {
+        return (StatusCode::NOT_FOUND, "no such binary in this release").into_response();
+    };
+    let file = match tokio::fs::File::open(&path).await {
+        Ok(file) => file,
+        Err(_) => return (StatusCode::NOT_FOUND, "release binary is unavailable").into_response(),
+    };
+    let stream = tokio_util::io::ReaderStream::new(file);
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "application/octet-stream"),
+            (axum::http::header::CACHE_CONTROL, "no-store"),
+        ],
+        Body::from_stream(stream),
+    ).into_response()
+}
+
 pub(super) async fn assets_manifest(Extension(auth): Extension<ApiAuth>) -> Response {
     if let Err(response) = require_link(&auth) {
         return response;

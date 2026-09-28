@@ -105,6 +105,7 @@ fn emit_error(proto: &Protocol, neg: &str, err: &str) {
 
 #[tokio::main]
 async fn main() {
+    if pandora_toolchain::pnworker::link::binaries::print_binary_info_if_requested() { return; }
     let args = Args::parse();
     // pnp2p had no on-disk log of any kind: a torrent that never progressed left the job directory
     // completely empty, so a stuck download and a download that was never started looked the same.

@@ -290,6 +290,7 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
             axum::routing::put(super::link::output).layer(DefaultBodyLimit::disable()),
         )
         .route("/link/release", get(super::link::release))
+        .route("/link/binaries/:digest/:name", get(super::link::binary))
         .route("/link/assets/manifest", get(super::link::assets_manifest))
         .route("/link/assets/:hash", get(super::link::asset))
         .route("/gitsync", post(gitsync))

@@ -4112,6 +4112,9 @@ fn refresh_pandora_fonts() -> std::pin::Pin<Box<dyn std::future::Future<Output =
 
 #[tokio::main]
 async fn main() {
+    if pandora_toolchain::pnworker::link::binaries::print_binary_info_if_requested() {
+        return;
+    }
     // `pndc --build-ffmpeg [--clean]`: compile ffmpeg for this CPU into DB/bin and exit. Handled
     // before configuration is even read, so a fresh box can build its ffmpeg before it has a
     // Discord token — and so a build never has to wait behind a bot that is otherwise starting.
@@ -4195,6 +4198,11 @@ async fn main() {
     // on whatever `api_port` it inherited. Nothing on a node needs it: the consoles, the job
     // routes and the submit tiers all belong to the machine that owns the queue.
     let mini = pandora_toolchain::pnworker::link::client::is_mini();
+    if !mini && cfg!(all(target_os = "linux", target_arch = "x86_64"))
+        && pandora_toolchain::pnworker::link::binaries::compiled_commit().is_empty()
+    {
+        eprintln!("[link] binary distribution unavailable: this build has no source commit; pass PANDORA_SOURCE_COMMIT when building the Docker image");
+    }
     // Boot profiles belong to whatever holds the roster and the queue. A node has neither: it takes
     // work from a coordinator and has nothing to start.
     if !mini {

@@ -69,6 +69,14 @@ setting.
 **Node** — `link_coordinator_url`, `link_node_name`, `link_node_token` (all required),
 `link_max_jobs`. Choosing the node role also writes `pandora_mode|pntools|mini`.
 
+If setup reports `x264-...-stock` on the node and `x264-...-pandora` on the coordinator, the
+node's Rust executables were linked against the system libx264. Downloading portable ffmpeg does
+not change this. With a coordinator that publishes a compatible Linux package, stop the node,
+update its checkout to the coordinator commit, run `python3 scripts/bootstrap-node.py`, then
+`./start-node.sh`. This installs the coordinator's `pndc`, `pnmpeg`, `pnp2p`, `pncurl`, and `pnass`
+without compiling on the node. See [LINK.md](LINK.md#staying-level) for compatibility and source
+fallback behavior.
+
 ## Native ffmpeg
 
 Pandora runs whatever `ffmpeg`/`ffprobe` pair `DB/bin` holds, and by default that is a portable

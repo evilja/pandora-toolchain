@@ -69,6 +69,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
+    if pandora_toolchain::pnworker::link::binaries::print_binary_info_if_requested() { return; }
     let args = Args::parse();
     // Sits beside the transfer transcript: that file only starts once bytes move, so a request
     // that stalls before the first byte leaves nothing behind without this.

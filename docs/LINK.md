@@ -56,20 +56,19 @@ them are silent when it is wrong.
   [Staying level](#staying-level) — so this reads as a node that is merely stuck a build behind.
   Point `PANDORA_GITSYNC_REPO` at a *separate* checkout rather than a working one if you split them:
   the pull ends in a forced `checkout_head`, which discards uncommitted changes.
-- **It needs a restart loop around it.** There is no in-place upgrade — the binary that pulled the
-  source is the old one — so `restart_into_new_build` records the build, exits, and expects
-  something to rebuild and relaunch. `start.sh` is that loop for a coordinator; a node needs the
-  same shape around `pndc --mini`. Without one, a successful update stops the node. A node that
+- **It needs a restart loop around it.** Run `./start-node.sh` for a node. It launches a verified
+  package from `DB/bin/pandora/current` when available and does not run Cargo for binary updates.
+  When there is no compatible package, its source fallback builds only if Cargo and the node's
+  forked x264 build environment are available. An old `start.sh` loop always rebuilds the source
+  and cannot activate a downloaded package. A node that
   cannot read its own link configuration exits `78`/`EX_CONFIG`, which `start.sh` stops on rather
   than respins — returning normally would have ended the process successfully and had the loop
   restart it forever.
 
-The loop is also where the **build environment** lives, and it is the one part of this that fails
-loudly. A node's `encoder_identity` is compared against the coordinator's and a mismatch is refused
-outright, so a rebuild that cannot find the forked libx264 — `PNX264_LIB_DIR`, `PNX264_INCLUDE_DIR`
-and `PNX264_STATIC`, read by `pnx264/build.rs` — links the distro's, comes back as `-stock`, and is
-turned away. Exporting those in the loop rather than in a shell profile is what makes an unattended
-restart reproduce the binary the node registered with.
+For a source fallback, the **build environment** must contain the forked libx264 paths:
+`PNX264_LIB_DIR`, `PNX264_INCLUDE_DIR`, and `PNX264_STATIC=1`. Otherwise it links the distro's
+x264, reports `-stock`, and is refused. A downloaded package already contains the coordinator's
+forked encoder; the separate portable ffmpeg download does not change `pnmpeg`'s x264 identity.
 
 ## Orchestrator mode
 
@@ -167,6 +166,7 @@ Node side:
 | `link_node_name` | stable node identity; must match the token's node name |
 | `link_max_jobs` | concurrent leases, default `1` |
 | `link_auto_update` | keep level with the coordinator's build, default on. See [Staying level](#staying-level) |
+| `link_update_mode` | `auto` (default): fetch a compatible package, otherwise use the source update path; `binary_only`: never compile; `source`: always use the source path |
 
 Coordinator side:
 
@@ -240,8 +240,10 @@ All under `/api/v1/link/`, all requiring a link token.
   accepted only from the node that holds the lease. See
   [HLS and returned output](#hls-and-returned-output) and
   [Returned artifacts](#returned-artifacts).
-- `GET /link/release` — what the coordinator is running: `{ version, build, commit, reset }`. A node
+- `GET /link/release` — what the coordinator is running: `{ version, build, commit, reset, binaries? }`. A node
   polls it once per loop pass. See [Staying level](#staying-level).
+- `GET /link/binaries/:sha256/:name` — stream one executable listed in the running release's binary
+  manifest. Requires a link token; arbitrary file names and digests cannot be read.
 - `GET /link/assets/manifest` — the font, intro and outro corpus, with its revision. See [Assets](#assets).
 - `GET /link/assets/:hash` — one asset, addressed by content hash.
 
@@ -530,10 +532,30 @@ returns `204` with no body, so a node with no work would learn nothing until it 
 is exactly the moment not to discover it needs to restart. `register` carries the same information
 for the first check, and the poll carries every one after.
 
-On a mismatch the node **drains**: it takes nothing new, finishes what it holds, and only then
-pulls. A restart mid-encode throws away the encode, and the encode is the expensive thing here.
-Then it runs [migrations](#migrations), records the coordinator's build number, and exits into its
-own restart loop, which rebuilds before it comes back.
+On a mismatch the node **drains**: it takes nothing new and finishes what it holds. A restart
+mid-encode throws away the encode. A compatible node downloads the coordinator's five Pandora
+executables over the authenticated link, verifies their SHA-256 hashes, sizes, embedded commit and
+x264 identity, then pulls the matching source for migrations, installs the package under
+`DB/bin/pandora/releases`, and atomically switches `current`. `start-node.sh` restarts from that
+pointer without Cargo. `ffmpeg` and `ffprobe` stay local to the node. An incompatible node uses the
+source fallback in `auto` mode or stays on its working build in `binary_only` mode. A refused node
+also checks for a package, so a stock-x264 build can repair itself before registration succeeds.
+
+Packages are offered only for the coordinator's running commit and a complete set of matching
+executables. The first supported target is x86-64 Linux with glibc. The manifest states its architecture,
+glibc version and required CPU features; a node checks all three before execution. A Docker
+coordinator needs `PANDORA_SOURCE_COMMIT` set at image build time because `.git` is excluded from
+the image build context. The gitsync watcher sets it automatically. For a manual build, set it to
+`git rev-parse HEAD` in the shell that invokes Docker Compose, for example
+`PANDORA_SOURCE_COMMIT=$(git rev-parse HEAD) docker compose build pndc`. If no package is published, source
+updates continue to work.
+
+For an existing node, switch its restart loop to `./start-node.sh` before enabling a binary update.
+To install without compiling even the first time, stop its old process, pull the coordinator's
+commit in the node checkout, and run `python3 scripts/bootstrap-node.py`. It reads the existing
+`env.pandora` link URL/token, verifies and installs the package, and prints the command to start
+the node. A fresh install needs the three link settings in `env.pandora` first. The checkout remains
+necessary for migrations; the node no longer needs a Rust compiler when a package is available.
 
 **A node that pulls and still does not land on the coordinator's commit does not restart.** It logs
 why, waits ten minutes, and goes back to taking work in the meantime. The failures that reach this

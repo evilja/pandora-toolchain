@@ -1194,6 +1194,7 @@ fn active_preset(args: &Args) -> Option<ResolvedPreset> {
 
 #[tokio::main]
 async fn main() {
+    if pandora_toolchain::pnworker::link::binaries::print_binary_info_if_requested() { return; }
     let args = Args::parse();
     // Opened before anything else runs: everything below this line used to be invisible, because
     // the --logfile transcript is only created once ffmpeg itself starts.

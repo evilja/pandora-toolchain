@@ -430,7 +430,25 @@ fn local_binary_available(name: &str) -> bool {
 
 fn ensure_tool_env_paths() {
     let env = get_pandora_env();
+    let installed_node = if crate::pnworker::link::client::is_mini() {
+        let current = std::fs::canonicalize("DB/bin/pandora/current/pndc").ok();
+        let running = std::env::current_exe().ok();
+        if current.zip(running).is_some_and(|(selected, process)| selected == process) {
+            std::env::current_dir().ok().map(|dir| dir.join("DB/bin/pandora/current"))
+        } else { None }
+    } else { None };
     for (key, bin) in [(PNMPEG, "pnmpeg"), (PNP2P, "pnp2p"), (PNCURL, "pncurl"), (PNASS, "pnass")] {
+        if let Some(directory) = &installed_node {
+            let path = directory.join(bin);
+            if path.is_file() {
+                if env.get(key).map(String::as_str) != Some(path.to_string_lossy().as_ref()) {
+                    if let Err(error) = upsert_env(ENV_PATH, key, &path.display().to_string()) {
+                        eprintln!("Warning: could not select installed {}: {}", bin, error);
+                    }
+                }
+                continue;
+            }
+        }
         let current = env.get(key).map(|v| v.trim()).unwrap_or("");
         if !current.is_empty() && tool_invocation_available(current) {
             continue;

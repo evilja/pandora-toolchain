@@ -64,6 +64,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
+    if pandora_toolchain::pnworker::link::binaries::print_binary_info_if_requested() { return; }
     let args = Args::parse();
     let mut log = ToolLog::open(args.logfile.as_deref());
     log.line(&format!(

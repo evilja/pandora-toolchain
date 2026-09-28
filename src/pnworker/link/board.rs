@@ -312,7 +312,7 @@ pub fn register(
         Some("this node reported no encoder identity (set link_allow_build_mismatch to permit)".to_string())
     } else if request.encoder_identity != coordinator_identity {
         Some(format!(
-            "encoder mismatch: node has {}, coordinator has {} (set link_allow_build_mismatch to permit)",
+            "encoder mismatch: node has {}, coordinator has {} (install a compatible coordinator binary package or rebuild against x264-pandora; link_allow_build_mismatch permits different encoders)",
             request.encoder_identity, coordinator_identity,
         ))
     } else {
@@ -426,6 +426,7 @@ fn read_local_release() -> ReleaseInfo {
     ReleaseInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
         build: record.build,
+        binaries: super::binaries::published(&commit),
         commit,
         reset: forced_reset(),
     }

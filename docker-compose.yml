@@ -3,6 +3,7 @@ services:
     build:
       context: .
       args:
+        PANDORA_SOURCE_COMMIT: ${PANDORA_SOURCE_COMMIT:-}
         # On by default: the image compiles ffmpeg for this machine's CPU while it builds and
         # ships it in place of Debian's, so the /gitsync-triggered rebuild the watcher runs is
         # all it takes — nobody has to log in. The layer is cached on the script's content, so

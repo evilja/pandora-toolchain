@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1.7
 FROM rust:1-bookworm AS build
+ARG PANDORA_SOURCE_COMMIT
 ARG PNX264_SOURCE_URL=https://github.com/evilja/x264-pandora/archive/2ecc6f52ab6946962667146d3d69dbff42e881f9.tar.gz
 ARG PNX264_SOURCE_SHA256=97355f37274264d40a72f69f67c0dd0a036abea13ecf6cf8e61a7af65a9ba80e
 RUN apt-get update \
@@ -28,6 +29,7 @@ RUN mkdir -p /tmp/pnx264-source /opt/pnx264 \
 ENV PNX264_INCLUDE_DIR=/opt/pnx264/include
 ENV PNX264_LIB_DIR=/opt/pnx264/lib
 ENV PNX264_STATIC=1
+ENV PANDORA_SOURCE_COMMIT=${PANDORA_SOURCE_COMMIT}
 WORKDIR /src
 COPY . .
 RUN --mount=type=cache,id=pandora-cargo-registry,target=/usr/local/cargo/registry \

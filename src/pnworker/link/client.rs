@@ -7,7 +7,7 @@ use tokio::sync::mpsc::Sender;
 
 use crate::lib::env::core::get_pandora_env;
 use crate::lib::env::standard::{
-    LINK_AUTO_UPDATE, LINK_COORDINATOR_URL, LINK_MAX_JOBS, LINK_NODE_NAME, LINK_NODE_TOKEN,
+    LINK_AUTO_UPDATE, LINK_COORDINATOR_URL, LINK_MAX_JOBS, LINK_NODE_NAME, LINK_NODE_TOKEN, LINK_UPDATE_MODE,
     PANDORA_MODE,
 };
 use crate::lib::sync::lock;
@@ -71,7 +71,11 @@ pub struct LinkConfig {
     // revision on purpose. It stops the pull and the restart, not the comparison: the node still
     // reports its build, so `/lsnode` shows it sitting behind rather than hiding it.
     pub auto_update: bool,
+    pub update_mode: UpdateMode,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum UpdateMode { Auto, BinaryOnly, Source }
 
 pub fn is_mini() -> bool {
     static MINI: OnceLock<bool> = OnceLock::new();
@@ -115,12 +119,18 @@ pub fn load_config() -> Result<LinkConfig, String> {
             !(value.eq_ignore_ascii_case("false") || value == "0" || value.eq_ignore_ascii_case("off"))
         })
         .unwrap_or(true);
+    let update_mode = match env.get(LINK_UPDATE_MODE).map(|value| value.trim()) {
+        Some("binary_only") => UpdateMode::BinaryOnly,
+        Some("source") => UpdateMode::Source,
+        _ => UpdateMode::Auto,
+    };
     Ok(LinkConfig {
         coordinator,
         token,
         node,
         max_jobs,
         auto_update,
+        update_mode,
     })
 }
 
@@ -571,9 +581,13 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
     let mut draining;
     let mut encoders = Vec::new();
     let mut probed_hardware = false;
+    let mut next_initial_update = tokio::time::Instant::now();
     loop {
         match register(&client, &config, &encoders).await {
             Ok(registered) if registered.accepted => {
+                if let Err(error) = super::binaries::complete_pending() {
+                    eprintln!("[link] could not confirm installed binary release: {error}");
+                }
                 if !probed_hardware
                     && matches!(registered.purpose, crate::pnworker::link::spec::NodePurpose::Gpu | crate::pnworker::link::spec::NodePurpose::Both)
                 {
@@ -617,6 +631,17 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
                     "[link] coordinator refused this node: {}",
                     registered.reason.unwrap_or_else(|| "no reason given".to_string())
                 );
+                // A stock-x264 node can be refused before it reaches the ordinary update loop.
+                // The release in the refused response is enough to repair it while idle.
+                if config.auto_update && tokio::time::Instant::now() >= next_initial_update
+                    && registered.release.binaries.is_some()
+                    && !is_level_with(&registered.release)
+                {
+                    if let Err(reason) = perform_update(&client, &config, &registered.release).await {
+                        eprintln!("[link] update after refused registration failed: {reason}");
+                        next_initial_update = tokio::time::Instant::now() + Duration::from_secs(UPDATE_RETRY_SECS);
+                    }
+                }
             }
             Err(e) => eprintln!("[link] registration failed: {e}"),
         }
@@ -823,7 +848,7 @@ pub async fn run(tx: Sender<JobClass>, refresh_fonts: FontRefresh) {
                         }
                         updating = true;
                         if active.is_empty() {
-                            if let Err(reason) = perform_update(&release).await {
+                            if let Err(reason) = perform_update(&client, &config, &release).await {
                                 eprintln!("[link] update to build {} failed: {reason}", release.build);
                                 // Take work again in the meantime. A node that cannot update is
                                 // still a node that can encode, and refusing everything until an
@@ -1021,13 +1046,19 @@ fn is_level_with(release: &ReleaseInfo) -> bool {
         // has never synced. There is nothing to move towards, so nothing is out of date.
         return true;
     }
+    if let Some(bundle) = &release.binaries {
+        if encoder_identity() != bundle.encoder_identity { return false; }
+        if super::binaries::active_binary_matches(release) { return true; }
+    }
     if release.reset {
         // A forced release is not satisfied by holding the right commit: the point of `/gitforce`
         // is to reset a checkout that may be dirty or diverged in ways HEAD does not show. It is
         // satisfied by having recorded that build, which only happens after the reset ran.
-        return crate::lib::release::read().build == release.build;
+        return crate::lib::release::read().build == release.build
+            && super::binaries::compiled_commit() == release.commit;
     }
-    crate::pnworker::pull::head_oid(&crate::lib::release::repo_path()).as_deref() == Some(release.commit.as_str())
+    super::binaries::compiled_commit() == release.commit
+        && release.binaries.as_ref().is_none_or(|bundle| encoder_identity() == bundle.encoder_identity)
 }
 
 // Bring this node onto the coordinator's revision, then hand over to the build that comes out of
@@ -1037,7 +1068,30 @@ fn is_level_with(release: &ReleaseInfo) -> bool {
 // is what stops the next poll asking for the same update again; running migrations before it is
 // what lets them prepare state for a binary that does not exist yet, which is the only moment they
 // can run at all.
-async fn perform_update(release: &ReleaseInfo) -> Result<(), String> {
+async fn perform_update(client: &reqwest::Client, config: &LinkConfig, release: &ReleaseInfo) -> Result<(), String> {
+    let bundle = if config.update_mode == UpdateMode::Source {
+        None
+    } else {
+        release.binaries.as_ref().filter(|bundle| super::binaries::compatibility(bundle).is_ok())
+    };
+    if config.update_mode == UpdateMode::BinaryOnly && bundle.is_none() {
+        let reason = release.binaries.as_ref()
+            .map(|bundle| super::binaries::compatibility(bundle).err().unwrap_or_default())
+            .unwrap_or_else(|| "coordinator has no binary package for this release".to_string());
+        return Err(format!("no compatible binary package: {reason}"));
+    }
+    if bundle.is_none()
+        && super::binaries::compiled_commit() == release.commit
+        && release.binaries.as_ref().is_some_and(|package| encoder_identity() != package.encoder_identity)
+    {
+        return Err("source is already at the coordinator commit, but this node has a different x264; install the Pandora x264 fork and rebuild, or use a compatible binary package".to_string());
+    }
+    if bundle.is_some() && std::env::var("PANDORA_BINARY_LAUNCHER").as_deref() != Ok("1") {
+        return Err("a compatible package is available; restart this node with ./start-node.sh before applying it".to_string());
+    }
+    if bundle.is_none() && std::process::Command::new("cargo").arg("--version").output().is_err() {
+        return Err("no compatible binary package and Cargo is unavailable for source fallback".to_string());
+    }
     let repo = crate::lib::release::repo_path();
     let outcome = if release.reset {
         println!("[link] resetting onto {} (forced)", &release.commit);
@@ -1068,10 +1122,20 @@ async fn perform_update(release: &ReleaseInfo) -> Result<(), String> {
     if let Some(summary) = run.summary() {
         println!("[link] {summary}");
     }
+    if let Some(bundle) = bundle {
+        super::binaries::install(client, &config.coordinator, &config.token, release, bundle).await?;
+        println!("[link] installed coordinator binaries for build {}; restarting", release.build);
+        crate::lib::release::restart_into_new_build().await
+    }
     // Recorded even when a migration failed. The source is at the coordinator's commit, which is
     // what the build number means; the failure travels separately, on the next register, so an
     // operator sees it on `/lsnode` instead of the node quietly retrying the pull forever.
     crate::lib::release::adopt(release.build, &release.commit);
+    let request = std::path::Path::new("DB/bin/pandora/source-build.request");
+    if let Some(parent) = request.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    std::fs::write(request, release.commit.as_bytes()).map_err(|error| error.to_string())?;
     println!("[link] updated to build {}; restarting", release.build);
     crate::lib::release::restart_into_new_build().await
 }

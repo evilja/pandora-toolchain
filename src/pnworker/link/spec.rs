@@ -92,6 +92,8 @@ pub struct ReleaseInfo {
     // which is the only way back for a checkout that has diverged from the coordinator's.
     #[serde(default)]
     pub reset: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binaries: Option<super::binaries::BinaryBundle>,
 }
 
 // What a node is for. It comes from the node's own token — `<token>|link|<node>|gpu` — and never

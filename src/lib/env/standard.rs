@@ -92,6 +92,7 @@ pub const LINK_NODES_PATH: &str = "DB/config/global/environment/link_nodes.json"
 // A node keeps itself on the coordinator's revision by itself. `LINK_AUTO_UPDATE` is the opt-out
 // for a machine whose checkout is managed by hand.
 pub const LINK_AUTO_UPDATE: &str = "link_auto_update";
+pub const LINK_UPDATE_MODE: &str = "link_update_mode";
 
 // Node boot profiles: the ordered HTTP requests that start a machine which is not running yet, and
 // the bindings that say which profile belongs to which node identity. A profile is a file an

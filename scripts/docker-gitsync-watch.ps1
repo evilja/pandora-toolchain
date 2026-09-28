@@ -10,6 +10,7 @@ while ($true) {
         Push-Location $Root
         try {
             docker compose stop pndc
+            $env:PANDORA_SOURCE_COMMIT = (git rev-parse HEAD).Trim()
             docker compose build pndc
             docker compose up -d --no-deps --force-recreate pndc
         } finally {
