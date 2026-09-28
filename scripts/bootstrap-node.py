@@ -12,6 +12,8 @@ import platform
 import subprocess
 import sys
 import urllib.request
+import urllib.error
+import urllib.parse
 from pathlib import Path
 
 NAMES = {"pndc", "pnmpeg", "pnp2p", "pncurl", "pnass"}
@@ -29,9 +31,12 @@ def settings():
         fail(f"configure {path} first")
     values = {}
     for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
         if "|pntools|" in line:
             key, value = line.split("|pntools|", 1)
-            values[key] = value.strip()
+            values[key.strip()] = value.strip()
     url = values.get("link_coordinator_url", "").rstrip("/")
     token = values.get("link_node_token", "")
     if not url or not token:
@@ -46,10 +51,26 @@ def request(url, token):
         def redirect_request(self, request, file, code, message, headers, target):
             return None
 
-    return urllib.request.build_opener(NoRedirect).open(
-        urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"}),
-        timeout=300,
-    )
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "User-Agent": "Pandora-Mini/4.0",
+        "Accept": "application/json, application/octet-stream",
+    }
+    try:
+        return urllib.request.build_opener(NoRedirect).open(
+            urllib.request.Request(url, headers=headers), timeout=300,
+        )
+    except urllib.error.HTTPError as error:
+        body = error.read(512).decode("utf-8", "replace").strip()
+        content_type = error.headers.get("Content-Type", "")
+        if error.code == 403 and "requires a link token" in body:
+            fail("HTTP 403 from Pandora: link_node_token is valid but is not a node link token")
+        if error.code == 401:
+            fail("HTTP 401 from Pandora: link_node_token is missing, revoked, or invalid")
+        if error.code == 403 and (error.headers.get("cf-mitigated") or "html" in content_type.lower()):
+            fail("HTTP 403 from Cloudflare or a proxy; allow the coordinator's /api/v1/link/release and /api/v1/link/binaries routes for this node")
+        detail = " ".join(body.split())[:200] if "html" not in content_type.lower() else "HTML response"
+        fail(f"HTTP {error.code} fetching {urllib.parse.urlsplit(url).path}: {detail or 'no response detail'}")
 
 
 def compatible(bundle):
