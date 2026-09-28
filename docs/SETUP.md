@@ -128,9 +128,9 @@ in place of Debian's `ffmpeg` package, with the record at `/usr/local/share/pand
 so startup reports it. Build the image on the machine that runs it: the pair is tuned to the CPU
 that built it. The layer is cached on the script's content, so a `/gitsync`-triggered rebuild only
 recompiles ffmpeg when `scripts/build-ffmpeg.sh` changed; `FFMPEG_NATIVE=0` in the compose `.env`
-opts out. If the ffmpeg stage fails, the image build fails and the watcher's `up` brings the
-previous image back, so the bot returns on the old code rather than not at all — a `/gitsync`
-whose commits do not show up is the symptom, and the watcher's console has the compiler output. `FFMPEG_TOOLCHAIN=1` is the separate, optional arg that adds the
+opts out. If the ffmpeg stage fails, the image build fails and the watcher leaves the currently
+running coordinator alone, retaining the rebuild request for retry; the watcher's log has the
+compiler output. `FFMPEG_TOOLCHAIN=1` is the separate, optional arg that adds the
 compiler to the runtime image so `docker compose exec pndc pndc --build-ffmpeg` or `/build-ffmpeg`
 can rebuild into the mounted `./DB/bin` without an image rebuild; `DB/bin` wins over PATH when both
 hold a pair. Without that arg the runtime image has no compiler, and both `/build-ffmpeg` and

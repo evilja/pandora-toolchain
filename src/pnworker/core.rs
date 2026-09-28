@@ -1765,14 +1765,20 @@ async fn run_gitsync(mut frontend: Frontend, shrine: &mut TypedShrine<WorkerMsg>
     if synced {
         lines.extend(advance_release(&repo_path, previous.as_deref(), force).await);
     }
+    // Even when HEAD did not move, an older Docker image may have been built without the
+    // complete link package. Rebuild that image once so stock-x264 nodes can fetch it. A normal
+    // no-op sync with an already published package does not need another image build.
+    let current = head_oid(&repo_path).unwrap_or_default();
+    let rebuild = synced && (force || previous.as_deref() != Some(current.as_str())
+        || crate::pnworker::link::binaries::published(&current).is_none());
     frontend.set_text(&lines.join("\n")).await;
     preserve_work_logs().await;
     let _ = remove_dir_all(PathBuf::from("DB").join("work")).await;
-    if synced {
+    if rebuild {
         crate::lib::release::restart_into_new_build().await;
     }
-    // Nothing was pulled, so there is nothing new to build: exit into the restart loop without
-    // asking a Docker host to rebuild an image whose source did not change.
+    // No new release or package is needed: exit into the restart loop without asking a Docker
+    // host to rebuild an image whose source and distributable binaries are already current.
     tokio::time::sleep(Duration::from_secs(1)).await;
     std::process::exit(0);
 }

@@ -8,6 +8,10 @@ COPY --from=rust-toolchain /usr/local/cargo /usr/local/cargo
 COPY --from=rust-toolchain /usr/local/rustup /usr/local/rustup
 ENV CARGO_HOME=/usr/local/cargo RUSTUP_HOME=/usr/local/rustup PATH=/usr/local/cargo/bin:$PATH
 ARG PANDORA_SOURCE_COMMIT
+RUN case "$PANDORA_SOURCE_COMMIT" in \
+      ''|*[!0-9a-f]*) echo 'PANDORA_SOURCE_COMMIT must be the 40-character checkout SHA to publish node binaries' >&2; exit 1 ;; \
+    esac \
+ && test "${#PANDORA_SOURCE_COMMIT}" -eq 40
 ARG PNX264_SOURCE_URL=https://github.com/evilja/x264-pandora/archive/2ecc6f52ab6946962667146d3d69dbff42e881f9.tar.gz
 ARG PNX264_SOURCE_SHA256=97355f37274264d40a72f69f67c0dd0a036abea13ecf6cf8e61a7af65a9ba80e
 RUN apt-get update \
@@ -79,6 +83,7 @@ RUN mkdir -p /opt/ffmpeg-native \
     fi
 
 FROM debian:bookworm-slim AS runtime
+ARG PANDORA_SOURCE_COMMIT
 ARG FFMPEG_NATIVE=0
 # FFMPEG_TOOLCHAIN=1 adds what `pndc --build-ffmpeg` / `/build-ffmpeg` need to compile inside the
 # running container, into the mounted DB/bin where the result survives image rebuilds. It is
@@ -115,7 +120,9 @@ COPY --from=build /out/pnmpeg  /usr/local/bin/pnmpeg
 COPY --from=build /out/pnp2p   /usr/local/bin/pnp2p
 COPY --from=build /out/pncurl  /usr/local/bin/pncurl
 COPY --from=build /out/pnass   /usr/local/bin/pnass
-RUN for binary in pndc pnmpeg pnp2p pncurl pnass; do "$binary" --link-binary-info >/dev/null; done
+RUN for binary in pndc pnmpeg pnp2p pncurl pnass; do \
+      "$binary" --link-binary-info | grep -Fq "\"commit\":\"${PANDORA_SOURCE_COMMIT}\"" || exit 1; \
+    done
 # DB/ (database, env.pandora, api.pandora tokens) comes from a mounted volume.
 EXPOSE 8787
 CMD ["pndc"]

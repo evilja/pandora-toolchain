@@ -4198,10 +4198,13 @@ async fn main() {
     // on whatever `api_port` it inherited. Nothing on a node needs it: the consoles, the job
     // routes and the submit tiers all belong to the machine that owns the queue.
     let mini = pandora_toolchain::pnworker::link::client::is_mini();
-    if !mini && cfg!(all(target_os = "linux", target_arch = "x86_64"))
-        && pandora_toolchain::pnworker::link::binaries::compiled_commit().is_empty()
-    {
-        eprintln!("[link] binary distribution unavailable: this build has no source commit; pass PANDORA_SOURCE_COMMIT when building the Docker image");
+    if !mini && cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        let release = pandora_toolchain::pnworker::link::board::local_release();
+        if let Some(bundle) = release.binaries {
+            println!("[link] serving {} coordinator binaries for {} (glibc >= {})", bundle.files.len(), release.commit, bundle.glibc);
+        } else {
+            eprintln!("[link] no coordinator binary package for running commit {}; rebuild the Docker image with PANDORA_SOURCE_COMMIT set to that commit", release.commit);
+        }
     }
     // Boot profiles belong to whatever holds the roster and the queue. A node has neither: it takes
     // work from a coordinator and has nothing to start.

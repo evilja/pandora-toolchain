@@ -399,9 +399,9 @@ pub fn register(
     }
 }
 
-// What this machine is running, as a node is told it. The commit is read from the checkout rather
-// than from the build record so that a coordinator whose repository moved underneath it — someone
-// pulling by hand on the box — advertises where it actually is, not where it last thought it was.
+// What this machine is running, as a node is told it. Usually the commit comes from the checkout
+// rather than the build record; a pending Docker rebuild is the exception, because advertising
+// source that the running image does not contain would send nodes to a nonexistent package.
 pub fn local_release() -> ReleaseInfo {
     // Cached for a moment, for the same reason `settings` is. Every node asks on every loop pass
     // and again on every register, and each answer opens the git repository, reads HEAD and reads
@@ -421,14 +421,28 @@ pub fn local_release() -> ReleaseInfo {
 
 fn read_local_release() -> ReleaseInfo {
     let record = crate::lib::release::read();
-    let commit = crate::pnworker::pull::head_oid(&crate::lib::release::repo_path())
-        .unwrap_or(record.commit);
+    let checkout_commit = crate::pnworker::pull::head_oid(&crate::lib::release::repo_path())
+        .unwrap_or_else(|| record.commit.clone());
+    let compiled_commit = super::binaries::compiled_commit();
+    // Docker's old process stays alive while the host builds its replacement. Until that image
+    // starts, the new checkout/build record must not be advertised: it has no matching package,
+    // and a node would fall back to compiling source. Keep serving the running build instead.
+    let request_pending = std::env::var("PANDORA_GITSYNC_REQUEST").ok().is_some_and(|path| {
+        std::path::Path::new(&path).exists()
+    }) && !compiled_commit.is_empty();
+    let rebuilding_new_release = request_pending
+        && (compiled_commit != checkout_commit || forced_reset());
+    let (build, commit, reset) = if rebuilding_new_release {
+        (record.build.saturating_sub(1), compiled_commit.to_string(), false)
+    } else {
+        (record.build, checkout_commit, forced_reset())
+    };
     ReleaseInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
-        build: record.build,
+        build,
         binaries: super::binaries::published(&commit),
         commit,
-        reset: forced_reset(),
+        reset,
     }
 }
 

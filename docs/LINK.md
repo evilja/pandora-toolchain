@@ -550,10 +550,18 @@ coordinator container's newer runtime glibc. These binaries use libssl3 and zlib
 nodes need their distribution's corresponding runtime packages. The separate native ffmpeg build
 still uses the coordinator's Bookworm runtime and is not distributed to nodes. A Docker
 coordinator needs `PANDORA_SOURCE_COMMIT` set at image build time because `.git` is excluded from
-the image build context. The gitsync watcher sets it automatically. For a manual build, set it to
-`git rev-parse HEAD` in the shell that invokes Docker Compose, for example
-`PANDORA_SOURCE_COMMIT=$(git rev-parse HEAD) docker compose build pndc`. If no package is published, source
-updates continue to work.
+the image build context. The host-side gitsync watcher sets it automatically. Run
+`scripts/docker-gitsync-watch.sh` on a Linux Docker host or `scripts/docker-gitsync-watch.ps1`
+on a Windows Docker host under a service manager so it stays running. After `/gitsync` moves
+HEAD, or an unchanged checkout still lacks a package, the coordinator leaves
+`DB/gitsync.request`. The watcher builds an image containing all five binaries for that commit,
+recreates only `pndc`, and clears the request after success.
+A failed build leaves the old coordinator running and the request in place for retry. The new
+coordinator logs `[link] serving 5 coordinator binaries ...` when its package is available to
+nodes. For a manual build, set the commit in the shell that invokes Docker Compose, for example
+`PANDORA_SOURCE_COMMIT=$(git rev-parse HEAD) docker compose build pndc`. Docker image builds
+without a commit now fail instead of silently producing an image with no node package. If no
+package is published on a non-Docker coordinator, source updates continue to work.
 
 For an existing node, switch its restart loop to `./start-node.sh` before enabling a binary update.
 To install without compiling even the first time, stop its old process, pull the coordinator's
@@ -575,9 +583,9 @@ sitting behind rather than not showing at all.
 
 ### `/gitforce`
 
-`/gitsync` fast-forwards, and bumps the build only when HEAD actually moved. That is what makes it
-safe to run constantly: a sync that pulled nothing does not drain and restart the whole cluster to
-arrive back where it started.
+`/gitsync` fast-forwards, and bumps the build only when HEAD actually moved. An unchanged
+checkout with no binary package requests an image rebuild but does not drain and restart the
+whole cluster. An unchanged checkout with a package needs no image rebuild.
 
 `/gitforce` is the other lever. It **resets** the coordinator onto origin's tip rather than
 fast-forwarding towards it, bumps the build whether or not anything moved, and sets `reset` on the
