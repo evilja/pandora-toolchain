@@ -1,10 +1,17 @@
 # syntax=docker/dockerfile:1.7
-FROM rust:1-bookworm AS build
+# The shared Pandora executables must run on Ubuntu 22.04 nodes (glibc 2.35).
+# Use a Rust toolchain built on older Bullseye, but link the applications on
+# Jammy so their OpenSSL dependency is libssl3 on both nodes and the coordinator.
+FROM rust:1.98-bullseye AS rust-toolchain
+FROM ubuntu:22.04 AS build
+COPY --from=rust-toolchain /usr/local/cargo /usr/local/cargo
+COPY --from=rust-toolchain /usr/local/rustup /usr/local/rustup
+ENV CARGO_HOME=/usr/local/cargo RUSTUP_HOME=/usr/local/rustup PATH=/usr/local/cargo/bin:$PATH
 ARG PANDORA_SOURCE_COMMIT
 ARG PNX264_SOURCE_URL=https://github.com/evilja/x264-pandora/archive/2ecc6f52ab6946962667146d3d69dbff42e881f9.tar.gz
 ARG PNX264_SOURCE_SHA256=97355f37274264d40a72f69f67c0dd0a036abea13ecf6cf8e61a7af65a9ba80e
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates build-essential nasm \
+ && apt-get install -y --no-install-recommends curl ca-certificates build-essential nasm pkg-config libssl-dev cmake git \
  && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /tmp/pnx264-source /opt/pnx264 \
  && curl --fail --location --retry 3 "$PNX264_SOURCE_URL" -o /tmp/pnx264-source.tar.gz \
@@ -34,10 +41,14 @@ WORKDIR /src
 COPY . .
 RUN --mount=type=cache,id=pandora-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=pandora-cargo-git,target=/usr/local/cargo/git \
-    --mount=type=cache,id=pandora-target,target=/src/target \
-    cargo build --release --bins \
+    --mount=type=cache,id=pandora-target-jammy,target=/src/target \
+    PANDORA_BUILD_GLIBC="$(getconf GNU_LIBC_VERSION | cut -d' ' -f2)" cargo build --release --bins \
     && mkdir -p /out \
-    && cp target/release/pndc target/release/pnmpeg target/release/pnp2p target/release/pncurl target/release/pnass /out/
+    && cp target/release/pndc target/release/pnmpeg target/release/pnp2p target/release/pncurl target/release/pnass /out/ \
+    && for binary in /out/*; do \
+         test "$(readelf --version-info "$binary" | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/GLIBC_//' | sort -V | tail -1)" != ""; \
+         ! readelf --version-info "$binary" | grep -Eq 'GLIBC_2\.(3[6-9]|[4-9][0-9])'; \
+       done
 
 # ffmpeg compiled for the CPU this image is built on. FFMPEG_NATIVE=1 runs scripts/build-ffmpeg.sh
 # here — ffmpeg, x264, x265 and libass from pinned sources with -march=native — and the runtime
@@ -75,7 +86,7 @@ ARG FFMPEG_NATIVE=0
 # other way round — and off by default because it grows the image by a few hundred MB.
 ARG FFMPEG_TOOLCHAIN=0
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl fontconfig \
+ && apt-get install -y --no-install-recommends ca-certificates curl fontconfig libssl3 zlib1g \
  && if [ "$FFMPEG_NATIVE" = "1" ]; then \
       apt-get install -y --no-install-recommends libfreetype6 libfontconfig1 libharfbuzz0b libfribidi0 zlib1g libstdc++6; \
     else \
@@ -104,6 +115,7 @@ COPY --from=build /out/pnmpeg  /usr/local/bin/pnmpeg
 COPY --from=build /out/pnp2p   /usr/local/bin/pnp2p
 COPY --from=build /out/pncurl  /usr/local/bin/pncurl
 COPY --from=build /out/pnass   /usr/local/bin/pnass
+RUN for binary in pndc pnmpeg pnp2p pncurl pnass; do "$binary" --link-binary-info >/dev/null; done
 # DB/ (database, env.pandora, api.pandora tokens) comes from a mounted volume.
 EXPOSE 8787
 CMD ["pndc"]

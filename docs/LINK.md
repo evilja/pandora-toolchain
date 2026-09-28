@@ -543,7 +543,12 @@ also checks for a package, so a stock-x264 build can repair itself before regist
 
 Packages are offered only for the coordinator's running commit and a complete set of matching
 executables. The first supported target is x86-64 Linux with glibc. The manifest states its architecture,
-glibc version and required CPU features; a node checks all three before execution. A Docker
+glibc version and required CPU features; a node checks all three before execution. The Docker
+coordinator builds the shared Pandora executables on Ubuntu 22.04 (glibc 2.35), using a Rust
+toolchain from the older Bullseye image. The manifest records that build minimum, not the
+coordinator container's newer runtime glibc. These binaries use libssl3 and zlib1g; non-Docker
+nodes need their distribution's corresponding runtime packages. The separate native ffmpeg build
+still uses the coordinator's Bookworm runtime and is not distributed to nodes. A Docker
 coordinator needs `PANDORA_SOURCE_COMMIT` set at image build time because `.git` is excluded from
 the image build context. The gitsync watcher sets it automatically. For a manual build, set it to
 `git rev-parse HEAD` in the shell that invokes Docker Compose, for example

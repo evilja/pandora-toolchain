@@ -122,7 +122,10 @@ pub fn published(commit: &str) -> Option<BinaryBundle> {
     if !cfg!(target_arch = "x86_64") || commit.is_empty() || commit != compiled_commit() { return None; }
     BUNDLE.get_or_init(|| {
         let dir = runtime_directory()?;
-        let (major, minor) = glibc_version()?;
+        let glibc = env!("PANDORA_BUILD_GLIBC");
+        let (required_major, required_minor) = glibc.split_once('.')
+            .and_then(|(major, minor)| Some((major.parse::<u32>().ok()?, minor.parse::<u32>().ok()?)))?;
+        if glibc_version()? < (required_major, required_minor) { return None; }
         let identity = crate::pnworker::link::client::encoder_identity();
         for name in NAMES {
             let output = std::process::Command::new(dir.join(name))
@@ -135,7 +138,7 @@ pub fn published(commit: &str) -> Option<BinaryBundle> {
         Some(BinaryBundle {
             commit: compiled_commit().to_string(),
             target: target(),
-            glibc: format!("{major}.{minor}"),
+            glibc: glibc.to_string(),
             cpu_features: cpu_features(),
             encoder_identity: identity,
             files,
