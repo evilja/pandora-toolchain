@@ -20,6 +20,8 @@ services:
       # Optional torrent tracker/peer proxy. Supported schemes are http,
       # socks5, and socks5h; leave blank for direct connections.
       - PNP2P_PROXY=${PNP2P_PROXY:-}
+      - PNP2P_PROXY_CHECK_URL=${PNP2P_PROXY_CHECK_URL:-https://nyaa.si/}
+      - PNP2P_PROXY_CHECK_INTERVAL_SECS=${PNP2P_PROXY_CHECK_INTERVAL_SECS:-60}
       - PANDORA_GITSYNC_REPO=/repo
       - PANDORA_GITSYNC_USERNAME=${PANDORA_GITSYNC_USERNAME:-x-access-token}
       - PANDORA_GITSYNC_TOKEN=${PANDORA_GITSYNC_TOKEN:-}

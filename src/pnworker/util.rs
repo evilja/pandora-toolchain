@@ -159,7 +159,36 @@ pub async fn run_tool<F>(
     paths: &HashMap<&str, PathValue>,
     job_id: u64,
     proto: &mut Protocol,
+    on_line: F,
+) -> ToolResult
+where
+    F: FnMut(&TypeC) -> Option<ToolResult>,
+{
+    run_tool_inner(tool_path, params, paths, job_id, proto, on_line, false).await
+}
+
+pub async fn run_torrent_tool<F>(
+    tool_path: &str,
+    params: &[CliParam],
+    paths: &HashMap<&str, PathValue>,
+    job_id: u64,
+    proto: &mut Protocol,
+    on_line: F,
+) -> ToolResult
+where
+    F: FnMut(&TypeC) -> Option<ToolResult>,
+{
+    run_tool_inner(tool_path, params, paths, job_id, proto, on_line, true).await
+}
+
+async fn run_tool_inner<F>(
+    tool_path: &str,
+    params: &[CliParam],
+    paths: &HashMap<&str, PathValue>,
+    job_id: u64,
+    proto: &mut Protocol,
     mut on_line: F,
+    torrent: bool,
 ) -> ToolResult
 where
     F: FnMut(&TypeC) -> Option<ToolResult>,
@@ -175,6 +204,9 @@ where
         }
     };
     let mut cmd = Command::new(tool_path);
+    if torrent {
+        crate::pnworker::proxy_health::apply_to_command(&mut cmd);
+    }
     cmd.args(&args);
     cmd.stderr(Stdio::null());
     cmd.stdout(Stdio::piped());

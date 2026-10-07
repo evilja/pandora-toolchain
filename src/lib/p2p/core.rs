@@ -18,6 +18,7 @@ const MAX_TORRENT_FILE_SIZE: u64 = 64 * 1024 * 1024;
 pub struct P2p {
     client: TorrentClient,
     cfile: Option<PathBuf>,
+    log: Option<std::sync::Mutex<crate::lib::logging::tool::ToolLog>>,
 }
 
 struct DownloadLock {
@@ -58,7 +59,19 @@ impl P2p {
         Ok(Self {
             client: TorrentClient::from_env()?,
             cfile: cfile.map(PathBuf::from),
+            log: None,
         })
+    }
+
+    pub fn with_log(mut self, log: crate::lib::logging::tool::ToolLog) -> Self {
+        self.log = Some(std::sync::Mutex::new(log));
+        self
+    }
+
+    fn log_proxy_fallback(&self) {
+        if let Some(log) = &self.log {
+            crate::lib::sync::lock(log).line("proxy route exhausted its connection attempts; retrying directly once (verified pieces retained)");
+        }
     }
 
     pub async fn probe_torrent(
@@ -68,7 +81,11 @@ impl P2p {
         _tag: Option<String>,
     ) -> Result<Vec<(u64, String, u64)>, Box<dyn std::error::Error>> {
         let source = torrent_source(torrent_path, srcmgn);
-        let files = self.client.probe(&source).await?;
+        let files = self.client.probe_with_events(&source, |event| {
+            if matches!(event, DownloadEvent::ProxyFallback) {
+                self.log_proxy_fallback();
+            }
+        }).await?;
         Ok(files
             .into_iter()
             .filter(|file| is_video_name(&file.path))
@@ -104,6 +121,7 @@ impl P2p {
         let result = self
             .client
             .download(&source, save_path, options, |event| match event {
+                DownloadEvent::ProxyFallback => self.log_proxy_fallback(),
                 DownloadEvent::FileSelected { path, .. } => {
                     let name = portable_path(&path);
                     println!(
@@ -200,6 +218,7 @@ impl P2p {
         let result = self
             .client
             .download(&source, save_path, options, |event| match event {
+                DownloadEvent::ProxyFallback => self.log_proxy_fallback(),
                 DownloadEvent::Progress {
                     downloaded_bytes,
                     total_bytes,

@@ -14,7 +14,7 @@ use crate::pnworker::tools::{
 };
 use crate::pnworker::util::PathValue;
 use crate::pnworker::util::string_byte_to_mb;
-use crate::pnworker::util::{ToolResult, WorkerNamePool, job_cancelled, run_tool};
+use crate::pnworker::util::{ToolResult, WorkerNamePool, job_cancelled, run_tool, run_torrent_tool};
 use crate::pnworker::worker_slots::download_worker_slots;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -715,7 +715,7 @@ async fn run_download_job(
     }
     let result = match file_indices.split_first() {
         None => {
-            run_tool(
+            run_torrent_tool(
                 &pnp2p_path,
                 PNP2P_TORRENT,
                 &p2p_params(
@@ -774,7 +774,7 @@ async fn run_download_job(
                 .map(|index| index.to_string())
                 .collect::<Vec<_>>()
                 .join(",");
-            run_tool(
+            run_torrent_tool(
                 &pnp2p_path,
                 PNP2P_SELECTS,
                 &{
@@ -850,7 +850,7 @@ async fn run_download_job(
             .await
         }
         Some((idx, _)) => {
-            run_tool(
+            run_torrent_tool(
                 &pnp2p_path,
                 PNP2P_SELECT,
                 &{

@@ -140,7 +140,7 @@ async fn main() {
 
     log.line("initialising the torrent client");
     let p2pcp = match P2p::new(args.cancelfile).await {
-        Ok(client) => client,
+        Ok(client) => client.with_log(log.watchdog()),
         Err(error) => {
             log.line(&format!("client initialisation failed: {}", error));
             emit_error(&proto, &neg, &error.to_string());

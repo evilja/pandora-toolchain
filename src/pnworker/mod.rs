@@ -2,6 +2,7 @@ pub mod core;
 pub mod acix;
 pub mod messages;
 pub mod util;
+mod proxy_health;
 pub mod server_effects;
 pub mod server_config;
 pub mod tools;

@@ -84,6 +84,7 @@ pub enum WorkerMsg {
 pub const STRUCT: [&str; 3] = ["contents", "work", "log"];
 
 pub async fn pn_worker(mut rx: Receiver<JobClass>) {
+    let _proxy_monitor = crate::pnworker::proxy_health::start().await;
     let db = JobDb::new().await.unwrap();
     db.init_schema().await.unwrap();
     db.migrate().await.unwrap();

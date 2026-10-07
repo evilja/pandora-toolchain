@@ -16,7 +16,7 @@ use crate::pnworker::preview::{compose_preview, merge_previews};
 use crate::pnworker::tools::{PNCURL_TORRENT, PNMPEG_EXTRACT_SUBS, PNMPEG_STUDIO, PNP2P_PROBE};
 use crate::pnworker::util::PathValue;
 use crate::pnworker::util::{
-    ToolResult, WorkerNamePool, job_cancelled, run_tool, string_byte_to_mb,
+    ToolResult, WorkerNamePool, job_cancelled, run_tool, run_torrent_tool, string_byte_to_mb,
 };
 use crate::pnworker::worker_slots::probe_worker_slots;
 use regex::Regex;
@@ -272,7 +272,7 @@ async fn run_probe_job(
         .unwrap();
         return;
     }
-    let result = run_tool(
+    let result = run_torrent_tool(
         &pnp2p_path,
         PNP2P_PROBE,
         &HashMap::from([

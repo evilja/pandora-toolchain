@@ -23,6 +23,14 @@ const DEFAULT_CANDIDATES: usize = 256;
 const DEFAULT_TRACKER_ROUNDS: usize = 3;
 const MAX_TORRENT_FILE_SIZE: usize = 64 * 1024 * 1024;
 
+fn retryable_route_error(error: &TorrentError) -> bool {
+    matches!(
+        error,
+        TorrentError::Http(_) | TorrentError::Tracker(_) | TorrentError::Peer(_)
+            | TorrentError::Timeout(_) | TorrentError::NoPeers
+    )
+}
+
 #[derive(Clone, Debug)]
 pub struct ClientConfig {
     pub proxy: Option<ProxyConfig>,
@@ -112,6 +120,8 @@ pub struct DownloadOptions {
 
 #[derive(Clone, Debug)]
 pub enum DownloadEvent {
+    // The proxy route exhausted its network attempts; this session now connects directly.
+    ProxyFallback,
     Metadata {
         name: String,
         files: Vec<TorrentFile>,
@@ -280,6 +290,7 @@ pub struct DownloadSummary {
     pub downloaded_bytes: u64,
 }
 
+#[derive(Clone)]
 pub struct TorrentClient {
     config: ClientConfig,
     peer_id: [u8; 20],
@@ -309,13 +320,59 @@ impl TorrentClient {
     pub async fn metadata(&self, source: &TorrentSource) -> Result<Metainfo> {
         let (sender, receiver) = watch::channel(false);
         let _keep_sender_alive = sender;
-        self.resolve_source(source, receiver)
+        self.resolve_with_fallback(source, receiver, &mut |_| {})
             .await
-            .map(|(meta, _)| meta)
+            .map(|(_, meta, _)| meta)
     }
 
     pub async fn probe(&self, source: &TorrentSource) -> Result<Vec<TorrentFile>> {
         Ok(self.metadata(source).await?.files)
+    }
+
+    pub async fn probe_with_events<F>(
+        &self,
+        source: &TorrentSource,
+        mut event: F,
+    ) -> Result<Vec<TorrentFile>>
+    where
+        F: FnMut(DownloadEvent),
+    {
+        let (_sender, receiver) = watch::channel(false);
+        let (_, metainfo, _) = self
+            .resolve_with_fallback(source, receiver, &mut event)
+            .await?;
+        Ok(metainfo.files)
+    }
+
+    fn direct(&self) -> Result<Self> {
+        let mut config = self.config.clone();
+        config.proxy = None;
+        let trackers = TrackerClient::new(
+            None, config.tracker_timeout, self.peer_id, config.listen_port,
+        )?;
+        Ok(Self { config, peer_id: self.peer_id, trackers })
+    }
+
+    async fn resolve_with_fallback<F>(
+        &self,
+        source: &TorrentSource,
+        cancel: watch::Receiver<bool>,
+        event: &mut F,
+    ) -> Result<(Self, Metainfo, Vec<SocketAddr>)>
+    where
+        F: FnMut(DownloadEvent),
+    {
+        match self.resolve_source(source, cancel.clone()).await {
+            Ok((metadata, peers)) => Ok((self.clone(), metadata, peers)),
+            Err(error) if self.config.proxy.is_some()
+                && retryable_route_error(&error) && !*cancel.borrow() => {
+                let direct = self.direct()?;
+                event(DownloadEvent::ProxyFallback);
+                let (metadata, peers) = direct.resolve_source(source, cancel).await?;
+                Ok((direct, metadata, peers))
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub async fn download<F>(
@@ -360,7 +417,9 @@ impl TorrentClient {
     where
         F: FnMut(DownloadEvent),
     {
-        let (metainfo, initial_peers) = self.resolve_source(source, cancel.clone()).await?;
+        let (mut route, metainfo, initial_peers) = self
+            .resolve_with_fallback(source, cancel.clone(), event)
+            .await?;
         event(DownloadEvent::Metadata {
             name: metainfo.name.clone(),
             files: metainfo.files.clone(),
@@ -446,7 +505,7 @@ impl TorrentClient {
             semaphore.clone(),
             metainfo.clone(),
             self.peer_id,
-            self.config.proxy.clone(),
+            route.config.proxy.clone(),
             settings.clone(),
             scheduler.clone(),
             memory.clone(),
@@ -488,6 +547,14 @@ impl TorrentClient {
                     break;
                 }
                 if tracker_round >= self.config.tracker_rounds {
+                    if route.config.proxy.is_some() {
+                        route = route.direct()?;
+                        event(DownloadEvent::ProxyFallback);
+                        tracker_round = 0;
+                        tried.clear();
+                        candidate_errors.clear();
+                        continue;
+                    }
                     return Err(TorrentError::peer(format!(
                         "download stopped after writing {written_pieces}/{} pieces: {}",
                         scheduler.required_count(),
@@ -501,7 +568,7 @@ impl TorrentClient {
                     .await;
                 }
                 tracker_round += 1;
-                match self
+                match route
                     .trackers
                     .announce_all(
                         &metainfo.trackers,
@@ -518,7 +585,7 @@ impl TorrentClient {
                         semaphore.clone(),
                         metainfo.clone(),
                         self.peer_id,
-                        self.config.proxy.clone(),
+                        route.config.proxy.clone(),
                         settings.clone(),
                         scheduler.clone(),
                         memory.clone(),
@@ -531,8 +598,20 @@ impl TorrentClient {
                     continue;
                 }
                 if tasks.is_empty() {
+                    if route.config.proxy.is_some() {
+                        route = route.direct()?;
+                        event(DownloadEvent::ProxyFallback);
+                        tracker_round = 0;
+                        tried.clear();
+                        candidate_errors.clear();
+                        continue;
+                    }
                     return Err(if tried.is_empty() {
-                        TorrentError::NoPeers
+                        if candidate_errors.is_empty() {
+                            TorrentError::NoPeers
+                        } else {
+                            TorrentError::tracker(describe_candidate_errors(&candidate_errors))
+                        }
                     } else {
                         // The peers were there; every connection to them failed. Saying only that
                         // the trackers returned nothing usable blames the wrong side and discards
@@ -1066,7 +1145,114 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn proxy_failure_mid_download_retains_verified_pieces_and_retries_directly_once() {
+        let content = b"first---second--".to_vec();
+        let mut info = decode(&test_info(&content)).unwrap().as_dictionary().unwrap().clone();
+        info.insert(b"piece length".to_vec(), Value::Integer(8));
+        let hashes = content.chunks(8).flat_map(|piece| Sha1::digest(piece).to_vec()).collect();
+        info.insert(b"pieces".to_vec(), Value::Bytes(hashes));
+        let info = encode(&Value::Dictionary(info));
+        let info_hash: [u8; 20] = Sha1::digest(&info).into();
+        let peer = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let peer_address = peer.local_addr().unwrap();
+        let direct_content = content.clone();
+        let peer_task = tokio::spawn(async move {
+            let (mut stream, _) = peer.accept().await.unwrap();
+            serve_piece_peer_at(&mut stream, info_hash, &direct_content[8..], 1, 0xc0).await;
+        });
+        let tracker = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let tracker_url = format!("http://{}/announce", tracker.local_addr().unwrap());
+        let tracker_task = tokio::spawn(serve_tracker_once(tracker, peer_address));
+        let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_url = format!("http://{}", proxy.local_addr().unwrap());
+        let proxied_content = content.clone();
+        let proxy_task = tokio::spawn(async move {
+            let (mut stream, _) = proxy.accept().await.unwrap();
+            serve_tracker_response(&mut stream, peer_address).await;
+            drop(stream);
+            let (mut stream, _) = proxy.accept().await.unwrap();
+            let mut header = Vec::new();
+            while !header.ends_with(b"\r\n\r\n") {
+                header.push(stream.read_u8().await.unwrap());
+            }
+            assert!(header.starts_with(b"CONNECT "));
+            stream.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n").await.unwrap();
+            serve_piece_peer_at(&mut stream, info_hash, &proxied_content[..8], 0, 0xc0).await;
+            // Close the proxy after the first verified piece, while the torrent is incomplete.
+        });
+        let mut config = test_config();
+        config.proxy = Some(ProxyConfig::parse(&proxy_url).unwrap());
+        let client = TorrentClient::new(config).unwrap();
+        let destination = scratch_dir();
+        let mut fallbacks = 0;
+        let mut progress = Vec::new();
+        let summary = tokio::time::timeout(Duration::from_secs(10), client.download(
+            &TorrentSource::Bytes(test_torrent(&info, &tracker_url)), &destination,
+            DownloadOptions::default(), |event| match event {
+                DownloadEvent::ProxyFallback => fallbacks += 1,
+                DownloadEvent::Progress { downloaded_bytes, .. } => progress.push(downloaded_bytes),
+                _ => {}
+            })).await.unwrap().unwrap();
+        assert_eq!(fallbacks, 1);
+        assert_eq!(progress, vec![8, 16]);
+        assert_eq!(summary.downloaded_bytes, 16);
+        assert_eq!(tokio::fs::read(destination.join("test.mkv")).await.unwrap(), content);
+        proxy_task.await.unwrap();
+        tracker_task.await.unwrap();
+        peer_task.await.unwrap();
+        tokio::fs::remove_dir_all(destination).await.unwrap();
+    }
+
+    #[test]
+    fn local_and_cancel_errors_do_not_trigger_route_fallback() {
+        assert!(!retryable_route_error(&TorrentError::Cancelled));
+        assert!(!retryable_route_error(&TorrentError::Io(std::io::Error::from(std::io::ErrorKind::PermissionDenied))));
+        assert!(!retryable_route_error(&TorrentError::metainfo("invalid selection")));
+        assert!(!retryable_route_error(&TorrentError::InvalidMagnet("invalid hash".into())));
+    }
+
+    #[tokio::test]
+    async fn failed_direct_attempt_ends_without_another_route_retry() {
+        async fn fail_once(listener: TcpListener) {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(stream.read_u8().await.unwrap());
+            }
+            stream.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+        }
+        let tracker = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let tracker_url = format!("http://{}/announce", tracker.local_addr().unwrap());
+        let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut config = test_config();
+        config.proxy = Some(ProxyConfig::parse(&format!("http://{}", proxy.local_addr().unwrap())).unwrap());
+        let proxy_task = tokio::spawn(fail_once(proxy));
+        let tracker_task = tokio::spawn(fail_once(tracker));
+        let destination = scratch_dir();
+        let mut fallbacks = 0;
+        let result = tokio::time::timeout(Duration::from_secs(5), TorrentClient::new(config).unwrap().download(
+            &TorrentSource::Bytes(test_torrent(&test_info(b"data"), &tracker_url)),
+            &destination, DownloadOptions::default(), |event| {
+                if matches!(event, DownloadEvent::ProxyFallback) { fallbacks += 1; }
+            })).await.unwrap();
+        assert!(matches!(result, Err(TorrentError::Tracker(_))));
+        assert_eq!(fallbacks, 1);
+        proxy_task.await.unwrap();
+        tracker_task.await.unwrap();
+        tokio::fs::remove_dir_all(destination).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn fetches_magnet_metadata_with_bep9() {
+        check_magnet_metadata(false).await;
+    }
+
+    #[tokio::test]
+    async fn fetches_magnet_metadata_directly_when_proxy_is_unreachable() {
+        check_magnet_metadata(true).await;
+    }
+
+    async fn check_magnet_metadata(dead_proxy: bool) {
         let content = b"metadata payload target".to_vec();
         let info = test_info(&content);
         let info_hash: [u8; 20] = Sha1::digest(&info).into();
@@ -1083,7 +1269,13 @@ mod tests {
         let mut magnet =
             reqwest::Url::parse(&format!("magnet:?xt=urn:btih:{}", hex_hash(&info_hash))).unwrap();
         magnet.query_pairs_mut().append_pair("tr", &tracker_url);
-        let client = TorrentClient::new(test_config()).unwrap();
+        let mut config = test_config();
+        if dead_proxy {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            config.proxy = Some(ProxyConfig::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap());
+            drop(listener);
+        }
+        let client = TorrentClient::new(config).unwrap();
         let metadata = client
             .metadata(&TorrentSource::Magnet(magnet.to_string()))
             .await
@@ -1143,6 +1335,10 @@ mod tests {
 
     async fn serve_tracker_once(listener: TcpListener, peer: SocketAddr) {
         let (mut stream, _) = listener.accept().await.unwrap();
+        serve_tracker_response(&mut stream, peer).await;
+    }
+
+    async fn serve_tracker_response(stream: &mut TcpStream, peer: SocketAddr) {
         let mut request = Vec::new();
         let mut buffer = [0u8; 1024];
         while !request.windows(4).any(|window| window == b"\r\n\r\n") {
@@ -1176,13 +1372,18 @@ mod tests {
     }
 
     async fn serve_piece_peer(stream: &mut TcpStream, info_hash: [u8; 20], content: &[u8]) {
+        serve_piece_peer_at(stream, info_hash, content, 0, 0x80).await;
+    }
+
+    async fn serve_piece_peer_at(stream: &mut TcpStream, info_hash: [u8; 20], content: &[u8], expected_index: u32, bitfield: u8) {
         serve_handshake(stream, info_hash, false).await;
         assert_eq!(read_wire(stream).await, vec![2]);
-        write_wire(stream, &[5, 0x80]).await;
+        write_wire(stream, &[5, bitfield]).await;
         write_wire(stream, &[1]).await;
         let request = read_wire(stream).await;
         assert_eq!(request.first(), Some(&6));
         let index = u32::from_be_bytes(request[1..5].try_into().unwrap());
+        assert_eq!(index, expected_index);
         let begin = u32::from_be_bytes(request[5..9].try_into().unwrap()) as usize;
         let length = u32::from_be_bytes(request[9..13].try_into().unwrap()) as usize;
         let mut response = vec![7];
