@@ -549,8 +549,12 @@ toolchain from the older Bullseye image. The manifest records that build minimum
 coordinator container's newer runtime glibc. These binaries use libssl3 and zlib1g; non-Docker
 nodes need their distribution's corresponding runtime packages. The separate native ffmpeg build
 still uses the coordinator's Bookworm runtime and is not distributed to nodes. A Docker
-coordinator needs `PANDORA_SOURCE_COMMIT` set at image build time because `.git` is excluded from
-the image build context. The host-side gitsync watcher sets it automatically. Run
+build resolves the checkout HEAD inside the build image, so ordinary `docker compose up -d --build`
+works without setting `PANDORA_SOURCE_COMMIT` and without Git on the host. Git metadata is available
+only to the build stage; local Git config/hooks, `.env` and `lumiere-internal/` are excluded from the
+context, and the runtime receives only the resolved SHA and executables. An explicit
+`PANDORA_SOURCE_COMMIT` is validated against HEAD when the checkout is available. The host-side
+gitsync watcher supplies it from Pandora's rebuild request. Run
 `scripts/docker-gitsync-watch.sh` on a Linux Docker host or `scripts/docker-gitsync-watch.ps1`
 on a Windows Docker host under a service manager so it stays running. After `/gitsync` moves
 HEAD, or an unchanged checkout still lacks a package, the coordinator leaves
@@ -561,9 +565,9 @@ An old request containing only `rebuild` is retained with an error; update Pando
 recreates only `pndc`, and clears the request after success.
 A failed build leaves the old coordinator running and the request in place for retry. The new
 coordinator logs `[link] serving 5 coordinator binaries ...` when its package is available to
-nodes. For a manual build, set the commit in the shell that invokes Docker Compose, for example
-`PANDORA_SOURCE_COMMIT=$(git rev-parse HEAD) docker compose build pndc`. Docker image builds
-without a commit now fail instead of silently producing an image with no node package. If no
+nodes. For a manual build, run `docker compose build pndc`. A source archive without `.git` still requires its full commit SHA in
+`PANDORA_SOURCE_COMMIT`. Builds with neither checkout metadata nor an explicit SHA fail instead of
+silently producing an image with no node package. If no
 package is published on a non-Docker coordinator, source updates continue to work.
 
 For an existing node, switch its restart loop to `./start-node.sh` before enabling a binary update.

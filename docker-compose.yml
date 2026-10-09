@@ -3,6 +3,7 @@ services:
     build:
       context: .
       args:
+        # Optional: the build resolves HEAD from the checkout when no SHA is supplied.
         PANDORA_SOURCE_COMMIT: ${PANDORA_SOURCE_COMMIT:-}
         # On by default: the image compiles ffmpeg for this machine's CPU while it builds and
         # ships it in place of Debian's, so the /gitsync-triggered rebuild the watcher runs is

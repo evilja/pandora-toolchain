@@ -1,3 +1,11 @@
 target
 DB
-.git
+# HEAD and objects are used only inside the build stage to resolve the checkout revision.
+.git/config
+.git/hooks
+lumiere-internal
+.env
+.claude
+.codex
+.agents
+.DS_Store
