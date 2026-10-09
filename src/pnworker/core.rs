@@ -2532,6 +2532,9 @@ async fn apply_link_reports(
         let Some(pos) = link_job_position(queue, job_id, node) else {
             return;
         };
+        if let Some(metrics) = report.metrics {
+            crate::pnworker::metrics::receive(job_id, metrics);
+        }
         let Some(payload) = link_payload_with_local_attachment(job_id, &report.payload) else {
             eprintln!(
                 "[link] {node} | job {job_id} sent message id {} this build cannot render",
@@ -3763,7 +3766,8 @@ async fn do_duplicate_waiting_things(db: &JobDb, queue: &mut Vec<Job>) {
                 continue;
             }
             match tokio::fs::copy(&source, &target).await {
-                Ok(_) => {
+                Ok(bytes) => {
+                    crate::pnworker::metrics::cache_hit(id, bytes);
                     queue[pos].duplicate_source = None;
                     queue[pos].ready = Stage::Downloaded;
                     db.update_stage(queue[pos].job_id, Stage::Downloaded)

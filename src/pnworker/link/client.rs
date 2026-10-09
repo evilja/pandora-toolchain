@@ -243,6 +243,7 @@ pub fn report(job_id: u64, payload: &MessagePayload, stage: Stage, worker: &str)
         if last.payload.id == wire.id && last.stage.as_deref() == Some(stage_name(stage)).as_deref()
         {
             *last = LinkReport {
+                metrics: Some(crate::pnworker::metrics::snapshot(job_id)),
                 payload: wire,
                 stage: Some(stage_name(stage)),
             };
@@ -250,6 +251,7 @@ pub fn report(job_id: u64, payload: &MessagePayload, stage: Stage, worker: &str)
         }
     }
     entry.reports.push(LinkReport {
+        metrics: Some(crate::pnworker::metrics::snapshot(job_id)),
         payload: wire,
         stage: Some(stage_name(stage)),
     });
@@ -1592,6 +1594,7 @@ mod tests {
                 reports: ids
                     .iter()
                     .map(|id| LinkReport {
+                        metrics: None,
                         payload: LinkPayload { id: (*id).to_string(), args: None },
                         stage: None,
                     })

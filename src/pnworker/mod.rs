@@ -29,3 +29,5 @@ pub mod studio;
 pub mod subs_media;
 pub mod link;
 pub mod boot;
+
+pub(crate) mod metrics;

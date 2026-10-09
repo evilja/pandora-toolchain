@@ -44,6 +44,8 @@ pub struct LinearAotState {
     pub bytes: u64,
     pub media_micros: u64,
     pub compatibility: String,
+    pub started_unix_millis: u64,
+    pub elapsed_millis: u64,
 }
 
 impl LinearAotState {
@@ -69,7 +71,9 @@ impl LinearAotState {
             0
         };
         let compatibility = lines.next().ok_or("linear AOT state has no compatibility key")?.to_string();
-        Ok(Self { complete, pid, job_id, frames, bytes, media_micros, compatibility })
+        let started_unix_millis = lines.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let elapsed_millis = lines.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+        Ok(Self { complete, pid, job_id, frames, bytes, media_micros, compatibility, started_unix_millis, elapsed_millis })
     }
 
     pub fn process_alive(&self) -> bool {
@@ -92,9 +96,9 @@ fn publish(path: &Path, state: &LinearAotState) -> Result<(), String> {
     std::fs::write(
         &temporary,
         format!(
-            "{VERSION}\n{status}\n{}\n{}\n{}\n{}\n{}\n{}\n",
+            "{VERSION}\n{status}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
             state.pid, state.job_id, state.frames, state.bytes, state.media_micros,
-            state.compatibility,
+            state.compatibility, state.started_unix_millis, state.elapsed_millis,
         ),
     ).map_err(|e| e.to_string())?;
     std::fs::rename(&temporary, path).map_err(|e| e.to_string())
@@ -198,7 +202,10 @@ fn filter_quote(value: &str) -> String {
 }
 
 pub fn run_linear_aot(config: LinearAotConfig) -> Result<LinearAotState, String> {
+    let started = std::time::Instant::now();
     let state = LinearAotState {
+        started_unix_millis: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64,
+        elapsed_millis: 0,
         complete: false,
         pid: std::process::id(),
         job_id: config.job_id,
@@ -301,6 +308,7 @@ pub fn run_linear_aot(config: LinearAotConfig) -> Result<LinearAotState, String>
     std::fs::rename(&temporary, &config.output).map_err(|e| e.to_string())?;
     let mut state = shared_state.lock().map_err(|_| "linear AOT state lock poisoned")?.clone();
     state.complete = true;
+    state.elapsed_millis = started.elapsed().as_millis() as u64;
     state.bytes = std::fs::metadata(&config.output).map(|value| value.len()).unwrap_or(state.bytes);
     publish(&config.state, &state)?;
     Ok(state)
@@ -323,6 +331,8 @@ mod tests {
             bytes: 9000,
             media_micros: 50_000_000,
             compatibility: "standard-v1".to_string(),
+            started_unix_millis: 1234,
+            elapsed_millis: 5678,
         };
         publish(&path, &state).unwrap();
         assert_eq!(LinearAotState::read(&path).unwrap(), state);

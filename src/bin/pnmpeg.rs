@@ -1092,6 +1092,10 @@ fn finish_linear_aot(
         completed.bytes,
         destination
     ));
+    // Only an adopted, successfully muxed AOT contributes to encode metrics.
+    if let Err(error) = std::fs::write(parent.join("linear-aot.metrics"), format!("{} {} {}", completed.frames, completed.started_unix_millis, completed.elapsed_millis)) {
+        eprintln!("pnmpeg: could not record adopted AOT metrics: {error}");
+    }
     std::fs::remove_file(&aot_video).ok();
     std::fs::remove_file(&state_path).ok();
     std::fs::remove_dir_all(&scratch).ok();

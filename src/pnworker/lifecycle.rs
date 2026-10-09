@@ -11,6 +11,7 @@ use crate::pnworker::messages::MessagePayload;
 // bus would have reported a node's encode progress faithfully and lost the reason a job was
 // refused. On a coordinator the report call returns immediately.
 pub(crate) async fn render(job: &mut Job, payload: MessagePayload) {
+    crate::pnworker::metrics::observe(job, &payload).await;
     let mut fe = std::mem::replace(&mut job.frontend, Frontend::None);
     fe.update(job, &payload).await;
     job.frontend = fe;
@@ -31,6 +32,9 @@ pub(crate) async fn cleanup_job(source: &PathBuf, dest: &PathBuf) {
     .await;
     preserve_log_dir(&source.join("log"), &dest.join("log")).await;
     remove_dir_all(source).await.ok();
+    if let Some(id) = source.file_name().and_then(|v| v.to_str()).and_then(|v| v.parse().ok()) {
+        crate::pnworker::metrics::forget(id).await;
+    }
 }
 
 // The log directory is the only durable account of why a job ended, and this is the last moment it

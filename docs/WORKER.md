@@ -351,3 +351,35 @@ If you extend `TorrentType` in `lib::p2p/nyaaise.rs`, you must also update:
 - `nyaaise()` classifier.
 - Every match block in `pnworker/workers/downloadworker.rs` and `probeworker.rs`.
 - The exhaustive match blocks in `nyaaise.rs`'s `#[cfg(test)] mod tests`.
+
+## Pandora Metrics
+
+The coordinator incrementally updates `DB/metrics/<UTC year>/<two-digit UTC month>/metrics.pandora`.
+The file is a JSON object containing only monthly totals, with no job ids or individual encode records:
+
+- `total_frames`: video frames in successfully encoded final outputs, including concat ends.
+- `linear_aot_frames`: frames from a linear AOT video actually adopted into a successful output;
+  discarded speculation and chunked AOT are excluded.
+- `cache_saved_bytes`: input bytes reused from the input cache or a duplicate download owner.
+- `encode_millis`: elapsed encode time through final mux/concat, beginning with the adopted linear
+  AOT run when it started before the foreground encode. Overlapping time is counted once.
+- `linear_aot_encode_millis`: elapsed time of adopted linear AOT runs, including their download/idle waits.
+- `uploaded_bytes`: output size per successful Drive/remote-provider upload. Multiple successful
+  destinations each contribute their copy; local HLS publication and node-to-coordinator handoff
+  contribute no external upload bytes.
+- `successful_encodes`: successful encoder completions, independent of a later upload failure.
+
+Frames are counted from the completed MP4 or HLS playlist; if probing is unavailable, the latest
+encoder frame count (or the adopted AOT count) is used. Cache and upload totals are updated even if
+another stage later fails. Backup-only jobs and forwarded jobs do not contribute encode metrics.
+A measurement is assigned to the UTC month in which the coordinator receives it; an encode spanning
+midnight/month-end contributes its frames and duration when it completes.
+
+Mini nodes never read or write monthly metrics files. They attach cumulative measurements to the
+existing lease reports; the coordinator accepts them only through the job's active lease and adds
+only the increase over previously received measurements. Report retries and older snapshots therefore
+cannot increment the totals twice. Per-job measurements are transient and discarded during cleanup;
+existing monthly totals are read back after a restart. Coordinator writes are serialized and replace
+the file through a synced temporary file. An unreadable or invalid existing file is left intact and
+the write failure is logged, without failing the job. Deploy the updated coordinator, nodes and
+`pnmpeg` together to collect all measurements.

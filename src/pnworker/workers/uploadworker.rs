@@ -359,6 +359,9 @@ async fn run_lumiere_single_upload(
                     continue;
                 }
                 done[lumiere_host_index(host)] = true;
+                if let Ok(meta) = tokio::fs::metadata(&output_path).await {
+                    crate::pnworker::metrics::uploaded(job_id, meta.len());
+                }
                 completed += 1;
                 any_success = true;
                 println!(

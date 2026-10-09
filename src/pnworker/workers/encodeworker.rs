@@ -236,6 +236,8 @@ pub async fn pn_encdeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
             for warning in effects.warnings {
                 tx.try_send((job_id, MessagePayload::Progress(ENCODE_WARNING, vec![warning]), None)).ok();
             }
+            // A reboot may retry this work directory with a different encode path.
+            tokio::fs::remove_file(directory.join("work").join("linear-aot.metrics")).await.ok();
             tx.send((job_id, MessagePayload::Static(ENCODE_START), Some(Stage::Encoding))).await.ok();
             let mut encode_params = HashMap::from([
                     ("INPUT",      PathValue::from(path_to_ffmpeg(directory.join("contents").join("torrent").join("input.mkv").as_path()))),

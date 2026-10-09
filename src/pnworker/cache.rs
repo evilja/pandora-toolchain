@@ -159,7 +159,8 @@ pub(crate) async fn use_cached_input(job: &mut Job) -> bool {
         return false;
     }
     match tokio::fs::copy(&source, &target).await {
-        Ok(_) => {
+        Ok(bytes) => {
+            crate::pnworker::metrics::cache_hit(job.job_id, bytes);
             touch_input_cache(&key).await;
             job.ready = Stage::Downloaded;
             job.worker = "dwl-cache".to_string();

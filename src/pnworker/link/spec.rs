@@ -305,6 +305,8 @@ pub struct LinkLogChunk {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LinkReport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<crate::pnworker::metrics::Totals>,
     pub payload: LinkPayload,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage: Option<String>,
