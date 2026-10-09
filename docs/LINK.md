@@ -550,7 +550,9 @@ coordinator container's newer runtime glibc. These binaries use libssl3 and zlib
 nodes need their distribution's corresponding runtime packages. The separate native ffmpeg build
 still uses the coordinator's Bookworm runtime and is not distributed to nodes. A Docker
 build resolves the checkout HEAD inside the build image, so ordinary `docker compose up -d --build`
-works without setting `PANDORA_SOURCE_COMMIT` and without Git on the host. Git metadata is available
+works without setting `PANDORA_SOURCE_COMMIT` and without Git on the host. Shell scripts use LF
+through `.gitattributes`; the builder also normalizes the source-revision and native-ffmpeg scripts
+so existing Windows CRLF checkouts can build without re-checking out the files. Git metadata is available
 only to the build stage; local Git config/hooks, `.env` and `lumiere-internal/` are excluded from the
 context, and the runtime receives only the resolved SHA and executables. An explicit
 `PANDORA_SOURCE_COMMIT` is validated against HEAD when the checkout is available. The host-side

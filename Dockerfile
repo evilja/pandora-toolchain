@@ -41,7 +41,8 @@ COPY . .
 RUN --mount=type=cache,id=pandora-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=pandora-cargo-git,target=/usr/local/cargo/git \
     --mount=type=cache,id=pandora-target-jammy,target=/src/target \
-    source_commit=$(sh scripts/docker-source-commit.sh /src) \
+    sed -i 's/\r$//' scripts/docker-source-commit.sh \
+    && source_commit=$(sh scripts/docker-source-commit.sh /src) \
     && PANDORA_SOURCE_COMMIT="$source_commit" \
        PANDORA_BUILD_GLIBC="$(getconf GNU_LIBC_VERSION | cut -d' ' -f2)" cargo build --release --bins \
     && mkdir -p /out \
@@ -74,7 +75,8 @@ RUN if [ "$FFMPEG_NATIVE" = "1" ]; then \
    && rm -rf /var/lib/apt/lists/*; \
     fi
 COPY scripts/build-ffmpeg.sh /tmp/build-ffmpeg.sh
-RUN mkdir -p /opt/ffmpeg-native \
+RUN sed -i 's/\r$//' /tmp/build-ffmpeg.sh \
+ && mkdir -p /opt/ffmpeg-native \
  && if [ "$FFMPEG_NATIVE" = "1" ]; then \
       PANDORA_FFMPEG_OUT=/opt/ffmpeg-native PANDORA_FFMPEG_WORK=/tmp/ffmpeg-work bash /tmp/build-ffmpeg.sh \
    && rm -rf /tmp/ffmpeg-work; \
