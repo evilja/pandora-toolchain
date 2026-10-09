@@ -51,6 +51,7 @@ pub struct ParallelConfig {
     pub workers: usize,
     pub encoder: Config,
     pub audio_map: String,
+    pub audio_args: Vec<String>,
     // Additional options for the final output container.
     pub output_args: Vec<String>,
 }
@@ -453,6 +454,7 @@ pub fn encode_aot_chunk(config: AotChunkConfig) -> Result<(), String> {
         workers: 1,
         encoder: config.encoder.clone(),
         audio_map: String::new(),
+        audio_args: Vec::new(),
         output_args: Vec::new(),
     };
     let source = Source {
@@ -532,14 +534,16 @@ where
         return Err("parallel input has fewer than four chunks per worker".to_string());
     }
     let reused_chunks = Arc::new(AtomicUsize::new(0));
-    let audio = scratch.join("audio.m4a");
+    let audio = scratch.join("audio.mp4");
     let mut audio_child = Command::new(&config.ffmpeg)
         .args(["-v", "error", "-i"])
         .arg(&config.input)
         .args([
             "-map", &format!("0:{}", config.audio_map),
-            "-vn", "-c:a", "aac", "-b:a", "192k", "-y",
+            "-vn",
         ])
+        .args(&config.audio_args)
+        .arg("-y")
         .arg(&audio)
         .stdout(Stdio::null())
         .stderr(Stdio::null())

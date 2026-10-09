@@ -6,7 +6,7 @@ use pandora_toolchain::lib::mpeg::{
     }, probe::{
         ConcatMedia, ffprobe_concat_media, ffprobe_estimated_frames, ffprobe_frame,
         ffprobe_duration_millis, ffprobe_framerate, ffprobe_lang,
-        ffprobe_samplerate
+        ffprobe_samplerate, ffprobe_audio_codec
     }
 };
 use tokio::{fs::File, io::AsyncWriteExt, time::{Duration, Instant}};
@@ -587,7 +587,7 @@ const TOTAL_ESTIMATE_TOLERANCE: u64 = 2;
 // scratch. See `handoff_frame_total`.
 const TOTAL_FRAMES_SIDECAR: &str = "total_frames";
 
-// How many half-second attempts the audio retry gets to see the input reappear.
+// How many half-second attempts the post-video audio pass gets to see the input reappear.
 const AUDIO_RETRY_ATTEMPTS: u32 = 20;
 
 // How long the linear AOT state file may be missing before the handoff stops believing in it. The
@@ -683,6 +683,20 @@ fn retarget_params_to_hls(
         names.chunk_directory
     ));
     Ok(())
+}
+
+// Keep the common MP4/HLS audio codecs without another lossy generation. Other
+// codecs (or an unreadable probe) retain the established AAC compatibility fallback.
+fn copies_source_audio(codec: Option<&str>) -> bool {
+    matches!(codec, Some("aac" | "mp3"))
+}
+
+fn source_audio_args(codec: Option<&str>) -> Vec<String> {
+    if copies_source_audio(codec) {
+        vec!["-c:a".into(), "copy".into()]
+    } else {
+        vec!["-c:a".into(), "aac".into(), "-b:a".into(), "192k".into()]
+    }
 }
 
 // The AOT final mux, written as HLS instead of an MP4.
@@ -788,26 +802,13 @@ fn finish_linear_aot(
     let scratch = parent.join("pnmpeg-linear-aot");
     std::fs::remove_dir_all(&scratch).ok();
     std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
-    let audio = scratch.join("audio.m4a");
-    // Both of these ran with their stderr discarded, so "linear AOT audio encode failed" was the
-    // whole account of the failure. The files sit inside the scratch directory that is removed on
-    // success, and are read back into the error on the paths that keep them.
+    let audio = scratch.join("audio.mp4");
+    // Keep ffmpeg diagnostics until success and include their tails in any failure.
     let audio_errors = scratch.join("audio.stderr.log");
     let mux_errors = scratch.join("mux.stderr.log");
-    let spawn_audio = || {
-        Command::new(resolve_runtime_binary("ffmpeg"))
-            .args(["-v", "error", "-i", &args.input, "-map", &format!("0:{audio_index}"),
-                "-vn", "-c:a", "aac", "-b:a", "192k", "-y"])
-            .arg(&audio)
-            .stdout(Stdio::null())
-            .stderr(std::fs::File::create(&audio_errors).map(Stdio::from).unwrap_or_else(|_| Stdio::null()))
-            .spawn()
-            .map_err(|e| format!("spawn linear AOT audio encoder: {e}"))
-    };
-    let mut audio_child = spawn_audio()?;
     let input_path = Path::new(&args.input);
     log.line(&format!(
-        "adopting linear AOT: waiting for {} to finish, encoding audio from stream {} of {} (exists={}) meanwhile; torrent dir holds {}",
+        "adopting linear AOT: waiting for video encoder {} to finish before taking audio stream {} from {} (exists={}); torrent dir holds {}",
         initial.pid,
         audio_index,
         args.input,
@@ -818,9 +819,8 @@ fn finish_linear_aot(
             .unwrap_or_else(|| "unreadable".to_string()),
     ));
     // The frame total used to come from `ffprobe -count_packets`, a full demux of the input, run on
-    // a thread for the whole handoff. That put a third reader on the same file the speculative
-    // encoder and the AAC pass were already streaming off the bind mount — the slowest resource in
-    // the container — for the length of an encode, and it still did not finish in time to report a
+    // a thread for the whole handoff. That competed with the speculative encoder for reads
+    // from the bind mount for the length of an encode, and it still did not finish in time to report a
     // total. The container header answers the same question in two metadata reads. The exact count
     // is now only paid for at the end, and only if this disagrees with what the AOT produced.
     let (estimate, estimate_source) = handoff_frame_total(&args.input, parent);
@@ -840,16 +840,8 @@ fn finish_linear_aot(
     let mut last_frames = initial_frames;
     let mut missing_since: Option<std::time::Instant> = None;
     let mut reported_missing = false;
-    // The AAC pass is started here and used to be waited on only after the video finished, so a job
-    // whose audio failed in its first second still spent the whole encode before anyone looked: one
-    // run burned eleven minutes and 34,911 successfully encoded frames before reporting that its
-    // input had not been there at all. Watch it as we go.
-    let mut audio_done: Option<std::process::ExitStatus> = None;
-    let mut audio_retry = false;
     let completed = loop {
         if args.cancelfile.as_deref().is_some_and(|path| Path::new(path).exists()) {
-            audio_child.kill().ok();
-            audio_child.wait().ok();
             std::fs::remove_dir_all(&scratch).ok();
             return Err("cancelled".to_string());
         }
@@ -893,8 +885,6 @@ fn finish_linear_aot(
                     job_dir.exists(),
                     directory_names(job_dir),
                 ));
-                audio_child.kill().ok();
-                audio_child.wait().ok();
                 std::fs::remove_dir_all(&scratch).ok();
                 if !planner_alive {
                     // There is nothing left to adopt, but the episode is not lost: the ordinary
@@ -907,8 +897,6 @@ fn finish_linear_aot(
             }
         };
         if state.compatibility != initial.compatibility {
-            audio_child.kill().ok();
-            audio_child.wait().ok();
             std::fs::remove_dir_all(&scratch).ok();
             return Err("linear AOT compatibility changed during handoff".to_string());
         }
@@ -946,30 +934,6 @@ fn finish_linear_aot(
             last_emit = Some(now);
         }
         last_frames = state.frames;
-        if audio_done.is_none() {
-            match audio_child.try_wait() {
-                Ok(Some(status)) if !status.success() => {
-                    // Almost always the input this is reading: on the production bind mount, a file
-                    // the speculative encoder holds open is listed in its directory but cannot be
-                    // stat'd by name after the download worker renames it, so the audio pass starts
-                    // against a path that resolves to nothing while the video sails on. The name
-                    // becomes usable again once that process exits, which is exactly what the loop
-                    // below is already waiting for — so this is a reason to retry the audio later,
-                    // not to throw the encode away.
-                    log.line(&format!(
-                        "linear AOT audio encode failed after {:.1}s ({}; ffmpeg said: {}); retrying it once the AOT finishes",
-                        wait_started.elapsed().as_secs_f64(),
-                        exit_reason(&status),
-                        tail_line(&audio_errors, 3)
-                    ));
-                    audio_retry = true;
-                    audio_done = Some(status);
-                }
-                Ok(Some(status)) => audio_done = Some(status),
-                Ok(None) => {}
-                Err(e) => log.line(&format!("linear AOT audio encode status unreadable: {e}")),
-            }
-        }
         if state.complete {
             break state;
         }
@@ -984,8 +948,6 @@ fn finish_linear_aot(
                 last_rss.map(|mib| format!("{mib}MiB RSS")).unwrap_or_else(|| "an unknown size".to_string()),
                 memory_line(),
             ));
-            audio_child.kill().ok();
-            audio_child.wait().ok();
             std::fs::remove_dir_all(&scratch).ok();
             std::fs::remove_file(&state_path).ok();
             std::fs::remove_file(&aot_video).ok();
@@ -1026,50 +988,71 @@ fn finish_linear_aot(
             "linear AOT encoded {} of the {} frames ffprobe counted in {}; falling back to the linear encode",
             completed.frames, total, args.input
         ));
-        audio_child.kill().ok();
-        audio_child.wait().ok();
         std::fs::remove_dir_all(&scratch).ok();
         std::fs::remove_file(&state_path).ok();
         std::fs::remove_file(&aot_video).ok();
         return Ok(false);
     }
-    if audio_retry {
-        // The AOT is complete, so whatever was holding the input open has let go of it.
-        for attempt in 1..=AUDIO_RETRY_ATTEMPTS {
-            if !input_path.exists() {
-                std::thread::sleep(Duration::from_millis(500));
-                continue;
-            }
-            log.line(&format!("retrying the linear AOT audio encode (attempt {attempt})"));
-            audio_child = spawn_audio()?;
-            audio_done = Some(audio_child.wait().map_err(|e| e.to_string())?);
+    // The downloader has completed before this invocation, and the video-only AOT has
+    // now closed its source. Wait out the bind-mount rename window before opening audio.
+    for _ in 0..AUDIO_RETRY_ATTEMPTS {
+        if args.cancelfile.as_deref().is_some_and(|path| Path::new(path).exists()) {
+            return Err("cancelled".to_string());
+        }
+        if input_path.exists() {
             break;
         }
-        if !input_path.exists() {
-            return Err(format!(
-                "linear AOT audio encode has no input: {} still does not resolve; its directory holds {}",
-                args.input,
-                input_path
-                    .parent()
-                    .map(directory_names)
-                    .unwrap_or_else(|| "unreadable".to_string()),
-            ));
-        }
+        std::thread::sleep(Duration::from_millis(500));
     }
-    let audio_status = match audio_done {
-        Some(status) => status,
-        None => audio_child.wait().map_err(|e| e.to_string())?,
+    if !input_path.exists() {
+        return Err(format!(
+            "linear AOT audio has no input: {} still does not resolve; its directory holds {}",
+            args.input,
+            input_path.parent().map(directory_names).unwrap_or_else(|| "unreadable".to_string()),
+        ));
+    }
+    // Resolve language again now that the source can be opened by name.
+    let selected_audio = args.lang.as_deref()
+        .and_then(|lang| ffprobe_lang(&args.input, lang))
+        .map(|index| index.to_string());
+    let audio_index = selected_audio.as_deref().unwrap_or(audio_index);
+    let codec = ffprobe_audio_codec(&args.input, audio_index);
+    let audio_args = source_audio_args(codec.as_deref());
+    log.line(&format!(
+        "linear AOT video complete; taking source audio stream {audio_index} (codec={}, {})",
+        codec.as_deref().unwrap_or("unknown"),
+        if copies_source_audio(codec.as_deref()) { "stream copy" } else { "AAC fallback" },
+    ));
+    let mut audio_child = Command::new(resolve_runtime_binary("ffmpeg"))
+        .args(["-v", "error", "-i", &args.input, "-map", &format!("0:{audio_index}"), "-vn"])
+        .args(audio_args)
+        .arg("-y")
+        .arg(&audio)
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(&audio_errors).map(Stdio::from).unwrap_or_else(|_| Stdio::null()))
+        .spawn()
+        .map_err(|e| format!("spawn linear AOT audio pass: {e}"))?;
+    let audio_status = loop {
+        if args.cancelfile.as_deref().is_some_and(|path| Path::new(path).exists()) {
+            audio_child.kill().ok();
+            audio_child.wait().ok();
+            std::fs::remove_dir_all(&scratch).ok();
+            return Err("cancelled".to_string());
+        }
+        if let Some(status) = audio_child.try_wait().map_err(|e| e.to_string())? {
+            break status;
+        }
+        std::thread::sleep(Duration::from_millis(250));
     };
     if !audio_status.success() {
         return Err(format!(
-            "linear AOT audio encode failed: {}; ffmpeg said: {}",
-            exit_reason(&audio_status),
-            tail_line(&audio_errors, 3)
+            "linear AOT audio pass failed: {}; ffmpeg said: {}",
+            exit_reason(&audio_status), tail_line(&audio_errors, 3),
         ));
     }
     // A job whose server publishes HLS and nothing else has no use for the MP4 this would
     // otherwise write: the broker would only take it apart again into the same chunks. Mux the
-    // finished video and its AAC track straight into the layout the broker publishes instead.
+    // finished video and its source audio track straight into the layout the broker publishes instead.
     let destination = match args.hls.as_deref() {
         Some(directory) => {
             mux_linear_aot_hls(
@@ -1670,6 +1653,23 @@ async fn main() {
     };
     log.line(&format!("audio_index={}", audio_index));
 
+    // Apply the same source-audio policy when speculation is absent or refused.
+    // Concat/filter-complex runs have their own audio compatibility requirements.
+    let source_codec = if active_preset.is_some() && !args.concat && !args.legacyconcat {
+        log.step("ffprobe selected audio codec", || ffprobe_audio_codec(&args.input, &audio_index))
+    } else {
+        None
+    };
+    if copies_source_audio(source_codec.as_deref()) {
+        params.retain(|param| !matches!(param, FfmpegParams::Ba(_) | FfmpegParams::Ar(_) | FfmpegParams::Ac(_)));
+        for param in &mut params {
+            if matches!(param, FfmpegParams::Ca(_)) {
+                *param = FfmpegParams::Ca(Cow::Borrowed("copy"));
+            }
+        }
+        log.line("selected source audio will be stream-copied");
+    }
+
     let idle_gated = runs_idle_gated(active_preset.as_ref(), &args);
     if adopts_linear_prefix(active_preset.as_ref()) || idle_gated {
         let preset = active_preset
@@ -1771,6 +1771,7 @@ async fn main() {
                 workers,
                 encoder,
                 audio_map: audio_index.clone(),
+                audio_args: source_audio_args(source_codec.as_deref()),
                 output_args: video_metadata_args(),
             },
             |update| {
@@ -2281,6 +2282,12 @@ fn encode_compatible_concat(
             FfmpegParams::R(_) => {
                 *param = FfmpegParams::R(Cow::Owned(fps.clone()));
             }
+            FfmpegParams::Ca(_) if target.audio_codec == "mp3" => {
+                *param = FfmpegParams::Ca(Cow::Borrowed("libmp3lame"));
+            }
+            FfmpegParams::Ca(_) if target.audio_codec == "aac" => {
+                *param = FfmpegParams::Ca(Cow::Borrowed("aac"));
+            }
             FfmpegParams::Ar(_) => {
                 *param = FfmpegParams::Ar(Cow::Owned(target.sample_rate.to_string()));
                 has_rate = true;
@@ -2372,9 +2379,21 @@ fn quote_filter_value(value: &str) -> String {
 mod tests {
     use super::{
         Args, active_preset, adopts_linear_prefix, encodes_in_chunks, media_bitrate_kbps,
-        planner_encoder_config, quote_filter_value, scale_height,
+        planner_encoder_config, quote_filter_value, scale_height, copies_source_audio, source_audio_args,
     };
     use clap::Parser;
+
+    #[test]
+    fn compatible_source_audio_is_copied_and_other_codecs_fall_back() {
+        for codec in ["aac", "mp3"] {
+            assert!(copies_source_audio(Some(codec)));
+            assert_eq!(source_audio_args(Some(codec)), ["-c:a", "copy"]);
+        }
+        for codec in [Some("flac"), Some("dts"), Some("opus"), None] {
+            assert!(!copies_source_audio(codec));
+            assert_eq!(source_audio_args(codec), ["-c:a", "aac", "-b:a", "192k"]);
+        }
+    }
 
     fn parsed(extra: &[&str]) -> Args {
         let mut argv = vec!["pnmpeg", "--input", "in.mkv", "--output", "out.mp4"];

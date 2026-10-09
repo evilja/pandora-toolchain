@@ -53,6 +53,22 @@ fn ffprobe_lang_from_json(stdout: &[u8], f_lang: &str) -> Option<u32> {
     }
     return None;
 }
+// Accept the same selector the encode maps: a:0 or an absolute stream index.
+pub fn ffprobe_audio_codec(path: &str, selector: &str) -> Option<String> {
+    let output = Command::new(resolve_runtime_binary("ffprobe"))
+        .args([
+            "-v", "error", "-select_streams", selector,
+            "-show_entries", "stream=codec_name", "-of", "json", path,
+        ])
+        .output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    value.get("streams")?.as_array()?.first()?.get("codec_name")?
+        .as_str().map(str::to_owned)
+}
+
 /*
  * ffprobe -v error -select_streams v:0 -count_packets
  *   -show_entries stream=nb_read_packets -of csv=p=0 input.mp4
