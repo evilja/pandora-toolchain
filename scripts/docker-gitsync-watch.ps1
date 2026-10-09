@@ -8,9 +8,9 @@ while ($true) {
     if (Test-Path $Request) {
         Push-Location $Root
         try {
-            $commit = (git rev-parse HEAD).Trim()
-            if ($LASTEXITCODE -ne 0 -or $commit -notmatch '^[0-9a-f]{40}$') {
-                throw "Cannot determine the coordinator checkout commit"
+            $commit = (Get-Content -LiteralPath $Request -Raw -ErrorAction Stop).Trim()
+            if ($commit -cnotmatch '^[0-9a-f]{40}$') {
+                throw "Rebuild request must contain the checkout SHA; update Pandora and request gitsync again"
             }
             $env:PANDORA_SOURCE_COMMIT = $commit
             # Build all five binaries before touching the running coordinator. The image only

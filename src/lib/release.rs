@@ -130,8 +130,14 @@ pub async fn restart_into_new_build() -> ! {
             if let Some(parent) = request_path.parent() {
                 let _ = tokio::fs::create_dir_all(parent).await;
             }
-            tokio::fs::write(request_path, b"rebuild
-").await.is_ok()
+            let repo = std::env::var("PANDORA_GITSYNC_REPO").unwrap_or_else(|_| ".".to_string());
+            match crate::pnworker::pull::head_oid(&repo) {
+                Some(commit) => write_rebuild_request(&request_path, &commit).await.is_ok(),
+                None => {
+                    eprintln!("[gitsync] cannot read checkout HEAD; no rebuild request written");
+                    false
+                }
+            }
         }
         Err(_) => false,
     };
@@ -141,6 +147,16 @@ pub async fn restart_into_new_build() -> ! {
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
     std::process::exit(0);
+}
+
+// The host needs Docker/Compose only: libgit2 has already resolved the checkout revision here.
+async fn write_rebuild_request(path: &Path, commit: &str) -> Result<(), std::io::Error> {
+    if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid rebuild commit"));
+    }
+    let temporary = path.with_extension("request.tmp");
+    tokio::fs::write(&temporary, format!("{}\n", commit.to_ascii_lowercase())).await?;
+    tokio::fs::rename(temporary, path).await
 }
 
 #[cfg(test)]
@@ -156,6 +172,17 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("build.pandora")
+    }
+
+    #[tokio::test]
+    async fn rebuild_request_contains_the_checkout_commit_and_rejects_invalid_input() {
+        let path = temp("rebuild");
+        let commit = "ABCDEF0123456789ABCDEF0123456789ABCDEF01";
+        write_rebuild_request(&path, commit).await.unwrap();
+        assert_eq!(tokio::fs::read_to_string(&path).await.unwrap(), format!("{}\n", commit.to_ascii_lowercase()));
+        assert!(write_rebuild_request(&path, "rebuild").await.is_err());
+        assert_eq!(tokio::fs::read_to_string(&path).await.unwrap(), format!("{}\n", commit.to_ascii_lowercase()));
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
     #[test]

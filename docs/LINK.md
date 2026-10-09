@@ -554,7 +554,10 @@ the image build context. The host-side gitsync watcher sets it automatically. Ru
 `scripts/docker-gitsync-watch.sh` on a Linux Docker host or `scripts/docker-gitsync-watch.ps1`
 on a Windows Docker host under a service manager so it stays running. After `/gitsync` moves
 HEAD, or an unchanged checkout still lacks a package, the coordinator leaves
-`DB/gitsync.request`. The watcher builds an image containing all five binaries for that commit,
+`DB/gitsync.request`, containing the full checkout commit SHA resolved by Pandora through libgit2.
+The watcher reads that SHA directly; the Docker host needs Docker Compose but no Git executable.
+An old request containing only `rebuild` is retained with an error; update Pandora and issue
+`/gitsync` again to replace it with the commit. The watcher builds an image containing all five binaries for that commit,
 recreates only `pndc`, and clears the request after success.
 A failed build leaves the old coordinator running and the request in place for retry. The new
 coordinator logs `[link] serving 5 coordinator binaries ...` when its package is available to
