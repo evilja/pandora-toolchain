@@ -49,6 +49,22 @@ pub struct LinearAotState {
 }
 
 impl LinearAotState {
+    // The downloader freezes this independently of the encoder's pipe/idle waits. A restarted
+    // encoder must not inherit another run's ahead-of-time work, nor use its final frame count.
+    pub fn download_metrics(&self, path: &Path) -> (u64, u64) {
+        let metrics = std::fs::read_to_string(path).ok().and_then(|value| {
+            value.split_whitespace().map(str::parse::<u64>).collect::<Result<Vec<_>, _>>().ok()
+        });
+        match metrics {
+            Some(values) if values.len() == 5
+                && values[0] == u64::from(self.pid) && values[1] == self.job_id
+                && values[2] != 0 && values[2] == self.started_unix_millis => {
+                (values[3].min(self.frames), values[4].min(self.elapsed_millis))
+            }
+            _ => (0, 0),
+        }
+    }
+
     pub fn read(path: &Path) -> Result<Self, String> {
         let value = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         let mut lines = value.lines();
@@ -86,6 +102,33 @@ impl LinearAotState {
             true
         }
     }
+}
+
+// Called by the prefix producer before publishing complete, rather than by the stream reader:
+// the latter may be blocked on ffmpeg or an idle lease long after downloading has finished.
+// Missing progress records zero work, and repeated completion notifications keep the first cutoff.
+pub fn freeze_download_metrics(state_path: &Path, metrics_path: &Path) -> Result<(), String> {
+    let ended = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+    freeze_download_metrics_at(state_path, metrics_path, ended)
+}
+
+fn freeze_download_metrics_at(state_path: &Path, metrics_path: &Path, ended: u64) -> Result<(), String> {
+    let values = match LinearAotState::read(state_path) {
+        Ok(state) => {
+            let elapsed = if state.frames == 0 || state.started_unix_millis == 0 { 0 }
+                else if state.complete { state.elapsed_millis }
+                else { ended.saturating_sub(state.started_unix_millis) };
+            [u64::from(state.pid), state.job_id, state.started_unix_millis, state.frames, elapsed]
+        }
+        Err(_) => [0; 5],
+    };
+    let mut file = match OpenOptions::new().create_new(true).write(true).open(metrics_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
+    writeln!(file, "{} {} {} {} {}", values[0], values[1], values[2], values[3], values[4])
+        .map_err(|e| e.to_string())
 }
 
 fn publish(path: &Path, state: &LinearAotState) -> Result<(), String> {
@@ -317,6 +360,66 @@ pub fn run_linear_aot(config: LinearAotConfig) -> Result<LinearAotState, String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn download_cutoff_excludes_later_frames_and_idle_time() {
+        let root = std::env::temp_dir().join(format!("pnx264-linear-cutoff-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("state");
+        let cutoff = root.join("download");
+        let mut state = LinearAotState {
+            complete: false, pid: std::process::id(), job_id: 42, frames: 1200,
+            bytes: 9000, media_micros: 50_000_000, compatibility: "standard-v1".into(),
+            started_unix_millis: 1000, elapsed_millis: 0,
+        };
+        publish(&path, &state).unwrap();
+        freeze_download_metrics_at(&path, &cutoff, 7000).unwrap();
+        state.frames = 3600;
+        state.complete = true;
+        state.elapsed_millis = 20_000;
+        publish(&path, &state).unwrap();
+        freeze_download_metrics_at(&path, &cutoff, 21_000).unwrap();
+        assert_eq!(state.download_metrics(&cutoff), (1200, 6000));
+        state.pid += 1;
+        assert_eq!(state.download_metrics(&cutoff), (0, 0));
+        state.pid -= 1;
+        state.job_id += 1;
+        assert_eq!(state.download_metrics(&cutoff), (0, 0));
+        state.job_id -= 1;
+        state.started_unix_millis += 1;
+        assert_eq!(state.download_metrics(&cutoff), (0, 0));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn completed_or_missing_encoder_cannot_add_waits_after_download() {
+        let root = std::env::temp_dir().join(format!("pnx264-linear-cutoff-edge-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("state");
+        let cutoff = root.join("download");
+        let mut state = LinearAotState {
+            complete: true, pid: std::process::id(), job_id: 43, frames: 1200,
+            bytes: 9000, media_micros: 50_000_000, compatibility: "standard-v1".into(),
+            started_unix_millis: 1000, elapsed_millis: 3000,
+        };
+        assert_eq!(state.download_metrics(&cutoff), (0, 0));
+        freeze_download_metrics_at(&path, &cutoff, 7000).unwrap();
+        publish(&path, &state).unwrap();
+        freeze_download_metrics_at(&path, &cutoff, 9000).unwrap();
+        assert_eq!(state.download_metrics(&cutoff), (0, 0));
+        std::fs::remove_file(&cutoff).unwrap();
+        freeze_download_metrics_at(&path, &cutoff, 9000).unwrap();
+        assert_eq!(state.download_metrics(&cutoff), (1200, 3000));
+        std::fs::remove_file(&cutoff).unwrap();
+        state.complete = false;
+        state.frames = 0;
+        publish(&path, &state).unwrap();
+        freeze_download_metrics_at(&path, &cutoff, 9000).unwrap();
+        assert_eq!(state.download_metrics(&cutoff), (0, 0));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn state_round_trips() {

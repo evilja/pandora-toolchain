@@ -1,4 +1,4 @@
-//! Monthly aggregate metrics. Job measurements exist only in memory and lease reports.
+//! Daily aggregate metrics. Job measurements exist only in memory and lease reports.
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
@@ -103,7 +103,7 @@ pub(crate) async fn observe(job: &Job, payload: &MessagePayload) {
             let aot = tokio::fs::read_to_string(job.directory.join("work").join("linear-aot.metrics"))
                 .await.ok().and_then(|v| {
                     let nums = v.split_whitespace().map(str::parse::<u64>).collect::<Result<Vec<_>, _>>().ok()?;
-                    (nums.len() == 3).then_some(nums)
+                    (nums.len() == 4).then_some(nums)
                 });
             let mut state = lock(measurements());
             let m = state.entry(job.job_id).or_default();
@@ -113,7 +113,7 @@ pub(crate) async fn observe(job: &Job, payload: &MessagePayload) {
                 m.totals.linear_aot_frames = aot[0];
                 m.totals.linear_aot_encode_millis = aot[2];
                 if aot[1] != 0 { started = started.min(aot[1]); }
-                m.totals.total_frames = m.totals.total_frames.max(aot[0]);
+                m.totals.total_frames = m.totals.total_frames.max(aot[3]);
             }
             m.totals.encode_millis = ended.saturating_sub(started);
             m.totals.successful_encodes = 1;
@@ -121,13 +121,13 @@ pub(crate) async fn observe(job: &Job, payload: &MessagePayload) {
     }
     if !crate::pnworker::link::client::is_mini() {
         if let Err(error) = persist(job.job_id, snapshot(job.job_id)).await {
-            eprintln!("[metrics] monthly totals could not be saved: {error}");
+            eprintln!("[metrics] daily totals could not be saved: {error}");
         }
     }
 }
 
-// Gregorian calendar from Unix days; months are UTC, independent of node timezone.
-fn month(unix_millis: u64) -> (i64, i64) {
+// Gregorian calendar from Unix days; dates are UTC, independent of node timezone.
+fn date(unix_millis: u64) -> (i64, i64, i64) {
     let z = (unix_millis / 86_400_000) as i64 + 719468;
     let era = z / 146097;
     let doe = z - era * 146097;
@@ -135,7 +135,12 @@ fn month(unix_millis: u64) -> (i64, i64) {
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
     let month = mp + if mp < 10 { 3 } else { -9 };
-    (yoe + era * 400 + i64::from(month <= 2), month)
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    (yoe + era * 400 + i64::from(month <= 2), month, day)
+}
+fn daily_path(root: &Path, unix_millis: u64) -> std::path::PathBuf {
+    let (year, month, day) = date(unix_millis);
+    root.join(format!("{year:04}")).join(format!("{month:02}")).join(format!("{day:02}.pandora"))
 }
 fn applied() -> &'static tokio::sync::Mutex<HashMap<u64, Totals>> {
     static APPLIED: OnceLock<tokio::sync::Mutex<HashMap<u64, Totals>>> = OnceLock::new();
@@ -152,21 +157,20 @@ async fn persist(id: u64, totals: Totals) -> Result<(), String> {
     let previous = applied.get(&id).copied().unwrap_or_default();
     let delta = totals.delta(previous);
     if delta == Totals::default() { return Ok(()); }
-    let (year, month) = month(now_millis());
-    let directory = std::path::PathBuf::from("DB").join("metrics").join(format!("{year:04}")).join(format!("{month:02}"));
-    tokio::task::spawn_blocking(move || update_file(&directory, delta)).await.map_err(|e| e.to_string())??;
+    let path = daily_path(Path::new("DB/metrics"), now_millis());
+    tokio::task::spawn_blocking(move || update_file(&path, delta)).await.map_err(|e| e.to_string())??;
     applied.insert(id, previous.merge(totals));
     Ok(())
 }
-fn update_file(directory: &Path, delta: Totals) -> Result<(), String> {
+fn update_file(path: &Path, delta: Totals) -> Result<(), String> {
+    let directory = path.parent().ok_or("metrics path has no parent")?;
     std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
-    let path = directory.join("metrics.pandora");
-    let previous = match std::fs::read(&path) {
+    let previous = match std::fs::read(path) {
         Ok(data) => serde_json::from_slice::<Totals>(&data).map_err(|e| e.to_string())?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Totals::default(),
         Err(e) => return Err(e.to_string()),
     };
-    let temporary = directory.join(".metrics.pandora.tmp");
+    let temporary = path.with_extension("pandora.tmp");
     use std::io::Write;
     let mut file = std::fs::File::create(&temporary).map_err(|e| e.to_string())?;
     file.write_all(&serde_json::to_vec_pretty(&previous.add(delta)).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
@@ -203,24 +207,33 @@ mod tests {
     }
 
     #[test]
-    fn months_roll_at_utc_boundaries() {
-        assert_eq!(month(0), (1970, 1));
-        assert_eq!(month(1_706_745_600_000), (2024, 2));
-        assert_eq!(month(1_709_251_200_000), (2024, 3));
+    fn dates_roll_at_utc_boundaries() {
+        assert_eq!(date(0), (1970, 1, 1));
+        assert_eq!(date(1_706_745_600_000 - 1), (2024, 1, 31));
+        assert_eq!(date(1_706_745_600_000), (2024, 2, 1));
+        assert_eq!(date(1_709_251_200_000 - 1), (2024, 2, 29));
+        assert_eq!(date(1_709_251_200_000), (2024, 3, 1));
+        assert_eq!(date(1_735_689_600_000 - 1), (2024, 12, 31));
+        assert_eq!(date(1_735_689_600_000), (2025, 1, 1));
+        assert_eq!(daily_path(Path::new("DB/metrics"), 1_735_689_600_000), Path::new("DB/metrics/2025/01/01.pandora"));
     }
     #[test]
     fn totals_survive_restart_and_corruption_is_not_overwritten() {
         let dir = std::env::temp_dir().join(format!("pandora-metrics-{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         let delta = Totals { total_frames: 12, successful_encodes: 1, ..Default::default() };
-        update_file(&dir, delta).unwrap();
-        update_file(&dir, delta).unwrap();
-        let path = dir.join("metrics.pandora");
+        let path = daily_path(&dir, 1_735_689_600_000);
+        let next_day = daily_path(&dir, 1_735_689_600_000 + 86_400_000);
+        update_file(&path, delta).unwrap();
+        update_file(&next_day, delta).unwrap();
+        update_file(&path, delta).unwrap();
         let total: Totals = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(total.total_frames, 24);
         assert_eq!(total.successful_encodes, 2);
+        let next: Totals = serde_json::from_slice(&std::fs::read(&next_day).unwrap()).unwrap();
+        assert_eq!(next, delta);
         std::fs::write(&path, b"broken").unwrap();
-        assert!(update_file(&dir, delta).is_err());
+        assert!(update_file(&path, delta).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"broken");
         std::fs::remove_dir_all(dir).unwrap();
     }

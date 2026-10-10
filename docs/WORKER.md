@@ -354,16 +354,20 @@ If you extend `TorrentType` in `lib::p2p/nyaaise.rs`, you must also update:
 
 ## Pandora Metrics
 
-The coordinator incrementally updates `DB/metrics/<UTC year>/<two-digit UTC month>/metrics.pandora`.
-The file is a JSON object containing only monthly totals, with no job ids or individual encode records:
+The coordinator incrementally updates `DB/metrics/<UTC year>/<two-digit UTC month>/<two-digit UTC day>.pandora`.
+Each file is a JSON object containing only that day's totals, with no job ids or individual encode records.
+Older monthly `metrics.pandora` files are retained untouched; their totals cannot be split into days retrospectively.
 
 - `total_frames`: video frames in successfully encoded final outputs, including concat ends.
-- `linear_aot_frames`: frames from a linear AOT video actually adopted into a successful output;
-  discarded speculation and chunked AOT are excluded.
+- `linear_aot_frames`: the latest reported frames already encoded when the selected input finished
+  downloading, from a linear AOT run actually adopted into a successful output. Frames encoded
+  after download completion, discarded speculation and chunked AOT are excluded.
 - `cache_saved_bytes`: input bytes reused from the input cache or a duplicate download owner.
 - `encode_millis`: elapsed encode time through final mux/concat, beginning with the adopted linear
   AOT run when it started before the foreground encode. Overlapping time is counted once.
-- `linear_aot_encode_millis`: elapsed time of adopted linear AOT runs, including their download/idle waits.
+- `linear_aot_encode_millis`: elapsed time of adopted linear AOT runs up to download completion
+  (or the encoder's completion if earlier), including download/idle waits within that window.
+  A run with no reported frames at the cutoff contributes zero.
 - `uploaded_bytes`: output size per successful Drive/remote-provider upload. Multiple successful
   destinations each contribute their copy; local HLS publication and node-to-coordinator handoff
   contribute no external upload bytes.
@@ -372,14 +376,22 @@ The file is a JSON object containing only monthly totals, with no job ids or ind
 Frames are counted from the completed MP4 or HLS playlist; if probing is unavailable, the latest
 encoder frame count (or the adopted AOT count) is used. Cache and upload totals are updated even if
 another stage later fails. Backup-only jobs and forwarded jobs do not contribute encode metrics.
-A measurement is assigned to the UTC month in which the coordinator receives it; an encode spanning
+A measurement is assigned to the UTC day in which the coordinator receives it; an encode spanning
 midnight/month-end contributes its frames and duration when it completes.
 
-Mini nodes never read or write monthly metrics files. They attach cumulative measurements to the
+Torrent, direct HTTP and Drive prefix producers freeze `work/linear-aot.download` before publishing
+the input's completion. This captures progress even if the encoder is blocked on its pipe or an
+idle lease. Handoff accepts the cutoff only for the same job, PID and start timestamp; missing or
+stale cutoffs contribute zero instead of the final frame count. After successful mux, pnmpeg writes
+`work/linear-aot.metrics` as `ahead_frames started_unix_millis ahead_elapsed_millis final_aot_frames`.
+The final AOT frame count remains available as the total-frame fallback, and the original start
+timestamp still defines overall encode time through final mux/concat.
+
+Mini nodes never read or write daily metrics files. They attach cumulative measurements to the
 existing lease reports; the coordinator accepts them only through the job's active lease and adds
 only the increase over previously received measurements. Report retries and older snapshots therefore
 cannot increment the totals twice. Per-job measurements are transient and discarded during cleanup;
-existing monthly totals are read back after a restart. Coordinator writes are serialized and replace
+existing daily totals are read back after a restart. Coordinator writes are serialized and replace
 the file through a synced temporary file. An unreadable or invalid existing file is left intact and
 the write failure is logged, without failing the job. Deploy the updated coordinator, nodes and
 `pnmpeg` together to collect all measurements.

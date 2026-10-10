@@ -74,6 +74,15 @@ pub fn write_download_prefix(path: &Path, state: &DownloadPrefixState) -> Result
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
+    let cutoff = path.with_file_name("linear-aot.download");
+    if state.complete {
+        if let Err(e) = pnx264::linear::freeze_download_metrics(&path.with_file_name("linear-aot.state"), &cutoff) {
+            eprintln!("[metrics] could not freeze download-time AOT progress: {e}");
+        }
+    } else {
+        // A fresh/retried download cannot retain the preceding attempt's cutoff.
+        std::fs::remove_file(cutoff).ok();
+    }
     let tmp = path.with_extension(format!(
         "prefix-tmp-{}",
         std::process::id(),
@@ -90,6 +99,35 @@ pub fn read_download_prefix(path: &Path) -> Result<DownloadPrefixState, String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn producer_freezes_aot_before_completion_and_resets_on_retry() {
+        let root = std::env::temp_dir().join(format!("pandora-prefix-cutoff-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(&root).unwrap();
+        let prefix = root.join("download.prefix");
+        let linear = root.join("linear-aot.state");
+        let cutoff = root.join("linear-aot.download");
+        let mut state = DownloadPrefixState {
+            source: root.join("input.mkv"), available: 12, total: 20, complete: false,
+        };
+        write_download_prefix(&prefix, &state).unwrap();
+        assert!(!cutoff.exists());
+        std::fs::write(&linear, "PNLINEAR2\ncomplete\n123\n42\n1200\n9000\n50000000\nstandard-v1\n1000\n3000\n").unwrap();
+        state.available = 20;
+        state.complete = true;
+        write_download_prefix(&prefix, &state).unwrap();
+        assert!(read_download_prefix(&prefix).unwrap().complete);
+        assert_eq!(std::fs::read_to_string(&cutoff).unwrap().trim(), "123 42 1000 1200 3000");
+        std::fs::write(&linear, "PNLINEAR2\ncomplete\n123\n42\n3600\n27000\n150000000\nstandard-v1\n1000\n20000\n").unwrap();
+        write_download_prefix(&prefix, &state).unwrap();
+        assert_eq!(std::fs::read_to_string(&cutoff).unwrap().trim(), "123 42 1000 1200 3000");
+        state.complete = false;
+        state.available = 0;
+        write_download_prefix(&prefix, &state).unwrap();
+        assert!(!cutoff.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn state_round_trips_paths_with_spaces() {
