@@ -282,11 +282,12 @@ pub fn worker_label(node: &str) -> String {
     format!("lnk-{}", crate::pnworker::link::board::display_name(node))
 }
 
-pub fn leasable_job_types() -> [JobType; 8] {
+pub fn leasable_job_types() -> [JobType; 9] {
     [
         JobType::Encode,
         JobType::Pancode,
         JobType::Backup,
+        JobType::Distribute,
         JobType::Probe,
         // All three fetch their own source and hand back something small: `/backupall` uploads its
         // own release exactly as `/backup` does, and `/subs` and `/preview` end in one file the

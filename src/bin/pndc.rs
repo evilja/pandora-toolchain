@@ -784,6 +784,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("studio", 0),
     ("subs", 0),
     ("backup", 0),
+    ("distribute", 0),
     ("backupall", 0),
     ("smartcode", 0),
     ("merge", 0),
@@ -1036,6 +1037,13 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Upload a downloaded source to Drive without release encoding.",
             usage: "/backup torrent:<link>",
             details: "Downloads a torrent, magnet, Google Drive or direct source and uploads it to Drive untouched. When the torrent holds more than one video, its file list is shown first and you pick one by sending its index as a plain number in the channel, exactly as `/encode do` asks; `/backupall` takes the whole pack.",
+        },
+        HelpCommand {
+            section: "encode",
+            name: "distribute",
+            summary: "Download a source and upload it unchanged to all four hosts.",
+            usage: "/distribute link:<link>",
+            details: "Downloads a torrent, magnet, Google Drive or direct video link without encoding, then uploads to Google Drive, Byse, LuluStream and Voe. Always uses all four hosts, including on Drive-only or HLS-only servers. A torrent pack asks which file to distribute, just like `/backup`.",
         },
         HelpCommand {
             section: "encode",
@@ -2466,6 +2474,16 @@ impl EventHandler for Handler {
                         self.tx.send(JobClass::Job(job)).await.unwrap();
                     }
                 }
+                "distribute" => {
+                    let link = match required_trimmed_option(&ctx, &command, "link", "Source link").await {
+                        Some(link) => link,
+                        None => return,
+                    };
+                    if let Some(mut job) = handle_distribute(&ctx, &command, link).await {
+                        job.pick_file_first();
+                        self.tx.send(JobClass::Job(job)).await.unwrap();
+                    }
+                }
                 "backupall" => {
                     let torrent_url = match required_trimmed_option(&ctx, &command, "torrent", "Torrent URL").await {
                         Some(url) => url,
@@ -3057,6 +3075,12 @@ impl EventHandler for Handler {
                 )
                 .add_option(keep_option.clone())
                 .add_option(keyword_option.clone()),
+            CreateCommand::new("distribute")
+                .description("Download a video unchanged and upload it to Drive, Byse, LuluStream and Voe")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "link", "Torrent URL, magnet link, Google Drive link, or direct video link")
+                        .required(true)
+                ),
             CreateCommand::new("backupall")
                 .description("Download a torrent and upload every MKV to GDrive")
                 .add_option(

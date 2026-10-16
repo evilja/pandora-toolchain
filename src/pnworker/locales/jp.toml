@@ -422,6 +422,10 @@ args = 0
 text = "💾 バックアップジョブ"
 args = 0
 
+[JOB_TYPE_DISTRIBUTE]
+text = "📤 配信ジョブ"
+args = 0
+
 [JOB_TYPE_BACKUP_ALL]
 text = "🗄️ 一括バックアップ"
 args = 0

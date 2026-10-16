@@ -22,6 +22,8 @@ publish commands, the Drive deletion capabilities, and the archived logs. A remo
 `Job` mirroring a remote execution, and it renders through exactly the same path as any other — see
 [Reporting](#reporting).
 
+`Distribute` is also leasable: the node downloads one selected source and uploads its original bytes to all four external hosts. It ignores the guild’s encode delivery policy and never returns an HLS output to the coordinator.
+
 ## Running a node
 
 ```bash
@@ -89,7 +91,7 @@ mean nothing runs at all, with no error and no node to look at.
 ### What waits, and what is refused
 
 - **Held for a node.** Everything in [What can be leased](#what-can-be-leased): `Encode`,
-  `Pancode`, `Backup`, `BackupAll`, `Probe`, `Subs`, `Preview`, and batch children. `must_offload`
+  `Pancode`, `Backup`, `Distribute`, `BackupAll`, `Probe`, `Subs`, `Preview`, and batch children. `must_offload`
   is exactly "leasable", so there is no second rule to keep in step with the first. A probe waits
   with the rest — an orchestrator fetches not even the metainfo — which means `/job` shows "waiting
   for a node" before it shows a file list.
@@ -696,7 +698,7 @@ since ffmpeg opens the stored file by its name and the bytes came off the wire.
 
 The rule is "does the job carry its own source", since a node fetches its own input:
 
-- **Leasable**: `Encode`, `Pancode`, `Backup`, `BackupAll`, `Probe`, `Subs`, `Preview`, and
+- **Leasable**: `Encode`, `Pancode`, `Backup`, `Distribute`, `BackupAll`, `Probe`, `Subs`, `Preview`, and
   **batch children**, provided the job carries a source the node can fetch — a non-empty link, or a
   `.torrent` the coordinator sends with it (see below). A kept encode travels too; see
   [Keeps and `/keycode`](#keeps-and-keycode).

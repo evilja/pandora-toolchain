@@ -422,6 +422,10 @@ args = 0
 text = "💾 Backup job"
 args = 0
 
+[JOB_TYPE_DISTRIBUTE]
+text = "📤 Distribution job"
+args = 0
+
 [JOB_TYPE_BACKUP_ALL]
 text = "🗄️ Batch backup"
 args = 0

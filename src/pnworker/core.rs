@@ -592,8 +592,10 @@ async fn try_link_offload_to(
     // An HLS-only release is served for twelve hours from the machine that published it, and a
     // node has no public hostname to serve it from. Such a job is still encoded remotely; the node
     // holds its finished MP4 and hands it back, and this machine does the publishing, so every
-    // playback URL stays on the one hostname that is already public.
-    let return_output = crate::pnworker::server_config::server_hls_enabled(job.server_id).await;
+    // playback URL stays on the one hostname that is already public. Distribution uploads the
+    // original file to external hosts on the node, independently of the guild's HLS policy.
+    let return_output = job.job_type != JobType::Distribute
+        && crate::pnworker::server_config::server_hls_enabled(job.server_id).await;
     // A node has no `meta.pandora` for the originating guild, so the upload policy travels with
     // the job rather than being looked up on the far side.
     let drive_only = crate::pnworker::server_config::server_drive_only(job.server_id).await;
@@ -721,7 +723,7 @@ async fn queue_new_job(
         JobType::Subs | JobType::SubsMedia => queue_subs_job(db, queue, shrine, job).await,
         JobType::Pancode => queue_pancode_job(db, queue, shrine, job).await,
         JobType::Batch => queue_batch_job(db, queue, shrine, job).await,
-        JobType::Backup => queue_backup_job(db, queue, shrine, job).await,
+        JobType::Backup | JobType::Distribute => queue_backup_job(db, queue, shrine, job).await,
         JobType::BackupAll => queue_backup_all_job(db, queue, shrine, job).await,
         JobType::Keycode => queue_keycode_job(db, queue, shrine, job).await,
         JobType::Preview => queue_preview_job(db, queue, shrine, job).await,
@@ -2006,6 +2008,7 @@ fn job_type_label(job_type: JobType) -> &'static str {
         JobType::Probe => "probe",
         JobType::Pancode => "pancode",
         JobType::Backup => "backup",
+        JobType::Distribute => "distribute",
         JobType::BackupAll => "backupall",
         JobType::Keycode => "keycode",
         JobType::GitQuery => "gitquery",
@@ -3805,7 +3808,7 @@ async fn do_queued_download_waiting_things(
                 && j.worker == "dwl-pending"
                 && matches!(
                     j.job_type,
-                    JobType::Encode | JobType::Pancode | JobType::Backup | JobType::Preview
+                    JobType::Encode | JobType::Pancode | JobType::Backup | JobType::Distribute | JobType::Preview
                 )
         })
         .map(|j| j.job_id)
@@ -4029,7 +4032,7 @@ async fn do_job_progression_things(
                 job.frontend
                     .set_presence(Presence::Encoding { idx, total: qlen })
                     .await;
-            } else if job.job_type == JobType::Backup {
+            } else if matches!(job.job_type, JobType::Backup | JobType::Distribute) {
                 if job.keep.is_some() {
                     if finish_keep_job(db, job, KeepKind::Backup).await {
                         dead.push(job.job_id);
@@ -4054,7 +4057,11 @@ async fn do_job_progression_things(
                             "{}.mkv",
                             job.directory.file_name().unwrap_or_default().display()
                         ),
-                        false,
+                        if job.job_type == JobType::Distribute {
+                            UploadMode::Distribute
+                        } else {
+                            UploadMode::DriveOnly
+                        },
                         job.job_id,
                         job.channel_id,
                         job.server_id,
@@ -4298,7 +4305,7 @@ async fn do_job_progression_things(
                             }
                             _ => true,
                         }
-                    },
+                    }.into(),
                     job.job_id,
                     job.channel_id,
                     job.server_id,
@@ -4637,6 +4644,7 @@ pub enum JobType {
     GitForce = 018,
     Restart = 019,
     SubsMedia = 020,
+    Distribute = 021,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -5058,11 +5066,11 @@ pub struct Job {
 impl Job {
     // Has this job list its source before it runs, so a pack of episodes becomes a question
     // instead of a guess. Every job that works on exactly one video qualifies — an encode, a
-    // subtitle extraction, a backup. Only where there is somebody to ask and something to list: a
+    // subtitle extraction, a backup or distribution. Only where there is somebody to ask and something to list: a
     // web submit has no chat to answer in, and a Drive or direct link is one file by construction
     // — the prober refuses them for that reason.
     pub fn pick_file_first(&mut self) {
-        if !matches!(self.job_type, JobType::Encode | JobType::Subs | JobType::Backup)
+        if !matches!(self.job_type, JobType::Encode | JobType::Subs | JobType::Backup | JobType::Distribute)
             || self.pick_then.is_some()
             || !matches!(self.frontend, Frontend::Discord { .. })
             || !matches!(self.torrent, TorrentType::Link(_) | TorrentType::Magnet(_))

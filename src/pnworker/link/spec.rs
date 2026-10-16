@@ -413,6 +413,7 @@ pub fn job_type_from_name(name: &str) -> Option<JobType> {
         "Encode" => JobType::Encode,
         "Pancode" => JobType::Pancode,
         "Backup" => JobType::Backup,
+        "Distribute" => JobType::Distribute,
         "Probe" => JobType::Probe,
         _ => return None,
     })
@@ -661,7 +662,7 @@ mod tests {
 
     #[test]
     fn job_type_names_round_trip() {
-        for job_type in [JobType::Encode, JobType::Pancode, JobType::Backup, JobType::Probe] {
+        for job_type in [JobType::Encode, JobType::Pancode, JobType::Backup, JobType::Distribute, JobType::Probe] {
             assert_eq!(job_type_from_name(&job_type_name(job_type)), Some(job_type));
         }
     }

@@ -224,6 +224,7 @@ pub const JOB_TYPE_ENCODE: &str = "JOB_TYPE_ENCODE";
 pub const JOB_TYPE_PANCODE: &str = "JOB_TYPE_PANCODE";
 pub const JOB_TYPE_PROBE: &str = "JOB_TYPE_PROBE";
 pub const JOB_TYPE_BACKUP: &str = "JOB_TYPE_BACKUP";
+pub const JOB_TYPE_DISTRIBUTE: &str = "JOB_TYPE_DISTRIBUTE";
 pub const JOB_TYPE_BACKUP_ALL: &str = "JOB_TYPE_BACKUP_ALL";
 pub const JOB_TYPE_KEYCODE: &str = "JOB_TYPE_KEYCODE";
 pub const JOB_TYPE_PREVIEW: &str = "JOB_TYPE_PREVIEW";
@@ -794,6 +795,7 @@ pub fn get_job_type_text(job_type: JobType, lang: &str) -> String {
         JobType::Pancode => JOB_TYPE_PANCODE,
         JobType::Probe => JOB_TYPE_PROBE,
         JobType::Backup => JOB_TYPE_BACKUP,
+        JobType::Distribute => JOB_TYPE_DISTRIBUTE,
         JobType::BackupAll => JOB_TYPE_BACKUP_ALL,
         JobType::Keycode => JOB_TYPE_KEYCODE,
         JobType::Preview => JOB_TYPE_PREVIEW,
@@ -1048,6 +1050,11 @@ mod tests {
         assert_ne!(get_job_type_text(JobType::Encode, "en"), get_job_type_text(JobType::Probe, "en"));
         assert_ne!(get_job_type_text(JobType::Backup, "tr"), get_job_type_text(JobType::Preview, "tr"));
         assert_ne!(get_job_type_text(JobType::Studio, "jp"), get_job_type_text(JobType::StudioPreview, "jp"));
+        for lang in ["en", "tr", "jp"] {
+            let title = get_job_type_text(JobType::Distribute, lang);
+            assert_ne!(title, get_job_type_text(JobType::Backup, lang));
+            assert_ne!(title, get_message(JOB_TYPE_UNKNOWN, lang));
+        }
     }
 
     #[test]

@@ -1548,6 +1548,7 @@ pub fn job_type_is_leasable(job_type: JobType) -> bool {
         JobType::Encode
             | JobType::Pancode
             | JobType::Backup
+            | JobType::Distribute
             | JobType::Probe
             // Each fetches its own source and needs nothing that is already on the coordinator.
             // `/backupall` downloads a release and uploads it, which is `/backup` over the whole

@@ -5,6 +5,7 @@ mod batch;
 mod listing;
 mod subs;
 mod backup;
+mod distribute;
 mod smartcode;
 mod cfont;
 mod merge;
@@ -68,6 +69,7 @@ pub use self::listing::{
 use self::batch::probe_rows;
 pub use self::subs::handle_subs;
 pub use self::backup::handle_backup;
+pub use self::distribute::handle_distribute;
 pub use self::smartcode::{handle_smartcode, handle_smartcode_preview};
 pub use self::cfont::{handle_cfont, handle_cfont_autocomplete, refresh_font_name_choices, resolve_preview_watermark_font_path, warm_font_name_cache};
 pub use self::merge::handle_merge;

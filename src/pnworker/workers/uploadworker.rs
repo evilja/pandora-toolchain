@@ -25,7 +25,30 @@ use tokio::time::{Instant, sleep, sleep_until};
 // when something is wrong.
 const HOST_WAIT_HEARTBEAT: Duration = Duration::from_secs(60);
 
-// The `bool` before last retains the per-file Drive deletion capability for upload-producing encode
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UploadMode {
+    DriveOnly,
+    Release,
+    Distribute,
+}
+
+impl From<bool> for UploadMode {
+    fn from(release: bool) -> Self {
+        if release { Self::Release } else { Self::DriveOnly }
+    }
+}
+
+// Distribution always sends the original file to the four external hosts, even when the guild's
+// encode delivery policy selects Drive or HLS alone. Backups remain Drive-only.
+fn upload_policy(mode: UploadMode, server_hls: bool, server_drive_only: bool) -> (bool, bool) {
+    match mode {
+        UploadMode::Release => (server_hls, server_drive_only),
+        UploadMode::DriveOnly | UploadMode::Distribute => (false, false),
+    }
+}
+
+// UploadMode selects backup, encode release, or four-host distribution delivery. The `bool`
+// before last retains the per-file Drive deletion capability for upload-producing encode
 // jobs; backup jobs leave it false even though they also use the single-Drive payload shape. The
 // trailing `Option<bool>` is a resolved Drive-only policy that overrides the server's own file —
 // it is how a linked node, which holds no `meta.pandora` for the originating guild, still honours
@@ -33,7 +56,7 @@ const HOST_WAIT_HEARTBEAT: Duration = Duration::from_secs(60);
 pub type UploadData = (
     PathBuf,
     String,
-    bool,
+    UploadMode,
     u64,
     u64,
     Option<u64>,
@@ -132,7 +155,7 @@ async fn run_lumiere_upload_job(msg: WorkerMsg, tx: Sender<CommData>, worker_nam
         WorkerMsg::Upload((
             directory,
             out_name,
-            release,
+            mode,
             job_id,
             _channel_id,
             server_id,
@@ -146,7 +169,7 @@ async fn run_lumiere_upload_job(msg: WorkerMsg, tx: Sender<CommData>, worker_nam
                 client,
                 directory,
                 out_name,
-                release,
+                mode,
                 job_id,
                 server_id,
                 gdrive_folder_global,
@@ -170,7 +193,7 @@ async fn run_lumiere_single_upload(
     client: LumiereClient,
     directory: PathBuf,
     out_name: String,
-    release: bool,
+    mode: UploadMode,
     job_id: u64,
     server_id: Option<u64>,
     gdrive_folder_global: Option<String>,
@@ -193,12 +216,19 @@ async fn run_lumiere_single_upload(
     let output_path = directory.join("work").join("output.mp4");
     let cancel_file = Some(directory.join("CANCEL"));
     let is_smartcode = gdrive_folder_local.is_some();
-    let hls_enabled = release && server_hls_enabled(server_id).await;
-    let drive_only = release
-        && match drive_only_override {
-            Some(policy) => policy,
-            None => server_drive_only(server_id).await,
-        };
+    let release = mode != UploadMode::DriveOnly;
+    let (hls_enabled, drive_only) = if mode == UploadMode::Release {
+        upload_policy(
+            mode,
+            server_hls_enabled(server_id).await,
+            match drive_only_override {
+                Some(policy) => policy,
+                None => server_drive_only(server_id).await,
+            },
+        )
+    } else {
+        upload_policy(mode, false, false)
+    };
     if hls_enabled {
         println!("[lumiere] job {job_id}: server policy restricts release output to Lumiere HLS");
     } else if drive_only {
@@ -1142,6 +1172,21 @@ mod tests {
         assert!(!remote_uploads_enabled(false, false));
         assert_eq!(expected_lumiere_hosts(true, false, true), 0);
         assert_eq!(expected_lumiere_hosts(true, true, true), 0);
+    }
+
+    #[test]
+    fn distribute_uses_four_hosts_under_every_server_policy() {
+        for hls in [false, true] {
+            for drive in [false, true] {
+                let (hls_only, drive_only) = upload_policy(UploadMode::Distribute, hls, drive);
+                assert!(!hls_only);
+                assert!(remote_uploads_enabled(true, drive_only));
+                assert_eq!(expected_lumiere_hosts(true, drive_only, hls_only), 4);
+                assert_eq!(upload_policy(UploadMode::Release, hls, drive), (hls, drive));
+                let (hls_only, drive_only) = upload_policy(UploadMode::DriveOnly, hls, drive);
+                assert_eq!(expected_lumiere_hosts(false, drive_only, hls_only), 1);
+            }
+        }
     }
 
     #[test]

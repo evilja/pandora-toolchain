@@ -422,6 +422,10 @@ args = 0
 text = "💾 Yedekleme işi"
 args = 0
 
+[JOB_TYPE_DISTRIBUTE]
+text = "📤 Dağıtım işi"
+args = 0
+
 [JOB_TYPE_BACKUP_ALL]
 text = "🗄️ Toplu yedekleme"
 args = 0
