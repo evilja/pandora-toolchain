@@ -5,7 +5,7 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
     {
         Some(k) => k,
         None => {
-            command_error(ctx, command, "Error: `type` must be TL, TLC, or TS.").await;
+            command_error(ctx, command, "Error: `type` must be Translation (TL), Translation check (TLC), or Typeset/signs (TS).").await;
             return;
         }
     };
@@ -93,7 +93,7 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
             }
             Ok(None) => {
                 let _ = response_msg.edit(ctx, EditMessage::new()
-                    .content("Error: zip must contain exactly one subtitle file at the root.")).await;
+                    .content("Error: the zip must hold exactly one subtitle file for this episode.")).await;
                 return;
             }
             Err(e) => {
@@ -134,7 +134,7 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
         Some(path) if !path.is_empty() => path.clone(),
         _ => {
             let _ = response_msg.edit(ctx, EditMessage::new()
-                .content("Error: PNASS binary path is not set in DB/config/global/environment/env.pandora.")).await;
+                .content("Error: the subtitle tool is not configured. Ask the bot operator to set it up.")).await;
             return;
         }
     };
@@ -161,7 +161,7 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
     ).await;
     if !matches!(result, ToolResult::Success) {
         let _ = response_msg.edit(ctx, EditMessage::new()
-            .content(format!("Failed to standardise ASS with pnass (warnings so far: {}).", warnings.len()))).await;
+            .content(format!("Could not prepare the subtitle file (failed after {} warning(s)).", warnings.len()))).await;
         return;
     }
     let output_bytes = match tokio::fs::read(&output_path).await {
@@ -175,7 +175,7 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
     println!("[job] id={} output_ass_bytes={} zip_threshold={}", job_id, output_bytes.len(), ASS_ZIP_THRESHOLD_BYTES);
     let (file_type_label, prefix, default_msg) = match job_kind {
         JobKind::TL  => ("TL",  "TL",  "Translation"),
-        JobKind::TLC => ("TL",  "TLC", "Edit"),
+        JobKind::TLC => ("TL",  "TLC", "Checked translation"),
         JobKind::TS  => ("TS",  "TS",  "Typeset"),
     };
     let commit_msg = if custom_commit.is_empty() {
@@ -193,7 +193,7 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
         Ok(f) => f,
         Err(e) => {
             let _ = response_msg.edit(ctx, EditMessage::new()
-                .content(format!("Forgejo init failed: {}", e))).await;
+                .content(format!("Could not connect to the project repo: {}", e))).await;
             return;
         }
     };
@@ -201,9 +201,9 @@ pub async fn handle_job(ctx: &Context, command: &serenity::all::CommandInteracti
         Ok(uploaded_path) => {
             println!("[job] id={} uploaded_path={} raw_bytes={}", job_id, uploaded_path, output_bytes.len());
             let kind = match job_kind {
-                JobKind::TL => "TL",
-                JobKind::TLC => "TLC",
-                JobKind::TS => "TS",
+                JobKind::TL => "Translation (TL)",
+                JobKind::TLC => "Checked translation (TLC)",
+                JobKind::TS => "Typeset (TS)",
             };
             let embed = success_embed(command, COMMAND_JOB_COMPLETE)
                 .description(format!("**{}** • {} `{:02}`", kind, command_message(command, FIELD_EPISODE), episode))

@@ -55,7 +55,7 @@ text = ""
 args = 0
 
 [ENCODE_CONCAT_PROG]
-text = "イントロパス `2/2`\nフレーム `{} / {}` • `{} FPS` • `{} kbit/s`"
+text = "オープニング動画パス `2/2`\nフレーム `{} / {}` • `{} FPS` • `{} kbit/s`"
 args = 4
 
 [QUEUE_POSITION]
@@ -79,19 +79,19 @@ text = "サーバー字幕エフェクトに失敗しました: {}"
 args = 1
 
 [KEEP_READY]
-text = "`{}` → `{}` を予約しました"
+text = "`{}` を `{}` という名前で保存しています"
 args = 2
 
 [KEEP_DONE]
-text = "5時間保存します。\nキーワード `{}` • 親 `{}` • 種類 `{}`"
+text = "`{}` という名前で5時間保存しました（{} — `{}` から）。"
 args = 3
 
 [KEEP_FAIL]
-text = "保存に失敗しました: {}"
+text = "後用に動画を保存できませんでした: {}"
 args = 1
 
 [KEYCODE_WAIT]
-text = "保存済み出力を待っています: {}"
+text = "保存済み動画を待っています: {}"
 args = 1
 
 [KEYCODE_FAIL]
@@ -119,7 +119,7 @@ text = "{}"
 args = 1
 
 [PROBE_FAIL]
-text = "Torrentを検査できませんでした。"
+text = "ソースを検査できませんでした。"
 args = 0
 
 [PROBE_ROW]
@@ -131,11 +131,11 @@ text = "ページ {}/{}"
 args = 2
 
 [PROBE_PAGE_EXPIRED]
-text = "このファイル一覧はもう利用できません。"
+text = "このファイル一覧はもう利用できません。新しい一覧のためコマンドをもう一度実行してください。"
 args = 0
 
 [BATCH_PICK_PROMPT]
-text = "このパックには `{}` 本の動画があり、アーカイブには `{}` 個の字幕があります。エンコードするインデックスをこのチャンネルに送信してください（例：`1,3,5-9`）。字幕とは順番に組み合わされます。"
+text = "このパックには `{}` 本の動画があり、アーカイブには `{}` 個の字幕があります。エンコードする動画の番号をこのチャンネルに送信してください（例：`1,3,5-9`）。回答できるのは実行した本人のみで、制限時間は3分です。字幕とは順番に組み合わされます。時間切れの場合はコマンドをもう一度実行してください。"
 args = 2
 
 [COMMAND_SOURCE_PICK]
@@ -143,11 +143,11 @@ text = "このエピソードはどのファイルですか？"
 args = 0
 
 [PICK_PROMPT]
-text = "このソースには複数の動画が含まれています。番号をこのチャンネルに送信してインデックスを選択してください。"
+text = "このリンクには複数の動画が含まれています。使いたい動画の番号をこのチャンネルに送信してください（例：`5`）。番号はファイルの前にある数字で、話数ではありません。回答できるのは実行した本人のみで、制限時間は3分です。時間切れの場合はコマンドをもう一度実行してください。"
 args = 0
 
 [PICK_TIMEOUT]
-text = "時間内にファイルが選択されなかったため、ジョブはキャンセルされました。"
+text = "時間内に回答がなかったため、何もキューに入れませんでした。もう一度コマンドを実行してやり直してください。"
 args = 0
 
 [PREVIEW_DONE]
@@ -275,7 +275,7 @@ text = "場所"
 args = 0
 
 [FIELD_SLUG]
-text = "スラッグ"
+text = "短縮名"
 args = 0
 
 [FIELD_KIND]
@@ -299,7 +299,7 @@ text = "匿名Driveフォルダー"
 args = 0
 
 [FIELD_WRAPSTYLE]
-text = "WrapStyle"
+text = "字幕の改行方法"
 args = 0
 
 [FIELD_ANNOUNCEMENT]
@@ -307,15 +307,15 @@ text = "告知チャンネル"
 args = 0
 
 [FIELD_CONCAT]
-text = "結合 / イントロ"
+text = "オープニング動画"
 args = 0
 
 [FIELD_OUTRO]
-text = "結合 / アウトロ"
+text = "エンディング動画"
 args = 0
 
 [FIELD_LOCAL_GDRIVE]
-text = "ローカルGoogle Drive"
+text = "このサーバーのDriveアカウント"
 args = 0
 
 [FIELD_DRIVE_ONLY]
@@ -327,11 +327,11 @@ text = "/merge はリリースファイルで応答する"
 args = 0
 
 [FIELD_HLS]
-text = "Lumiere HLSのみの出力（12時間）"
+text = "再生用リンクのみ（12時間）"
 args = 0
 
 [FIELD_HLS_NAME]
-text = "HLS出力名"
+text = "再生用ファイル名"
 args = 0
 
 [FIELD_CHANNEL_RENAME]
@@ -479,15 +479,15 @@ text = "Magnetリンクは非表示です"
 args = 0
 
 [SOURCE_PROBE_FILE]
-text = "一覧化したソース • ファイル `#{}`"
+text = "パック内の動画 `#{}`"
 args = 1
 
 [SOURCE_PROBE]
-text = "一覧化したソース"
+text = "パックから選んだ動画"
 args = 0
 
 [SOURCE_KEYWORDS]
-text = "保存済み出力: {}"
+text = "保存済み動画: {}"
 args = 1
 
 [COMMAND_WORKING]
@@ -603,11 +603,15 @@ text = "📚 バッチエンコード"
 args = 0
 
 [BATCH_CONFIRM_BODY]
-text = "`{}` 話をこれらの字幕でエンコードします。\n確認しますか？"
+text = "以下の字幕で `{}` 話を順番にエンコードします。\n開始するには✅、中止するには✖を押してください。押せるのは実行した本人のみです。"
 args = 1
 
 [BATCH_CONFIRM_EXPIRED]
 text = "このバッチ確認は利用できなくなりました。"
+args = 0
+
+[BATCH_CONFIRM_NOT_YOURS]
+text = "このバッチを確定できるのは、実行した本人のみです。"
 args = 0
 
 [BATCH_CANCELLED]
@@ -615,7 +619,7 @@ text = "バッチエンコードを中止しました。"
 args = 0
 
 [BATCH_MISMATCH]
-text = "`{}` ファイルと `{}` 字幕: 最初の `{}` 組のみエンコードします。"
+text = "`{}` 本の動画と `{}` 個の字幕があります: 最初の `{}` 組のみ実行します。残りは対象外です。"
 args = 3
 
 [FIELD_OUTPUT]
@@ -627,11 +631,11 @@ text = "📚 バッチエンコードジョブ"
 args = 0
 
 [SUBS_DONE]
-text = "`{}` 本の字幕トラックを抽出しました。\n{}"
+text = "動画に `{}` 件の字幕がありました。\n{}"
 args = 2
 
 [SUBS_NONE]
-text = "抽出できるテキスト字幕トラックがありません。\n{}"
+text = "動画に抽出できるテキスト字幕がありません。\n{}"
 args = 1
 
 [SUBS_FAIL]

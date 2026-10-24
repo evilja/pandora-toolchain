@@ -1015,7 +1015,7 @@ fn help_catalog() -> &'static [HelpCommand] {
             name: "encode",
             summary: "Encode, locally keep, or join video outputs.",
             usage: "/encode do|link|keep|key ... (preset, intro and outro come from /edit)",
-            details: "`do` encodes with an attached ASS. When the torrent holds more than one video, `do`, `link` and `keep` show its file list first, paged, and wait three minutes for you to send the index you want as a plain number in the channel; a torrent with one video encodes straight away. Attach a `.zip` of several subtitles to `do` instead and it becomes a batch: the pack is listed, its files are paired with the subtitles in order, and every episode encodes after you confirm the pairing. When the pack holds more videos than the archive holds subtitles, it asks which files first: answer in the channel with their indexes, like `1,3,5-9`. `link` fetches the ASS from a URL; `keep` encodes an attachment and stores the output under a keyword; `key` joins kept keyword outputs.",
+            details: "`do` encodes with an attached ASS. When the torrent holds more than one video, `do`, `link` and `keep` show its file list first, paged, and wait three minutes for you to send the index you want as a plain number in the channel; a torrent with one video encodes straight away. Attach a `.zip` of several subtitles to `do` instead and it becomes a batch: the pack is listed, its files are paired with the subtitles in order, and every episode encodes after you confirm the pairing. When the pack holds more videos than the archive holds subtitles, it asks which files first: answer in the channel with their indexes, like `1,3,5-9`. `link` fetches the ASS from a URL; `keep` encodes an attachment and stores the output under a keyword for `/encode key` to join later. New? Run `/tutorial` first.",
         },
         HelpCommand {
             section: "encode",
@@ -1048,9 +1048,9 @@ fn help_catalog() -> &'static [HelpCommand] {
         HelpCommand {
             section: "encode",
             name: "backupall",
-            summary: "Upload every MKV from a torrent to Drive.",
+            summary: "Upload every video from a torrent to Drive.",
             usage: "/backupall torrent:<link>",
-            details: "Downloads the torrent or magnet link and backs up all MKV outputs instead of selecting a single file.",
+            details: "Downloads the torrent or magnet link and backs up every video instead of asking you to pick one. Torrents and magnets only: Drive and direct links are single videos, so use `/backup` for those.",
         },
         HelpCommand {
             section: "misc",
@@ -1118,16 +1118,16 @@ fn help_catalog() -> &'static [HelpCommand] {
         HelpCommand {
             section: "repo",
             name: "smartcode",
-            summary: "Merge attached repo subtitles, then encode or preview an episode.",
+            summary: "Merge saved subtitles, then encode or preview an episode.",
             usage: "/smartcode do|keep episode:<n> [link] or /smartcode preview episode:<n> [link] [cooldown]",
-            details: "Requires this channel to be attached to an anime repo. `do` reads TL/TS files, uploads the release ASS, then encodes using the source link or SOURCE.md. `keep` runs the same flow and retains the encode locally under a generated or supplied keyword. When the source is a pack, `do` and `keep` encode the file `/source` recorded in SOURCE.md; with none recorded they show the pack's file list and wait three minutes for you to send the index as a plain number in the channel. `preview` performs the merge/upload step, then renders up to three stamp-first, cluster-ranked previews. Cooldown defaults to 90 seconds; set it to 0 to disable cooldown.",
+            details: "Requires an attached anime channel with a saved translation (`/job`). `do` combines the saved translation and signs into the release subtitles, then encodes using `link`, or the episode's saved video link when `link` is omitted (`/source` saves it). `keep` runs the same flow and stores the finished video under a keyword for `/encode key` to join later, instead of uploading it. When the video link is a pack, `do` and `keep` use the file `/source` saved for this episode; with none saved they show the pack's file list and wait three minutes for you to reply in the channel with the file's number, for example `5`. `preview` renders up to three sample pictures to check subtitle placement instead of encoding. Preview pause between shots defaults to 90 seconds; set cooldown to 0 to disable it. New? Run `/tutorial` first.",
         },
         HelpCommand {
             section: "repo",
             name: "merge",
-            summary: "Merge TL and TS subtitles for an attached episode.",
+            summary: "Combine an episode's saved translation and signs into release subtitles.",
             usage: "/merge episode:<n> [link]",
-            details: "Requires an attached anime repo. Produces and uploads the release ASS for the episode without starting an encode. With `/edit merge_release_only` on it answers with the release file itself; `/link set channel:<channel>` then sends that file to the linked channel instead, and the command's own reply stays here with a jump link to it.",
+            details: "Requires an attached anime channel with a saved translation (`/job`). Builds the release subtitles for the episode without encoding any video. With `/edit merge_release_only` on it answers with the subtitle file itself; `/link set channel:<channel>` then sends that file to the linked channel instead, and the command's own reply stays here with a jump link to it.",
         },
         HelpCommand {
             section: "repo",
@@ -1139,9 +1139,9 @@ fn help_catalog() -> &'static [HelpCommand] {
         HelpCommand {
             section: "repo",
             name: "source",
-            summary: "Write SOURCE.md for an attached episode folder.",
-            usage: "/source link:<source_link> [episode:<n>]",
-            details: "Stores the episode source link in the attached GitHub repo. Source links can be torrent URLs, magnet links, or Google Drive links. When the link is a pack, its file list is shown and you pick the episode's file by sending its index as a plain number in the channel; the choice is recorded on a comment line beside the link, which is what `/smartcode do` reads back instead of asking again. Leave `episode` out and a pack is matched to every episode at once: each file's episode number is read from its name, the mapping is shown for you to confirm (or to correct by picking which file is episode 1), and then every episode's SOURCE.md is written with its own file.",
+            summary: "Save an episode's video link so it never has to be pasted again.",
+            usage: "/source link:<video_link> [episode:<n>]",
+            details: "Saves the episode's video link (torrent, magnet, or Google Drive link) for this channel. `/smartcode` then uses the saved link whenever its own `link` is omitted. When the link holds several videos, its file list is shown and you reply in the channel with the episode's file number, for example `5`; that choice is saved alongside the link, so `/smartcode` never asks again. Leave `episode` out and a whole season pack is matched to every episode at once: each file's episode number is read from its name, the mapping is shown for you to confirm (or to correct by picking which file is episode 1), and then every episode's link is saved with its own file.",
         },
         HelpCommand {
             section: "repo",
@@ -1188,9 +1188,9 @@ fn help_catalog() -> &'static [HelpCommand] {
         HelpCommand {
             section: "repo",
             name: "job",
-            summary: "Upload one episode work file to the attached repo.",
-            usage: "/job type:<TL|TLC|TS> episode:<n> subtitle:<subtitle_or_zip> [commit]",
-            details: "Requires a channel attachment. Accepts ASS or any text subtitle ffmpeg can read (.srt, .ssa, .vtt, .sub, .smi, ...), directly or as a root-level zip entry; non-ASS uploads are converted to ASS and flagged as unstyled. Normalizes the result, then uploads it under the selected job type.",
+            summary: "Save one episode's translation, checked translation, or typeset file.",
+            usage: "/job type:<Translation (TL)|Translation check (TLC)|Typeset (TS)> episode:<n> subtitle:<file> [commit]",
+            details: "Requires an attached anime channel. Translation (TL) is the episode dialogue; Translation check (TLC) is a corrected translation and replaces the TL file; Typeset (TS) is the on-screen signs and lettering. Accepts ASS or any text subtitle ffmpeg can read (.srt, .ssa, .vtt, .sub, .smi, ...), directly or as a zip holding one file; non-ASS uploads are converted to ASS. This only saves the file — it makes no video. A custom commit note is saved as [TL], [TLC] or [TS] plus your text.",
         },
         HelpCommand {
             section: "repo",
@@ -1657,7 +1657,7 @@ fn help_command_select(user_id: u64, section: &str, selected_cmd: Option<&str>) 
 fn help_overview_embed(user_id: u64) -> CreateEmbed {
     let mut embed = CreateEmbed::new()
         .title("Pandora command help")
-        .description("Select a section below to see usage, required inputs, and workflow notes.");
+        .description("Select a section below to see usage, required inputs, and workflow notes. New here? Run `/tutorial` first: lesson `1` encodes your first video, `admin` sets up the server.");
     for section in visible_sections(user_id) {
         let command_list = user_section_commands(user_id, section.slug)
             .iter()
@@ -1665,6 +1665,15 @@ fn help_overview_embed(user_id: u64) -> CreateEmbed {
             .collect::<Vec<_>>()
             .join(" ");
         embed = embed.field(section.title, command_list, false);
+    }
+    // A fresh account has no rank yet, so every section is filtered out and the overview
+    // would otherwise be an empty menu. Say why, and where the public commands are.
+    if visible_sections(user_id).iter().all(|s| user_section_commands(user_id, s.slug).is_empty()) {
+        embed = embed.field(
+            "No commands yet",
+            "Your account has no access tier yet, so only `/help`, `/providers` and `/tutorial` are visible. Ask an operator for `/auth`, then come back here.",
+            false,
+        );
     }
     embed
 }
@@ -1700,7 +1709,7 @@ async fn handle_help_command(ctx: &Context, command: &serenity::all::CommandInte
     let response = match option_str(command, "section").map(str::trim).filter(|s| !s.is_empty()) {
         Some(section) if help_section(section).is_none() => {
             CreateInteractionResponseMessage::new()
-                .content("Unknown help section.")
+                .content("Unknown help section. Pick one of: encode, repo, workers, admin, publish, fonts, misc.")
                 .ephemeral(true)
         }
         Some(section) if user_section_commands(user_id, section).is_empty() => {
@@ -2373,7 +2382,7 @@ impl EventHandler for Handler {
 
         match parts[0] {
             "!enc" => {
-                msg.reply(context, "Lütfen yeni /encode komutunu kullanın.").await.unwrap();
+                msg.reply(context, "Please use the new /encode command instead. Example: `/encode do torrent:<link> subtitle:<.ass file>`.").await.unwrap();
             }
             "!ts" => {
                 handle_ts_message(&context, &msg, &parts).await;
@@ -2418,9 +2427,13 @@ impl EventHandler for Handler {
         if let Interaction::Command(mut command) = interaction {
             if !is_authorized(command.data.name.as_str(), command.user.id.get()) {
                 println!("[gate] BLOCKED user={} cmd={}", command.user.id.get(), command.data.name.as_str());
+                // A fresh install has empty perm files, so this is the first error a new user
+                // ever sees. Name the required tier and the fix instead of a bare denial.
+                let min_rank = min_rank_for_command(command.data.name.as_str());
+                let needed = if min_rank == u8::MAX { "a configured rank".to_string() } else { format!("{} rank or higher ({}+)", help_rank_label(min_rank), min_rank) };
                 or_report(command.create_response(&ctx, CreateInteractionResponse::Message(
                     CreateInteractionResponseMessage::new()
-                        .content("Yetkisiz işlem.\nGeliştiricimden izin isteyin.")
+                        .content(format!("You need {} to run `/{}`. Ask an operator to grant it with `/auth user_id:<your id>`, or start with `/tutorial`.", needed, command.data.name.as_str()))
                         .ephemeral(true)
                 )).await, "reply", &command);
                 return;
@@ -2429,7 +2442,7 @@ impl EventHandler for Handler {
                 println!("[gate] BLOCKED_NON_ADMIN user={} cmd={}", command.user.id.get(), command.data.name.as_str());
                 or_report(command.create_response(&ctx, CreateInteractionResponse::Message(
                     CreateInteractionResponseMessage::new()
-                        .content("This server-scoped command requires the Discord Server Administrator permission.")
+                        .content("This server-scoped command also needs the Discord Server Administrator permission (Witch tier bypasses it). See `/tutorial admin`.")
                         .ephemeral(true)
                 )).await, "reply", &command);
                 return;
@@ -2825,7 +2838,16 @@ impl EventHandler for Handler {
                 "anizmconfirm" => handle_anizmconfirm_autocomplete(&ctx, &autocomplete).await,
                 "publish" => handle_publish_autocomplete(&ctx, &autocomplete).await,
                 "attribute" => handle_attribute_autocomplete(&ctx, &autocomplete).await,
-                _ => {}
+                // Any autocompleted option without its own arm must still answer: Discord shows
+                // "interaction failed" when nobody does, which reads like a broken command.
+                _ => {
+                    autocomplete.create_response(
+                        &ctx,
+                        CreateInteractionResponse::Autocomplete(
+                            serenity::builder::CreateAutocompleteResponse::new()
+                        ),
+                    ).await.ok();
+                }
             }
         } else if let Interaction::Modal(modal) = interaction {
             if modal.data.custom_id.starts_with("pnconfig:") {
@@ -2865,12 +2887,12 @@ impl EventHandler for Handler {
         let keep_option = CreateCommandOption::new(
             CommandOptionType::Boolean,
             "keep",
-            "Keep output locally for /encode key instead of uploading"
+            "Keep output locally under a keyword for /encode key instead of uploading"
         ).required(false);
         let keyword_option = CreateCommandOption::new(
             CommandOptionType::String,
             "keyword",
-            "Existing keep keyword; omit for New keyword"
+            "Reuse one keep keyword; omit to create a new one"
         ).required(false);
         let mut help_section_option = CreateCommandOption::new(
             CommandOptionType::String,
@@ -2888,7 +2910,7 @@ impl EventHandler for Handler {
             .add_option(
                 CreateCommandOption::new(CommandOptionType::SubCommand, "do", "Encode with an attached subtitle file")
                     .add_sub_option(
-                        CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent URL, magnet link, or Google Drive link")
+                        CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent/magnet/Drive/direct video link to encode")
                             .required(true)
                     )
                     .add_sub_option(
@@ -2899,7 +2921,7 @@ impl EventHandler for Handler {
             .add_option(
                 CreateCommandOption::new(CommandOptionType::SubCommand, "link", "Encode with a subtitle fetched from a URL")
                     .add_sub_option(
-                        CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent URL, magnet link, or Google Drive link")
+                        CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent/magnet/Drive/direct video link to encode")
                             .required(true)
                     )
                     .add_sub_option(
@@ -2908,9 +2930,9 @@ impl EventHandler for Handler {
                     )
             )
             .add_option(
-                CreateCommandOption::new(CommandOptionType::SubCommand, "keep", "Encode and keep the output locally")
+                CreateCommandOption::new(CommandOptionType::SubCommand, "keep", "Encode and keep the output locally under a keyword")
                     .add_sub_option(
-                        CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent URL, magnet link, or Google Drive link")
+                        CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent/magnet/Drive/direct video link to encode")
                             .required(true)
                     )
                     .add_sub_option(
@@ -2920,9 +2942,9 @@ impl EventHandler for Handler {
                     .add_sub_option(keyword_option.clone())
             )
             .add_option(
-                CreateCommandOption::new(CommandOptionType::SubCommand, "key", "Join kept keyword outputs and upload")
+                CreateCommandOption::new(CommandOptionType::SubCommand, "key", "Join kept outputs and upload (e.g. keywords: kw1,kw2)")
                     .add_sub_option(
-                        CreateCommandOption::new(CommandOptionType::String, "keywords", "Comma-separated keep keywords")
+                        CreateCommandOption::new(CommandOptionType::String, "keywords", "Keep keywords in order, comma-separated (e.g. kw1,kw2)")
                             .required(true)
                     )
                     .add_sub_option(
@@ -3068,9 +3090,9 @@ impl EventHandler for Handler {
                         .required(false)
                 ),
             CreateCommand::new("backup")
-                .description("Download torrent and upload MKV to GDrive without release")
+                .description("Download a video and upload it to Drive untouched (no encode)")
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent URL, magnet link, Google Drive link, or direct video link")
+                    CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent/magnet/Drive/direct video link to back up")
                         .required(true)
                 )
                 .add_option(keep_option.clone())
@@ -3082,9 +3104,9 @@ impl EventHandler for Handler {
                         .required(true)
                 ),
             CreateCommand::new("backupall")
-                .description("Download a torrent and upload every MKV to GDrive")
+                .description("Download a torrent/magnet and upload every video to Drive")
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent URL or magnet link")
+                    CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent URL or magnet link (packs only; not Drive/direct)")
                         .required(true)
                 ),
             CreateCommand::new("attach")
@@ -3154,24 +3176,24 @@ impl EventHandler for Handler {
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::SubCommand, "do", "Merge subtitles and encode the episode")
                         .add_sub_option(
-                            CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (1-based)")
+                            CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (e.g. 1)")
                                 .required(true)
                                 .min_int_value(1)
                         )
                         .add_sub_option(
-                            CreateCommandOption::new(CommandOptionType::String, "link", "Source link. Falls back to SOURCE.md if omitted.")
+                            CreateCommandOption::new(CommandOptionType::String, "link", "Video link. Omit if /source already saved this episode's link.")
                                 .required(false)
                         )
                 )
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::SubCommand, "keep", "Merge, encode, and keep the episode locally")
                         .add_sub_option(
-                            CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (1-based)")
+                            CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (e.g. 1)")
                                 .required(true)
                                 .min_int_value(1)
                         )
                         .add_sub_option(
-                            CreateCommandOption::new(CommandOptionType::String, "link", "Source link. Falls back to SOURCE.md if omitted.")
+                            CreateCommandOption::new(CommandOptionType::String, "link", "Video link. Omit if /source already saved this episode's link.")
                                 .required(false)
                         )
                         .add_sub_option(keyword_option.clone())
@@ -3179,12 +3201,12 @@ impl EventHandler for Handler {
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::SubCommand, "preview", "Render 1-3 typeset preview screenshots")
                         .add_sub_option(
-                            CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (1-based)")
+                            CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (e.g. 1)")
                                 .required(true)
                                 .min_int_value(1)
                         )
                         .add_sub_option(
-                            CreateCommandOption::new(CommandOptionType::String, "link", "Source link. Falls back to SOURCE.md if omitted.")
+                            CreateCommandOption::new(CommandOptionType::String, "link", "Video link. Omit if /source already saved this episode's link.")
                                 .required(false)
                         )
                         .add_sub_option(
@@ -3197,18 +3219,18 @@ impl EventHandler for Handler {
             CreateCommand::new("merge")
                 .description("Merge the channel's attached TL and TS subtitles for an episode and upload the release ASS")
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (1-based)")
+                    CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (e.g. 1)")
                         .required(true)
                         .min_int_value(1)
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "link", "Source link. Falls back to SOURCE.md if omitted.")
+                    CreateCommandOption::new(CommandOptionType::String, "link", "Video link. Omit if /source already saved this episode's link.")
                         .required(false)
                 ),
             CreateCommand::new("release")
                 .description("Upload release fonts to Google Drive for an existing episode release ASS")
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (1-based)")
+                    CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (e.g. 1)")
                         .required(true)
                         .min_int_value(1)
                 ),
@@ -3358,15 +3380,15 @@ impl EventHandler for Handler {
                         .required(false)
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::Boolean, "local_gdrive", "Prefer this server's Lumiere Drive profile when configured.")
+                    CreateCommandOption::new(CommandOptionType::Boolean, "local_gdrive", "Prefer this server's Drive account when available.")
                         .required(false)
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::Boolean, "drive_only", "Upload releases only to Google Drive; disable streaming hosts.")
+                    CreateCommandOption::new(CommandOptionType::Boolean, "drive_only", "Upload releases only to Google Drive (no streaming sites).")
                         .required(false)
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::Boolean, "hls", "Use only Lumiere HLS output for releases; retain it for 12 hours.")
+                    CreateCommandOption::new(CommandOptionType::Boolean, "hls", "Publish only a 12-hour playback link instead of files.")
                         .required(false)
                 )
                 .add_option(
@@ -3374,7 +3396,7 @@ impl EventHandler for Handler {
                         .required(false)
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "hls_name", "HLS file name template: %uuid%, %random%, %res%. `-` restores the default.")
+                    CreateCommandOption::new(CommandOptionType::String, "hls_name", "Playback file-name template (%uuid%/%random%/%res%). `-` resets.")
                         .required(false)
                 )
                 .add_option(
@@ -3382,7 +3404,7 @@ impl EventHandler for Handler {
                         .required(false)
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "wrapstyle", "ASS WrapStyle normalization. Use dont_touch to clear.")
+                    CreateCommandOption::new(CommandOptionType::String, "wrapstyle", "Subtitle line-break style: dont_touch keeps author's; 0/1/2/3 override.")
                         .required(false)
                         .add_string_choice("dont_touch", "dont_touch")
                         .add_string_choice("0", "0")
@@ -3395,17 +3417,17 @@ impl EventHandler for Handler {
                     // is: the set is not known when the command is registered. A preset file in
                     // `DB/config/global/presets/` may carry a name this binary has no table for,
                     // and a static list could only ever offer the compiled-in ones.
-                    CreateCommandOption::new(CommandOptionType::String, "preset", "Default encoding preset for this server; type to search.")
+                    CreateCommandOption::new(CommandOptionType::String, "preset", "Default encode preset (e.g. standard). Type to see choices.")
                         .required(false)
                         .set_autocomplete(true)
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "concat", "Type/search and select an intro group; choose Disable concat to clear.")
+                    CreateCommandOption::new(CommandOptionType::String, "concat", "Intro video group. Pick Disable concat to clear it.")
                         .required(false)
                         .set_autocomplete(true)
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "outro", "Type/search and select an outro group; choose Disable concat to clear.")
+                    CreateCommandOption::new(CommandOptionType::String, "outro", "Outro video group. Pick Disable concat to clear it.")
                         .required(false)
                         .set_autocomplete(true)
                 )
@@ -3971,9 +3993,9 @@ impl EventHandler for Handler {
                         .required(true)
                 ),
             CreateCommand::new("auth")
-                .description("Append a user id to an auth level file")
+                .description("Give a user a Pandora access tier (Authorize → Witch)")
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "user_id", "The Discord user id to authorize")
+                    CreateCommandOption::new(CommandOptionType::String, "user_id", "Numeric Discord user ID (right-click user → Copy User ID)")
                         .required(true)
                 )
                 .add_option(
@@ -3986,9 +4008,9 @@ impl EventHandler for Handler {
                         .add_string_choice("Witch", "witch.pandora")
                 ),
             CreateCommand::new("rm")
-                .description("Remove a user id from an auth level file")
+                .description("Remove a user's Pandora access tier")
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "user_id", "The Discord user id to deauthorize")
+                    CreateCommandOption::new(CommandOptionType::String, "user_id", "Numeric Discord user ID (right-click user → Copy User ID)")
                         .required(true)
                 )
                 .add_option(
@@ -4001,25 +4023,25 @@ impl EventHandler for Handler {
                         .add_string_choice("Witch", "witch.pandora")
                 ),
             CreateCommand::new("job")
-                .description("Submit a single-episode job against the channel's attached anime")
+                .description("Save a translation, checked translation, or typeset file for one episode")
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "type", "Job type")
+                    CreateCommandOption::new(CommandOptionType::String, "type", "What to save: Translation (TL), Translation check (TLC), or Typeset (TS)")
                         .required(true)
-                        .add_string_choice("Translation", "TL")
-                        .add_string_choice("Translation Check", "TLC")
-                        .add_string_choice("Typeset", "TS")
+                        .add_string_choice("Translation (TL)", "TL")
+                        .add_string_choice("Translation check (TLC)", "TLC")
+                        .add_string_choice("Typeset / on-screen signs (TS)", "TS")
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (1-based)")
+                    CreateCommandOption::new(CommandOptionType::Integer, "episode", "Episode number (e.g. 1)")
                         .required(true)
                         .min_int_value(1)
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "Subtitle file or .zip (.ass, .srt, .vtt, ...; converted to ASS)")
+                    CreateCommandOption::new(CommandOptionType::Attachment, "subtitle", "Subtitle file (.ass/.srt/..., converted to ASS; a .zip must hold one file)")
                         .required(true)
                 )
                 .add_option(
-                    CreateCommandOption::new(CommandOptionType::String, "commit", "Custom commit message (optional; will be prefixed with [TL]/[TLC]/[TS])")
+                    CreateCommandOption::new(CommandOptionType::String, "commit", "Custom commit note (saved as [TL]/[TLC]/[TS] + your text)")
                         .required(false)
                 ),
         ];
