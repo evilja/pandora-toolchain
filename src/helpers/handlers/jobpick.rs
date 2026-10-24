@@ -26,7 +26,9 @@ pub enum JobScope {
 }
 
 fn scope_of(command_name: &str) -> JobScope {
-    if command_name == "catlogs" {
+    // A retry exists for the jobs that did *not* finish, so it needs the full recent history — the
+    // uploaded-only list would never offer the row it is meant to re-run.
+    if matches!(command_name, "catlogs" | "retry") {
         JobScope::Any
     } else {
         JobScope::Uploaded

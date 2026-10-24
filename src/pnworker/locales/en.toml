@@ -1278,3 +1278,41 @@ args = 0
 [SOURCE_BATCH_NOT_YOURS]
 text = "Only the person who ran this `/source` can answer it."
 args = 0
+[QUEUE_TITLE]
+text = "Queue — `{}` running, `{}` waiting"
+args = 2
+
+[QUEUE_LINE]
+text = "`{}` {} — {}"
+args = 3
+
+[QUEUE_EMPTY]
+text = "Nothing is queued or running right now."
+args = 0
+
+[QUEUE_MORE]
+text = "…and {} more."
+args = 1
+
+[RETRY_QUEUED]
+text = "Re-queued `{}` as `{}`."
+args = 2
+
+[RETRY_UNKNOWN]
+text = "There is no job `{}`."
+args = 1
+
+[RETRY_NOT_YOURS]
+text = "That job belongs to somebody else."
+args = 0
+
+[RETRY_RUNNING]
+text = "`{}` has not finished yet."
+args = 1
+
+[RETRY_TYPE]
+text = "`{}` is not a job that can be re-run from its source."
+args = 1
+[FAILURE_TAIL]
+text = "Last log lines:\n{}"
+args = 1

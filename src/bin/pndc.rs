@@ -797,6 +797,10 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("alias", 0),
     ("get", 0),
     ("job", 0),
+    // Looking at the queue is not an operator privilege — everybody's own work is in it — and a
+    // retry only re-runs a job the caller already owns unless the caller is an operator.
+    ("queue", 0),
+    ("retry", 0),
     ("!enc", 0),
     ("attach", 1),
     ("init", 1),
@@ -1053,6 +1057,13 @@ fn help_catalog() -> &'static [HelpCommand] {
             details: "Downloads the torrent or magnet link and backs up every video instead of asking you to pick one. Torrents and magnets only: Drive and direct links are single videos, so use `/backup` for those.",
         },
         HelpCommand {
+            section: "encode",
+            name: "retry",
+            summary: "Run a failed or cancelled job again from the same source.",
+            usage: "/retry job:<job>",
+            details: "Re-queues a job that failed or was cancelled, from the link it was given. Only one-link-one-output work can be rebuilt that way: /encode, /backup and /distribute. Whoever asked for the job may retry it; from the worker rank up, anybody may. The preset name the job recorded is reused when that preset still exists, and the server's current default is used otherwise, so a retry never quietly reuses a preset you have since replaced. A job that is still running is refused.",
+        },
+        HelpCommand {
             section: "misc",
             name: "lspool",
             summary: "List keep keyword pool entries.",
@@ -1212,6 +1223,13 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Show worker slots and active jobs.",
             usage: "/workers",
             details: "Reports the current download, encode, probe, and upload worker slots from the live orchestrator queue.",
+        },
+        HelpCommand {
+            section: "workers",
+            name: "queue",
+            summary: "Show the jobs waiting and running.",
+            usage: "/queue",
+            details: "Lists what the worker has not finished yet, one `<id> · <type> · <stage>` line each, headed by the running and waiting counts. You see your own jobs; from the worker rank up the reply covers the whole machine, which is what answers the question of why a job is not moving. Capped at 15 rows with a count of the rest.",
         },
         HelpCommand {
             section: "workers",
@@ -2743,6 +2761,12 @@ impl EventHandler for Handler {
                 "job" => {
                     handle_job(&ctx, &command).await;
                 }
+                "queue" => {
+                    handle_queue(&ctx, &command).await;
+                }
+                "retry" => {
+                    handle_retry(&ctx, &command, &self.tx).await;
+                }
                 "gitsync" => {
                     let response_msg = match working_response(&ctx, &command, "Tüm işlemler kapatılıyor.").await {
                         Some(m) => m,
@@ -3755,6 +3779,15 @@ impl EventHandler for Handler {
                 ),
             CreateCommand::new("refreshcache")
                 .description("Refresh the cached AnimeciX/OpenAnime/Anizm fansub directories now"),
+            CreateCommand::new("queue")
+                .description("Show the jobs waiting and running (Admin+ sees every job on this machine)"),
+            CreateCommand::new("retry")
+                .description("Run a failed or cancelled job again from the same source")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "job", "Job to run again; pick from the list")
+                        .required(true)
+                        .set_autocomplete(true)
+                ),
             CreateCommand::new("catlogs")
                 .description("Download a job's logs as a ZIP (Witch only)")
                 .add_option(

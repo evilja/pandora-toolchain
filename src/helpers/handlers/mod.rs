@@ -55,6 +55,8 @@ mod logo;
 mod watermark;
 mod studio;
 mod catlogs;
+mod queue;
+mod retry;
 mod refreshcache;
 mod build_ffmpeg;
 mod jobpick;
@@ -69,6 +71,8 @@ pub use self::listing::{
 use self::batch::probe_rows;
 pub use self::subs::handle_subs;
 pub use self::backup::handle_backup;
+pub use self::queue::handle_queue;
+pub use self::retry::handle_retry;
 pub use self::distribute::handle_distribute;
 pub use self::smartcode::{handle_smartcode, handle_smartcode_preview};
 pub use self::cfont::{handle_cfont, handle_cfont_autocomplete, refresh_font_name_choices, resolve_preview_watermark_font_path, warm_font_name_cache};
