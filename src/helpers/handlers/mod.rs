@@ -408,7 +408,7 @@ async fn smartcode_merge_upload(
         Ok(f) => f,
         Err(e) => {
             let _ = response_msg.edit(ctx, EditMessage::new()
-                .content(format!("Repository connection failed: {}", e))).await;
+                .content(format!("Could not connect to the project repo: {}", e))).await;
             return None;
         }
     };
@@ -422,12 +422,12 @@ async fn smartcode_merge_upload(
         Ok(Some((b, _))) => b,
         Ok(None) => {
             let _ = response_msg.edit(ctx, EditMessage::new()
-                .content(format!("TL file not found at `{}` or `{}.zip`.", tl_path, tl_path))).await;
+                .content(format!("No translation saved for episode {} yet. Save one first with `/job type:Translation episode:{}`.", episode, episode))).await;
             return None;
         }
         Err(e) => {
             let _ = response_msg.edit(ctx, EditMessage::new()
-                .content(format!("Failed to fetch TL: {}", e))).await;
+                .content(format!("Could not load the saved translation: {}", e))).await;
             return None;
         }
     };
@@ -437,7 +437,7 @@ async fn smartcode_merge_upload(
         Ok(None) => None,
         Err(e) => {
             let _ = response_msg.edit(ctx, EditMessage::new()
-                .content(format!("Failed to fetch TS: {}", e))).await;
+                .content(format!("Could not load the saved signs file: {}", e))).await;
             return None;
         }
     };
@@ -450,13 +450,13 @@ async fn smartcode_merge_upload(
                 Ok(Some((b, _))) => b,
                 Ok(None) => {
                     let _ = response_msg.edit(ctx, EditMessage::new()
-                        .content(format!("`link` was not provided and no `{}` exists in the repo to read it from.",
-                            source_md_path))).await;
+                        .content(format!("No video link was given and episode {} has no saved source yet. Pass `link:<video link>` or save one first with `/source episode:{} link:<video link>`.",
+                            episode, episode))).await;
                     return None;
                 }
                 Err(e) => {
                     let _ = response_msg.edit(ctx, EditMessage::new()
-                        .content(format!("Failed to fetch `{}`: {}", source_md_path, e))).await;
+                        .content(format!("Could not load the saved source for episode {}: {}", episode, e))).await;
                     return None;
                 }
             };
@@ -464,7 +464,7 @@ async fn smartcode_merge_upload(
                 Ok(b) => b,
                 Err(e) => {
                     let _ = response_msg.edit(ctx, EditMessage::new()
-                        .content(format!("Failed to decode `{}` base64: {}", source_md_path, e))).await;
+                        .content(format!("The saved source for episode {} is unreadable: {}", episode, e))).await;
                     return None;
                 }
             };
@@ -472,7 +472,7 @@ async fn smartcode_merge_upload(
                 Ok(t) => t,
                 Err(e) => {
                     let _ = response_msg.edit(ctx, EditMessage::new()
-                        .content(format!("`{}` is not valid UTF-8: {}", source_md_path, e))).await;
+                        .content(format!("The saved source for episode {} is unreadable: {}", episode, e))).await;
                     return None;
                 }
             };
@@ -480,7 +480,7 @@ async fn smartcode_merge_upload(
                 Some(doc) => (doc.link, doc.probe, false),
                 None => {
                     let _ = response_msg.edit(ctx, EditMessage::new()
-                        .content(format!("`{}` does not contain a parseable source link.", source_md_path))).await;
+                        .content(format!("The saved source for episode {} has no usable video link. Save it again with `/source episode:{}`.", episode, episode))).await;
                     return None;
                 }
             }
@@ -491,7 +491,7 @@ async fn smartcode_merge_upload(
         Some(p) if !p.is_empty() => p.clone(),
         _ => {
             let _ = response_msg.edit(ctx, EditMessage::new()
-                .content("Error: PNASS binary path is not set in DB/config/global/environment/env.pandora.")).await;
+                .content("Error: the subtitle tool is not configured. Ask the bot operator to set it up.")).await;
             return None;
         }
     };
@@ -518,13 +518,13 @@ async fn smartcode_merge_upload(
 
     if let Err(e) = tokio::fs::write(&tl_local, &tl_bytes).await {
         let _ = response_msg.edit(ctx, EditMessage::new()
-            .content(format!("Failed to write TL: {}", e))).await;
+            .content(format!("Could not prepare the translation file: {}", e))).await;
         return None;
     }
     if let Some(ref b) = ts_bytes_opt {
         if let Err(e) = tokio::fs::write(&ts_local, b).await {
             let _ = response_msg.edit(ctx, EditMessage::new()
-                .content(format!("Failed to write TS: {}", e))).await;
+                .content(format!("Could not prepare the signs file: {}", e))).await;
             return None;
         }
     } else {
@@ -551,7 +551,7 @@ async fn smartcode_merge_upload(
         ).await;
         if !matches!(split_result, ToolResult::Success) {
             let _ = response_msg.edit(ctx, EditMessage::new()
-                .content(format!("ASS sign split failed (warnings so far: {}).", warnings.len()))).await;
+                .content(format!("Could not separate on-screen signs from the dialogue ({} warning(s) so far).", warnings.len()))).await;
             return None;
         }
         if tokio::fs::metadata(&ts_local).await.is_ok() {
@@ -559,7 +559,7 @@ async fn smartcode_merge_upload(
                 Ok(b) => b,
                 Err(e) => {
                     let _ = response_msg.edit(ctx, EditMessage::new()
-                        .content(format!("Failed to read sign-aware TL: {}", e))).await;
+                        .content(format!("Could not read the separated dialogue: {}", e))).await;
                     return None;
                 }
             };
@@ -567,26 +567,26 @@ async fn smartcode_merge_upload(
                 Ok(b) => b,
                 Err(e) => {
                     let _ = response_msg.edit(ctx, EditMessage::new()
-                        .content(format!("Failed to read generated TS: {}", e))).await;
+                        .content(format!("Could not read the separated signs: {}", e))).await;
                     return None;
                 }
             };
             if let Err(e) = upsert_repo_ass(&fg, &owner_repo, &tl_path, &split_tl_bytes, "Smartcode move signs from TL").await {
                 let _ = response_msg.edit(ctx, EditMessage::new()
-                    .content(format!("Failed to update TL after sign split: {}", e))).await;
+                    .content(format!("Could not save the updated translation: {}", e))).await;
                 return None;
             }
             if let Err(e) = upsert_repo_ass(&fg, &owner_repo, &ts_path, &sign_bytes, "Smartcode move signs to TS").await {
                 let _ = response_msg.edit(ctx, EditMessage::new()
-                    .content(format!("Failed to upload generated TS: {}", e))).await;
+                    .content(format!("Could not save the separated signs file: {}", e))).await;
                 return None;
             }
             if let Err(e) = tokio::fs::write(&tl_local, &split_tl_bytes).await {
                 let _ = response_msg.edit(ctx, EditMessage::new()
-                    .content(format!("Failed to write sign-aware TL: {}", e))).await;
+                    .content(format!("Could not prepare the separated dialogue: {}", e))).await;
                 return None;
             }
-            warnings.push(format!("Sign lines were moved from `{}` into generated `{}`.", tl_path, ts_path));
+            warnings.push(format!("On-screen signs were moved out of the translation into its own signs file for episode {}.", episode));
             ts_bytes_opt = Some(sign_bytes);
         }
     }

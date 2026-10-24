@@ -107,12 +107,17 @@ mod tests {
 
     #[test]
     fn the_run_log_sits_beside_the_tool_log() {
+        // Compared as paths: `PathBuf` renders with the platform separator, so an exact string
+        // match would pin this to Unix.
         assert_eq!(
-            run_log_path("DB/work/12/log/PNmpeg_Encode12.log"),
-            "DB/work/12/log/PNmpeg_Encode12.run.log"
+            PathBuf::from(run_log_path("DB/work/12/log/PNmpeg_Encode12.log")),
+            PathBuf::from("DB/work/12/log/PNmpeg_Encode12.run.log")
         );
         // A name without the extension still gets one run log, not two suffixes.
-        assert_eq!(run_log_path("DB/work/12/log/pncurl12"), "DB/work/12/log/pncurl12.run.log");
+        assert_eq!(
+            PathBuf::from(run_log_path("DB/work/12/log/pncurl12")),
+            PathBuf::from("DB/work/12/log/pncurl12.run.log")
+        );
     }
 
     #[test]

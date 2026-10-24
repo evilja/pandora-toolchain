@@ -7,12 +7,12 @@ pub async fn handle_lsauth(
     let level = match option_trimmed(command, "level") {
         Some(s) => s,
         None => {
-            command_error(ctx, command, "Error: `level` is required.").await;
+            command_error(ctx, command, "Error: `level` is required. Pick one of authorize, fansubber, admin, upper, witch.").await;
             return;
         }
     };
     if level_rank(&level) == u8::MAX {
-        command_error(ctx, command, "Error: unknown auth level.").await;
+        command_error(ctx, command, "Error: unknown auth level. Pick one of authorize, fansubber, admin, upper, witch.").await;
         return;
     }
     let mut users = get_perm(perm_path(&level))

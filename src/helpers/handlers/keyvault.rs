@@ -1665,7 +1665,7 @@ fn safe_archive_component(value: &str) -> String {
 
 fn random_hex(bytes: usize) -> Result<String, String> {
     let mut random = vec![0u8; bytes];
-    getrandom::getrandom(&mut random).map_err(|e| format!("entropy source failed: {e}"))?;
+    getrandom::fill(&mut random).map_err(|e| format!("entropy source failed: {e}"))?;
     let output = hex_bytes(&random);
     random.fill(0);
     Ok(output)

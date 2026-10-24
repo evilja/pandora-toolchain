@@ -13,6 +13,12 @@ const EMBED_LINK_KEYS: &[&str] = &["byse", "lulustream", "voe"];
 const MAX_ANIME_CHOICES: usize = 25;
 const MAX_CHOICE_LABEL_CHARS: usize = 100;
 
+// An outage and a search with no match both render as Discord's empty option box, which hides
+// an expired login or an unreachable staff panel behind what looks like a bad search term. The
+// reason is surfaced as a single choice instead; picking it fails submit-time validation like any
+// other non-id, so it stores nothing.
+const LOOKUP_FAILED_VALUE: &str = "__lookup_failed__";
+
 pub async fn handle_anizmconfirm_autocomplete(
     ctx: &Context,
     interaction: &serenity::all::CommandInteraction,
@@ -31,7 +37,18 @@ pub async fn handle_anizmconfirm_autocomplete(
                     response.add_string_choice(anime_choice_label(&option), option.id.to_string());
             }
         }
-        Err(e) => eprintln!("[anizmconfirm] anime autocomplete failed: {}", e),
+        Err(e) => {
+            eprintln!("[anizmconfirm] anime autocomplete failed: {}", e);
+            let reason = e.split_whitespace().collect::<Vec<_>>().join(" ");
+            let prefix = "⚠ Anizm lookup failed: ";
+            let available = MAX_CHOICE_LABEL_CHARS.saturating_sub(prefix.chars().count());
+            let label = if reason.chars().count() <= available {
+                format!("{}{}", prefix, reason)
+            } else {
+                format!("{}{}…", prefix, reason.chars().take(available.saturating_sub(1)).collect::<String>())
+            };
+            response = response.add_string_choice(label, LOOKUP_FAILED_VALUE);
+        }
     }
     interaction
         .create_response(ctx, CreateInteractionResponse::Autocomplete(response))
@@ -521,5 +538,13 @@ mod tests {
         );
         assert!(text.contains("Anizm `Naruto` (#187) episode `12. Bölüm`"), "{}", text);
         assert!(text.contains("Notes: created episode `12`"), "{}", text);
+    }
+
+    #[test]
+    fn the_lookup_failure_sentinel_is_not_a_submittable_anime_id() {
+        // The submit path parses the `anime` value as a u64 id; the sentinel must fail that
+        // parse so picking the failure choice errors instead of submitting something stale.
+        assert!(LOOKUP_FAILED_VALUE.trim().parse::<u64>().is_err());
+        assert_ne!(LOOKUP_FAILED_VALUE, "187");
     }
 }

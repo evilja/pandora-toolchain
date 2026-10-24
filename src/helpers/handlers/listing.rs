@@ -67,7 +67,7 @@ pub async fn list_source(
             .map_err(|e| format!("failed to read the listing: {}", e))?;
         let Some(row) = row else {
             if started.elapsed() > LISTING_ADMISSION_TIMEOUT {
-                return Err("the source could not be listed: the queue did not accept the request (it may be full)".to_string());
+                return Err("the download queue did not accept the request (it may be full) — nothing was listed".to_string());
             }
             continue;
         };
@@ -75,7 +75,7 @@ pub async fn list_source(
             ListingState::Ready => {
                 let rows = probe_rows(row.progress.as_deref());
                 if rows.is_empty() {
-                    return Err("the source lists no video files".to_string());
+                    return Err("the link holds no video files".to_string());
                 }
                 let text = probe_list_text(row.progress.as_deref()).unwrap_or_else(|| {
                     rows.iter()
@@ -86,12 +86,12 @@ pub async fn list_source(
                 return Ok(SourceListing { probe_job_id, rows, text });
             }
             ListingState::Dead => {
-                return Err("the source could not be inspected".to_string());
+                return Err("the link could not be opened — check that it is a valid torrent or magnet link".to_string());
             }
             ListingState::Running => {}
         }
         if started.elapsed() > LISTING_TIMEOUT {
-            return Err("the source took too long to list".to_string());
+            return Err("listing the link took too long — try again".to_string());
         }
     }
 }

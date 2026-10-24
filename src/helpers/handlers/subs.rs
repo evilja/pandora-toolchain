@@ -7,7 +7,7 @@ pub async fn handle_subs(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,
 ) -> Option<Job> {
-    let source = required_trimmed_option(ctx, command, "torrent", "Torrent URL").await?;
+    let source = required_trimmed_option(ctx, command, "torrent", "Video link").await?;
 
     let response_msg = working_response(ctx, command, "...").await?;
     if let Err(error) = response_msg.react(ctx, '❌').await {

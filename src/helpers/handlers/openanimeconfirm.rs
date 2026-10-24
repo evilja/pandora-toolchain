@@ -414,7 +414,13 @@ mod tests {
             &["byse (no OpenAnime player adapter)".to_string()],
             &["lulustream: HTTP 500".to_string()],
         );
-        assert!(text.starts_with("Partially published job `5`"), "{}", text);
+        // The summary names the OpenAnime target, not the queue job id, so a re-run's message
+        // reads the same however the job was numbered.
+        assert!(
+            text.starts_with("Partially published to OpenAnime `slug` S01E07 as **Akira Subs**."),
+            "{}",
+            text
+        );
         assert!(text.contains("Skipped: byse"), "{}", text);
         assert!(text.contains("Failed: lulustream: HTTP 500"), "{}", text);
     }

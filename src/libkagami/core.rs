@@ -1243,7 +1243,9 @@ mod tests {
     }
 
     fn set_modified(path: &Path, time: SystemTime) {
-        let file = File::open(path).unwrap();
+        // Write access is required: setting times through a read-only handle is allowed on Unix
+        // but rejected with PermissionDenied on Windows.
+        let file = File::options().write(true).open(path).unwrap();
         file.set_times(FileTimes::new().set_modified(time)).unwrap();
     }
 

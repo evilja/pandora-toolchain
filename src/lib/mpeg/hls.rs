@@ -504,11 +504,14 @@ mod tests {
     #[test]
     fn the_muxer_writes_chunks_below_the_playlist_and_names_them_in_it() {
         let names = default_names(Some(720), HlsSegmentType::Ts);
-        let args = names.muxer_args_in(Path::new("/jobs/7/work/hls"));
+        let directory = Path::new("/jobs/7/work/hls");
+        let args = names.muxer_args_in(directory);
         let position = |flag: &str| args.iter().position(|value| value == flag).unwrap();
+        // The muxer arguments are built by joining the directory, so the expectations are built
+        // the same way — an exact `/`-joined string would pin this test to Unix.
         assert_eq!(
             args[position("-hls_segment_filename") + 1],
-            format!("/jobs/7/work/hls/{}", names.chunk_pattern)
+            directory.join(&names.chunk_pattern).display().to_string()
         );
         // Deliberate, and the number players buffer around: the segment target is asserted here
         // rather than against the constant so that changing it has to be a decision.
@@ -518,7 +521,7 @@ mod tests {
         assert_eq!(args[position("-hls_base_url") + 1], names.chunk_base_url);
         assert_eq!(
             args.last().unwrap(),
-            &format!("/jobs/7/work/hls/{}", names.media)
+            &directory.join(&names.media).display().to_string()
         );
         // A caller that runs the mux inside the directory addresses the same files by name.
         assert_eq!(

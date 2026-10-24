@@ -251,10 +251,13 @@ pub fn build_spec(
     }
 }
 
-// Which kind of keep a job's output is. A `/backup` keeps its downloaded input; everything else
-// keeps what it encoded, and the two are stored and resolved separately.
+// Which kind of keep a job's output is. A `/backup` and a `/distribute` keep their downloaded
+// input; everything else keeps what it encoded, and the two are stored and resolved separately.
+// The worker's own progression path finishes both a Backup and a Distribute keep as
+// `KeepKind::Backup`, so the lease spec must agree — otherwise a kept distribution's keyword
+// resolves against the encode keep store and never finds its file.
 pub fn keep_kind_for(job: &Job) -> crate::pnworker::core::KeepKind {
-    if job.job_type == JobType::Backup {
+    if matches!(job.job_type, JobType::Backup | JobType::Distribute) {
         crate::pnworker::core::KeepKind::Backup
     } else {
         crate::pnworker::core::KeepKind::Encode
@@ -383,6 +386,15 @@ mod tests {
         backup.keep = source.keep.clone();
         assert_eq!(
             build_spec(&backup, &LeaseSource::default(), false, false).keep.unwrap().kind,
+            "backup",
+        );
+
+        // A `/distribute` keeps its downloaded input too, and must agree with the local
+        // progression path, which finishes both as KeepKind::Backup.
+        let mut distribute = job(JobType::Distribute);
+        distribute.keep = source.keep.clone();
+        assert_eq!(
+            build_spec(&distribute, &LeaseSource::default(), false, false).keep.unwrap().kind,
             "backup",
         );
 

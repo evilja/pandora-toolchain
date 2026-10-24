@@ -4,8 +4,8 @@ use pandora_toolchain::lib::subs::ensure_ass_bytes;
 use pandora_toolchain::pnworker::batch::{BatchEntry, BatchRequest};
 use super::listing::SourceListing;
 use pandora_toolchain::pnworker::messages::{
-    BATCH_CANCELLED, BATCH_CONFIRM, BATCH_CONFIRM_BODY, BATCH_CONFIRM_EXPIRED, BATCH_MISMATCH,
-    BATCH_PICK_PROMPT, FIELD_PROGRESS, PICK_TIMEOUT,
+    BATCH_CANCELLED, BATCH_CONFIRM, BATCH_CONFIRM_BODY, BATCH_CONFIRM_EXPIRED, BATCH_CONFIRM_NOT_YOURS,
+    BATCH_MISMATCH, BATCH_PICK_PROMPT, FIELD_PROGRESS, PICK_TIMEOUT,
 };
 use pandora_toolchain::pnworker::probe_pages::{
     probe_page_body, probe_page_components, probe_page_count,
@@ -58,7 +58,7 @@ pub async fn handle_batch_link(
     torrent_url: String,
 ) {
     let Some(attachment) = option_attachment(command, "subtitle") else {
-        command_error(ctx, command, "Error: Subtitle file is required").await;
+        command_error(ctx, command, "Error: attach your subtitle file to the `subtitle` option.").await;
         return;
     };
     let archive = match attachment.download().await {
@@ -333,7 +333,7 @@ pub async fn handle_batch_component(
                 ctx,
                 CreateInteractionResponse::Message(
                     CreateInteractionResponseMessage::new()
-                        .content(get_message(BATCH_CONFIRM_EXPIRED, &lang))
+                        .content(get_message(BATCH_CONFIRM_NOT_YOURS, &lang))
                         .ephemeral(true),
                 ),
             )
@@ -603,20 +603,20 @@ fn select_files(
         match part.split_once('-') {
             Some((start, end)) => {
                 let start = start.trim().parse::<u64>().map_err(|_| {
-                    format!("Error: `{}` is not a valid index range.", part)
+                    format!("Error: `{}` is not a valid file number or range.", part)
                 })?;
                 let end = end
                     .trim()
                     .parse::<u64>()
-                    .map_err(|_| format!("Error: `{}` is not a valid index range.", part))?;
+                    .map_err(|_| format!("Error: `{}` is not a valid file number or range.", part))?;
                 if end < start || end.saturating_sub(start) > 512 {
-                    return Err(format!("Error: `{}` is not a valid index range.", part));
+                    return Err(format!("Error: `{}` is not a valid file number or range.", part));
                 }
                 wanted.extend(start..=end);
             }
             None => wanted.push(
                 part.parse::<u64>()
-                    .map_err(|_| format!("Error: `{}` is not a valid index.", part))?,
+                    .map_err(|_| format!("Error: `{}` is not a valid file number.", part))?,
             ),
         }
     }
@@ -632,12 +632,17 @@ fn select_files(
 async fn read_subtitle_archive(archive: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
     use futures_lite::AsyncReadExt;
 
-    let reader = async_zip::base::read::mem::ZipFileReader::new(archive.to_vec())
-        .await
-        .map_err(|e| format!("the archive could not be read: {}", e))?;
+    // async_zip 0.0.19 deprecated the in-memory reader in favour of `read1`'s seek reader: the
+    // central directory is the source of truth for entry names and offsets, and CRC32 is verified
+    // at end-of-file, so a corrupted archive fails per entry instead of yielding garbage subtitles.
+    let mut reader = async_zip::base::read1::seek::ZipArchiveReader::open(
+        futures_lite::io::Cursor::new(archive.to_vec()),
+    )
+    .await
+    .map_err(|e| format!("the archive could not be read: {}", e))?;
     let mut named: Vec<(String, usize)> = Vec::new();
-    for (position, entry) in reader.file().entries().iter().enumerate() {
-        let Ok(name) = entry.filename().as_str() else {
+    for (position, entry) in reader.cdrs().iter().enumerate() {
+        let Some(name) = entry.insecure_file_name.as_str() else {
             continue;
         };
         if name.ends_with('/') {
@@ -655,7 +660,7 @@ async fn read_subtitle_archive(archive: &[u8]) -> Result<Vec<(String, Vec<u8>)>,
     for (name, position) in named {
         let mut bytes = Vec::new();
         reader
-            .reader_with_entry(position)
+            .file(position)
             .await
             .map_err(|e| format!("`{}` could not be read: {}", name, e))?
             .read_to_end(&mut bytes)

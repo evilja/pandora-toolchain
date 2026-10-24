@@ -101,5 +101,42 @@ pub fn get_perm(envfile: String) -> Vec<String> {
     if file.read_to_string(&mut buf).is_err() {
         return vec![];
     }
-    buf.lines().map(|line| line.to_string()).collect()
+    // One Discord user id per line. Trim each line so a trailing space or a Windows
+    // `\r` from a hand-edited file does not silently fail the exact-match auth check.
+    // Skip blanks and `#`/`;` comments so commented-out ids stay revoked, matching
+    // the `command_ranks.pandora` parser and the `/lsauth` display filter.
+    buf.lines()
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty() && !line.starts_with('#') && !line.starts_with(';'))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_perm(contents: &str) -> String {
+        let path = std::env::temp_dir().join(format!(
+            "pandora-perm-test-{}-{}.pandora",
+            std::process::id(),
+            contents.len()
+        ));
+        // CRLF on purpose: a file saved from Windows Notepad must still authorize.
+        let stored = contents.replace('\n', "\r\n");
+        std::fs::write(&path, stored).unwrap();
+        path.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn perm_files_tolerate_notepad_formatting() {
+        let path = write_perm("123456789\r\n  987654321  \n\n# revoked: 111\n; also revoked: 222\n");
+        let ids = get_perm(path.clone());
+        assert_eq!(ids, vec!["123456789".to_string(), "987654321".to_string()]);
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn missing_perm_file_authorizes_nobody() {
+        assert!(get_perm("DB/config/global/perms/definitely-not-here.pandora".to_string()).is_empty());
+    }
 }

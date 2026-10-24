@@ -54,7 +54,7 @@ pub async fn idle_presence_text() -> String {
         return "No jobs in queue.".to_string();
     }
     let mut bytes = [0u8; 8];
-    let idx = if getrandom::getrandom(&mut bytes).is_ok() {
+    let idx = if getrandom::fill(&mut bytes).is_ok() {
         (u64::from_ne_bytes(bytes) as usize) % flavors.len()
     } else {
         0

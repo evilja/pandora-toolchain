@@ -3,6 +3,9 @@ use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+// Only the unix download path writes chunks through a file; leaving this ungated made the
+// Windows build warn on every check.
+#[cfg(unix)]
 use tokio::io::AsyncWriteExt;
 
 use crate::pnworker::link::spec::ReleaseInfo;
@@ -109,7 +112,13 @@ fn hash_file(path: &Path) -> Result<BinaryFile, String> {
         if bytes > MAX_BINARY_BYTES { return Err(format!("{name} exceeds the package limit")); }
         hash.update(&buffer[..read]);
     }
-    Ok(BinaryFile { name, bytes, sha256: format!("{:x}", hash.finalize()) })
+    // digest 0.11's hybrid-array output no longer implements `LowerHex`; hex through the shared
+    // encoder keeps the digest format identical (lowercase, zero-padded).
+    Ok(BinaryFile {
+        name,
+        bytes,
+        sha256: crate::lib::secret::hex_bytes(&hash.finalize()),
+    })
 }
 
 fn runtime_directory() -> Option<PathBuf> {

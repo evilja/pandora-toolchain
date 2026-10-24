@@ -14,7 +14,7 @@ pub async fn handle_alias(ctx: &Context, command: &serenity::all::CommandInterac
         "choose" => (command.user.id.get(), "You are".to_string()),
         "force" => {
             if !has_level_at_least(command.user.id.get(), FORCE_RANK) {
-                command_error(ctx, command, "Sorry, you're not a sigma.").await;
+                command_error(ctx, command, "Only Admin tier and above can set somebody else's alias. Use `/alias choose` for your own name.").await;
                 return;
             }
             let Some(user) = option_user(command, "user") else {

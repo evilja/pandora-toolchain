@@ -18,7 +18,7 @@ pub fn hex_bytes(bytes: &[u8]) -> String {
 // transfer fails, `/gentoken` reports the entropy source by name.
 pub fn random_hex_token() -> Result<String, getrandom::Error> {
     let mut bytes = [0u8; 32];
-    getrandom::getrandom(&mut bytes)?;
+    getrandom::fill(&mut bytes)?;
     Ok(hex_bytes(&bytes))
 }
 
@@ -27,7 +27,7 @@ pub fn random_hex_token() -> Result<String, getrandom::Error> {
 // template, a height, and a server still land on different names.
 pub fn random_short_id() -> Result<String, getrandom::Error> {
     let mut bytes = [0u8; 3];
-    getrandom::getrandom(&mut bytes)?;
+    getrandom::fill(&mut bytes)?;
     Ok(hex_bytes(&bytes))
 }
 
@@ -36,7 +36,7 @@ pub fn random_short_id() -> Result<String, getrandom::Error> {
 // it is an identifier, not the capability — `random_hex_token` still guards the directory.
 pub fn random_uuid_v4() -> Result<String, getrandom::Error> {
     let mut bytes = [0u8; 16];
-    getrandom::getrandom(&mut bytes)?;
+    getrandom::fill(&mut bytes)?;
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     let hex = hex_bytes(&bytes);
