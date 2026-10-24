@@ -214,7 +214,18 @@ where
     // parked. Without kill_on_drop the tool keeps running with nobody reading it, and every reboot
     // of a wedged worker leaves another encoder behind competing for the machine.
     cmd.kill_on_drop(true);
-    let mut child = cmd.spawn().expect("Failed to spawn tool");
+    // A spawn failure here is a missing or unrunnable tool binary — almost always permanent for
+    // this job. Panicking the layer instead would reboot it into the same failure on every
+    // heartbeat while the job sits until the stall watchdog gives up on it twenty minutes later;
+    // failing the job now is the same answer the tool_args error above already gives, and the
+    // reason (tool name + OS error) is on stderr.
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            eprintln!("[Pandora] failed to spawn {} for job {}: {}", tool_path, job_id, error);
+            return ToolResult::Fail;
+        }
+    };
     let stdout = child.stdout.take().expect("No stdout");
     let reader = BufReader::new(stdout);
     let mut lines = reader.lines();
@@ -234,14 +245,16 @@ where
         }
     }
 
-    match child
-        .wait()
-        .await
-        .expect("Failed to wait on child")
-        .success()
-    {
-        true => ToolResult::Success,
-        false => ToolResult::Fail,
+    // Waiting on the child can also fail (a broken handle, an OS-level error). Treat it as a
+    // failed run rather than a dead worker: kill_on_drop has already ensured no tool survives
+    // this future.
+    match child.wait().await {
+        Ok(status) if status.success() => ToolResult::Success,
+        Ok(_) => ToolResult::Fail,
+        Err(error) => {
+            eprintln!("[Pandora] failed to wait on {} for job {}: {}", tool_path, job_id, error);
+            ToolResult::Fail
+        }
     }
 }
 
@@ -522,4 +535,30 @@ mod intro_tests {
 #[inline]
 pub fn string_byte_to_mb(s: &str) -> u16 {
     (s.parse::<u64>().unwrap_or(1) / 1024 / 1024) as u16
+}
+
+#[cfg(test)]
+mod run_tool_tests {
+    use super::{run_tool, ToolResult};
+    use crate::lib::protocol::core::Protocol;
+
+    // A tool binary that cannot be spawned fails the job; it must not panic the worker layer,
+    // which would reboot into the same failure on every heartbeat while the job waits out the
+    // twenty-minute stall watchdog.
+    #[tokio::test]
+    async fn a_tool_that_cannot_be_spawned_fails_the_job_instead_of_panicking() {
+        let mut proto = Protocol::new(vec![1]);
+        let paths = std::collections::HashMap::new();
+        let params: Vec<super::CliParam> = Vec::new();
+        let result = run_tool(
+            "pandora-tool-that-does-not-exist",
+            &params,
+            &paths,
+            7,
+            &mut proto,
+            |_| None,
+        )
+        .await;
+        assert!(matches!(result, ToolResult::Fail));
+    }
 }

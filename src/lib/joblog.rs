@@ -290,6 +290,10 @@ mod tests {
         tokio::fs::remove_dir_all(root).await.ok();
     }
 
+    // Unix-only: the dangling-entry fixture is a symlink, and creating one on Windows needs
+    // privileges the test host may not have. The behaviour under test lives in log_files and is
+    // platform-independent.
+    #[cfg(unix)]
     #[tokio::test]
     async fn an_entry_that_does_not_resolve_never_hides_the_logs_beside_it() {
         let root = scratch("dangling").await;

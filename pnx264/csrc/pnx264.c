@@ -3,6 +3,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* MSVC's CRT spells these with leading underscores and has no POSIX strtok_r; without this the
+ * shim does not compile under MSVC at all (cl reports undeclared identifiers), which broke every
+ * Windows build regardless of where x264.h came from. strtok_s is signature-compatible. */
+#ifdef _MSC_VER
+#define strdup _strdup
+#define strtok_r strtok_s
+#endif
+
 /* X264_BUILD is a number and X264_POINTVER a string literal, so the identity is assembled by the
  * preprocessor and costs nothing at runtime. The fork marker is what separates an encoder that can
  * plan from one that merely shares a version number with it. */
