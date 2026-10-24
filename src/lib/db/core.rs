@@ -25,6 +25,18 @@ pub struct JobDb {
 }
 
 impl JobDb {
+    // A pool that opens nothing and touches no file until a query actually asks for a connection.
+    // The API router has to be buildable — axum validates every route while it is being inserted,
+    // and PANICS on a bad one — without a database on disk, so the test that builds it must not
+    // create `DB/DATA.db` as a side effect.
+    #[cfg(test)]
+    pub(crate) fn lazy() -> Self {
+        let pool = SqlitePoolOptions::new()
+            .connect_lazy("sqlite::memory:")
+            .expect("an in-memory sqlite pool is always constructible");
+        Self { pool }
+    }
+
     pub async fn new() -> Result<Self, sqlx::Error> {
         let db_path = PathBuf::from("DB").join("DATA.db");
         tokio::fs::create_dir_all("DB").await?;
@@ -197,7 +209,10 @@ impl JobDb {
     }
 
     async fn column_exists(&self, table: &str, column: &str) -> Result<bool, sqlx::Error> {
-        let rows = sqlx::query(&format!("PRAGMA table_info({})", table))
+        // sqlx 0.9 refuses unbounded strings as SQL (`SqlSafeStr` is only implemented for
+        // `&'static str`). This PRAGMA interpolates the table name because SQLite cannot bind an
+        // identifier; the only caller passes the literal `"jobs"` below, so it is audited.
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!("PRAGMA table_info({})", table)))
             .fetch_all(&self.pool)
             .await?;
         for row in rows {
@@ -209,7 +224,10 @@ impl JobDb {
         Ok(false)
     }
 
-    async fn add_column_if_missing(&self, alter_sql: &str) -> Result<(), sqlx::Error> {
+    // `alter_sql` is `&'static str` because every caller passes a literal migration statement:
+    // sqlx 0.9's `SqlSafeStr` bound only admits `&'static str`, which turns "built from a
+    // literal and cannot drift" into something the type system enforces.
+    async fn add_column_if_missing(&self, alter_sql: &'static str) -> Result<(), sqlx::Error> {
         sqlx::query(alter_sql)
             .execute(&self.pool)
             .await
@@ -457,7 +475,9 @@ impl JobDb {
         for chunk in job_ids.chunks(500) {
             let placeholders = ["?"].repeat(chunk.len()).join(",");
             let sql = format!("{}WHERE job_id IN ({})", job_query!(""), placeholders);
-            let mut query = sqlx::query_as::<_, JobRow>(&sql);
+            // Audited: `sql` is the static `job_query!` base plus `?` placeholders repeated once
+            // per bound id — no caller data reaches the SQL text, only the bind parameters.
+            let mut query = sqlx::query_as::<_, JobRow>(sqlx::AssertSqlSafe(sql));
             for job_id in chunk {
                 query = query.bind(*job_id as i64);
             }
@@ -503,7 +523,9 @@ impl JobDb {
                 "SELECT job_id, identity FROM job_owners WHERE job_id IN ({})",
                 placeholders
             );
-            let mut query = sqlx::query(&sql);
+            // Audited: `sql` is a literal plus `?` placeholders repeated once per bound id —
+            // no caller data reaches the SQL text, only the bind parameters.
+            let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
             for job_id in chunk {
                 query = query.bind(*job_id as i64);
             }

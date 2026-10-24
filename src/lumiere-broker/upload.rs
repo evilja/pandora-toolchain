@@ -718,7 +718,7 @@ async fn file_md5(path: &Path, cancel_file: &Option<PathBuf>) -> Result<String, 
         }
         context.consume(&buffer[..read]);
     }
-    Ok(format!("{:x}", context.compute()))
+    Ok(format!("{:x}", context.finalize()))
 }
 
 async fn upload_drive_chunks(

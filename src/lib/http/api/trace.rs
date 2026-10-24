@@ -266,23 +266,30 @@ mod tests {
 
     #[tokio::test]
     async fn ass_archives_always_contain_one_ass_file() {
+        use futures_lite::AsyncReadExt;
+
         let archive = zip_ass("sample.ass", b"[Script Info]\nTitle: test\n")
             .await
             .unwrap();
-        let zip = async_zip::base::read::mem::ZipFileReader::new(archive)
-            .await
-            .unwrap();
+        // async_zip 0.0.19 deprecated the in-memory reader in favour of `read1`'s seek reader,
+        // which reads the central directory (so entry count/names come from `cdrs`) and validates
+        // CRC32 at end-of-file — the same check the old `read_to_string_checked` performed.
+        let mut zip = async_zip::base::read1::seek::ZipArchiveReader::open(
+            futures_lite::io::Cursor::new(archive),
+        )
+        .await
+        .unwrap();
 
-        assert_eq!(zip.file().entries().len(), 1);
+        assert_eq!(zip.cdrs().len(), 1);
         assert_eq!(
-            zip.file().entries()[0].filename().as_str().unwrap(),
+            zip.cdrs()[0].insecure_file_name.as_str().unwrap(),
             "sample.ass"
         );
         let mut contents = String::new();
-        zip.reader_with_entry(0)
+        zip.file(0)
             .await
             .unwrap()
-            .read_to_string_checked(&mut contents)
+            .read_to_string(&mut contents)
             .await
             .unwrap();
         assert_eq!(contents, "[Script Info]\nTitle: test\n");

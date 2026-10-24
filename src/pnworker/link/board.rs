@@ -694,7 +694,7 @@ pub fn offer(node: &str, mut spec: LinkJobSpec) -> bool {
         return false;
     }
     let mut nonce = [0u8; 16];
-    if getrandom::getrandom(&mut nonce).is_err() {
+    if getrandom::fill(&mut nonce).is_err() {
         eprintln!("[link] could not create a lease identity for job {job_id}");
         return false;
     }

@@ -107,10 +107,23 @@ pub fn hash_file(path: &Path) -> Option<(String, u64)> {
     }
     // Streamed: an intro or outro is a video, and reading one whole to hash it put the entire file
     // in memory on the coordinator and again on every node that checks its copy.
+    // digest 0.11 no longer implements `std::io::Write`, so the copy loop feeds the hasher directly.
     let mut file = std::fs::File::open(path).ok()?;
     let mut hasher = Sha256::new();
-    std::io::copy(&mut file, &mut hasher).ok()?;
-    let hash = format!("{:x}", hasher.finalize());
+    {
+        use std::io::Read;
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let read = file.read(&mut buffer).ok()?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+        }
+    }
+    // digest 0.11's hybrid-array output no longer implements `LowerHex`, so hex goes through the
+    // shared encoder instead of `format!("{:x}", ...)`.
+    let hash = crate::lib::secret::hex_bytes(&hasher.finalize());
     lock(hash_cache()).insert(path.to_path_buf(), (mtime, len, hash.clone()));
     Some((hash, len))
 }
@@ -126,7 +139,7 @@ fn revision_of(entries: &[AssetEntry]) -> String {
         })
         .collect::<Vec<_>>();
     lines.sort();
-    format!("{:x}", Sha256::digest(lines.join("\n").as_bytes()))
+    crate::lib::secret::hex_bytes(&Sha256::digest(lines.join("\n").as_bytes()))
 }
 
 // Variants pnmpeg produced to make a retained intro concat-compatible with one episode's exact
@@ -267,7 +280,7 @@ pub fn read_asset(hash: &str) -> Option<(AssetEntry, Vec<u8>)> {
     let entry = manifest.find(hash)?.clone();
     let path = source_path(&entry)?;
     let bytes = std::fs::read(&path).ok()?;
-    if format!("{:x}", Sha256::digest(&bytes)) != entry.hash {
+    if crate::lib::secret::hex_bytes(&Sha256::digest(&bytes)) != entry.hash {
         // The file changed under the cached manifest. Answering nothing is right: the node will
         // reconcile against the next revision rather than take a copy of something else.
         return None;
@@ -399,7 +412,7 @@ pub fn prune_concat(manifest: &AssetManifest) -> Vec<PathBuf> {
 }
 
 pub fn write_asset(entry: &AssetEntry, bytes: &[u8]) -> Result<(), String> {
-    if format!("{:x}", Sha256::digest(bytes)) != entry.hash {
+    if crate::lib::secret::hex_bytes(&Sha256::digest(bytes)) != entry.hash {
         return Err(format!("{} did not hash to what the manifest said", entry.name));
     }
     let Some(path) = install_path(entry) else {

@@ -84,7 +84,7 @@ impl WorkerNamePool {
             return None;
         }
         let mut bytes = [0u8; 8];
-        let idx = if getrandom::getrandom(&mut bytes).is_ok() {
+        let idx = if getrandom::fill(&mut bytes).is_ok() {
             (u64::from_ne_bytes(bytes) as usize) % available.len()
         } else {
             0

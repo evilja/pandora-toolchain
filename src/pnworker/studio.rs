@@ -1052,7 +1052,7 @@ fn validate_studio_id(id: &str) -> Result<(), String> {
 
 fn random_hex(bytes_len: usize) -> Result<String, String> {
     let mut bytes = vec![0u8; bytes_len];
-    getrandom::getrandom(&mut bytes).map_err(|e| e.to_string())?;
+    getrandom::fill(&mut bytes).map_err(|e| e.to_string())?;
     Ok(bytes.iter().map(|b| format!("{:02x}", b)).collect())
 }
 

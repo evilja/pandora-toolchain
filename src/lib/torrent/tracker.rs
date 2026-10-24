@@ -408,7 +408,7 @@ fn percent_bytes(data: &[u8]) -> String {
 
 fn random_u32() -> Result<u32> {
     let mut bytes = [0u8; 4];
-    getrandom::getrandom(&mut bytes).map_err(|error| {
+    getrandom::fill(&mut bytes).map_err(|error| {
         TorrentError::tracker(format!("random number generation failed: {error}"))
     })?;
     Ok(u32::from_be_bytes(bytes))

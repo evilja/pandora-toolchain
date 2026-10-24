@@ -632,12 +632,17 @@ fn select_files(
 async fn read_subtitle_archive(archive: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
     use futures_lite::AsyncReadExt;
 
-    let reader = async_zip::base::read::mem::ZipFileReader::new(archive.to_vec())
-        .await
-        .map_err(|e| format!("the archive could not be read: {}", e))?;
+    // async_zip 0.0.19 deprecated the in-memory reader in favour of `read1`'s seek reader: the
+    // central directory is the source of truth for entry names and offsets, and CRC32 is verified
+    // at end-of-file, so a corrupted archive fails per entry instead of yielding garbage subtitles.
+    let mut reader = async_zip::base::read1::seek::ZipArchiveReader::open(
+        futures_lite::io::Cursor::new(archive.to_vec()),
+    )
+    .await
+    .map_err(|e| format!("the archive could not be read: {}", e))?;
     let mut named: Vec<(String, usize)> = Vec::new();
-    for (position, entry) in reader.file().entries().iter().enumerate() {
-        let Ok(name) = entry.filename().as_str() else {
+    for (position, entry) in reader.cdrs().iter().enumerate() {
+        let Some(name) = entry.insecure_file_name.as_str() else {
             continue;
         };
         if name.ends_with('/') {
@@ -655,7 +660,7 @@ async fn read_subtitle_archive(archive: &[u8]) -> Result<Vec<(String, Vec<u8>)>,
     for (name, position) in named {
         let mut bytes = Vec::new();
         reader
-            .reader_with_entry(position)
+            .file(position)
             .await
             .map_err(|e| format!("`{}` could not be read: {}", name, e))?
             .read_to_end(&mut bytes)
