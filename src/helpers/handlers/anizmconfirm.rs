@@ -359,7 +359,7 @@ pub(super) fn job_embed_links(uploaded: &serde_json::Value) -> Vec<(String, Stri
 }
 
 async fn uploaded_links(job_id: u64) -> Result<serde_json::Value, String> {
-    let db = pandora_toolchain::lib::db::core::JobDb::new()
+    let db = pandora_toolchain::lib::db::core::JobDb::shared()
         .await
         .map_err(|e| format!("Database error: {}", e))?;
     let row = db

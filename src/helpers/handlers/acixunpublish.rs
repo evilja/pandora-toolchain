@@ -27,7 +27,7 @@ pub async fn handle_acixunpublish(
         return;
     }
 
-    let db = match pandora_toolchain::lib::db::core::JobDb::new().await {
+    let db = match pandora_toolchain::lib::db::core::JobDb::shared().await {
         Ok(db) => db,
         Err(e) => {
             let content = format!("Database error: {}", e);

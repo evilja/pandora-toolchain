@@ -17,7 +17,7 @@ pub async fn handle_smartlist(ctx: &Context, command: &serenity::all::CommandInt
     if attached_repo(ctx, command, server_id, None).await.is_none() {
         return;
     }
-    let db = match JobDb::new().await {
+    let db = match JobDb::shared().await {
         Ok(db) => db,
         Err(e) => {
             command_error(ctx, command, format!("Database error: {}", e)).await;

@@ -64,7 +64,7 @@ async fn acknowledge(ctx: &Context, component: &ComponentInteraction) {
 }
 
 async fn probe_file_list(job_id: u64) -> Option<String> {
-    let db = pandora_toolchain::lib::db::core::JobDb::new().await.ok()?;
+    let db = pandora_toolchain::lib::db::core::JobDb::shared().await.ok()?;
     let row = db.get_job(job_id).await.ok()??;
     probe_list_from_progress(row.progress.as_deref())
 }

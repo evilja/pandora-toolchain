@@ -37,7 +37,7 @@ pub async fn handle_acixconfirm(
         return;
     }
 
-    let db = match pandora_toolchain::lib::db::core::JobDb::new().await {
+    let db = match pandora_toolchain::lib::db::core::JobDb::shared().await {
         Ok(d) => d,
         Err(e) => {
             acixconfirm_response(ctx, command, job_id, format!("Database error: {}", e)).await;

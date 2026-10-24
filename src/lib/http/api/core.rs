@@ -190,7 +190,7 @@ impl ApiRateLimiter {
 
 pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let env = get_pandora_env();
-    let db = Arc::new(JobDb::new().await?);
+    let db = Arc::new(JobDb::shared().await?);
     db.init_schema().await?;
     db.migrate().await?;
     let api_author = env

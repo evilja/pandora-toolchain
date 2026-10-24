@@ -55,7 +55,7 @@ pub async fn list_source(
         .await
         .map_err(|_| "the worker queue is not running".to_string())?;
 
-    let db = JobDb::new()
+    let db = JobDb::shared()
         .await
         .map_err(|e| format!("failed to open job DB: {}", e))?;
     let started = tokio::time::Instant::now();

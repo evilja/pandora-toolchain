@@ -309,7 +309,7 @@ async fn record_source_name(job_id: u64, source: &std::path::Path) {
     let Some(name) = source.file_name().map(|name| name.to_string_lossy().to_string()) else {
         return;
     };
-    match crate::lib::db::core::JobDb::new().await {
+    match crate::lib::db::core::JobDb::shared().await {
         Ok(db) => {
             if let Err(e) = db.set_source_name(job_id, &name).await {
                 eprintln!("[Pandora Downloader] could not record the source name of {}: {}", job_id, e);

@@ -87,7 +87,7 @@ pub async fn handle_akiraconfirm(ctx: &Context, command: &serenity::all::Command
         .unwrap_or("https://index.akirasubs.com")
         .to_string();
 
-    let db = match pandora_toolchain::lib::db::core::JobDb::new().await {
+    let db = match pandora_toolchain::lib::db::core::JobDb::shared().await {
         Ok(d) => d,
         Err(e) => {
             akiraconfirm_response(ctx, command, job_id, format!("Database error: {}", e)).await;

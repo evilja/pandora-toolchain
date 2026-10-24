@@ -34,7 +34,7 @@ fn scope_of(command_name: &str) -> JobScope {
 }
 
 async fn candidate_rows(channel_id: u64, scope: JobScope) -> Vec<JobRow> {
-    let db = match JobDb::new().await {
+    let db = match JobDb::shared().await {
         Ok(db) => db,
         Err(e) => {
             // An empty choice list is also what "this channel has no jobs" looks like, so a DB
