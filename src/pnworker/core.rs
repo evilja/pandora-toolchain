@@ -979,6 +979,16 @@ async fn queue_pancode_job(
         return true;
     }
 
+    if let Some(index) = job.probe_file_index {
+        if let Some(episode) = listed_file_episode(db, probe_id, index).await {
+            job.display_link = Some(format!(
+                "{} • file #{} • {}",
+                crate::lib::p2p::nyaaise::display_source_link(&job.torrent.get()),
+                index,
+                episode
+            ));
+        }
+    }
     queue_download_job(db, queue, shrine, job, job.probe_file_index.into_iter().collect(), false).await
 }
 
@@ -2903,6 +2913,13 @@ async fn listed_file_name(db: &JobDb, job_id: u64, index: Option<u64>) -> Option
         .filter(|name| !name.is_empty())
 }
 
+// Read the episode before admission replaces the listing's progress with encode progress.
+async fn listed_file_episode(db: &JobDb, job_id: u64, index: u64) -> Option<String> {
+    let row = db.get_job(job_id).await.ok()??;
+    let progress: serde_json::Value = serde_json::from_str(row.progress.as_deref()?).ok()?;
+    selected_file_episode(progress.get("files")?.as_array()?, index)
+}
+
 // A torrent lists its files by path; the name worth showing somebody is the last component.
 pub fn source_file_name(path: &str) -> String {
     path.rsplit(['/', '\\']).next().unwrap_or(path).trim().to_string()
@@ -2995,6 +3012,10 @@ async fn promote_picked_job(
     if let Some(name) = listed_file_name(db, job_id, index).await {
         db.set_source_name(job_id, &name).await.ok();
     }
+    let episode = match index {
+        Some(index) => listed_file_episode(db, job_id, index).await,
+        None => None,
+    };
     let mut job = queue.remove(pos);
     job.job_type = job_type;
     job.pick_then = None;
@@ -3009,9 +3030,10 @@ async fn promote_picked_job(
             let _ = pick_answer.send(index);
         }
         job.display_link = Some(format!(
-            "{} • file #{}",
+            "{} • file #{}{}",
             crate::lib::p2p::nyaaise::display_source_link(&job.torrent.get()),
-            index
+            index,
+            episode.map(|episode| format!(" • {}", episode)).unwrap_or_default()
         ));
     }
     job.ready = Stage::Queued;

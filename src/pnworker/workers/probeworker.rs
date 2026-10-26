@@ -820,14 +820,36 @@ fn load_preview_font(path: Option<&Path>) -> Font {
         .unwrap_or_else(Font::fallback)
 }
 
-fn format_probe_rows(rows: &[ProbeFile]) -> Vec<String> {
+// Reuse the listing's episode detection, including numeric columns in unconventional filenames,
+// so a selected index keeps the same episode label the person picked from the list.
+pub fn selected_file_episode(files: &[serde_json::Value], index: u64) -> Option<String> {
+    let rows = files.iter().filter_map(|file| Some(ProbeFile {
+        idx: file.get("index")?.as_u64()?.to_string(),
+        name: file.get("name")?.as_str()?.to_string(),
+        size: file.get("bytes").and_then(|v| v.as_u64()).unwrap_or(0).to_string(),
+    })).collect::<Vec<_>>();
+    let tokens = probe_episode_tokens(&rows);
+    if tokens.iter().filter(|token| token.is_some()).count() < 2 {
+        return None;
+    }
+    rows.iter().zip(tokens).find_map(|(row, token)| {
+        (row.idx == index.to_string()).then_some(token).flatten().map(|token| format!("E{}", token))
+    })
+}
+
+fn probe_episode_tokens(rows: &[ProbeFile]) -> Vec<Option<String>> {
     let basenames: Vec<String> = rows.iter().map(|r| basename(&r.name)).collect();
     let direct_tokens: Vec<Option<String>> = basenames.iter().map(|n| episode_token(n)).collect();
-    let tokens = if direct_tokens.iter().filter(|t| t.is_some()).count() >= 2 {
+    if direct_tokens.iter().filter(|t| t.is_some()).count() >= 2 {
         direct_tokens
     } else {
         sequence_tokens(&basenames)
-    };
+    }
+}
+
+fn format_probe_rows(rows: &[ProbeFile]) -> Vec<String> {
+    let basenames: Vec<String> = rows.iter().map(|r| basename(&r.name)).collect();
+    let tokens = probe_episode_tokens(rows);
     let detected = tokens.iter().filter(|t| t.is_some()).count() >= 2;
     let mut listed: Vec<(&ProbeFile, &String, &Option<String>)> = rows
         .iter()
@@ -981,6 +1003,24 @@ mod tests {
             name: name.to_string(),
             size: "734003200".to_string(),
         }
+    }
+
+    #[test]
+    fn selected_episode_uses_torrent_index_and_omits_unknown_numbers() {
+        let files = vec![
+            serde_json::json!({"index": 10, "name": "Show S01E12v2.mkv"}),
+            serde_json::json!({"index": 3, "name": "Show S01E02.mkv"}),
+            serde_json::json!({"index": 4, "name": "Extras/creditless OP.mkv"}),
+        ];
+        assert_eq!(selected_file_episode(&files, 10).as_deref(), Some("E12v2"));
+        assert_eq!(selected_file_episode(&files, 3).as_deref(), Some("E02"));
+        assert_eq!(selected_file_episode(&files, 4), None);
+        assert_eq!(selected_file_episode(&files, 99), None);
+        let sequence = vec![
+            serde_json::json!({"index": 9, "name": "Show 1080p 07.mkv"}),
+            serde_json::json!({"index": 2, "name": "Show 1080p 08.mkv"}),
+        ];
+        assert_eq!(selected_file_episode(&sequence, 2).as_deref(), Some("E08"));
     }
 
     #[test]
