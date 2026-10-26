@@ -92,11 +92,17 @@ fn describe(repo: &Repository, commit: &git2::Commit) -> SyncedCommit {
         .as_object()
         .short_id()
         .ok()
-        .and_then(|buffer| buffer.as_str().map(str::to_string))
+        .and_then(|buffer| buffer.as_str().ok().map(str::to_string))
         .unwrap_or_else(|| commit.id().to_string().chars().take(7).collect());
     SyncedCommit {
         id,
-        title: commit.summary().unwrap_or("(no commit title)").to_string(),
+        // git2 0.21 returns `Result<Option<&str>>`: `Ok(None)` is a commit with no summary.
+        title: commit
+            .summary()
+            .ok()
+            .flatten()
+            .unwrap_or("(no commit title)")
+            .to_string(),
     }
 }
 
@@ -129,12 +135,11 @@ fn commits_between(repo: &Repository, from: Oid, to: Oid) -> (Vec<SyncedCommit>,
 pub fn git_pull(repo_path: &str) -> Result<SyncReport, git2::Error> {
     let repo = Repository::open(repo_path)?;
     let head = repo.head()?;
-    let refname = head.name()
-        .ok_or_else(|| git2::Error::from_str("invalid HEAD"))?
-        .to_owned();
-    let branch = head.shorthand()
-        .ok_or_else(|| git2::Error::from_str("invalid branch"))?
-        .to_owned();
+    // git2 0.21 returns `Result<&str>` here instead of `Option<&str>`; `?` already maps the error
+    // onto the caller's `git2::Error`, which is what the old `ok_or_else(git2::Error::from_str)`
+    // was spelling by hand.
+    let refname = head.name()?.to_owned();
+    let branch = head.shorthand()?.to_owned();
     // Captured before the fast-forward so the pulled range can be walked afterwards.
     let previous = head.target();
     drop(head);
@@ -192,10 +197,7 @@ fn fetch_origin(repo: &Repository, branch: &str) -> Result<(), git2::Error> {
 pub fn git_reset(repo_path: &str, commit: &str) -> Result<SyncReport, git2::Error> {
     let repo = Repository::open(repo_path)?;
     let head = repo.head()?;
-    let branch = head
-        .shorthand()
-        .ok_or_else(|| git2::Error::from_str("invalid branch"))?
-        .to_owned();
+    let branch = head.shorthand()?.to_owned();
     let previous = head.target();
     drop(head);
 

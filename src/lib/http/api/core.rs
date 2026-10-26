@@ -190,7 +190,7 @@ impl ApiRateLimiter {
 
 pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let env = get_pandora_env();
-    let db = Arc::new(JobDb::new().await?);
+    let db = Arc::new(JobDb::shared().await?);
     db.init_schema().await?;
     db.migrate().await?;
     let api_author = env
@@ -221,16 +221,35 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         )),
     };
 
+    let app = api_routes(&state).with_state(state);
+
+    let addr = SocketAddr::new(host, port);
+    let listener = TcpListener::bind(addr).await?;
+    println!("[Pandora API] serving console + API on http://{}", addr);
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+// The full console + API route table, with the state left to the caller. Split out of `serve` so
+// a test can build it: axum validates a route when it is added and *panics* on an invalid one —
+// the 0.8 migration made the removed `:param` syntax exactly that failure, which compiles cleanly
+// and only explodes the moment `serve` starts. Building the router here is the only check that
+// runs before the listener binds.
+//
+// The state is a parameter rather than left entirely to `with_state` because the bearer middleware
+// is layered on here and `middleware::from_fn` cannot extract `State`; `from_fn_with_state` needs
+// the concrete value up front.
+fn api_routes(state: &AppState) -> Router<AppState> {
     let protected = Router::new()
         .route("/jobs", get(list_jobs))
-        .route("/jobs/:id", get(get_job))
+        .route("/jobs/{id}", get(get_job))
         .route("/jobs/encode", post(submit_encode))
         .route("/jobs/backup", post(submit_backup))
         .route("/jobs/probe", post(submit_probe))
         .route("/jobs/pancode", post(submit_pancode))
         .route("/jobs/gitcode", post(submit_gitcode))
         .route("/jobs/keycode", post(submit_keycode))
-        .route("/jobs/:id/cancel", post(cancel_job))
+        .route("/jobs/{id}/cancel", post(cancel_job))
         .route("/subs/media", post(super::subs::submit_media))
         .route("/workers", get(super::workers::workers))
         .route("/workers/summary", get(super::workers::summary))
@@ -242,12 +261,12 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/account/logout", post(super::account::logout))
         .route("/account/password", post(super::account::change_password))
         .route("/accounts", get(super::account::list).post(super::account::create))
-        .route("/accounts/:username/update", post(super::account::update))
-        .route("/accounts/:username/delete", post(super::account::remove))
-        .route("/jobs/:id/logs", get(super::logs::list_logs))
-        .route("/jobs/:id/logs.zip", get(super::logs::download_logs))
-        .route("/jobs/:id/logs/:name", get(super::logs::read_log))
-        .route("/jobs/:id/acix/confirm", post(acix_confirm))
+        .route("/accounts/{username}/update", post(super::account::update))
+        .route("/accounts/{username}/delete", post(super::account::remove))
+        .route("/jobs/{id}/logs", get(super::logs::list_logs))
+        .route("/jobs/{id}/logs.zip", get(super::logs::download_logs))
+        .route("/jobs/{id}/logs/{name}", get(super::logs::read_log))
+        .route("/jobs/{id}/acix/confirm", post(acix_confirm))
         .route("/studios", get(super::studio::list).post(super::studio::create))
         .route("/studios/current", get(super::studio::current))
         .route("/studios/current/disown", post(super::studio::disown))
@@ -257,20 +276,20 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
             post(super::studio::add_track)
                 .layer(DefaultBodyLimit::max(STUDIO_AUDIO_REQUEST_LIMIT)),
         )
-        .route("/studios/current/media/sources/:source_index", get(super::studio::source_media))
-        .route("/studios/current/media/tracks/:track_id", get(super::studio::track_media))
-        .route("/studios/current/tracks/:track_id/edit", post(super::studio::edit_track))
-        .route("/studios/current/tracks/:track_id/move", post(super::studio::move_track))
-        .route("/studios/current/tracks/:track_id/cut", post(super::studio::cut_track))
-        .route("/studios/current/tracks/:track_id/remove", post(super::studio::remove_track))
+        .route("/studios/current/media/sources/{source_index}", get(super::studio::source_media))
+        .route("/studios/current/media/tracks/{track_id}", get(super::studio::track_media))
+        .route("/studios/current/tracks/{track_id}/edit", post(super::studio::edit_track))
+        .route("/studios/current/tracks/{track_id}/move", post(super::studio::move_track))
+        .route("/studios/current/tracks/{track_id}/cut", post(super::studio::cut_track))
+        .route("/studios/current/tracks/{track_id}/remove", post(super::studio::remove_track))
         .route("/studios/current/timeline", post(super::studio::timeline))
         .route("/studios/current/preview", post(super::studio::preview))
         .route("/studios/current/render", post(super::studio::render))
-        .route("/studios/:id", get(super::studio::details))
-        .route("/studios/:id/switch", post(super::studio::switch))
-        .route("/studios/:id/reown", post(super::studio::reown))
+        .route("/studios/{id}", get(super::studio::details))
+        .route("/studios/{id}/switch", post(super::studio::switch))
+        .route("/studios/{id}/reown", post(super::studio::reown))
         .route("/git/attachments", get(git_attachments))
-        .route("/git/attachments/:channel_id/health", get(git_attachment_health))
+        .route("/git/attachments/{channel_id}/health", get(git_attachment_health))
         .route("/git/channels", get(git_channels))
         .route("/git/readmebase", get(git_readmebase).post(git_readmebase_set))
         .route("/git/init", post(git_init))
@@ -281,18 +300,18 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/git/smartcode", post(git_smartcode))
         .route("/link/register", post(super::link::register))
         .route("/link/lease", get(super::link::lease))
-        .route("/link/lease/:id/renew", post(super::link::renew))
-        .route("/link/lease/:id/result", post(super::link::result))
+        .route("/link/lease/{id}/renew", post(super::link::renew))
+        .route("/link/lease/{id}/result", post(super::link::result))
         .route(
-            "/link/lease/:id/output",
+            "/link/lease/{id}/output",
             // A finished episode, not a JSON payload: the 8 MiB request cap that protects every
             // other route would reject it outright. The body is streamed straight to disk.
             axum::routing::put(super::link::output).layer(DefaultBodyLimit::disable()),
         )
         .route("/link/release", get(super::link::release))
-        .route("/link/binaries/:digest/:name", get(super::link::binary))
+        .route("/link/binaries/{digest}/{name}", get(super::link::binary))
         .route("/link/assets/manifest", get(super::link::assets_manifest))
-        .route("/link/assets/:hash", get(super::link::asset))
+        .route("/link/assets/{hash}", get(super::link::asset))
         .route("/gitsync", post(gitsync))
         .route("/acix/search", post(acix_search))
         .route("/acix/tmdb", post(acix_tmdb))
@@ -319,7 +338,7 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/account/status", get(super::account::status))
         .layer(DefaultBodyLimit::max(API_REQUEST_LIMIT));
 
-    let app = Router::new()
+    Router::new()
         // The console is one shell with four in-page views, so `/`, `/jobs`, `/encode` and
         // `/settings` are the same document picking its view from the path.
         .route("/", get(index))
@@ -338,31 +357,24 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/subs/manifest.webmanifest", get(subs_manifest))
         // Public on purpose: a `<video>` cannot send a bearer header, so the 256-bit token in the
         // path is the credential, the same as the Lumiere routes below.
-        .route("/subs/media/:token/:file", get(super::subs::media_file))
+        .route("/subs/media/{token}/{file}", get(super::subs::media_file))
         .route("/console.css", get(console_css))
         .route("/console.js", get(console_js))
         .route("/studio-sw.js", get(studio_service_worker))
         .route("/favicon", get(favicon))
         .route("/favicon.ico", get(favicon))
         .route("/health", get(health))
-        .route("/batch/:token", get(batch_page))
-        .route("/batch/:token/output", get(batch_output))
+        .route("/batch/{token}", get(batch_page))
+        .route("/batch/{token}/output", get(batch_output))
         .route(
-            "/lumiere/v1/files/:token/:filename",
+            "/lumiere/v1/files/{token}/{filename}",
             get(crate::lumiere_broker::serve_transfer),
         )
         .route(
-            "/lumiere/v1/hls/:token/*resource",
+            "/lumiere/v1/hls/{token}/{*resource}",
             get(crate::lumiere_broker::serve_hls),
         )
         .nest("/api/v1", public.merge(protected))
-        .with_state(state);
-
-    let addr = SocketAddr::new(host, port);
-    let listener = TcpListener::bind(addr).await?;
-    println!("[Pandora API] serving console + API on http://{}", addr);
-    axum::serve(listener, app).await?;
-    Ok(())
 }
 
 const INDEX_HTML: &str = include_str!("../../../../web/index.html");
@@ -1973,5 +1985,21 @@ mod tests {
         assert!(should_rate_limit(&Method::POST, "/api/v1/jobs/encode"));
         // Including a path that merely mentions the word.
         assert!(should_rate_limit(&Method::POST, "/api/v1/jobs/linkedy"));
+    }
+
+    // Building the router validates every route: axum panics while a route is being added — on the
+    // `:param` syntax removed in 0.8, on conflicting inserts — and those failures compile cleanly
+    // and only surface when `serve` starts, taking the whole API down. This is the check that runs
+    // in `cargo test` instead.
+    #[tokio::test]
+    async fn the_api_router_builds() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let state = AppState {
+            tx,
+            db: Arc::new(JobDb::lazy()),
+            api_author: 0,
+            rate_limiter: Arc::new(ApiRateLimiter::new(1000, Duration::from_secs(60))),
+        };
+        let _ = api_routes(&state);
     }
 }

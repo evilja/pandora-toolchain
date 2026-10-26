@@ -58,7 +58,10 @@ fn parse_tutorial_page(id: &str, user: u64) -> Option<(&str, usize)> {
 
 pub async fn handle_tutorial(ctx: &Context, command: &serenity::all::CommandInteraction) {
     let lesson = command.data.options.first().map(|o| o.name.as_str()).unwrap_or("1");
-    if pages(lesson).is_none() { return; }
+    if pages(lesson).is_none() {
+        command_error(ctx, command, "Unknown tutorial lesson. Choose `1` (your first video) or `admin` (server setup).").await;
+        return;
+    }
     let response = tutorial_page(command.user.id.get(), lesson, 0, &read_lang(command.guild_id))
         .ephemeral(true);
     if let Err(error) = command.create_response(ctx, CreateInteractionResponse::Message(response)).await {
@@ -104,6 +107,16 @@ mod tests {
                 assert!(get_message(title, lang).encode_utf16().count() <= 256);
                 assert!(get_message(body, lang).encode_utf16().count() <= 4096);
             }
+        }
+    }
+
+    #[test]
+    fn only_known_lessons_have_pages() {
+        assert!(pages("1").is_some());
+        assert!(pages("admin").is_some());
+        // Anything else must be answered with the valid lesson list, never silence.
+        for lesson in ["", "2", "help", "ADMIN", "1 ", "beginner"] {
+            assert!(pages(lesson).is_none(), "{}", lesson);
         }
     }
 }

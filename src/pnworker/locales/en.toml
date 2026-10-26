@@ -55,7 +55,7 @@ text = ""
 args = 0
 
 [ENCODE_CONCAT_PROG]
-text = "Intro pass `2/2`\nFrames `{} / {}` • `{} FPS` • `{} kbit/s`"
+text = "Opening-video pass `2/2`\nFrames `{} / {}` • `{} FPS` • `{} kbit/s`"
 args = 4
 
 [QUEUE_POSITION]
@@ -79,23 +79,23 @@ text = "Server subtitle effects failed: {}"
 args = 1
 
 [KEEP_READY]
-text = "Reserved `{}` → `{}`"
+text = "Saving `{}` under the name `{}`"
 args = 2
 
 [KEEP_DONE]
-text = "Saved for 5 hours.\nKeyword `{}` • parent `{}` • type `{}`"
+text = "Saved for 5 hours under the name `{}` ({} — from `{}`)."
 args = 3
 
 [KEEP_FAIL]
-text = "Keep failed: {}"
+text = "Could not save the video for later: {}"
 args = 1
 
 [KEYCODE_WAIT]
-text = "Waiting for keep output(s): {}"
+text = "Waiting for these saved videos: {}"
 args = 1
 
 [KEYCODE_FAIL]
-text = "Join failed: {}"
+text = "Could not combine the videos: {}"
 args = 1
 
 [UPLOAD_PROG]
@@ -119,7 +119,7 @@ text = "{}"
 args = 1
 
 [PROBE_FAIL]
-text = "The torrent could not be inspected."
+text = "The source could not be inspected."
 args = 0
 
 [PROBE_ROW]
@@ -131,11 +131,11 @@ text = "Page {}/{}"
 args = 2
 
 [PROBE_PAGE_EXPIRED]
-text = "This file list is no longer available."
+text = "This file list is no longer available. Run the command again for a fresh list."
 args = 0
 
 [BATCH_PICK_PROMPT]
-text = "This pack holds `{}` videos and the archive `{}` subtitles. Send the indexes to encode in this channel, for example `1,3,5-9`; they are paired with the subtitles in order."
+text = "This pack holds `{}` videos and your archive holds `{}` subtitles. Reply in this channel with the video numbers to encode, for example `1,3,5-9` — only you can answer, and you have 3 minutes. They will be paired with the subtitles in order; if time runs out, just run the command again."
 args = 2
 
 [COMMAND_SOURCE_PICK]
@@ -143,11 +143,11 @@ text = "Which file is this episode?"
 args = 0
 
 [PICK_PROMPT]
-text = "This is a source with multiple videos in it; please select an index by sending its number in this channel."
+text = "This link contains multiple videos. Reply in this channel with the number of the video you want, for example `5` — the number in front of the file, not the episode number. Only you can answer, and you have 3 minutes; if time runs out, run the command again."
 args = 0
 
 [PICK_TIMEOUT]
-text = "No file was selected in time, so the job was cancelled."
+text = "Nobody answered in time, so nothing was queued. Run the command again to retry."
 args = 0
 
 [PREVIEW_DONE]
@@ -275,7 +275,7 @@ text = "Location"
 args = 0
 
 [FIELD_SLUG]
-text = "Slug"
+text = "Short name"
 args = 0
 
 [FIELD_KIND]
@@ -299,7 +299,7 @@ text = "Anonymous Drive folder"
 args = 0
 
 [FIELD_WRAPSTYLE]
-text = "WrapStyle"
+text = "Subtitle line-wrapping"
 args = 0
 
 [FIELD_ANNOUNCEMENT]
@@ -307,15 +307,15 @@ text = "Announcement channel"
 args = 0
 
 [FIELD_CONCAT]
-text = "Concat / intro"
+text = "Opening video"
 args = 0
 
 [FIELD_OUTRO]
-text = "Concat / outro"
+text = "Ending video"
 args = 0
 
 [FIELD_LOCAL_GDRIVE]
-text = "Local Google Drive"
+text = "This server's Drive account"
 args = 0
 
 [FIELD_DRIVE_ONLY]
@@ -327,11 +327,11 @@ text = "/merge answers with the release file"
 args = 0
 
 [FIELD_HLS]
-text = "Lumiere HLS-only output (12 hours)"
+text = "Streaming-only link (12 hours)"
 args = 0
 
 [FIELD_HLS_NAME]
-text = "HLS output name"
+text = "Streaming file name"
 args = 0
 
 [FIELD_CHANNEL_RENAME]
@@ -415,7 +415,7 @@ text = "🎞️ Selected-file encode"
 args = 0
 
 [JOB_TYPE_PROBE]
-text = "🔎 Probe job"
+text = "🔎 File list"
 args = 0
 
 [JOB_TYPE_BACKUP]
@@ -427,11 +427,11 @@ text = "📤 Distribution job"
 args = 0
 
 [JOB_TYPE_BACKUP_ALL]
-text = "🗄️ Batch backup"
+text = "🗄️ Whole-pack backup"
 args = 0
 
 [JOB_TYPE_KEYCODE]
-text = "🧩 Join job"
+text = "🧩 Combined videos"
 args = 0
 
 [JOB_TYPE_PREVIEW]
@@ -479,15 +479,15 @@ text = "Magnet link hidden"
 args = 0
 
 [SOURCE_PROBE_FILE]
-text = "Listed source • file `#{}`"
+text = "Pack video `#{}`"
 args = 1
 
 [SOURCE_PROBE]
-text = "Listed source"
+text = "Video chosen from a pack"
 args = 0
 
 [SOURCE_KEYWORDS]
-text = "Keep outputs: {}"
+text = "Saved videos: {}"
 args = 1
 
 [COMMAND_WORKING]
@@ -595,27 +595,31 @@ text = "`{}/{}` episodes finished."
 args = 2
 
 [BATCH_EPISODE]
-text = "Batch `{}` • `{}`"
+text = "Multi-episode `{}` • `{}`"
 args = 2
 
 [BATCH_CONFIRM]
-text = "📚 Batch encode"
+text = "📚 Multi-episode encode"
 args = 0
 
 [BATCH_CONFIRM_BODY]
-text = "`{}` episodes will be encoded with these subtitles.\nDo you confirm?"
+text = "`{}` episodes will be encoded with the subtitles below, in order.\nPress ✅ to queue them or ✖ to cancel — only you can press them."
 args = 1
 
 [BATCH_CONFIRM_EXPIRED]
 text = "This batch confirmation is no longer available."
 args = 0
 
+[BATCH_CONFIRM_NOT_YOURS]
+text = "Only the person who ran this batch can confirm it."
+args = 0
+
 [BATCH_CANCELLED]
-text = "Batch encode cancelled."
+text = "Multi-episode encode cancelled."
 args = 0
 
 [BATCH_MISMATCH]
-text = "`{}` files and `{}` subtitles: only the first `{}` pairs will be encoded."
+text = "`{}` videos and `{}` subtitles: only the first `{}` pairs will run. The rest are left out."
 args = 3
 
 [FIELD_OUTPUT]
@@ -623,15 +627,15 @@ text = "Output"
 args = 0
 
 [JOB_TYPE_BATCH]
-text = "📚 Batch encode job"
+text = "📚 Multi-episode encode"
 args = 0
 
 [SUBS_DONE]
-text = "Extracted `{}` subtitle track(s).\n{}"
+text = "Found `{}` subtitle(s) in the video.\n{}"
 args = 2
 
 [SUBS_NONE]
-text = "No text subtitle track could be extracted.\n{}"
+text = "No readable subtitles found in the video.\n{}"
 args = 1
 
 [SUBS_FAIL]
@@ -1274,3 +1278,41 @@ args = 0
 [SOURCE_BATCH_NOT_YOURS]
 text = "Only the person who ran this `/source` can answer it."
 args = 0
+[QUEUE_TITLE]
+text = "Queue — `{}` running, `{}` waiting"
+args = 2
+
+[QUEUE_LINE]
+text = "`{}` {} — {}"
+args = 3
+
+[QUEUE_EMPTY]
+text = "Nothing is queued or running right now."
+args = 0
+
+[QUEUE_MORE]
+text = "…and {} more."
+args = 1
+
+[RETRY_QUEUED]
+text = "Re-queued `{}` as `{}`."
+args = 2
+
+[RETRY_UNKNOWN]
+text = "There is no job `{}`."
+args = 1
+
+[RETRY_NOT_YOURS]
+text = "That job belongs to somebody else."
+args = 0
+
+[RETRY_RUNNING]
+text = "`{}` has not finished yet."
+args = 1
+
+[RETRY_TYPE]
+text = "`{}` is not a job that can be re-run from its source."
+args = 1
+[FAILURE_TAIL]
+text = "Last log lines:\n{}"
+args = 1

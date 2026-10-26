@@ -49,7 +49,9 @@ from the built-in tables; startup only ever adds keys, so a runtime locale file 
 them keeps them, unrendered.
 `PICK_PROMPT` and `PICK_TIMEOUT` are the question a job asks about a pack and what it says when
 nobody answers; `COMMAND_SOURCE_PICK` titles the same question when `/source` asks it, and `BATCH_PICK_PROMPT` asks
-which files of a pack a subtitle archive is for. `JOB_PICK_INVALID`, `JOB_PICK_REQUIRED`, `JOB_PICK_NONE` and `JOB_PICK_DEFAULTED` belong to the `job` option of the publishing commands and `/catlogs`: a value that is no job, a missing required job, a channel with no job to default to, and the line naming the job that was assumed. These are new keys so existing runtime locale files receive the added guidance
+which files of a pack a subtitle archive is for. `BATCH_CONFIRM_NOT_YOURS` answers a batch confirmation
+click from anyone but the person who ran the command, distinct from `BATCH_CONFIRM_EXPIRED` so a refusal
+is never mistaken for a gone confirmation. `JOB_PICK_INVALID`, `JOB_PICK_REQUIRED`, `JOB_PICK_NONE` and `JOB_PICK_DEFAULTED` belong to the `job` option of the publishing commands and `/catlogs`: a value that is no job, a missing required job, a channel with no job to default to, and the line naming the job that was assumed. These are new keys so existing runtime locale files receive the added guidance
 without overwriting custom translations. Input field names retain their `/edit` spellings.
 
 GitHub setup guidance uses new `CONFIG_GITHUB_*`, `TUTORIAL_ADMIN_GITHUB_*`, and

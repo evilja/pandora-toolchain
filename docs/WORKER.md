@@ -303,6 +303,27 @@ Reading is forgiving in the same direction: `log_files` skips an entry it cannot
 stdout, and fails the request only when nothing readable turned up. One unresolvable name in the
 directory must never answer `500` in place of every transcript sitting beside it.
 
+## Failure report
+
+A failed job says *that* it failed in its own message, but the reason stayed in the tool's log:
+reachable with `/catlogs` while the job is fresh in `DB/saved_data/<job_id>/log`, and never once a
+later `/gitsync` or a cleanup takes the directory away. `lifecycle::render` is the one place every
+user-visible update passes through, so the tail is attached there rather than in each failing path:
+when `job.ready == Stage::Failed`, the newest file in the job's `log` directory is read from its
+last 4 KiB and its final five non-empty lines are added to the embed under `FAILURE_TAIL`
+("Last log lines:"), localized like every other message.
+
+The *newest* file is the point: a job that died in the encoder already has the download's log
+beside it, and reporting that one says nothing about why the encode stopped. `JobLogFile::modified`
+is whole seconds and ties for two tools that wrote in the same second — the tie then fell back to
+the directory's name order and reported the wrong tool — so the files are stamped again for a
+sub-second modification time and the newest wins.
+
+The tail is appended once per job, matched against the warnings already on the job, so a stage that
+reports twice or a probe retried after a failure does not stack copies of the same lines. A job
+with no log directory, an empty log, or a failure before any tool ran adds nothing at all rather
+than a heading with no body under it. The full transcript is still `/catlogs`.
+
 ## Linked nodes (Pandora Mini)
 
 `pndc --mini` runs the worker runtime with a link client in place of the Discord client, taking

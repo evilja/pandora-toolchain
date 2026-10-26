@@ -383,3 +383,31 @@ pub(super) async fn forgejo_config(
     }
     Some((forgejo_base, api_key))
 }
+
+// Permission files hold bare numeric Discord user ids, one per line. A pasted mention
+// (`<@123>`), a username, or an empty string is the common mistake, so it is rejected here with
+// `None` rather than written to the file where it would never match anyone.
+pub(super) fn parse_discord_user_id(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_digit()) {
+        Some(trimmed.to_string())
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_bare_numeric_ids_are_authorizable() {
+        assert_eq!(parse_discord_user_id("123456789").as_deref(), Some("123456789"));
+        assert_eq!(parse_discord_user_id("  123456789  ").as_deref(), Some("123456789"));
+        assert_eq!(parse_discord_user_id("<@123456789>"), None);
+        assert_eq!(parse_discord_user_id("<@!123456789>"), None);
+        assert_eq!(parse_discord_user_id("SomeName"), None);
+        assert_eq!(parse_discord_user_id(""), None);
+        assert_eq!(parse_discord_user_id("123 456"), None);
+    }
+}

@@ -12,6 +12,20 @@ const LEGACY_LOCALE: &str = include_str!("locales/legacy.toml");
 
 pub const QUEUE_TOO_LONG: &str = "QUEUE_TOO_LONG";
 pub const QUEUED: &str = "QUEUED";
+// `/queue`: what is waiting and what is running, as the worker's own rows describe it.
+pub const QUEUE_TITLE: &str = "QUEUE_TITLE";
+pub const QUEUE_LINE: &str = "QUEUE_LINE";
+pub const QUEUE_EMPTY: &str = "QUEUE_EMPTY";
+pub const QUEUE_MORE: &str = "QUEUE_MORE";
+// `/retry`: re-running a finished job from the row it left behind.
+pub const RETRY_QUEUED: &str = "RETRY_QUEUED";
+pub const RETRY_UNKNOWN: &str = "RETRY_UNKNOWN";
+pub const RETRY_NOT_YOURS: &str = "RETRY_NOT_YOURS";
+pub const RETRY_RUNNING: &str = "RETRY_RUNNING";
+pub const RETRY_TYPE: &str = "RETRY_TYPE";
+// The tail of the failing tool's own log, attached to the failure message so the reason is where
+// the failure is reported rather than in a ZIP that needs `/catlogs`.
+pub const FAILURE_TAIL: &str = "FAILURE_TAIL";
 pub const JOB_SETUP_FAIL: &str = "JOB_SETUP_FAIL";
 pub const JOB_CANCELLED: &str = "JOB_CANCELLED";
 pub const GITQUERY_BLOCKED: &str = "GITQUERY_BLOCKED";
@@ -119,6 +133,7 @@ pub const BATCH_EPISODE: &str = "BATCH_EPISODE";
 pub const BATCH_CONFIRM: &str = "BATCH_CONFIRM";
 pub const BATCH_CONFIRM_BODY: &str = "BATCH_CONFIRM_BODY";
 pub const BATCH_CONFIRM_EXPIRED: &str = "BATCH_CONFIRM_EXPIRED";
+pub const BATCH_CONFIRM_NOT_YOURS: &str = "BATCH_CONFIRM_NOT_YOURS";
 pub const BATCH_CANCELLED: &str = "BATCH_CANCELLED";
 pub const BATCH_MISMATCH: &str = "BATCH_MISMATCH";
 pub const ENCODE_PROG: &str = "ENCODE_PROG";

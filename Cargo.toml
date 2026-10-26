@@ -5,9 +5,9 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 
 [dependencies]
-clap = { version = "4.5", features = ["derive"] }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
+clap = { version = "4.6", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
 capella = { git = "https://github.com/evilja/capella" }
 kagami-trace = { path = "kagami-trace" }
 pnx264 = { path = "pnx264" }
@@ -16,24 +16,31 @@ pnx264 = { path = "pnx264" }
 # no other crate asks for it, so it was compiling a second client and its runtime for nobody.
 # `socks` stays: reqwest's `system-proxy` honours a `socks5://` in ALL_PROXY/HTTPS_PROXY, and that is
 # deployment configuration, not something the source can prove unused.
-reqwest = { version = "0.12", features = ["json", "multipart", "cookies", "stream", "socks"] }
+# reqwest 0.13 split `query`/`form` out of the default feature set; both are used by the
+# provider clients and the boot-profile executor.
+reqwest = { version = "0.13", features = ["json", "multipart", "cookies", "stream", "socks", "query", "form"] }
 # `sync` is used directly in 28 places and was never declared here — it only resolved because
 # serenity, capella, hyper and sqlx all happen to enable it. Depending on someone else's feature for
 # a module this crate imports itself means an unrelated dependency trim breaks the build.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "net", "time", "process", "io-util", "sync"] }
 serenity = "0.12"
-regex = "1.12.3"
-sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite"] }
-tokio-util = { version = "0.7.18", features = ["io"] }
-toml = "0.8"
-git2 = "0.19"
-md5 = "0.7"
-sha1 = "0.10"
-sha2 = "0.10"
-async_zip = { version = "0.0.17", features = ["tokio", "deflate"] }
+regex = "1.13"
+# sqlx 0.9 split the combined `runtime-tokio-rustls` feature into a runtime and a TLS provider;
+# `tls-rustls-ring-webpki` is the same ring + webpki-roots combination the old feature implied.
+sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls-ring-webpki", "sqlite"] }
+tokio-util = { version = "0.7.20", features = ["io"] }
+toml = "1.1"
+# git2 0.21 emptied its default feature set. The three features below are exactly what 0.19's
+# defaults shipped (https → openssl-sys, ssh → libssh2-sys, cred → the gitsync credential helper),
+# so fetches keep their previous backend instead of silently losing https or credential_helper.
+git2 = { version = "0.21", features = ["https", "ssh", "cred"] }
+md5 = "0.8"
+sha1 = "0.11"
+sha2 = "0.11"
+async_zip = { version = "0.0.19", features = ["tokio", "deflate"] }
 futures-lite = "2"
-axum = "0.7"
-getrandom = "0.2"
-resvg = { version = "0.47", default-features = false }
+axum = "0.8"
+getrandom = "0.4"
+resvg = { version = "0.48", default-features = false }
 ab_glyph = "0.2"
 age = "0.12.1"

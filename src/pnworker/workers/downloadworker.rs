@@ -18,8 +18,6 @@ use crate::pnworker::util::{ToolResult, WorkerNamePool, job_cancelled, run_tool,
 use crate::pnworker::worker_slots::download_worker_slots;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-#[cfg(test)]
-use std::path::MAIN_SEPARATOR;
 use tokio::fs::{create_dir_all, rename};
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::time::{Duration, Instant, sleep};
@@ -311,7 +309,7 @@ async fn record_source_name(job_id: u64, source: &std::path::Path) {
     let Some(name) = source.file_name().map(|name| name.to_string_lossy().to_string()) else {
         return;
     };
-    match crate::lib::db::core::JobDb::new().await {
+    match crate::lib::db::core::JobDb::shared().await {
         Ok(db) => {
             if let Err(e) = db.set_source_name(job_id, &name).await {
                 eprintln!("[Pandora Downloader] could not record the source name of {}: {}", job_id, e);
@@ -1076,6 +1074,7 @@ async fn find_mkv_files(root: &PathBuf) -> Vec<PathBuf> {
 mod tests {
     use super::*;
     use crate::pnworker::util::tool_args;
+    use std::path::Path;
 
     // Nothing at compile time connects a spec's `CliParam::Path` keys to the map its caller builds,
     // so every pnp2p spec is walked against the parameters this worker actually passes. Dropping a
@@ -1098,7 +1097,13 @@ mod tests {
 
         let whole = base("PNp2p7.log");
         let args = tool_args(PNP2P_TORRENT, &whole, 7).unwrap();
-        assert!(args.contains(&"DB/work/7/log/PNp2p7.log".replace('/', &MAIN_SEPARATOR.to_string())));
+        // Compared as paths: the parameter mixes the call site's forward slashes with the
+        // platform separator PathBuf rendering introduces, and path equality is component-wise.
+        assert!(
+            args.iter()
+                .any(|arg| Path::new(arg) == Path::new("DB/work/7/log/PNp2p7.log")),
+            "{args:?}"
+        );
 
         let mut one = base("PNp2pSelect7.log");
         one.insert("INDEX", PathValue::from("12".to_string()));

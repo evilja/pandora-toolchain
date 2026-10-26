@@ -154,7 +154,11 @@ mod tests {
                 .map(|(key, _)| key.to_str().unwrap())
                 .collect();
             for key in PROXY_KEYS {
-                assert_eq!(removed.contains(&key), !healthy);
+                // Windows environment keys are case-insensitive, so `ALL_PROXY` and `all_proxy`
+                // are one removal there and two on Unix; match case-insensitively so both are
+                // asserted against what the platform actually records.
+                let removed_key = removed.iter().any(|entry| entry.eq_ignore_ascii_case(key));
+                assert_eq!(removed_key, !healthy);
             }
         }
         server.await.unwrap();

@@ -468,7 +468,7 @@ pub async fn handle_publish(ctx: &Context, command: &serenity::all::CommandInter
         return;
     }
 
-    let db = match JobDb::new().await {
+    let db = match JobDb::shared().await {
         Ok(db) => db,
         Err(e) => {
             publish_response(ctx, command, job_id, format!("Database error: {}", e)).await;

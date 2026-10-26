@@ -26,7 +26,9 @@ pub enum JobScope {
 }
 
 fn scope_of(command_name: &str) -> JobScope {
-    if command_name == "catlogs" {
+    // A retry exists for the jobs that did *not* finish, so it needs the full recent history — the
+    // uploaded-only list would never offer the row it is meant to re-run.
+    if matches!(command_name, "catlogs" | "retry") {
         JobScope::Any
     } else {
         JobScope::Uploaded
@@ -34,13 +36,23 @@ fn scope_of(command_name: &str) -> JobScope {
 }
 
 async fn candidate_rows(channel_id: u64, scope: JobScope) -> Vec<JobRow> {
-    let Ok(db) = JobDb::new().await else {
-        return Vec::new();
+    let db = match JobDb::shared().await {
+        Ok(db) => db,
+        Err(e) => {
+            // An empty choice list is also what "this channel has no jobs" looks like, so a DB
+            // failure that answers the same way would read as no jobs rather than an outage.
+            eprintln!("[jobpick] job autocomplete: database unavailable: {}", e);
+            return Vec::new();
+        }
     };
     match scope {
         JobScope::Uploaded => db.get_uploaded_jobs_by_channel(channel_id).await,
         JobScope::Any => db.get_recent_jobs_by_channel(channel_id, CANDIDATE_ROWS).await,
     }
+    .map_err(|e| {
+        eprintln!("[jobpick] job autocomplete: job query failed: {}", e);
+        e
+    })
     .unwrap_or_default()
 }
 

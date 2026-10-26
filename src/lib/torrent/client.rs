@@ -958,7 +958,7 @@ fn usable_peer(address: &SocketAddr) -> bool {
 fn generate_peer_id() -> Result<[u8; 20]> {
     const ALPHABET: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
     let mut random = [0u8; 12];
-    getrandom::getrandom(&mut random)
+    getrandom::fill(&mut random)
         .map_err(|error| TorrentError::peer(format!("random number generation failed: {error}")))?;
     let mut peer_id = [0u8; 20];
     peer_id[..8].copy_from_slice(b"-PN3300-");

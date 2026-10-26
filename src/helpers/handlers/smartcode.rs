@@ -142,7 +142,7 @@ pub async fn handle_smartcode_preview(
             let _ = response_msg
                 .edit(
                     ctx,
-                    EditMessage::new().content(format!("Failed to prepare TL preview file: {}", e)),
+                    EditMessage::new().content(format!("Could not prepare the translation preview: {}", e)),
                 )
                 .await;
             return None;
@@ -155,7 +155,7 @@ pub async fn handle_smartcode_preview(
                 let _ = response_msg
                     .edit(
                         ctx,
-                        EditMessage::new().content(format!("Failed to prepare TS preview file: {}", e)),
+                        EditMessage::new().content(format!("Could not prepare the signs preview: {}", e)),
                     )
                     .await;
                 return None;
@@ -195,7 +195,7 @@ pub async fn handle_smartcode_preview(
             .edit(
                 ctx,
                 EditMessage::new()
-                    .content("Episode has no stamp marks and no typeset lines to preview."),
+                    .content("This episode has no timed signs or marked scenes to preview."),
             )
             .await;
         return None;

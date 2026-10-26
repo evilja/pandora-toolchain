@@ -278,7 +278,7 @@ pub(super) fn channel_credits(meta: &ChannelMeta) -> Option<String> {
 }
 
 async fn uploaded_links(job_id: u64) -> Result<serde_json::Value, String> {
-    let db = pandora_toolchain::lib::db::core::JobDb::new()
+    let db = pandora_toolchain::lib::db::core::JobDb::shared()
         .await
         .map_err(|e| format!("Database error: {}", e))?;
     let row = db
@@ -414,7 +414,13 @@ mod tests {
             &["byse (no OpenAnime player adapter)".to_string()],
             &["lulustream: HTTP 500".to_string()],
         );
-        assert!(text.starts_with("Partially published job `5`"), "{}", text);
+        // The summary names the OpenAnime target, not the queue job id, so a re-run's message
+        // reads the same however the job was numbered.
+        assert!(
+            text.starts_with("Partially published to OpenAnime `slug` S01E07 as **Akira Subs**."),
+            "{}",
+            text
+        );
         assert!(text.contains("Skipped: byse"), "{}", text);
         assert!(text.contains("Failed: lulustream: HTTP 500"), "{}", text);
     }
