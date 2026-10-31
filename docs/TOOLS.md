@@ -215,10 +215,22 @@ Every tool now writes a **run log**: `ToolLog` in `src/lib/logging/tool.rs`, one
 
 ## Video output identifier
 
-Newly generated videos carry `SubstitutePandoraIdentifier - Evillja Cloud Solutions` in their
-container metadata. MP4/Matroska use `comment`; MPEG-TS HLS segments use `service_name`.
+Newly generated videos carry `SubstitutePandoraIdentifier - <label>` in their container
+metadata. MP4/Matroska use `comment`; MPEG-TS HLS segments use `service_name`. The prefix is
+fixed so existing detection commands continue to work.
+
+On the main node, `/signature text:<label>` (hard Witch rank 4) sets the deployment-wide label;
+`/signature` shows it. The default remains `Evillja Cloud Solutions`. The label is a non-empty,
+single line of at most 128 Unicode characters without control characters, persisted in
+`DB/config/global/environment/signature.pandora` and read on output without a restart.
+
+Pandora Mini always uses its own `link_node_name`, even if its working directory was copied from
+the coordinator. The worker passes that identity to child tools through `PANDORA_VIDEO_NODE_LABEL`,
+including when Mini mode came from `pndc --mini` rather than `env.pandora`.
+
 The shared output arguments apply the credit after preset options, including custom presets,
-Studio renders and joined outputs. Parallel and ahead-of-time final muxes apply the same credit;
-the shared HLS muxer arguments also cover direct HLS output and broker remuxing. This changes
-metadata only, with no visible text added to the picture. Existing files and unmodified backup
-uploads are not rewritten.
+Studio renders and joined outputs. Parallel and ahead-of-time final muxes apply the same credit.
+Direct HLS output uses the producer's label too; broker remuxing preserves an existing Pandora
+identifier from the source rather than replacing a Mini node's credit with the coordinator's.
+This changes metadata only, with no visible text added to the picture. Existing files, cached
+releases and unmodified backup uploads are not rewritten.

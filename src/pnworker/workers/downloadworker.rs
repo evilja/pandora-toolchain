@@ -197,6 +197,9 @@ async fn start_download_planner(
     let foreground_busy = worker_root.join(".foreground-encode");
     let aot_lease = worker_root.join(".aot-owner");
     let mut command = tokio::process::Command::new(pnmpeg_path);
+    if let Some(label) = crate::lib::mpeg::signature::mini_label() {
+        command.env(crate::lib::mpeg::signature::NODE_LABEL_ENV, label);
+    }
     let linear = !mode.chunked;
     let prefix_state = directory.join("work").join("download.prefix");
     if linear {

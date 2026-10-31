@@ -227,6 +227,11 @@ impl HlsNames {
     // addressed, and is what keeps the published playlist portable. The muxer will not create the
     // directory its segments go in; that is the caller's job before the mux starts.
     pub fn muxer_args_in(&self, directory: &Path) -> Vec<String> {
+        self.muxer_args_in_with_identifier(directory, &super::signature::video_identifier())
+    }
+
+    // A coordinator remuxing a Mini release keeps the producer's credit rather than its own.
+    pub fn muxer_args_in_with_identifier(&self, directory: &Path, identifier: &str) -> Vec<String> {
         let segments = directory.join(&self.chunk_pattern);
         let playlist = directory.join(&self.media);
         let mut args = [
@@ -265,7 +270,7 @@ impl HlsNames {
                 ]);
             }
         }
-        args.extend(super::core::video_metadata_args());
+        args.extend(super::core::video_metadata_args_for(identifier));
         args.push(playlist.to_string_lossy().to_string());
         args
     }

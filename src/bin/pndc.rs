@@ -827,6 +827,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("build-ffmpeg", 4),
     ("gentoken", 3),
     ("genwitchtoken", 4),
+    ("signature", 4),
     ("exportdrive", 4),
     ("keyvault", 4),
     ("lstoken", 3),
@@ -1331,6 +1332,13 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Generate a new API bearer token.",
             usage: "/gentoken [label:<note>] [local:<true|false>] [link:<node>] [purpose:<cpu|gpu|both>] [boot:<profile>]",
             details: "Mints a random bearer token for the HTTP API and appends it to the token file. With local enabled, jobs submitted with the token prefer this server's Lumiere Drive profile when configured, falling back to the global Lumiere profile. With link set, it becomes a Pandora Mini node token bound to that node name, opening only the link routes. purpose marks what that node is for and is what decides which presets it is ever offered — a GPU preset never reaches a cpu node. It defaults to cpu, needs link, and is changed by minting a new token rather than by editing the file. boot names a file in DB/config/global/boot-profiles and binds it to that node, so the node is started when a job is waiting for it and no other node can take it — an offline node is not a trigger by itself, and there is no command that boots one by hand. The binding is written before the token, so a half-finished mint leaves nothing that can boot. The token is shown once, privately. Upper only.",
+        },
+        HelpCommand {
+            section: "admin",
+            name: "signature",
+            summary: "Set or show the main node's video metadata signature.",
+            usage: "/signature [text:<label>]",
+            details: "Sets the deployment-wide label after SubstitutePandoraIdentifier - for videos produced on the main node. Omit text to show the current signature. Defaults to Evillja Cloud Solutions. Changes apply without a restart; Mini nodes always use their own link_node_name instead. Witch only.",
         },
         HelpCommand {
             section: "admin",
@@ -2525,6 +2533,9 @@ impl EventHandler for Handler {
                 "genwitchtoken" => {
                     handle_genwitchtoken(&ctx, &command).await;
                 }
+                "signature" => {
+                    handle_signature(&ctx, &command).await;
+                }
                 "teenode" => {
                     handle_teenode(&ctx, &command).await;
                 }
@@ -3546,6 +3557,14 @@ impl EventHandler for Handler {
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::Attachment, "file", "TOML file")
                         .required(true)
+                ),
+            CreateCommand::new("signature")
+                .description("Set or show the main node's video signature (Witch only)")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "text", "Label after SubstitutePandoraIdentifier -; omit to show")
+                        .min_length(1)
+                        .max_length(128)
+                        .required(false)
                 ),
             CreateCommand::new("genwitchtoken")
                 .description("Generate a privileged API bearer token (witch only)")

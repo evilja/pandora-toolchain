@@ -1274,3 +1274,23 @@ args = 0
 [SOURCE_BATCH_NOT_YOURS]
 text = "Only the person who ran this `/source` can answer it."
 args = 0
+
+[SIGNATURE_CURRENT]
+text = "Current main-node signature: `{}`."
+args = 1
+
+[SIGNATURE_UPDATED]
+text = "Main-node signature saved: `{}`. Mini nodes keep their own labels."
+args = 1
+
+[SIGNATURE_INVALID]
+text = "Use a non-empty, single-line label of at most {} characters without control characters."
+args = 1
+
+[SIGNATURE_FAILED]
+text = "Could not save the signature: {}"
+args = 1
+
+[SIGNATURE_DENIED]
+text = "This command requires Witch rank (4)."
+args = 0

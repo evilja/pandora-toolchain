@@ -1274,3 +1274,23 @@ args = 0
 [SOURCE_BATCH_NOT_YOURS]
 text = "Bunu yalnızca bu `/source` komutunu çalıştıran kişi yanıtlayabilir."
 args = 0
+
+[SIGNATURE_CURRENT]
+text = "Ana node imzası: `{}`."
+args = 1
+
+[SIGNATURE_UPDATED]
+text = "Ana node imzası kaydedildi: `{}`. Mini node’lar kendi etiketlerini kullanmaya devam eder."
+args = 1
+
+[SIGNATURE_INVALID]
+text = "Kontrol karakteri içermeyen, boş olmayan, tek satırlık ve en fazla {} karakterlik bir etiket girin."
+args = 1
+
+[SIGNATURE_FAILED]
+text = "İmza kaydedilemedi: {}"
+args = 1
+
+[SIGNATURE_DENIED]
+text = "Bu komut Witch (4) yetkisi gerektirir."
+args = 0

@@ -72,6 +72,15 @@ For a source fallback, the **build environment** must contain the forked libx264
 x264, reports `-stock`, and is refused. A downloaded package already contains the coordinator's
 forked encoder; the separate portable ffmpeg download does not change `pnmpeg`'s x264 identity.
 
+### Video metadata signature
+
+Every Mini-produced video uses `SubstitutePandoraIdentifier - <link_node_name>` in its metadata.
+This is the node's own identity, not its `/teenode` display group or the coordinator's `/signature`
+label. The worker passes the label into child tools even when Mini was selected with `--mini`.
+Final parallel/AOT muxes and joins use it too. If a returned video is remuxed to HLS on the
+coordinator, its original Pandora identifier is retained. Existing and cached files are unchanged.
+See [TOOLS.md](TOOLS.md#video-output-identifier).
+
 ## Orchestrator mode
 
 ```bash

@@ -94,6 +94,31 @@ async fn probe_video_codec(source: &FsPath) -> Option<String> {
     first_probe_record(&text).map(str::to_string)
 }
 
+// Returned Mini videos are remuxed here on the coordinator. Preserve their producer label rather
+// than replacing it with the coordinator's signature merely because it publishes the HLS.
+fn source_identifier(probe: &serde_json::Value) -> Option<String> {
+    let format_tags = probe.get("format").and_then(|format| format.get("tags"));
+    let program_tags = probe.get("programs").and_then(serde_json::Value::as_array)
+        .into_iter().flatten().filter_map(|program| program.get("tags"));
+    format_tags.into_iter().chain(program_tags)
+        .filter_map(serde_json::Value::as_object)
+        .flat_map(|tags| tags.iter())
+        .filter(|(key, _)| key.eq_ignore_ascii_case("comment") || key.eq_ignore_ascii_case("service_name"))
+        .filter_map(|(_, value)| value.as_str())
+        .find(|value| crate::lib::mpeg::signature::is_identifier(value))
+        .map(str::to_string)
+}
+
+async fn probe_source_identifier(source: &FsPath) -> Option<String> {
+    let mut command = Command::new(resolve_runtime_binary("ffprobe"));
+    command.args([
+        "-v", "error", "-show_entries", "format_tags:program_tags", "-of", "json",
+    ]).arg(source).kill_on_drop(true);
+    let output = command.output().await.ok()?;
+    if !output.status.success() { return None; }
+    source_identifier(&serde_json::from_slice(&output.stdout).ok()?)
+}
+
 async fn probe_stream_field(source: &FsPath, field: &str) -> Vec<String> {
     let mut command = Command::new(resolve_runtime_binary("ffprobe"));
     command
@@ -389,11 +414,13 @@ async fn build_hls(
         .await
         .map_err(|e| format!("HLS chunk directory could not be created: {e}"))?;
     let mut command = Command::new(resolve_runtime_binary("ffmpeg"));
+    let identifier = probe_source_identifier(source).await
+        .unwrap_or_else(crate::lib::mpeg::signature::video_identifier);
     command
         .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
         .arg(source)
         .args(["-map", "0:v:0", "-map", "0:a:0?", "-c", "copy"])
-        .args(names.muxer_args_in(directory));
+        .args(names.muxer_args_in_with_identifier(directory, &identifier));
     command.kill_on_drop(true);
     let output = {
         let output = command.output();
@@ -717,6 +744,24 @@ fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remux_preserves_the_producing_node_from_mp4_matroska_or_ts() {
+        for probe in [
+            serde_json::json!({"format": {"tags": {"comment": "SubstitutePandoraIdentifier - mini-hoshi"}}}),
+            serde_json::json!({"format": {"tags": {"COMMENT": "SubstitutePandoraIdentifier - mini-hoshi"}}}),
+            serde_json::json!({"programs": [{"tags": {"service_name": "SubstitutePandoraIdentifier - mini-hoshi"}}]}),
+        ] {
+            let identifier = source_identifier(&probe).unwrap();
+            let args = HlsNames::new("release", HlsSegmentType::Ts)
+                .muxer_args_in_with_identifier(FsPath::new("/tmp/hls"), &identifier);
+            assert!(args.contains(&"comment=SubstitutePandoraIdentifier - mini-hoshi".to_string()));
+            assert!(args.contains(&"service_name=SubstitutePandoraIdentifier - mini-hoshi".to_string()));
+            assert!(!args.iter().any(|arg| arg.contains("Evillja Cloud Solutions")));
+        }
+        assert!(source_identifier(&serde_json::json!({"format": {"tags": {"comment": "unrelated credit"}}})).is_none());
+        assert!(source_identifier(&serde_json::json!({"format": {"tags": {"comment": "SubstitutePandoraIdentifier - "}}})).is_none());
+    }
 
     const ID: &str = "f28305c9-74d0-449e-920b-938155931dd6";
     // What the default template renders for a 720p output; the tests below only need a stem some

@@ -1274,3 +1274,23 @@ args = 0
 [SOURCE_BATCH_NOT_YOURS]
 text = "この `/source` を実行した人だけが操作できます。"
 args = 0
+
+[SIGNATURE_CURRENT]
+text = "メインノードの現在の署名: `{}`。"
+args = 1
+
+[SIGNATURE_UPDATED]
+text = "メインノードの署名を保存しました: `{}`。Miniノードは各自のラベルを使います。"
+args = 1
+
+[SIGNATURE_INVALID]
+text = "制御文字を含まない、空でない1行のラベルを{}文字以内で入力してください。"
+args = 1
+
+[SIGNATURE_FAILED]
+text = "署名を保存できませんでした: {}"
+args = 1
+
+[SIGNATURE_DENIED]
+text = "このコマンドにはWitchランク（4）が必要です。"
+args = 0

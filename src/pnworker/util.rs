@@ -204,6 +204,9 @@ where
         }
     };
     let mut cmd = Command::new(tool_path);
+    if let Some(label) = crate::lib::mpeg::signature::mini_label() {
+        cmd.env(crate::lib::mpeg::signature::NODE_LABEL_ENV, label);
+    }
     if torrent {
         crate::pnworker::proxy_health::apply_to_command(&mut cmd);
     }

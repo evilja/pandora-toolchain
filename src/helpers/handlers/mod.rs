@@ -53,6 +53,8 @@ mod translation;
 mod addintro;
 mod logo;
 mod watermark;
+mod signature;
+pub use self::signature::handle_signature;
 mod studio;
 mod catlogs;
 mod refreshcache;

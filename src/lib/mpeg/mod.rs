@@ -1,4 +1,5 @@
 pub mod core;
+pub mod signature;
 pub mod hls;
 pub mod logo;
 pub mod probe;
