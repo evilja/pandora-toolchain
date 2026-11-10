@@ -510,8 +510,11 @@ fn start_idle_gated_encode(
     ));
     let error = std::sync::Arc::new(std::sync::Mutex::new(None));
     let thread_error = error.clone();
+    let mut encoder_log = log.watchdog();
     let handle = std::thread::spawn(move || {
-        if let Err(reason) = pnx264::linear::run_linear_aot(config.clone()) {
+        if let Err(reason) = pnx264::linear::run_linear_aot_with_log(
+            config.clone(), move |line| encoder_log.line(line),
+        ) {
             if let Ok(mut slot) = thread_error.lock() {
                 *slot = Some(reason);
             }
@@ -1284,7 +1287,8 @@ async fn main() {
                 }
             })
         };
-        let result = pnx264::linear::run_linear_aot(pnx264::linear::LinearAotConfig {
+        let mut encoder_log = log.watchdog();
+        let result = pnx264::linear::run_linear_aot_with_log(pnx264::linear::LinearAotConfig {
             ffmpeg: resolve_runtime_binary("ffmpeg"),
             prefix_state: PathBuf::from(&args.input),
             state: state_path,
@@ -1301,7 +1305,7 @@ async fn main() {
                     .unwrap_or_else(|| format!("ass={},format=yuv420p", pnx264::linear::SUBTITLE_TOKEN)),
             ),
             video_args: preset.video_encoder_args(),
-        });
+        }, move |line| encoder_log.line(line));
         watchdog_stop.store(true, std::sync::atomic::Ordering::Relaxed);
         watchdog.join().ok();
         match result {

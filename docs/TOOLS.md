@@ -84,7 +84,10 @@ worker then passes `--aot-busyfile` and `--aot-lockfile`, and pnmpeg feeds its e
 same gate the speculative planners use rather than running it at full speed. See
 [WORKER.md](WORKER.md#background-encodes). `--linear-prefix` runs the preset's own filter and encoder arguments, so it
 encodes ahead with whatever the preset names — libx264, NVENC, AMF — and requires a preset to be
-selected. See [WORKER.md](WORKER.md#parallel-veryslow-encoding).
+selected. See [WORKER.md](WORKER.md#parallel-veryslow-encoding). The linear AOT runner enables FFmpeg's
+info-level diagnostics and writes its stderr, including libass `fontselect` lines (requested face
+and selected font), into pnmpeg's `.run.log` beside `--logfile`. Idle-gated encodes use the same
+logging path; diagnostics are drained independently of progress and download feeding.
 
 Release encodes invoke pnmpeg with `--lang jpn`. pnmpeg selects the first audio stream tagged
 `jpn`; when the input has no such tag, it falls back to the first audio stream instead of failing

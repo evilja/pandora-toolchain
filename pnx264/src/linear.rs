@@ -245,6 +245,15 @@ fn filter_quote(value: &str) -> String {
 }
 
 pub fn run_linear_aot(config: LinearAotConfig) -> Result<LinearAotState, String> {
+    run_linear_aot_with_log(config, |line| eprintln!("{line}"))
+}
+
+// Drain diagnostics independently of progress and source feeding so libass font selections reach
+// the caller's transcript even while a growing download or an idle lease holds the feeder up.
+pub fn run_linear_aot_with_log(
+    config: LinearAotConfig,
+    mut log: impl FnMut(&str) + Send + 'static,
+) -> Result<LinearAotState, String> {
     let started = std::time::Instant::now();
     let state = LinearAotState {
         started_unix_millis: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64,
@@ -277,7 +286,7 @@ pub fn run_linear_aot(config: LinearAotConfig) -> Result<LinearAotState, String>
 
     let mut command = Command::new(&config.ffmpeg);
     command
-        .args(["-v", "error", "-i", "pipe:0", "-map", "0:v:0", "-an", "-sn", "-vf", &filter])
+        .args(["-v", "info", "-i", "pipe:0", "-map", "0:v:0", "-an", "-sn", "-vf", &filter])
         .args(&config.video_args);
     command
         .args(["-movflags", "+faststart", "-progress", "pipe:1", "-nostats",
@@ -285,10 +294,18 @@ pub fn run_linear_aot(config: LinearAotConfig) -> Result<LinearAotState, String>
         .arg(&temporary)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
+        .stderr(Stdio::piped());
     let mut encoder = command.spawn().map_err(|e| format!("spawn linear AOT ffmpeg: {e}"))?;
     let stdin = encoder.stdin.take().ok_or("linear AOT ffmpeg has no stdin")?;
     let stdout = encoder.stdout.take().ok_or("linear AOT ffmpeg has no progress output")?;
+
+    let stderr = encoder.stderr.take().ok_or("linear AOT ffmpeg has no diagnostic output")?;
+    let diagnostics = std::thread::spawn(move || -> Result<(), String> {
+        for line in BufReader::new(stderr).lines() {
+            log(&line.map_err(|e| e.to_string())?);
+        }
+        Ok(())
+    });
 
     let shared_state = Arc::new(Mutex::new(state));
     let progress_state = shared_state.clone();
@@ -334,12 +351,14 @@ pub fn run_linear_aot(config: LinearAotConfig) -> Result<LinearAotState, String>
         encoder.kill().ok();
         encoder.wait().ok();
         progress.join().ok();
+        diagnostics.join().ok();
         std::fs::remove_file(&temporary).ok();
         return Err(error);
     }
     let source_bytes = streamed.unwrap();
     let status = encoder.wait().map_err(|e| e.to_string())?;
     progress.join().map_err(|_| "linear AOT progress reader panicked".to_string())??;
+    diagnostics.join().map_err(|_| "linear AOT diagnostic reader panicked".to_string())??;
     if !status.success() {
         std::fs::remove_file(&temporary).ok();
         return Err(format!("linear AOT ffmpeg failed with {status}"));
