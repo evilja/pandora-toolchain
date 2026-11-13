@@ -92,7 +92,10 @@ logging path; diagnostics are drained independently of progress and download fee
 Release encodes invoke pnmpeg with `--lang jpn`. pnmpeg selects the first audio stream tagged
 `jpn`; when the input has no such tag, it falls back to the first audio stream instead of failing
 the job. This applies to the ordinary, ahead-of-time handoff, and parallel encode paths because all
-three use the same resolved audio map.
+three use the same resolved audio map. These paths stream-copy AAC and encode other codecs to
+AAC. An unreadable codec probe also selects the AAC encoder. Ordinary encodes use the preset's
+bitrate, sample rate, and channel options when encoding AAC. The ahead-of-time handoff and
+parallel audio passes use 192 kbit/s.
 
 The file format and its `hardware` tag are described in [WORKER.md](WORKER.md) and
 [LINK.md](LINK.md#purpose); reference copies of every built-in live in `presets/`.

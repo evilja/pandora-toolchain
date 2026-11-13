@@ -688,18 +688,32 @@ fn retarget_params_to_hls(
     Ok(())
 }
 
-// Keep the common MP4/HLS audio codecs without another lossy generation. Other
-// codecs (or an unreadable probe) retain the established AAC compatibility fallback.
-fn copies_source_audio(codec: Option<&str>) -> bool {
-    matches!(codec, Some("aac" | "mp3"))
+// Preserve AAC without another lossy generation and normalize other sources to AAC.
+fn source_audio_encoder(codec: Option<&str>) -> &'static str {
+    match codec {
+        Some("aac") => "copy",
+        _ => "aac",
+    }
 }
 
-fn source_audio_args(codec: Option<&str>) -> Vec<String> {
-    if copies_source_audio(codec) {
-        vec!["-c:a".into(), "copy".into()]
-    } else {
-        vec!["-c:a".into(), "aac".into(), "-b:a".into(), "192k".into()]
+fn source_audio_args(encoder: &str) -> Vec<String> {
+    let mut args = vec!["-c:a".into(), encoder.into()];
+    if encoder == "aac" {
+        args.extend(["-b:a".into(), "192k".into()]);
     }
+    args
+}
+
+fn apply_source_audio_encoder(params: &mut Vec<FfmpegParams>, encoder: &'static str) {
+    params.retain(|param| match param {
+        FfmpegParams::Ca(_) => false,
+        FfmpegParams::Ba(_) | FfmpegParams::Ar(_) | FfmpegParams::Ac(_) => encoder != "copy",
+        _ => true,
+    });
+    // Put the selected codec after preset passthrough options, which can also set a codec.
+    let output = params.iter().position(|param| matches!(param, FfmpegParams::Output(_)))
+        .expect("an encode preset has an output");
+    params.insert(output, FfmpegParams::Ca(Cow::Borrowed(encoder)));
 }
 
 // The AOT final mux, written as HLS instead of an MP4.
@@ -1020,15 +1034,14 @@ fn finish_linear_aot(
         .map(|index| index.to_string());
     let audio_index = selected_audio.as_deref().unwrap_or(audio_index);
     let codec = ffprobe_audio_codec(&args.input, audio_index);
-    let audio_args = source_audio_args(codec.as_deref());
+    let audio_encoder = source_audio_encoder(codec.as_deref());
     log.line(&format!(
-        "linear AOT video complete; taking source audio stream {audio_index} (codec={}, {})",
+        "linear AOT video complete; taking source audio stream {audio_index} (codec={}, encoder={audio_encoder})",
         codec.as_deref().unwrap_or("unknown"),
-        if copies_source_audio(codec.as_deref()) { "stream copy" } else { "AAC fallback" },
     ));
     let mut audio_child = Command::new(resolve_runtime_binary("ffmpeg"))
         .args(["-v", "error", "-i", &args.input, "-map", &format!("0:{audio_index}"), "-vn"])
-        .args(audio_args)
+        .args(source_audio_args(audio_encoder))
         .arg("-y")
         .arg(&audio)
         .stdout(Stdio::null())
@@ -1662,21 +1675,12 @@ async fn main() {
     };
     log.line(&format!("audio_index={}", audio_index));
 
-    // Apply the same source-audio policy when speculation is absent or refused.
-    // Concat/filter-complex runs have their own audio compatibility requirements.
-    let source_codec = if active_preset.is_some() && !args.concat && !args.legacyconcat {
-        log.step("ffprobe selected audio codec", || ffprobe_audio_codec(&args.input, &audio_index))
-    } else {
-        None
-    };
-    if copies_source_audio(source_codec.as_deref()) {
-        params.retain(|param| !matches!(param, FfmpegParams::Ba(_) | FfmpegParams::Ar(_) | FfmpegParams::Ac(_)));
-        for param in &mut params {
-            if matches!(param, FfmpegParams::Ca(_)) {
-                *param = FfmpegParams::Ca(Cow::Borrowed("copy"));
-            }
-        }
-        log.line("selected source audio will be stream-copied");
+    let mut audio_encoder = source_audio_encoder(None);
+    if active_preset.is_some() && !args.concat && !args.legacyconcat {
+        let codec = log.step("ffprobe selected audio codec", || ffprobe_audio_codec(&args.input, &audio_index));
+        audio_encoder = source_audio_encoder(codec.as_deref());
+        apply_source_audio_encoder(&mut params, audio_encoder);
+        log.line(&format!("selected source audio codec={}, encoder={audio_encoder}", codec.as_deref().unwrap_or("unknown")));
     }
 
     let idle_gated = runs_idle_gated(active_preset.as_ref(), &args);
@@ -1780,7 +1784,7 @@ async fn main() {
                 workers,
                 encoder,
                 audio_map: audio_index.clone(),
-                audio_args: source_audio_args(source_codec.as_deref()),
+                audio_args: source_audio_args(audio_encoder),
                 output_args: video_metadata_args(),
             },
             |update| {
@@ -2388,20 +2392,39 @@ fn quote_filter_value(value: &str) -> String {
 mod tests {
     use super::{
         Args, active_preset, adopts_linear_prefix, encodes_in_chunks, media_bitrate_kbps,
-        planner_encoder_config, quote_filter_value, scale_height, copies_source_audio, source_audio_args,
+        planner_encoder_config, quote_filter_value, scale_height, source_audio_args, source_audio_encoder,
+        apply_source_audio_encoder, FfmpegParams,
     };
     use clap::Parser;
+    use std::borrow::Cow;
 
     #[test]
-    fn compatible_source_audio_is_copied_and_other_codecs_fall_back() {
-        for codec in ["aac", "mp3"] {
-            assert!(copies_source_audio(Some(codec)));
-            assert_eq!(source_audio_args(Some(codec)), ["-c:a", "copy"]);
+    fn only_aac_source_audio_is_copied() {
+        assert_eq!(source_audio_args(source_audio_encoder(Some("aac"))), ["-c:a", "copy"]);
+        for codec in [Some("mp3"), Some("flac"), Some("dts"), Some("opus"), None] {
+            assert_eq!(source_audio_args(source_audio_encoder(codec)), ["-c:a", "aac", "-b:a", "192k"]);
         }
-        for codec in [Some("flac"), Some("dts"), Some("opus"), None] {
-            assert!(!copies_source_audio(codec));
-            assert_eq!(source_audio_args(codec), ["-c:a", "aac", "-b:a", "192k"]);
-        }
+    }
+
+    #[test]
+    fn episode_audio_policy_overrides_preset_codec() {
+        use FfmpegParams::{Ac, Ar, Ba, Ca, Output, Passthrough};
+
+        let preset = vec![
+            Ca(Cow::Borrowed("libopus")),
+            Ba(Cow::Borrowed("128k")),
+            Ar(Cow::Borrowed("48000")),
+            Ac(Cow::Borrowed("2")),
+            Passthrough(vec!["-codec:a:0".into(), "libmp3lame".into()]),
+            Output(Cow::Borrowed("output.mp4")),
+        ];
+        let mut params = preset.clone();
+        apply_source_audio_encoder(&mut params, source_audio_encoder(Some("mp3")));
+        assert!(matches!(params.as_slice(), [Ba(_), Ar(_), Ac(_), Passthrough(_), Ca(codec), Output(_)] if codec == "aac"));
+
+        let mut params = preset;
+        apply_source_audio_encoder(&mut params, source_audio_encoder(Some("aac")));
+        assert!(matches!(params.as_slice(), [Passthrough(_), Ca(codec), Output(_)] if codec == "copy"));
     }
 
     fn parsed(extra: &[&str]) -> Args {
