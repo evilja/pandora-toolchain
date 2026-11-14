@@ -1036,9 +1036,9 @@ fn help_catalog() -> &'static [HelpCommand] {
         HelpCommand {
             section: "encode",
             name: "caramel-analysis",
-            summary: "Estimate the CRF a source needs without encoding it.",
+            summary: "Give every scene of a source its own CRF, without encoding it.",
             usage: "/caramel-analysis source:<link> [preset:<name>] [anchor:<crf>] [verify:true] [verify_crfs:<list>]",
-            details: "Downloads the video and runs Caramel Analysis on it: a few short windows spread across the source are measured for grain, banding risk, line art, texture, motion and chroma detail, and the result is the highest CRF the content should hold, as an offset from the preset's own CRF (the server's /edit preset unless `preset` is given; `anchor` overrides the CRF). The embed lists the factors that moved the estimate and the full JSON report is attached. `verify:true` also encodes short sample clips at the estimate and the anchor (or at `verify_crfs`, e.g. `16,18,20`) and reports SSIM, PSNR and bitrate for each, which takes minutes rather than seconds. When the torrent holds more than one video, its file list is shown first and you pick one by sending its index as a plain number in the channel, exactly as `/encode do` asks.",
+            details: "Downloads the video and runs Caramel Analysis on it: the source is split into scenes at its cuts, the opening frames of every scene are measured for grain, banding risk, line art, texture, motion and chroma detail, and each scene gets its own CRF as an offset from the preset's (the server's /edit preset unless `preset` is given; `anchor` overrides the CRF). This is what a preset with `crf_mode = \"caramel-analysis\"` encodes with. The embed shows the scene count, the CRF range and distribution and the factors that moved it, and the full JSON report — every scene, its CRF, and the x264 zones — is attached. `verify:true` also encodes the scenes moved furthest from the anchor, each at its own CRF and at the anchor (or at `verify_crfs`, e.g. `16,18`), and reports SSIM, PSNR and bitrate for both, which takes minutes rather than seconds. When the torrent holds more than one video, its file list is shown first and you pick one by sending its index as a plain number in the channel, exactly as `/encode do` asks.",
         },
         HelpCommand {
             section: "encode",
@@ -3079,7 +3079,7 @@ impl EventHandler for Handler {
                         .required(true)
                 ),
             CreateCommand::new("caramel-analysis")
-                .description("Estimate the CRF a source needs from its content, without encoding it")
+                .description("Give every scene of a source its own CRF from its content, without encoding it")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "source", "Torrent URL, magnet link, Google Drive link, or direct video link")
                         .required(true)
@@ -3090,8 +3090,8 @@ impl EventHandler for Handler {
                         .min_number_value(0.0)
                         .max_number_value(51.0)
                 )
-                .add_option(CreateCommandOption::new(CommandOptionType::Boolean, "verify", "Also encode sample clips and measure SSIM/PSNR (slow)"))
-                .add_option(CreateCommandOption::new(CommandOptionType::String, "verify_crfs", "CRFs to verify, e.g. 16,18,20 (default: the estimate and the anchor)")),
+                .add_option(CreateCommandOption::new(CommandOptionType::Boolean, "verify", "Also encode the most-moved scenes and measure SSIM/PSNR (slow)"))
+                .add_option(CreateCommandOption::new(CommandOptionType::String, "verify_crfs", "Fixed CRFs to compare the scene CRFs with, e.g. 16,18 (default: the anchor)")),
             CreateCommand::new("gitsync")
                 .description("Sync with the git repo"),
             CreateCommand::new("gitforce")

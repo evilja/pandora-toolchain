@@ -667,16 +667,16 @@ text = "🍮 Caramel Analizi"
 args = 0
 
 [CARAMEL_PROG]
-text = "Caramel Analizi kaynağı örnekliyor…"
-args = 0
+text = "Caramel Analizi kaynağı sahne sahne okuyor… %{}"
+args = 1
 
 [CARAMEL_VERIFY_PROG]
-text = "Tahmin doğrulanıyor: örnek klipler CRF {} ile kodlanıyor…"
+text = "Sahne CRF'leri doğrulanıyor: çapadan en uzak sahneler kendi CRF'leriyle ve CRF {} ile kodlanıyor…"
 args = 1
 
 [CARAMEL_DONE]
-text = "Caramel Analizi: **CRF {}**, `{}` ön ayarı için (çapa {}, {}, güven {}).\n{} pencere / {} kare {} sn içinde örneklendi.\nEtkenler: {}\n{}"
-args = 10
+text = "Caramel Analizi: **{} sahne**, `{}` ön ayarı için CRF {}–{} (ortalama {}, çapa {}; kareler {}).\n{} kare {} sn içinde analiz edildi.\nCRF'ler: {}\nEtkenler: {}\n{}"
+args = 12
 
 [CARAMEL_FAIL]
 text = "Caramel Analizi başarısız oldu: {}"

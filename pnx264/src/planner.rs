@@ -213,7 +213,7 @@ impl AotScheduler {
                 .args(["--video-height", &self.height.to_string()])
                 .args(["--fps-num", &self.fps_num.to_string()])
                 .args(["--fps-den", &self.fps_den.to_string()])
-                .args(["--aot-crf", &self.encoder.crf.to_string()])
+                .args(["--aot-crf", &aot_crf_arg(&self.encoder)])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::inherit());
@@ -237,6 +237,9 @@ impl AotScheduler {
             }
             if let Some(value) = self.encoder.x264_params.as_ref() {
                 command.args(["--aot-x264-params", value]);
+            }
+            if let Some(caramel) = self.encoder.caramel.as_ref() {
+                command.args(["--aot-caramel", &caramel.to_arg()]);
             }
             match command.spawn() {
                 Ok(child) => {
@@ -267,6 +270,15 @@ impl AotScheduler {
 impl Drop for AotScheduler {
     fn drop(&mut self) {
         self.release_lease();
+    }
+}
+
+// What an AOT chunk is told to encode at: the CRF, or Caramel Analysis anchored at it. pnmpeg's
+// `--aot-crf` parser reads both forms.
+pub fn aot_crf_arg(encoder: &crate::Config) -> String {
+    match encoder.caramel {
+        Some(_) => format!("caramel-analysis:{}", encoder.crf),
+        None => encoder.crf.to_string(),
     }
 }
 
@@ -346,6 +358,10 @@ pub fn run_prefix_planner(config: PrefixPlannerConfig) -> Result<PlannerSummary,
     let aot_directory = crate::parallel::aot_directory(&config.output);
     std::fs::remove_dir_all(&aot_directory).ok();
     std::fs::create_dir_all(&aot_directory).map_err(|e| e.to_string())?;
+    if let Some(caramel) = encoder_config.caramel.as_ref() {
+        std::fs::write(aot_directory.join(crate::scenes::CONTEXT_FILE), caramel.to_arg() + "\n")
+            .map_err(|e| e.to_string())?;
+    }
     let mut scheduler = AotScheduler {
         executable: config.executable,
         input: first.source,

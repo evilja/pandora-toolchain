@@ -6,6 +6,7 @@ pub mod parallel;
 pub mod plan;
 pub mod planner;
 pub mod prefix;
+pub mod scenes;
 pub mod y4m;
 
 use std::ffi::{CStr, CString, c_char, c_float, c_int};
@@ -48,6 +49,7 @@ unsafe extern "C" {
         out: *mut *const u8,
     ) -> c_int;
     fn pnx264_flush(e: *mut c_void, out: *mut *const u8) -> c_int;
+    fn pnx264_set_crf(e: *mut c_void, crf: c_float) -> c_int;
     fn pnx264_plan_push(
         e: *mut c_void,
         y: *const u8, u: *const u8, v: *const u8,
@@ -88,6 +90,9 @@ pub struct Config {
     pub x264_params: Option<String>,
     // Lookahead only, no macroblock coding. Needs the Pandora x264 fork.
     pub plan_only: bool,
+    // A CRF per scene, decided by Caramel Analysis as the frames arrive, with `crf` as the anchor
+    // every scene's CRF is an offset from. None encodes everything at `crf`.
+    pub caramel: Option<scenes::SceneCrf>,
 }
 
 impl Default for Config {
@@ -105,6 +110,7 @@ impl Default for Config {
             level: None,
             x264_params: None,
             plan_only: false,
+            caramel: None,
         }
     }
 }
@@ -185,6 +191,14 @@ impl Encoder {
             )
         };
         Self::slice(n, out, "x264_encoder_encode failed")
+    }
+
+    // Encodes from the next frame handed to `encode` onwards at this CRF. See `pnx264_set_crf`.
+    pub fn set_crf(&mut self, crf: f32) -> Result<(), String> {
+        if unsafe { pnx264_set_crf(self.raw, crf) } < 0 {
+            return Err("x264 CRF change failed".to_string());
+        }
+        Ok(())
     }
 
     // Drains one buffered frame. An empty slice means the encoder has nothing left.
@@ -314,6 +328,57 @@ mod tests {
         cfg.x264_params = Some("aq-mode=3:aq-strength=1.1".into());
         let opts = options_of(&cfg);
         assert!(opts.contains("aq=3:1.10"), "expected aq=3:1.10, got: {opts}");
+    }
+
+    // Detailed moving frames, coded the same way twice except that the second run switches to a
+    // much higher CRF halfway through: the first half must come out byte-identical, and the second
+    // much smaller. Bytes are split at the frame they were returned for (ultrafast has no delay).
+    #[test]
+    fn a_crf_switch_takes_effect_from_the_next_frame() {
+        let (width, height) = (128usize, 96usize);
+        let frame = |index: usize| -> Vec<u8> {
+            (0..width * height)
+                .map(|i| {
+                    let (x, y) = (i % width + index * 3, i / width);
+                    ((x * 37 + y * 91 + (x * y) % 23) % 256) as u8
+                })
+                .collect()
+        };
+        let chroma = vec![128u8; width * height / 4];
+        let encode = |switch_at: Option<usize>| -> (usize, usize) {
+            let mut enc = Encoder::open(&Config {
+                width: width as u32,
+                height: height as u32,
+                fps_num: 24,
+                fps_den: 1,
+                crf: 16.0,
+                threads: 1,
+                preset: Some("ultrafast".into()),
+                ..Default::default()
+            })
+            .unwrap();
+            let mut total = 0;
+            let mut first = 0;
+            for index in 0..48 {
+                if index == 24 { first = total; }
+                if switch_at == Some(index) {
+                    enc.set_crf(40.0).unwrap();
+                }
+                let y = frame(index);
+                total += enc.encode(&y, &chroma, &chroma, width, width / 2, width / 2, index as i64).unwrap().len();
+            }
+            loop {
+                let tail = enc.flush().unwrap().len();
+                if tail == 0 {
+                    break;
+                }
+                total += tail;
+            }
+            (first, total - first)
+        };
+        let (fixed, switched) = (encode(None), encode(Some(24)));
+        assert_eq!(fixed.0, switched.0, "frames before the switch changed");
+        assert!(switched.1 * 10 < fixed.1 * 6, "fixed {fixed:?} bytes, switched {switched:?} bytes");
     }
 
     #[test]

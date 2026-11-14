@@ -1,3 +1,4 @@
+use crate::scenes::{self, SceneCrfSummary, SceneMark, SceneSchedule};
 use crate::y4m::Y4mReader;
 use crate::{Config, Encoder};
 use std::collections::HashMap;
@@ -74,6 +75,8 @@ pub struct ParallelSummary {
     pub natural_boundaries: bool,
     pub frame_total: FrameTotal,
     pub elapsed: Duration,
+    // The CRFs Caramel Analysis gave the encode's scenes, when it ran with `encoder.caramel`.
+    pub scenes: Option<SceneCrfSummary>,
 }
 
 #[derive(Clone, Debug)]
@@ -331,16 +334,76 @@ fn ranges(source: &Source, plan: Option<&Path>, workers: usize) -> (Vec<(u64, u6
     (out, natural.is_some())
 }
 
-fn reuse_aot_chunk(directory: &Path, output: &Path, start: u64, frames: u64) -> Option<u64> {
+// A chunk encoded ahead of time, linked into this encode's scratch directory. Under Caramel Analysis
+// a chunk is only taken with its scenes beside it, and without Caramel only without: the two encode
+// the same frames at different CRFs, and the path alone does not say which one a chunk was.
+fn reuse_aot_chunk(
+    directory: &Path,
+    output: &Path,
+    start: u64,
+    frames: u64,
+    caramel: bool,
+) -> Option<(u64, Option<Vec<SceneMark>>)> {
     let candidate = aot_chunk_path(directory, start, frames);
     let metadata = std::fs::metadata(&candidate).ok()?;
     if metadata.len() == 0 {
         return None;
     }
+    let marks = scenes::read_sidecar(&candidate);
+    if marks.is_some() != caramel {
+        return None;
+    }
     if std::fs::hard_link(&candidate, output).is_err() {
         std::fs::copy(&candidate, output).ok()?;
     }
-    Some(metadata.len())
+    Some((metadata.len(), marks))
+}
+
+// The encoder end of a chunk: frames in, bitstream out, progress counted.
+struct ChunkOutput<'a> {
+    encoder: Encoder,
+    writer: BufWriter<File>,
+    count: u64,
+    completed: &'a AtomicU64,
+    bytes: &'a AtomicU64,
+    events: &'a mpsc::Sender<WorkerEvent>,
+}
+
+impl ChunkOutput<'_> {
+    fn put(&mut self, y: &[u8], u: &[u8], v: &[u8], stride_y: usize, stride_c: usize) -> Result<(), String> {
+        let encoded = self.encoder.encode(y, u, v, stride_y, stride_c, stride_c, self.count as i64)?;
+        self.writer.write_all(encoded).map_err(|e| e.to_string())?;
+        self.bytes.fetch_add(encoded.len() as u64, Ordering::Relaxed);
+        self.count += 1;
+        self.completed.fetch_add(1, Ordering::Relaxed);
+        if self.count == 1 || self.count.is_multiple_of(8) {
+            self.events.send(WorkerEvent::Progress).ok();
+        }
+        Ok(())
+    }
+
+    // Everything the schedule can release, each scene's first frame preceded by its CRF.
+    fn drain(&mut self, schedule: &mut SceneSchedule) -> Result<(), String> {
+        while let Some((frame, switch)) = schedule.ready() {
+            if let Some(crf) = switch {
+                self.encoder.set_crf(crf)?;
+            }
+            self.put(&frame.y, &frame.u, &frame.v, frame.stride_y, frame.stride_c)?;
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<(), String> {
+        loop {
+            let encoded = self.encoder.flush()?;
+            if encoded.is_empty() {
+                break;
+            }
+            self.writer.write_all(encoded).map_err(|e| e.to_string())?;
+            self.bytes.fetch_add(encoded.len() as u64, Ordering::Relaxed);
+        }
+        self.writer.flush().map_err(|e| e.to_string())
+    }
 }
 
 fn encode_chunk(
@@ -355,7 +418,7 @@ fn encode_chunk(
     stop: &AtomicBool,
     events: &mpsc::Sender<WorkerEvent>,
     extra_cancel_files: &[&Path],
-) -> Result<(), String> {
+) -> Result<Vec<SceneMark>, String> {
     let seek = format!("{:.9}", start as f64 * source.fps_den as f64 / source.fps_num as f64);
     let frame_count = frames.to_string();
     let subtitle = std::fs::canonicalize(&config.subtitle).unwrap_or_else(|_| config.subtitle.clone());
@@ -376,10 +439,28 @@ fn encode_chunk(
         .map_err(|e| format!("spawn chunk decoder: {e}"))?;
     let stdout = child.stdout.take().ok_or("chunk decoder has no stdout")?;
     let mut y4m = Y4mReader::new(BufReader::with_capacity(1 << 20, stdout))?;
-    let mut encoder = Encoder::open(encoder_config)?;
-    let mut writer = BufWriter::new(File::create(output).map_err(|e| e.to_string())?);
-    let mut count = 0u64;
-    while count < frames {
+    let mut out = ChunkOutput {
+        encoder: Encoder::open(encoder_config)?,
+        writer: BufWriter::new(File::create(output).map_err(|e| e.to_string())?),
+        count: 0,
+        completed,
+        bytes,
+        events,
+    };
+    // Each chunk decides its own scenes from its first frame on. Chunks start at x264's natural
+    // keyframes, which are cuts, so a chunk boundary is a scene boundary anyway.
+    let mut schedule = encoder_config.caramel.as_ref().map(|caramel| {
+        SceneSchedule::new(
+            caramel,
+            source.width as usize,
+            source.height as usize,
+            source.fps_num,
+            source.fps_den,
+            encoder_config.crf,
+        )
+    });
+    let mut decoded = 0u64;
+    while decoded < frames {
         if stop.load(Ordering::Relaxed)
             || config.cancel_file.as_ref().is_some_and(|path| path.exists())
             || extra_cancel_files.iter().any(|path| path.exists())
@@ -391,37 +472,25 @@ fn encode_chunk(
         let Some(frame) = y4m.next_frame()? else {
             break;
         };
-        let encoded = encoder.encode(
-            frame.y,
-            frame.u,
-            frame.v,
-            frame.stride_y,
-            frame.stride_c,
-            frame.stride_c,
-            count as i64,
-        )?;
-        writer.write_all(encoded).map_err(|e| e.to_string())?;
-        bytes.fetch_add(encoded.len() as u64, Ordering::Relaxed);
-        count += 1;
-        completed.fetch_add(1, Ordering::Relaxed);
-        if count == 1 || count.is_multiple_of(8) {
-            events.send(WorkerEvent::Progress).ok();
+        decoded += 1;
+        match schedule.as_mut() {
+            Some(schedule) => {
+                schedule.push(&frame)?;
+                out.drain(schedule)?;
+            }
+            None => out.put(frame.y, frame.u, frame.v, frame.stride_y, frame.stride_c)?,
         }
     }
-    loop {
-        let encoded = encoder.flush()?;
-        if encoded.is_empty() {
-            break;
-        }
-        writer.write_all(encoded).map_err(|e| e.to_string())?;
-        bytes.fetch_add(encoded.len() as u64, Ordering::Relaxed);
+    if let Some(schedule) = schedule.as_mut() {
+        schedule.finish();
+        out.drain(schedule)?;
     }
-    writer.flush().map_err(|e| e.to_string())?;
+    out.finish()?;
     let status = child.wait().map_err(|e| e.to_string())?;
-    if !status.success() || count != frames {
-        return Err(format!("chunk at frame {start} decoded {count}/{frames} frames"));
+    if !status.success() || out.count != frames {
+        return Err(format!("chunk at frame {start} decoded {}/{frames} frames", out.count));
     }
-    Ok(())
+    Ok(schedule.map(|schedule| schedule.marks().to_vec()).unwrap_or_default())
 }
 
 pub fn encode_aot_chunk(config: AotChunkConfig) -> Result<(), String> {
@@ -492,16 +561,30 @@ pub fn encode_aot_chunk(config: AotChunkConfig) -> Result<(), String> {
         &events,
         &extra_cancel_files,
     );
-    if let Err(error) = result {
-        std::fs::remove_file(&temporary).ok();
-        return Err(error);
-    }
+    let marks = match result {
+        Ok(marks) => marks,
+        Err(error) => {
+            std::fs::remove_file(&temporary).ok();
+            return Err(error);
+        }
+    };
     if config.stop_file.exists() || config.busy_file.as_ref().is_some_and(|path| path.exists()) {
         std::fs::remove_file(&temporary).ok();
         return Err("cancelled".to_string());
     }
+    // The scenes land before the chunk does, so no reader ever sees a Caramel chunk without them.
+    let caramel = encoder.caramel.is_some();
+    if caramel {
+        if let Err(error) = scenes::write_sidecar(&config.output, &marks) {
+            std::fs::remove_file(&temporary).ok();
+            return Err(error.to_string());
+        }
+    }
     std::fs::rename(&temporary, &config.output).map_err(|e| {
         std::fs::remove_file(&temporary).ok();
+        if caramel {
+            std::fs::remove_file(scenes::sidecar_path(&config.output)).ok();
+        }
         e.to_string()
     })
 }
@@ -513,6 +596,18 @@ where
     let aot = config.plan.as_deref().map(aot_directory);
     if let Some(directory) = aot.as_ref() {
         freeze_aot(directory);
+    }
+    // Chunks encoded ahead of time decided their scenes from the planner's context; the ones encoded
+    // here decide from the same one, whatever this run could have read for itself.
+    let mut config = config;
+    if config.encoder.caramel.is_some() {
+        if let Some(planned) = aot
+            .as_ref()
+            .and_then(|directory| std::fs::read_to_string(directory.join(scenes::CONTEXT_FILE)).ok())
+            .and_then(|text| crate::scenes::SceneCrf::from_arg(&text).ok())
+        {
+            config.encoder.caramel = Some(planned);
+        }
     }
     let (probed, frame_total) = probe(&config.ffprobe, &config.input)?;
     let source = Arc::new(probed);
@@ -534,6 +629,9 @@ where
         return Err("parallel input has fewer than four chunks per worker".to_string());
     }
     let reused_chunks = Arc::new(AtomicUsize::new(0));
+    let caramel = config.encoder.caramel.is_some();
+    // Each chunk's scenes, by chunk index, for the summary.
+    let chunk_scenes: Arc<std::sync::Mutex<HashMap<usize, Vec<SceneMark>>>> = Default::default();
     let audio = scratch.join("audio.mp4");
     let mut audio_child = Command::new(&config.ffmpeg)
         .args(["-v", "error", "-i"])
@@ -569,6 +667,7 @@ where
             let source = source.clone();
             let aot = aot.clone();
             let reused_chunks = reused_chunks.clone();
+            let chunk_scenes = chunk_scenes.clone();
             let config = &config;
             let mut encoder_config = config.encoder.clone();
             encoder_config.width = source.width;
@@ -589,18 +688,21 @@ where
                     };
                     let output = scratch.join(format!("chunk-{index:06}.264"));
                     let reused = aot.as_ref().and_then(|directory| {
-                        reuse_aot_chunk(directory, &output, frame, count)
-                    }).is_some_and(|size| {
+                        reuse_aot_chunk(directory, &output, frame, count, caramel)
+                    }).is_some_and(|(size, marks)| {
                         completed.fetch_add(count, Ordering::Relaxed);
                         bytes.fetch_add(size, Ordering::Relaxed);
                         reused_chunks.fetch_add(1, Ordering::Relaxed);
+                        if let Some(marks) = marks {
+                            chunk_scenes.lock().unwrap().insert(index, marks);
+                        }
                         events.send(WorkerEvent::Progress).ok();
                         true
                     });
                     if reused {
                         continue;
                     }
-                    if let Err(e) = encode_chunk(
+                    match encode_chunk(
                         config,
                         &source,
                         &encoder_config,
@@ -613,9 +715,16 @@ where
                         &events,
                         &[],
                     ) {
-                        stop.store(true, Ordering::Relaxed);
-                        events.send(WorkerEvent::Error(e)).ok();
-                        break;
+                        Ok(marks) => {
+                            if caramel {
+                                chunk_scenes.lock().unwrap().insert(index, marks);
+                            }
+                        }
+                        Err(e) => {
+                            stop.store(true, Ordering::Relaxed);
+                            events.send(WorkerEvent::Error(e)).ok();
+                            break;
+                        }
                     }
                 }
                 events.send(WorkerEvent::Done).ok();
@@ -732,6 +841,12 @@ where
         natural_boundaries,
         frame_total,
         elapsed,
+        scenes: caramel.then(|| {
+            let chunk_scenes = chunk_scenes.lock().unwrap();
+            SceneCrfSummary::from_chunks(
+                ranges.iter().enumerate().map(|(index, &(_, count))| (count, chunk_scenes.get(&index).map(Vec::as_slice))),
+            )
+        }),
     })
 }
 
@@ -805,8 +920,15 @@ mod tests {
         std::fs::create_dir_all(&aot).unwrap();
         std::fs::write(aot_chunk_path(&aot, 250, 250), b"encoded chunk").unwrap();
         let output = root.join("fixed.264");
-        assert_eq!(reuse_aot_chunk(&aot, &output, 250, 250), Some(13));
-        assert_eq!(std::fs::read(output).unwrap(), b"encoded chunk");
+        assert_eq!(reuse_aot_chunk(&aot, &output, 250, 250, false), Some((13, None)));
+        assert_eq!(std::fs::read(&output).unwrap(), b"encoded chunk");
+        // A chunk without scenes was not encoded under Caramel Analysis, and one with them was.
+        std::fs::remove_file(&output).ok();
+        assert_eq!(reuse_aot_chunk(&aot, &output, 250, 250, true), None);
+        let marks = vec![SceneMark { start: 0, crf: 18.5 }];
+        scenes::write_sidecar(&aot_chunk_path(&aot, 250, 250), &marks).unwrap();
+        assert_eq!(reuse_aot_chunk(&aot, &output, 250, 250, false), None);
+        assert_eq!(reuse_aot_chunk(&aot, &output, 250, 250, true), Some((13, Some(marks))));
         std::fs::remove_dir_all(root).ok();
     }
 

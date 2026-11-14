@@ -57,6 +57,11 @@ int pnx264_encode(pnx264_enc *e,
                   int stride_y, int stride_u, int stride_v,
                   int64_t pts, const uint8_t **out);
 
+/* Encode from the next frame passed to pnx264_encode onwards at this CRF, frame-accurately (the
+ * per-picture parameter change x264's zones are built on). Setting it twice before that frame keeps
+ * the last value. Returns negative on allocation failure. */
+int pnx264_set_crf(pnx264_enc *e, float crf);
+
 /* Drain one buffered frame. Returns 0 when the encoder is empty. */
 int pnx264_flush(pnx264_enc *e, const uint8_t **out);
 

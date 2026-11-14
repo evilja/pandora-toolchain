@@ -2792,6 +2792,7 @@ dependencies = [
 name = "pnx264"
 version = "0.1.0"
 dependencies = [
+ "caramel-kernel",
  "cc",
 ]
 

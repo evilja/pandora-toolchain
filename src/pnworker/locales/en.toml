@@ -667,16 +667,16 @@ text = "🍮 Caramel Analysis"
 args = 0
 
 [CARAMEL_PROG]
-text = "Caramel Analysis is sampling the source…"
-args = 0
+text = "Caramel Analysis is reading the source scene by scene… {}%"
+args = 1
 
 [CARAMEL_VERIFY_PROG]
-text = "Verifying the estimate: encoding sample clips at CRF {}…"
+text = "Verifying the scene CRFs: encoding the scenes furthest from the anchor at their own CRF and at CRF {}…"
 args = 1
 
 [CARAMEL_DONE]
-text = "Caramel Analysis: **CRF {}** for `{}` (anchor {}, {}, confidence {}).\nSampled {} windows / {} frames in {} s.\nDrivers: {}\n{}"
-args = 10
+text = "Caramel Analysis: **{} scenes** for `{}`, CRF {}–{} (mean {}, anchor {}; frames {}).\nAnalysed {} frames in {} s.\nCRFs: {}\nDrivers: {}\n{}"
+args = 12
 
 [CARAMEL_FAIL]
 text = "Caramel Analysis failed: {}"

@@ -110,7 +110,10 @@ pub(crate) async fn persist_side_effects(
         });
         db.update_progress(job_id, &v.to_string()).await.ok();
     } else if *id == CARAMEL_PROG {
-        let v = serde_json::json!({ "type": "caramel", "phase": "analysis" });
+        let v = serde_json::json!({
+            "type": "caramel", "phase": "analysis",
+            "percent": args.get(0).and_then(|percent| percent.parse::<u64>().ok()),
+        });
         db.update_progress(job_id, &v.to_string()).await.ok();
     } else if *id == CARAMEL_VERIFY_PROG {
         let v = serde_json::json!({ "type": "caramel", "phase": "verify", "crfs": args.get(0) });
@@ -127,8 +130,12 @@ pub(crate) async fn persist_side_effects(
         };
         let v = serde_json::json!({
             "type": "caramel", "done": true, "percent": 100,
-            "crf": args.get(0).and_then(|crf| crf.parse::<f64>().ok()),
+            "scenes": args.get(0).and_then(|scenes| scenes.parse::<u64>().ok()),
             "preset": args.get(1),
+            "min_crf": args.get(2).and_then(|crf| crf.parse::<f64>().ok()),
+            "max_crf": args.get(3).and_then(|crf| crf.parse::<f64>().ok()),
+            "mean_crf": args.get(4).and_then(|crf| crf.parse::<f64>().ok()),
+            "anchor_crf": args.get(5).and_then(|crf| crf.parse::<f64>().ok()),
             "report": report,
         });
         db.update_progress(job_id, &v.to_string()).await.ok();

@@ -102,38 +102,55 @@ The file format and its `hardware` tag are described in [WORKER.md](WORKER.md) a
 
 ## `pnmpeg` Caramel Analysis
 
-Caramel Analysis estimates the highest CRF a source holds at the preset's quality from the source
-alone, without trial encodes. The feature extraction and the model are in `caramel-kernel/` (see its
-README for the method); `src/lib/mpeg/caramel.rs` decodes the samples and runs the optional
-verification.
+Caramel Analysis gives every scene of a source its own CRF, decided from the source alone, without
+trial encodes. There is no file-wide CRF: a still dialogue shot, a grainy flashback and a dark fade
+in one episode each get their own. The feature extraction, cut detection and model are in
+`caramel-kernel/` (see its README for the method). `pnx264::scenes` runs the same decider inside the
+chunk encoder, and `src/lib/mpeg/caramel.rs` runs it over a whole file and verifies it.
 
-- **Sampling.** One ffprobe call reads the size, frame rate, bit depth, codec and bitrate (Matroska
-  `BPS` tags, then the container bitrate). Each window is its own ffmpeg process that seeks with
-  `-noaccurate_seek`, so it starts on a keyframe and decodes only the frames it measures, written as
-  y4m. Two requested positions that land on the same keyframe are measured once. A whole file is
-  sampled with 6 frames every 40 s, 6–24 windows. A frame range (an AOT chunk) is sampled every 8 s,
-  2–6 windows. Up to four windows decode in parallel.
-- **Estimate.** Each window's features (P.910 SI/TI, edge density, Immerkær noise σ over the flattest
-  pixels, smooth/gradient/dark/line-art block shares, chroma SI, quarter-resolution
-  motion-compensated residual, cut detection) give it a bounded CRF offset from the anchor. The file
-  takes the weighted 25th percentile of those offsets, so the hard windows decide, plus global
-  factors for output resolution and source bits per pixel. A raise is scaled by confidence (how many
-  windows, how much temporal coverage); a cut never is. The offset is bounded to −4…+4 and rounded to
-  0.5. Reports are stamped with `caramel_kernel::MODEL_VERSION`.
+- **Scenes.** `caramel_kernel::SceneDecider` is fed every frame in display order. Each frame is
+  compared with the one before for a cut: a large histogram distance, a medium one with real motion
+  residual, or a motion-compensated residual more than twice the frame's own intra residual (a cut
+  between shots that share one palette). A cut within `min_scene_frames` (12) of the last is ignored.
+  A scene that runs past `max_scene_frames` (250) is split and decided again. The first
+  `analysis_frames` (12) of each scene are measured, and the scene's CRF is decided as soon as they
+  have been, so an encoder holds back at most that many frames.
+- **Estimate.** A scene's features (P.910 SI, Immerkær noise σ over the flattest pixels,
+  gradient/dark-gradient/line-art block shares, chroma SI, quarter-resolution motion-compensated
+  residual) give it a bounded offset from the anchor. Output resolution and source bits per pixel
+  are added on top. Banding only counts once most of a frame is smooth gradient, since cel shading
+  puts half of a typical anime frame there and the anchor already covers it. A raise is scaled by
+  confidence (frames measured, temporal coverage); a cut never is. The offset is bounded to −4…+4 and
+  rounded to 0.5. Reports are stamped with `caramel_kernel::MODEL_VERSION`.
+- **Presets.** `crf_mode = "caramel-analysis"` in a libx264 preset file makes every encode with it
+  per-scene, anchored at its `crf`. Such a preset chunks by default and never runs linear AOT, which
+  could not know the scene CRFs. When the job runs linearly anyway (idle-gated, or a fallback), the
+  whole file is analysed first and the scenes go to x264 as `zones=<start>,<end>,crf=<crf>/…` in
+  `-x264-params`, replacing any `zones` the preset had. Runs at the anchor are left out. Other
+  encoders ignore the mode with a warning.
+- **Chunks.** With caramel, each chunk encoder runs a `SceneSchedule`: frames go through the decider
+  and are held back only until their scene is decided, and the CRF is switched per picture through
+  `x264_picture_t.param`, exactly as x264's own zones are applied. A chunk starts a scene at its
+  first frame, since nothing before it is visible. The planner writes the decider's settings to
+  `parallel-aot/caramel.context` and passes them to every chunk child as the hidden
+  `--aot-caramel`. Each finished chunk writes `<chunk>.scenes` (`start|crf` lines) beside it. A
+  chunk is reused only when that sidecar matches the mode: present under caramel, absent otherwise.
 - **`--aot-crf <value>`** (hidden). It sets the CRF of AOT chunks: a number (`-12`…`63`),
   `caramel-analysis` (anchored at the preset's CRF), or `caramel-analysis:<crf>` (anchored at
-  `<crf>`). Each chunk is analysed over its own frame range with one worker and one decoder thread.
-  If the analysis fails, the chunk logs why and encodes at the anchor.
-- **`--caramel-report`** analyses the whole input (`-i`) with the active preset as the anchor
-  (`--aot-crf` overrides it) and writes the JSON report to `-o`, or to stdout for `-o -`. Nothing is
-  encoded.
-- **`--caramel-verify <auto|crf,crf,…>`** (with `--caramel-report`) also encodes up to six 2 s clips,
-  chosen from the hardest windows first, at each CRF (`auto` means the estimate and the anchor). It
-  uses libx264 with the preset's preset, tune and x264 params, then compares each clip against the
-  source with ffmpeg's `ssim` and `psnr` filters. A clip is a fixed frame count from the keyframe
-  both passes seek to: with `-noaccurate_seek`, an input `-t` counts from the requested timestamp
-  and can end before the keyframe's first frame. Scratch files go in a hidden directory beside the
-  output and are removed afterwards. `--cancelfile` is checked before each clip.
+  `<crf>`).
+- **`--caramel-report`** analyses the input (`-i`, optionally `--start-frame`/`--frame-count`) with
+  the active preset as the anchor (`--aot-crf` overrides it) and writes the JSON report to `-o`, or to
+  stdout for `-o -`. Nothing is encoded. Every frame is decoded, split into contiguous segments of at
+  least 2400 frames decoded in parallel; each seeks accurately to its first frame. The report lists
+  every scene (start, frames, how it started, CRF, contributions), the frame-weighted CRF
+  distribution, and the `zones` string a linear encode would use.
+- **`--caramel-verify <auto|crf,crf,…>`** (with `--caramel-report`) also encodes up to six 4 s clips
+  from the scenes moved furthest from the anchor. Each is encoded at its scene CRF and at every listed
+  fixed CRF (`auto` means the anchor), using libx264 with the preset's preset, tune and x264 params,
+  and compared against the source with ffmpeg's `ssim` and `psnr` filters. Both passes seek
+  accurately to the scene's first frame and take the same frame count. The pooled totals give the
+  adaptive strategy's bitrate saving against each fixed CRF. Scratch files go in a hidden directory
+  beside the output and are removed afterwards. `--cancelfile` is checked before each clip.
 
 ## `pnmpeg` image watermark
 

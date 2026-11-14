@@ -1,33 +1,38 @@
-// Pandora's side of Caramel Analysis: probing the source, decoding the sample windows through
-// ffmpeg, and feeding them to `caramel_kernel`.
+// Pandora's side of Caramel Analysis: probing the source, decoding it through ffmpeg into
+// `caramel_kernel`'s scene decider, and verifying the CRFs it chose.
 //
-// The cost is a fraction of a second of decoding per window. Each window is one ffmpeg process that
-// seeks with `-noaccurate_seek`, so it starts decoding at the keyframe it lands on and stops after a
-// few frames — nothing between windows is ever decoded, and the container is never fully demuxed.
-// What the container header says (codec, bitrate, bit depth) is read with one ffprobe call.
+// There is no file-wide CRF. The decider splits the source into scenes and gives each its own; a
+// report is that list. The same decider runs inside every chunk encoder (`pnx264::scenes`), so what
+// a report says about a scene is what an encode does with it. Encodes that cannot switch CRF
+// themselves — the ffmpeg x264 paths — get the report's scenes as x264 `zones`.
+//
+// A report decodes every frame, because every frame has to be compared with the one before it to
+// find the cuts. That is split across parallel time segments, and the expensive measurement only
+// runs on each scene's first `analysis_frames`. What the container header says (codec, bitrate, bit
+// depth) is read with one ffprobe call.
 
 use crate::lib::bin::resolve_runtime_binary;
-use caramel_kernel::{EncodeContext, Estimate, Frame, Plane, SourceContext, WindowAnalyzer, WindowFeatures};
+use caramel_kernel::{
+    Contribution, EncodeContext, Frame, MODEL_VERSION, Plane, SceneConfig, SceneDecider, SceneDecision, SceneStart,
+    SourceContext,
+};
 use serde::Serialize;
 use std::fmt;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const CARAMEL_ANALYSIS: &str = "caramel-analysis";
 
-// Consecutive frames decoded per window: five frame pairs for the temporal features.
-const WINDOW_FRAMES: usize = 6;
-// A whole file gets a window about every 40 seconds — 24 across a TV episode.
-const FILE_WINDOW_SPACING: f64 = 40.0;
-const FILE_WINDOWS_MIN: usize = 6;
-const FILE_WINDOWS_MAX: usize = 24;
-// A frame range (one AOT chunk) is short and IDR-bounded, so it is sampled more densely but with
-// far fewer windows in absolute terms.
-const RANGE_WINDOW_SPACING: f64 = 8.0;
-const RANGE_WINDOWS_MIN: usize = 2;
-const RANGE_WINDOWS_MAX: usize = 6;
+// A segment boundary forces a scene boundary, so segments are long enough that this is rare: about
+// a hundred seconds each, whatever the worker count.
+const MIN_SEGMENT_FRAMES: u64 = 2400;
+// How often a segment looks at the cancel file.
+const CANCEL_CHECK_FRAMES: u64 = 48;
+// A scene shorter than this is not worth a verification clip: x264's rate control has barely settled.
+const VERIFY_MIN_FRAMES: u64 = 12;
 
 // What `--aot-crf` asks for: a CRF, or Caramel Analysis anchored at the preset's CRF (or at the
 // one written after the colon, `caramel-analysis:17`).
@@ -68,54 +73,6 @@ impl fmt::Display for AotCrf {
     }
 }
 
-// Overrides of the sampling plan, for experiments with density against accuracy. Anything left
-// unset is the built-in plan for a whole file or a frame range.
-#[derive(Clone, Copy, Debug, Default, Serialize, serde::Deserialize)]
-pub struct Sampling {
-    #[serde(default)]
-    pub frames_per_window: Option<usize>,
-    #[serde(default)]
-    pub spacing_seconds: Option<f64>,
-    #[serde(default)]
-    pub min_windows: Option<usize>,
-    #[serde(default)]
-    pub max_windows: Option<usize>,
-}
-
-// Hard ceilings on an override, so a request cannot turn a sampled analysis into a full decode.
-const SAMPLING_FRAMES_CEILING: usize = 48;
-const SAMPLING_WINDOWS_CEILING: usize = 128;
-
-#[derive(Clone, Copy, Debug, Serialize)]
-pub struct SamplingPlan {
-    pub frames_per_window: usize,
-    pub spacing_seconds: f64,
-    pub min_windows: usize,
-    pub max_windows: usize,
-}
-
-impl SamplingPlan {
-    // The built-in plan: for a frame range (an AOT chunk) or for a whole file.
-    pub fn default_for(range: bool) -> Self {
-        Self::resolve(range, &Sampling::default())
-    }
-
-    fn resolve(range: bool, overrides: &Sampling) -> Self {
-        let (spacing, min, max) = if range {
-            (RANGE_WINDOW_SPACING, RANGE_WINDOWS_MIN, RANGE_WINDOWS_MAX)
-        } else {
-            (FILE_WINDOW_SPACING, FILE_WINDOWS_MIN, FILE_WINDOWS_MAX)
-        };
-        let max_windows = overrides.max_windows.unwrap_or(max).clamp(1, SAMPLING_WINDOWS_CEILING);
-        Self {
-            frames_per_window: overrides.frames_per_window.unwrap_or(WINDOW_FRAMES).clamp(1, SAMPLING_FRAMES_CEILING),
-            spacing_seconds: overrides.spacing_seconds.filter(|s| s.is_finite() && *s >= 1.0).unwrap_or(spacing),
-            min_windows: overrides.min_windows.unwrap_or(min).clamp(1, max_windows),
-            max_windows,
-        }
-    }
-}
-
 // The x264 settings a verification encodes its clips with — the preset's own, so the measured
 // quality is the quality that preset would deliver at that CRF.
 #[derive(Clone, Debug, Default, Serialize)]
@@ -125,83 +82,126 @@ pub struct VerifyEncoder {
     pub x264_params: Option<String>,
 }
 
-// Ground truth for the estimate: short clips at a few sample points, each encoded at every CRF
-// listed and measured against the source. This is the brute-force search the estimate exists to
-// replace, run small and only on request, to see how far off the estimate is.
-#[derive(Clone, Debug, Serialize)]
-pub struct VerifyRequest {
-    pub crfs: Vec<f32>,
-    pub clip_seconds: f64,
-    pub max_clips: usize,
-    pub encoder: VerifyEncoder,
-    // Where the clips are written while they are measured; removed afterwards.
-    pub scratch: PathBuf,
-    // Checked before every clip: a verification is minutes of encoding, and a cancel should not
-    // have to wait for all of it.
-    pub cancel_file: Option<PathBuf>,
-}
-
-#[derive(Clone, Debug, Default, Serialize)]
-pub struct VerifyPoint {
-    pub crf: f32,
-    pub clips: usize,
-    pub mean_ssim: f64,
-    pub min_ssim: f64,
-    pub mean_psnr: f64,
-    pub min_psnr: f64,
-    pub kbps: f64,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct VerifyReport {
-    pub encoder: VerifyEncoder,
-    pub clip_seconds: f64,
-    pub positions: Vec<f64>,
-    pub points: Vec<VerifyPoint>,
-    pub elapsed_ms: u128,
-}
-
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize)]
 pub struct FrameRange {
     pub start: u64,
     pub frames: u64,
 }
 
-pub struct CaramelRequest<'a> {
+pub struct SceneRequest<'a> {
     pub input: &'a Path,
-    // Analyse only these frames (an AOT chunk); None for the whole file.
+    // Analyse only these frames; None for the whole file.
     pub range: Option<FrameRange>,
-    // The frame rate the range is counted in, when the caller already knows it.
+    // The frame rate frames are counted in, when the caller already knows it.
     pub fps: Option<f64>,
     pub encode: EncodeContext,
-    // Windows decoded at once. An AOT chunk runs beside other single-threaded encoders and uses 1.
+    pub scenes: SceneConfig,
+    // Segments decoded at once.
     pub workers: usize,
-    // ffmpeg's decoder `-threads`; 0 lets it choose.
+    // ffmpeg's decoder `-threads` per segment; 0 lets it choose.
     pub decoder_threads: u32,
-    pub sampling: Sampling,
+    pub cancel_file: Option<PathBuf>,
+    // Frames decoded so far, summed over the segments, for a caller that shows progress.
+    pub progress: Option<&'a AtomicU64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SceneEntry {
+    pub start_frame: u64,
+    pub frames: u64,
+    pub start_seconds: f64,
+    pub crf: f32,
+    // What began the scene: the start of the analysis or of a segment, a cut, or a long-scene split.
+    pub start: SceneStart,
+    pub adjustment: f64,
+    pub raw_adjustment: f64,
+    pub confidence: f64,
+    pub frames_analyzed: usize,
+    pub contributions: Vec<Contribution>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CrfBin {
+    pub crf: f32,
+    pub scenes: usize,
+    pub frames: u64,
+}
+
+// The CRFs over the whole analysis, weighted by frames — what the bitrate follows.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct CrfDistribution {
+    pub scenes: usize,
+    pub frames: u64,
+    pub anchor_crf: f32,
+    pub mean_crf: f64,
+    pub min_crf: f32,
+    pub max_crf: f32,
+    pub frames_below_anchor: u64,
+    pub frames_at_anchor: u64,
+    pub frames_above_anchor: u64,
+    pub histogram: Vec<CrfBin>,
+}
+
+impl CrfDistribution {
+    pub fn of(scenes: &[SceneEntry], anchor: f32) -> Self {
+        let mut summary = Self { anchor_crf: anchor, scenes: scenes.len(), ..Default::default() };
+        if scenes.is_empty() {
+            return summary;
+        }
+        summary.min_crf = f32::INFINITY;
+        summary.max_crf = f32::NEG_INFINITY;
+        let mut weighted = 0.0;
+        for scene in scenes {
+            summary.frames += scene.frames;
+            weighted += scene.crf as f64 * scene.frames as f64;
+            summary.min_crf = summary.min_crf.min(scene.crf);
+            summary.max_crf = summary.max_crf.max(scene.crf);
+            match scene.crf.total_cmp(&anchor) {
+                std::cmp::Ordering::Less => summary.frames_below_anchor += scene.frames,
+                std::cmp::Ordering::Equal => summary.frames_at_anchor += scene.frames,
+                std::cmp::Ordering::Greater => summary.frames_above_anchor += scene.frames,
+            }
+            match summary.histogram.iter_mut().find(|bin| bin.crf == scene.crf) {
+                Some(bin) => {
+                    bin.scenes += 1;
+                    bin.frames += scene.frames;
+                }
+                None => summary.histogram.push(CrfBin { crf: scene.crf, scenes: 1, frames: scene.frames }),
+            }
+        }
+        summary.histogram.sort_by(|a, b| a.crf.total_cmp(&b.crf));
+        summary.mean_crf = if summary.frames == 0 { anchor as f64 } else { weighted / summary.frames as f64 };
+        summary
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct CaramelReport {
+    pub model: &'static str,
     pub input: String,
     pub source: SourceContext,
     pub encode: EncodeContext,
+    pub scene_config: SceneConfig,
+    pub range: Option<FrameRange>,
+    pub frames: u64,
     pub duration_seconds: Option<f64>,
-    pub sampling: SamplingPlan,
-    pub windows_planned: usize,
-    pub windows_skipped: usize,
+    pub segments: usize,
     pub elapsed_ms: u128,
-    pub estimate: Estimate,
-    pub windows: Vec<WindowFeatures>,
+    pub summary: CrfDistribution,
+    pub scenes: Vec<SceneEntry>,
+    // The scenes as an x264 `zones` value, in the input's own frame numbers: what an ffmpeg x264
+    // encode of the whole input is given to follow the same CRFs. Empty when every scene is at
+    // the anchor.
+    pub zones: String,
     // Filled in from `run_verification` when one was asked for, or why it could not be.
     pub verify: Option<VerifyReport>,
     pub verify_error: Option<String>,
 }
 
 #[derive(Clone, Debug)]
-struct SourceProbe {
-    context: SourceContext,
-    duration: Option<f64>,
+pub struct SourceProbe {
+    pub context: SourceContext,
+    pub duration: Option<f64>,
 }
 
 fn parse_rate(value: Option<&str>) -> Option<f64> {
@@ -262,7 +262,7 @@ fn parse_probe(stdout: &[u8]) -> Option<SourceProbe> {
     })
 }
 
-fn probe_source(input: &Path) -> Result<SourceProbe, String> {
+pub fn probe_source(input: &Path) -> Result<SourceProbe, String> {
     let output = Command::new(resolve_runtime_binary("ffprobe"))
         .args([
             "-v", "error", "-select_streams", "v:0",
@@ -280,44 +280,53 @@ fn probe_source(input: &Path) -> Result<SourceProbe, String> {
     parse_probe(&output.stdout).ok_or_else(|| format!("ffprobe found no video stream in {}", input.display()))
 }
 
-// Window start times spread evenly over [start, start + length): each window sits in the middle of
-// its share of the span, so neither end of the file is over-represented.
-fn plan_windows(start: f64, length: f64, spacing: f64, min: usize, max: usize) -> Vec<f64> {
-    if !(length > 0.0) {
-        return vec![start];
-    }
-    let count = ((length / spacing).round() as usize).clamp(min, max);
+// Contiguous segments over [start, start + frames). With no frame count the analysis runs to the
+// end of the input in one segment, since nothing says where a second one would begin.
+fn plan_segments(start: u64, frames: Option<u64>, workers: usize) -> Vec<(u64, Option<u64>)> {
+    let Some(frames) = frames.filter(|frames| *frames > 0) else {
+        return vec![(start, None)];
+    };
+    let count = (frames / MIN_SEGMENT_FRAMES).clamp(1, workers.max(1) as u64);
     (0..count)
-        .map(|index| start + (index as f64 + 0.5) * length / count as f64)
+        .map(|index| {
+            let from = start + index * frames / count;
+            let to = start + (index + 1) * frames / count;
+            (from, Some(to - from))
+        })
         .collect()
 }
 
-// Cheap identity of a window's first frame. With `-noaccurate_seek` two windows inside one long
-// GOP land on the same keyframe, and analysing the same frames twice would weigh them double.
-fn fingerprint(luma: &[u8]) -> u64 {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in luma.iter().step_by(61) {
-        hash ^= *byte as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
+struct SegmentResult {
+    start: u64,
+    decoded: u64,
+    decisions: Vec<SceneDecision>,
 }
 
-fn analyse_window(
+// The accurate-seek target that makes `frame` the first frame decoded: half a frame early, so a
+// timestamp rounded either way still lands on it and not on its neighbour.
+fn seek_seconds(frame: u64, fps: f64) -> Option<String> {
+    (frame > 0).then(|| format!("{:.6}", (frame as f64 - 0.5) / fps))
+}
+
+fn analyse_segment(
     ffmpeg: &Path,
-    input: &Path,
-    position: f64,
-    frames: usize,
-    decoder_threads: u32,
-) -> Result<Option<(u64, WindowFeatures)>, String> {
-    let mut child = Command::new(ffmpeg)
-        .args(["-v", "error", "-nostdin", "-threads", &decoder_threads.to_string(), "-noaccurate_seek"])
-        .args(["-ss", &format!("{position:.3}"), "-i"])
-        .arg(input)
-        .args([
-            "-map", "0:v:0", "-frames:v", &frames.to_string(), "-an", "-sn", "-dn",
-            "-pix_fmt", "yuv420p", "-f", "yuv4mpegpipe", "-",
-        ])
+    request: &SceneRequest,
+    source: &SourceContext,
+    start: u64,
+    frames: Option<u64>,
+    fps: f64,
+) -> Result<SegmentResult, String> {
+    let mut command = Command::new(ffmpeg);
+    command.args(["-v", "error", "-nostdin", "-threads", &request.decoder_threads.to_string()]);
+    if let Some(seek) = seek_seconds(start, fps) {
+        command.args(["-ss", &seek]);
+    }
+    command.arg("-i").arg(request.input).args(["-map", "0:v:0"]);
+    if let Some(frames) = frames {
+        command.args(["-frames:v", &frames.to_string()]);
+    }
+    let mut child = command
+        .args(["-an", "-sn", "-dn", "-pix_fmt", "yuv420p", "-f", "yuv4mpegpipe", "-"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -327,115 +336,165 @@ fn analyse_window(
     let result = (|| {
         let mut reader = match pnx264::y4m::Y4mReader::new(BufReader::with_capacity(1 << 20, stdout)) {
             Ok(reader) => reader,
-            // Nothing decoded: a seek past the end of a file whose duration was an estimate.
-            Err(_) => return Ok(None),
+            // Nothing decoded: a segment past the end of a file whose length was an estimate.
+            Err(_) => return Ok(SegmentResult { start, decoded: 0, decisions: Vec::new() }),
         };
         let (width, height) = (reader.width, reader.height);
         let (chroma_width, chroma_height) = (width.div_ceil(2), height.div_ceil(2));
-        let mut window = WindowAnalyzer::new(position);
-        let mut identity = None;
+        let mut decider = SceneDecider::new(request.scenes, source.clone(), request.encode);
+        let mut decisions = Vec::new();
+        let mut decoded = 0u64;
         while let Some(frame) = reader.next_frame()? {
             let y = Plane::new(frame.y, width, height, frame.stride_y).ok_or("short luma plane")?;
             let u = Plane::new(frame.u, chroma_width, chroma_height, frame.stride_c);
             let v = Plane::new(frame.v, chroma_width, chroma_height, frame.stride_c);
-            identity.get_or_insert_with(|| fingerprint(frame.y));
-            window.push(&Frame { y, u, v });
+            decisions.extend(decider.push(&Frame { y, u, v }));
+            decoded += 1;
+            if let Some(progress) = request.progress {
+                progress.fetch_add(1, Ordering::Relaxed);
+            }
+            if decoded.is_multiple_of(CANCEL_CHECK_FRAMES) && request.cancel_file.as_ref().is_some_and(|path| path.exists()) {
+                return Err("cancelled".to_string());
+            }
         }
-        let features = window.finish();
-        Ok(identity.filter(|_| features.frames > 0).map(|identity| (identity, features)))
+        decisions.extend(decider.finish());
+        for decision in &mut decisions {
+            decision.start_frame += start;
+        }
+        Ok(SegmentResult { start, decoded, decisions })
     })();
     child.kill().ok();
     child.wait().ok();
     result
 }
 
-pub fn run_caramel_analysis(request: &CaramelRequest) -> Result<CaramelReport, String> {
+// A segment's decisions as scenes: each runs to the next one's start, the last to the segment's end.
+fn segment_scenes(segment: &SegmentResult, fps: f64) -> Vec<SceneEntry> {
+    let end = segment.start + segment.decoded;
+    segment
+        .decisions
+        .iter()
+        .enumerate()
+        .map(|(index, decision)| {
+            let next = segment.decisions.get(index + 1).map_or(end, |next| next.start_frame.min(end));
+            let estimate = &decision.estimate;
+            SceneEntry {
+                start_frame: decision.start_frame,
+                frames: next.saturating_sub(decision.start_frame),
+                start_seconds: decision.start_frame as f64 / fps,
+                crf: decision.crf,
+                start: decision.start,
+                adjustment: estimate.adjustment,
+                raw_adjustment: estimate.raw_adjustment,
+                confidence: estimate.confidence,
+                frames_analyzed: estimate.frames_analyzed,
+                contributions: estimate.contributions.clone(),
+            }
+        })
+        .collect()
+}
+
+// Scenes as an x264 `zones` value: runs of equal CRF merged, runs at the anchor left out (the
+// encoder is already there), frame numbers inclusive as x264 counts them.
+pub fn x264_zones(scenes: &[SceneEntry], anchor: f32) -> String {
+    let mut runs: Vec<(u64, u64, f32)> = Vec::new();
+    for scene in scenes.iter().filter(|scene| scene.frames > 0) {
+        let end = scene.start_frame + scene.frames - 1;
+        match runs.last_mut() {
+            Some(run) if run.2 == scene.crf && run.1 + 1 == scene.start_frame => run.1 = end,
+            _ => runs.push((scene.start_frame, end, scene.crf)),
+        }
+    }
+    runs.iter()
+        .filter(|run| run.2 != anchor)
+        .map(|(start, end, crf)| format!("{start},{end},crf={crf}"))
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+// `x264_params` with `zones` set to `zones`, replacing any it already had.
+pub fn with_zones(x264_params: Option<&str>, zones: &str) -> Option<String> {
+    let mut pairs: Vec<&str> = x264_params
+        .unwrap_or_default()
+        .split(':')
+        .filter(|pair| !pair.is_empty() && !pair.starts_with("zones="))
+        .collect();
+    let zoned = format!("zones={zones}");
+    if !zones.is_empty() {
+        pairs.push(&zoned);
+    }
+    (!pairs.is_empty()).then(|| pairs.join(":"))
+}
+
+pub fn run_scene_analysis(request: &SceneRequest) -> Result<CaramelReport, String> {
     let started = std::time::Instant::now();
     let probe = probe_source(request.input)?;
     let fps = request.fps.filter(|fps| *fps > 0.0).unwrap_or(probe.context.fps);
-    let plan = SamplingPlan::resolve(request.range.is_some(), &request.sampling);
-    let positions = match request.range {
-        Some(range) => plan_windows(
-            range.start as f64 / fps,
-            // The last window must still have its frames inside the range.
-            (range.frames.saturating_sub(plan.frames_per_window as u64)) as f64 / fps,
-            plan.spacing_seconds,
-            plan.min_windows,
-            plan.max_windows,
-        ),
-        None => match probe.duration {
-            Some(duration) => plan_windows(
-                0.0,
-                (duration - plan.frames_per_window as f64 / fps).max(0.0),
-                plan.spacing_seconds,
-                plan.min_windows,
-                plan.max_windows,
-            ),
-            // No duration in the header: one window at the start is all that can be placed safely.
-            None => vec![0.0],
-        },
+    let source = SourceContext { fps, ..probe.context.clone() };
+    let (start, frames) = match request.range {
+        Some(range) => (range.start, Some(range.frames)),
+        // An estimate, so the last segment runs to the end of the input rather than stopping at it.
+        None => (0, probe.duration.map(|duration| (duration * fps).round() as u64)),
     };
+    let mut segments = plan_segments(start, frames, request.workers);
+    if request.range.is_none() {
+        if let Some(last) = segments.last_mut() {
+            last.1 = None;
+        }
+    }
     let ffmpeg: PathBuf = resolve_runtime_binary("ffmpeg").into();
-    let workers = request.workers.clamp(1, positions.len().max(1));
-    let mut results: Vec<Option<Result<Option<(u64, WindowFeatures)>, String>>> = vec![None; positions.len()];
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let slots = std::sync::Mutex::new(&mut results);
-    std::thread::scope(|scope| {
-        for _ in 0..workers {
-            scope.spawn(|| loop {
-                let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let Some(&position) = positions.get(index) else { break };
-                let outcome = analyse_window(
-                    &ffmpeg,
-                    request.input,
-                    position,
-                    plan.frames_per_window,
-                    request.decoder_threads,
-                );
-                if let Ok(mut slots) = slots.lock() {
-                    slots[index] = Some(outcome);
-                }
-            });
-        }
+    let results: Vec<Result<SegmentResult, String>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = segments
+            .iter()
+            .map(|&(from, length)| {
+                let (ffmpeg, source) = (&ffmpeg, &source);
+                scope.spawn(move || analyse_segment(ffmpeg, request, source, from, length, fps))
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap_or_else(|_| Err("a segment's analysis panicked".to_string())))
+            .collect()
     });
-
-    let mut seen = std::collections::HashSet::new();
-    let mut windows = Vec::new();
-    let mut first_error = None;
-    for outcome in results.into_iter().flatten() {
-        match outcome {
-            Ok(Some((identity, features))) if seen.insert(identity) => windows.push(features),
-            Ok(_) => {}
-            Err(error) => {
-                first_error.get_or_insert(error);
-            }
-        }
+    let mut scenes = Vec::new();
+    for result in results {
+        scenes.extend(segment_scenes(&result?, fps));
     }
-    if windows.is_empty() {
-        return Err(first_error.unwrap_or_else(|| "no window decoded any frames".to_string()));
+    if scenes.is_empty() {
+        return Err("no frames decoded".to_string());
     }
-    let estimate = caramel_kernel::estimate(&windows, &probe.context, &request.encode);
+    let frames = scenes.iter().map(|scene| scene.frames).sum();
+    let anchor = request.encode.anchor_crf;
     Ok(CaramelReport {
+        model: MODEL_VERSION,
         input: request.input.display().to_string(),
-        source: probe.context,
+        source,
         encode: request.encode,
+        scene_config: request.scenes.sanitised(),
+        range: request.range,
+        frames,
         duration_seconds: probe.duration,
-        sampling: plan,
-        windows_planned: positions.len(),
-        windows_skipped: positions.len() - windows.len(),
+        segments: segments.len(),
         elapsed_ms: started.elapsed().as_millis(),
-        estimate,
-        windows,
+        summary: CrfDistribution::of(&scenes, anchor),
+        zones: x264_zones(&scenes, anchor),
+        scenes,
         verify: None,
         verify_error: None,
     })
 }
 
-// Clip positions for a verification: an even subset of the windows the estimate was made from, so
-// the clips measure the same content.
-fn verify_positions(windows: &[WindowFeatures], max: usize) -> Vec<f64> {
-    let take = max.min(windows.len());
-    (0..take).map(|index| windows[index * windows.len() / take].position_seconds).collect()
+// What a chunk encoder needs to decide scenes the way this report did. Size and frame rate come
+// from the frames the encoder decodes; the rest is the container's.
+pub fn scene_crf(source: &SourceContext, encode: &EncodeContext, scenes: SceneConfig) -> pnx264::scenes::SceneCrf {
+    pnx264::scenes::SceneCrf {
+        output_height: encode.output_height,
+        output_bit_depth: encode.output_bit_depth,
+        scenes,
+        source_bitrate: source.video_bitrate,
+        source_codec: source.codec.clone(),
+        source_bit_depth: source.bit_depth,
+    }
 }
 
 // `key:value` out of one line of an ffmpeg ssim/psnr stats file. A PSNR of identical frames is
@@ -470,32 +529,130 @@ fn run_quiet(command: &mut Command, what: &str) -> Result<(), String> {
     Err(format!("{what} failed: {}", stderr.lines().last().unwrap_or("no output").trim()))
 }
 
+// Ground truth for the scene CRFs: the scenes the model moved furthest from the anchor, each
+// encoded at its own CRF and at every fixed CRF listed, and measured against the source. It is the
+// brute-force comparison the estimate exists to replace, run small and only on request.
+#[derive(Clone, Debug, Serialize)]
+pub struct VerifyRequest {
+    // Fixed CRFs to compare the adaptive encode with; the anchor when empty.
+    pub compare_crfs: Vec<f32>,
+    // The longest clip taken from one scene.
+    pub clip_seconds: f64,
+    pub max_scenes: usize,
+    pub encoder: VerifyEncoder,
+    // Where the clips are written while they are measured; removed afterwards.
+    pub scratch: PathBuf,
+    // Checked before every clip: a verification is minutes of encoding, and a cancel should not
+    // have to wait for all of it.
+    pub cancel_file: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct VerifyMeasure {
+    pub crf: f32,
+    pub mean_ssim: f64,
+    pub min_ssim: f64,
+    pub mean_psnr: f64,
+    pub min_psnr: f64,
+    pub kbps: f64,
+    pub bytes: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct VerifyScene {
+    pub start_frame: u64,
+    pub frames: u64,
+    pub scene_crf: f32,
+    pub adaptive: VerifyMeasure,
+    pub fixed: Vec<VerifyMeasure>,
+}
+
+// One encode strategy over every clip: the scene CRFs (`crf` None) or one fixed CRF.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct VerifyTotal {
+    pub crf: Option<f32>,
+    pub frames: u64,
+    pub mean_ssim: f64,
+    pub min_ssim: f64,
+    pub mean_psnr: f64,
+    pub kbps: f64,
+    pub bytes: u64,
+    // How much smaller the adaptive clips are than this strategy's, in percent (positive = smaller).
+    pub adaptive_saving_percent: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct VerifyReport {
+    pub encoder: VerifyEncoder,
+    pub clip_seconds: f64,
+    pub scenes: Vec<VerifyScene>,
+    pub adaptive: VerifyTotal,
+    pub fixed: Vec<VerifyTotal>,
+    pub elapsed_ms: u128,
+}
+
+// The scenes a verification measures: the ones moved furthest from the anchor, longest first among
+// equals, in the order they play.
+fn verify_scenes(scenes: &[SceneEntry], anchor: f32, max: usize) -> Vec<usize> {
+    let mut candidates: Vec<usize> = (0..scenes.len()).filter(|&index| scenes[index].frames >= VERIFY_MIN_FRAMES).collect();
+    candidates.sort_by(|&a, &b| {
+        let distance = |index: usize| (scenes[index].crf - anchor).abs();
+        distance(b).total_cmp(&distance(a)).then(scenes[b].frames.cmp(&scenes[a].frames))
+    });
+    candidates.truncate(max);
+    candidates.sort_unstable();
+    candidates
+}
+
 struct ClipMeasurement {
     ssim: Vec<f64>,
     psnr: Vec<f64>,
     bytes: u64,
 }
 
-// One clip at one CRF: encode it, then decode the source from the same keyframe and compare. Both
-// passes seek with `-noaccurate_seek` to the same timestamp and take the same number of frames, so
-// they start on the same keyframe and cover the same frames. The length is a frame count, not a
-// duration: with `-noaccurate_seek` an input `-t` is measured from the requested timestamp rather
-// than the keyframe actually landed on, and can end the clip before its first frame.
+impl ClipMeasurement {
+    fn measure(&self, crf: f32, fps: f64) -> VerifyMeasure {
+        let mean = |values: &[f64]| if values.is_empty() { 0.0 } else { values.iter().sum::<f64>() / values.len() as f64 };
+        let min = |values: &[f64]| if values.is_empty() { 0.0 } else { values.iter().copied().fold(f64::INFINITY, f64::min) };
+        VerifyMeasure {
+            crf,
+            mean_ssim: mean(&self.ssim),
+            min_ssim: min(&self.ssim),
+            mean_psnr: mean(&self.psnr),
+            min_psnr: min(&self.psnr),
+            kbps: kbps(self.bytes, self.ssim.len() as u64, fps),
+            bytes: self.bytes,
+        }
+    }
+}
+
+fn kbps(bytes: u64, frames: u64, fps: f64) -> f64 {
+    if frames == 0 || fps <= 0.0 { 0.0 } else { bytes as f64 * 8.0 / (frames as f64 / fps) / 1000.0 }
+}
+
+// One clip at one CRF: encode it, then decode the source again from the same frame and compare.
+// Both passes seek accurately to the scene's first frame and take the same frame count, so they
+// cover exactly the frames the scene's CRF was decided for.
 fn measure_clip(
     ffmpeg: &Path,
     input: &Path,
-    position: f64,
+    start: u64,
     frames: u64,
+    fps: f64,
     request: &VerifyRequest,
     crf: f32,
     name: &str,
 ) -> Result<ClipMeasurement, String> {
     let clip = request.scratch.join(format!("{name}.mkv"));
-    let seek = format!("{position:.3}");
+    let seek = seek_seconds(start, fps);
     let frame_count = frames.to_string();
     let mut encode = Command::new(ffmpeg);
+    encode.args(["-v", "error", "-nostdin", "-y"]);
+    if let Some(seek) = &seek {
+        encode.args(["-ss", seek]);
+    }
     encode
-        .args(["-v", "error", "-nostdin", "-y", "-noaccurate_seek", "-ss", &seek, "-i"])
+        .arg("-i")
         .arg(input)
         .args(["-map", "0:v:0", "-frames:v", &frame_count, "-an", "-sn", "-dn", "-pix_fmt", "yuv420p", "-c:v", "libx264"]);
     if let Some(preset) = &request.encoder.preset {
@@ -504,8 +661,8 @@ fn measure_clip(
     if let Some(tune) = &request.encoder.tune {
         encode.args(["-tune", tune]);
     }
-    if let Some(params) = &request.encoder.x264_params {
-        encode.args(["-x264-params", params]);
+    if let Some(params) = with_zones(request.encoder.x264_params.as_deref(), "") {
+        encode.args(["-x264-params", &params]);
     }
     encode.args(["-crf", &crf.to_string()]).arg(&clip);
     run_quiet(&mut encode, "the verification encode")?;
@@ -520,9 +677,12 @@ fn measure_clip(
          [e1][r1]ssim=stats_file={ssim_file}:shortest=1;[e2][r2]psnr=stats_file={psnr_file}:shortest=1"
     );
     let mut measure = Command::new(ffmpeg);
+    measure.current_dir(&request.scratch).args(["-v", "error", "-nostdin"]);
+    if let Some(seek) = &seek {
+        measure.args(["-ss", seek]);
+    }
     measure
-        .current_dir(&request.scratch)
-        .args(["-v", "error", "-nostdin", "-noaccurate_seek", "-ss", &seek, "-i"])
+        .arg("-i")
         .arg(input)
         .arg("-i")
         .arg(&clip)
@@ -542,88 +702,137 @@ fn measure_clip(
     Ok(measured)
 }
 
-fn summarise(crf: f32, clips: &[ClipMeasurement], clip_seconds: f64) -> VerifyPoint {
+// Every clip of one strategy pooled: SSIM and PSNR per frame, the bitrate over all of them.
+fn total(crf: Option<f32>, clips: &[&ClipMeasurement], fps: f64) -> VerifyTotal {
     let ssim: Vec<f64> = clips.iter().flat_map(|clip| clip.ssim.iter().copied()).collect();
     let psnr: Vec<f64> = clips.iter().flat_map(|clip| clip.psnr.iter().copied()).collect();
-    let mean = |values: &[f64]| if values.is_empty() { 0.0 } else { values.iter().sum::<f64>() / values.len() as f64 };
-    let min = |values: &[f64]| values.iter().copied().fold(f64::INFINITY, f64::min);
-    let bytes: u64 = clips.iter().map(|clip| clip.bytes).sum();
-    VerifyPoint {
+    let bytes = clips.iter().map(|clip| clip.bytes).sum();
+    let frames = ssim.len() as u64;
+    let pooled = ClipMeasurement { ssim, psnr, bytes }.measure(crf.unwrap_or_default(), fps);
+    VerifyTotal {
         crf,
-        clips: clips.len(),
-        mean_ssim: mean(&ssim),
-        min_ssim: if ssim.is_empty() { 0.0 } else { min(&ssim) },
-        mean_psnr: mean(&psnr),
-        min_psnr: if psnr.is_empty() { 0.0 } else { min(&psnr) },
-        kbps: bytes as f64 * 8.0 / (clips.len().max(1) as f64 * clip_seconds) / 1000.0,
+        frames,
+        mean_ssim: pooled.mean_ssim,
+        min_ssim: pooled.min_ssim,
+        mean_psnr: pooled.mean_psnr,
+        kbps: pooled.kbps,
+        bytes,
+        adaptive_saving_percent: 0.0,
     }
 }
 
-// The verification pass: every CRF listed, over the same clips. It is the expensive part of a
-// report — a real encode of `max_clips × clip_seconds` of video per CRF — and only runs on request.
 pub fn run_verification(report: &CaramelReport, request: &VerifyRequest) -> Result<VerifyReport, String> {
     let started = std::time::Instant::now();
-    if request.crfs.is_empty() {
-        return Err("no CRFs to verify".to_string());
+    let anchor = report.encode.anchor_crf;
+    let mut compare = if request.compare_crfs.is_empty() { vec![anchor] } else { request.compare_crfs.clone() };
+    compare.retain(|crf| crf.is_finite());
+    compare.sort_by(|a, b| a.total_cmp(b));
+    compare.dedup();
+    let chosen = verify_scenes(&report.scenes, anchor, request.max_scenes.max(1));
+    if chosen.is_empty() {
+        return Err(format!("no scene is at least {VERIFY_MIN_FRAMES} frames long"));
     }
     std::fs::create_dir_all(&request.scratch).map_err(|e| format!("verification scratch: {e}"))?;
     // The measurement runs inside the scratch directory, so every path it is handed — the clip
     // included — has to be absolute.
     let scratch = std::fs::canonicalize(&request.scratch).map_err(|e| format!("verification scratch: {e}"))?;
     let request = &VerifyRequest { scratch, ..request.clone() };
-    // Relative inputs would resolve against the scratch directory the measurement runs in.
     let input = std::fs::canonicalize(&report.input).unwrap_or_else(|_| PathBuf::from(&report.input));
+    // `DB/bin/ffmpeg` is relative to the process, and the measurement runs from the scratch
+    // directory: without this it cannot start at all. A bare `ffmpeg` is found on PATH either way.
     let ffmpeg: PathBuf = resolve_runtime_binary("ffmpeg").into();
-    let positions = verify_positions(&report.windows, request.max_clips.max(1));
-    let frames = (request.clip_seconds * report.source.fps).round().max(1.0) as u64;
-    let mut points = Vec::with_capacity(request.crfs.len());
-    for (crf_index, &crf) in request.crfs.iter().enumerate() {
-        let mut clips = Vec::with_capacity(positions.len());
-        for (clip_index, &position) in positions.iter().enumerate() {
+    let ffmpeg = if ffmpeg.components().count() > 1 { std::fs::canonicalize(&ffmpeg).unwrap_or(ffmpeg) } else { ffmpeg };
+    let fps = report.source.fps;
+    let clip_limit = (request.clip_seconds * fps).round().max(1.0) as u64;
+    let fail = |error: String| {
+        std::fs::remove_dir_all(&request.scratch).ok();
+        Err(error)
+    };
+    // Per chosen scene: the adaptive clip, then one per fixed CRF (shared when it is the same CRF).
+    let mut measured: Vec<(usize, ClipMeasurement, Vec<usize>)> = Vec::new();
+    let mut fixed_clips: Vec<ClipMeasurement> = Vec::new();
+    for (scene_index, &index) in chosen.iter().enumerate() {
+        let scene = &report.scenes[index];
+        let frames = scene.frames.min(clip_limit);
+        let clip_at = |crf: f32, name: String| {
             if request.cancel_file.as_ref().is_some_and(|path| path.exists()) {
-                std::fs::remove_dir_all(&request.scratch).ok();
                 return Err("cancelled".to_string());
             }
-            match measure_clip(&ffmpeg, &input, position, frames, request, crf, &format!("clip-{crf_index}-{clip_index}")) {
-                Ok(clip) => clips.push(clip),
-                Err(error) => {
-                    std::fs::remove_dir_all(&request.scratch).ok();
-                    return Err(error);
+            measure_clip(&ffmpeg, &input, scene.start_frame, frames, fps, request, crf, &name)
+        };
+        let adaptive = match clip_at(scene.crf, format!("scene-{scene_index}")) {
+            Ok(clip) => clip,
+            Err(error) => return fail(error),
+        };
+        let mut fixed = Vec::with_capacity(compare.len());
+        for (crf_index, &crf) in compare.iter().enumerate() {
+            let clip = if crf == scene.crf {
+                ClipMeasurement { ssim: adaptive.ssim.clone(), psnr: adaptive.psnr.clone(), bytes: adaptive.bytes }
+            } else {
+                match clip_at(crf, format!("scene-{scene_index}-fixed-{crf_index}")) {
+                    Ok(clip) => clip,
+                    Err(error) => return fail(error),
                 }
-            }
+            };
+            fixed.push(fixed_clips.len());
+            fixed_clips.push(clip);
         }
-        points.push(summarise(crf, &clips, request.clip_seconds));
+        measured.push((index, adaptive, fixed));
     }
     std::fs::remove_dir(&request.scratch).ok();
+
+    let scenes = measured
+        .iter()
+        .map(|(index, adaptive, fixed)| {
+            let scene = &report.scenes[*index];
+            VerifyScene {
+                start_frame: scene.start_frame,
+                frames: adaptive.ssim.len() as u64,
+                scene_crf: scene.crf,
+                adaptive: adaptive.measure(scene.crf, fps),
+                fixed: fixed.iter().zip(&compare).map(|(&clip, &crf)| fixed_clips[clip].measure(crf, fps)).collect(),
+            }
+        })
+        .collect();
+    let adaptive = total(None, &measured.iter().map(|(_, clip, _)| clip).collect::<Vec<_>>(), fps);
+    let fixed = compare
+        .iter()
+        .enumerate()
+        .map(|(crf_index, &crf)| {
+            let clips: Vec<&ClipMeasurement> = measured.iter().map(|(_, _, fixed)| &fixed_clips[fixed[crf_index]]).collect();
+            let mut strategy = total(Some(crf), &clips, fps);
+            if strategy.bytes > 0 {
+                strategy.adaptive_saving_percent = (1.0 - adaptive.bytes as f64 / strategy.bytes as f64) * 100.0;
+            }
+            strategy
+        })
+        .collect();
     Ok(VerifyReport {
         encoder: request.encoder.clone(),
         clip_seconds: request.clip_seconds,
-        positions,
-        points,
+        scenes,
+        adaptive,
+        fixed,
         elapsed_ms: started.elapsed().as_millis(),
     })
 }
 
 // One line for a tool log.
 pub fn summary_line(report: &CaramelReport) -> String {
-    let estimate = &report.estimate;
-    let drivers: Vec<String> = estimate
-        .typical
-        .iter()
-        .chain(estimate.global.iter())
-        .filter(|factor| factor.delta.abs() >= 0.1)
-        .map(|factor| format!("{} {:+.2}", factor.factor, factor.delta))
-        .collect();
+    let summary = &report.summary;
     format!(
-        "caramel analysis: crf {} (anchor {}, {:+.2}, confidence {:.2}) from {} windows / {} frames in {} ms [{}]",
-        estimate.crf,
-        estimate.anchor_crf,
-        estimate.adjustment,
-        estimate.confidence,
-        estimate.windows_analyzed,
-        estimate.frames_analyzed,
+        "caramel analysis ({}): {} scenes over {} frames, crf {}..{} (mean {:.2}, anchor {}; {} frames below, {} above) in {} ms over {} segments",
+        report.model,
+        summary.scenes,
+        summary.frames,
+        summary.min_crf,
+        summary.max_crf,
+        summary.mean_crf,
+        summary.anchor_crf,
+        summary.frames_below_anchor,
+        summary.frames_above_anchor,
         report.elapsed_ms,
-        drivers.join(", "),
+        report.segments,
     )
 }
 
@@ -641,31 +850,72 @@ mod tests {
         assert_eq!(stat_value(ssim, "psnr_avg"), None);
     }
 
-    #[test]
-    fn sampling_overrides_are_bounded() {
-        let plan = SamplingPlan::resolve(false, &Sampling::default());
-        assert_eq!((plan.frames_per_window, plan.max_windows), (WINDOW_FRAMES, FILE_WINDOWS_MAX));
-        let wild = Sampling {
-            frames_per_window: Some(10_000),
-            spacing_seconds: Some(0.0),
-            min_windows: Some(500),
-            max_windows: Some(10_000),
-        };
-        let plan = SamplingPlan::resolve(false, &wild);
-        assert_eq!(plan.frames_per_window, SAMPLING_FRAMES_CEILING);
-        assert_eq!(plan.max_windows, SAMPLING_WINDOWS_CEILING);
-        assert_eq!(plan.min_windows, SAMPLING_WINDOWS_CEILING);
-        assert_eq!(plan.spacing_seconds, FILE_WINDOW_SPACING);
+    fn scene(start_frame: u64, frames: u64, crf: f32) -> SceneEntry {
+        SceneEntry {
+            start_frame,
+            frames,
+            start_seconds: 0.0,
+            crf,
+            start: SceneStart::Cut,
+            adjustment: 0.0,
+            raw_adjustment: 0.0,
+            confidence: 1.0,
+            frames_analyzed: 12,
+            contributions: Vec::new(),
+        }
     }
 
     #[test]
-    fn verification_clips_follow_the_analysed_windows() {
-        let windows: Vec<WindowFeatures> = (0..10)
-            .map(|index| WindowFeatures { position_seconds: index as f64 * 10.0, ..Default::default() })
-            .collect();
-        assert_eq!(verify_positions(&windows, 4), vec![0.0, 20.0, 50.0, 70.0]);
-        assert_eq!(verify_positions(&windows[..2], 4), vec![0.0, 10.0]);
-        assert!(verify_positions(&[], 4).is_empty());
+    fn zones_merge_equal_runs_and_leave_the_anchor_out() {
+        let scenes = [scene(0, 100, 17.0), scene(100, 50, 19.5), scene(150, 30, 19.5), scene(180, 20, 15.0)];
+        assert_eq!(x264_zones(&scenes, 17.0), "100,179,crf=19.5/180,199,crf=15");
+        assert_eq!(x264_zones(&scenes[..1], 17.0), "");
+    }
+
+    #[test]
+    fn zones_replace_any_the_params_had() {
+        assert_eq!(
+            with_zones(Some("aq-mode=3:zones=0,9,crf=30:deblock=-1,-1"), "0,99,crf=18").as_deref(),
+            Some("aq-mode=3:deblock=-1,-1:zones=0,99,crf=18")
+        );
+        assert_eq!(with_zones(None, "0,99,crf=18").as_deref(), Some("zones=0,99,crf=18"));
+        assert_eq!(with_zones(Some("zones=1,2,crf=3"), ""), None);
+    }
+
+    #[test]
+    fn the_distribution_is_weighted_by_frames() {
+        let scenes = [scene(0, 300, 16.0), scene(300, 100, 20.0), scene(400, 100, 17.0)];
+        let summary = CrfDistribution::of(&scenes, 17.0);
+        assert_eq!((summary.min_crf, summary.max_crf, summary.scenes, summary.frames), (16.0, 20.0, 3, 500));
+        assert!((summary.mean_crf - (16.0 * 300.0 + 20.0 * 100.0 + 17.0 * 100.0) / 500.0).abs() < 1e-9);
+        assert_eq!((summary.frames_below_anchor, summary.frames_at_anchor, summary.frames_above_anchor), (300, 100, 100));
+        assert_eq!(summary.histogram.iter().map(|bin| bin.crf).collect::<Vec<_>>(), vec![16.0, 17.0, 20.0]);
+    }
+
+    #[test]
+    fn segments_are_contiguous_and_not_too_short() {
+        assert_eq!(plan_segments(0, Some(1000), 4), vec![(0, Some(1000))]);
+        let segments = plan_segments(100, Some(34_000), 4);
+        assert_eq!(segments.len(), 4);
+        assert_eq!(segments[0].0, 100);
+        assert!(segments.windows(2).all(|pair| pair[0].0 + pair[0].1.unwrap() == pair[1].0));
+        let last = segments.last().unwrap();
+        assert_eq!(last.0 + last.1.unwrap(), 34_100);
+        assert_eq!(plan_segments(0, None, 4), vec![(0, None)]);
+    }
+
+    #[test]
+    fn verification_takes_the_scenes_moved_furthest() {
+        let scenes = [scene(0, 100, 17.0), scene(100, 8, 13.0), scene(108, 40, 19.0), scene(148, 90, 15.0), scene(238, 60, 19.0)];
+        // The 8-frame scene is too short to measure; 19.0 twice is a tie broken by length.
+        assert_eq!(verify_scenes(&scenes, 17.0, 2), vec![3, 4]);
+        assert_eq!(verify_scenes(&scenes, 17.0, 10), vec![0, 2, 3, 4]);
+    }
+
+    #[test]
+    fn a_scene_starts_decoding_on_its_own_frame() {
+        assert_eq!(seek_seconds(0, 24.0), None);
+        assert_eq!(seek_seconds(24, 24.0).as_deref(), Some("0.979167"));
     }
 
     #[test]
@@ -693,18 +943,17 @@ mod tests {
         }
     }
 
+    // The planner writes `--aot-crf` in pnx264 and pnmpeg reads it here; a caramel encoder has to
+    // arrive as caramel at the same anchor, and a fixed one as that CRF.
     #[test]
-    fn windows_spread_across_the_span_within_their_bounds() {
-        let episode = plan_windows(0.0, 1440.0, FILE_WINDOW_SPACING, FILE_WINDOWS_MIN, FILE_WINDOWS_MAX);
-        assert_eq!(episode.len(), 24);
-        assert!(episode[0] > 0.0 && *episode.last().unwrap() < 1440.0);
-        assert!(episode.windows(2).all(|pair| pair[0] < pair[1]));
-
-        let short = plan_windows(10.0, 30.0, FILE_WINDOW_SPACING, FILE_WINDOWS_MIN, FILE_WINDOWS_MAX);
-        assert_eq!(short.len(), FILE_WINDOWS_MIN);
-        assert!(short.iter().all(|position| (10.0..40.0).contains(position)));
-
-        assert_eq!(plan_windows(5.0, 0.0, 8.0, 2, 6), vec![5.0]);
+    fn the_planner_crf_argument_parses_back() {
+        let mut encoder = pnx264::Config { crf: 16.5, ..Default::default() };
+        assert_eq!(pnx264::planner::aot_crf_arg(&encoder).parse::<AotCrf>(), Ok(AotCrf::Fixed(16.5)));
+        encoder.caramel = Some(Default::default());
+        assert_eq!(
+            pnx264::planner::aot_crf_arg(&encoder).parse::<AotCrf>(),
+            Ok(AotCrf::CaramelAnalysis { anchor: Some(16.5) })
+        );
     }
 
     #[test]

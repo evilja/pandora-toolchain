@@ -9,13 +9,14 @@ standard presets, 18 for `veryslow`, 25 for the low-bitrate one). A fixed CRF ov
 easy material (flat anime, static dialogue scenes) and can underspend on hard material (heavy
 grain, fast action, dark gradients). The goal here is to pick the CRF from the content.
 
-## Implementation: `caramel-prior-1`
+## Implementation: `caramel-scene-1`
 
-The first model, **Caramel Analysis**, is a prior built from published encoding practice, not from
-measurements yet. It moves the preset's own CRF (the *anchor*) by bounded offsets. It does not
-choose an absolute CRF, so a deployment that never turns it on encodes exactly as before. The crate
-depends only on `serde`: it takes decoded planes and runs no processes. Decoding, sampling and
-verification are Pandora's job (`src/lib/mpeg/caramel.rs`; see `docs/TOOLS.md`).
+**Caramel Analysis** gives every scene its own CRF. It is a prior built from published encoding
+practice and calibrated against the feature distribution of real releases, not yet against
+measured quality. It moves the preset's own CRF (the *anchor*) by bounded offsets. It does not choose
+an absolute CRF, so a deployment that never turns it on encodes exactly as before. The crate depends
+only on `serde`: it takes decoded planes and runs no processes. Decoding, encoding and verification
+are Pandora's job (`src/lib/mpeg/caramel.rs` and `pnx264::scenes`; see `docs/TOOLS.md`).
 
 - `frame` — borrowed `Plane` / `Frame` views over 8-bit planes (luma, and chroma when present).
 - `spatial` — per-frame luma features, evaluated on every second pixel of every second row:
@@ -25,27 +26,44 @@ verification are Pandora's job (`src/lib/mpeg/caramel.rs`; see `docs/TOOLS.md`).
   - Shares of 16×16 blocks that are smooth, gradient (smooth next to a smooth neighbour with a
     small mean step: banding risk), dark gradient, line art (edges over flat fill), and dark.
 - `temporal` — P.910 TI, plus a quarter-resolution 8×8 block motion search (predictors and a small
-  diamond, ±8). It gives the zero-motion and motion-compensated residual, the mean motion, and cut
-  detection from histogram distance.
-- `window` — `WindowAnalyzer` accumulates a few consecutive frames into `WindowFeatures`. Frame
-  pairs across a cut are kept out of the temporal means.
-- `model` — `estimate`. Each window gets an offset from these factors:
+  diamond, ±8). It gives the zero-motion and motion-compensated residual, the mean motion, and the
+  intra residual of the same low-resolution frame (left/up DPCM). A pair is a cut when the
+  histogram distance is large, when it is moderate and the motion residual is real, or when motion
+  compensation predicts the frame worse than twice as badly as the frame predicts itself — the
+  last catches a cut between two shots that share one palette.
+- `window` — `WindowAnalyzer` accumulates consecutive frames into `WindowFeatures`. Frame pairs
+  across a cut are kept out of the temporal means.
+- `scene` — `SceneDecider`, fed every frame in display order. It finds cuts (ignoring any within
+  `min_scene_frames` of the last), splits a scene past `max_scene_frames`, measures each scene's
+  first `analysis_frames` and decides its CRF as soon as it has. `decided_frames()` says how many
+  frames an encoder may release, so it holds back at most one scene's opening. Deciding from the
+  opening is what makes it streamable; it holds because a shot does not change character halfway,
+  and the split bounds the damage when one does.
+- `model` — `estimate_scene`. Each scene gets an offset from these factors:
   - grain (down to −2.5; a small raise when the source is very clean)
-  - gradient banding and dark banding (stronger when a >8-bit source goes to 8-bit)
+  - gradient banding and dark banding, from 55% and 45% of the frame respectively (stronger when a
+    >8-bit source goes to 8-bit)
   - line art
   - texture masking (only where there is no gradient)
-  - motion masking
+  - motion masking (a small cut for a still shot)
   - chroma detail
+  - output resolution and source bits per pixel. The starved-source raise applies only when the
+    content is detailed, because a flat source is cheap rather than starved.
 
-  The file takes the weighted 25th percentile of the window offsets, so the hard windows decide.
-  It then adds global factors for output resolution and source bits per pixel. The starved-source
-  raise applies only when the content is detailed, because a flat source is cheap rather than
-  starved. A raise is scaled by confidence; a cut is not. The total is bounded to −4…+4 and rounded
-  to 0.5. Every factor's contribution is reported, so a wrong estimate shows which term caused it.
+  A raise is scaled by confidence (frames measured, temporal coverage); a cut is not. The total is
+  bounded to −4…+4 and rounded to 0.5. Every factor's contribution is reported, so a wrong CRF shows
+  which term caused it.
 
-The coefficients are a starting point. Use `--caramel-verify` / `verify:true` (SSIM, PSNR and
-bitrate of real clips at the chosen CRFs) to collect the evidence that calibrates them. A
-calibrated model gets a new `MODEL_VERSION`.
+Calibration so far: `caramel-prior-1`'s banding thresholds (5–35% of the frame) put every window of
+two real 1080p TV anime releases at the full penalty and the lower bound, because cel shading puts
+30–70% of a typical frame in smooth gradient blocks. That is content the anchor is already right
+for, and x264's aq-mode 3 already spends on it. The thresholds now start where a frame is mostly
+gradient, so typical scenes sit at the anchor and skies and dark fades are cut. A unit test pins
+those releases' median features to the anchor.
+
+The coefficients are still a starting point. Use `--caramel-verify` / `verify:true` (SSIM, PSNR and
+bitrate of real scenes at their own CRF and at fixed CRFs) to collect the evidence that calibrates
+them. A calibrated model gets a new `MODEL_VERSION`.
 
 ## Problem statement
 
@@ -92,9 +110,11 @@ hides the hard scenes that decide whether the target is met.
 
 ## Granularity
 
-- **Per file**: one CRF for the whole encode — the simplest integration with today's presets.
-- **Per scene**: a CRF per shot via x264/x265 zones, so a static dialogue scene and a fight scene
-  get different CRFs in the same episode.
+- **Per scene** (implemented): a CRF per shot, so a static dialogue scene and a fight scene get
+  different CRFs in the same episode. Chunk encoders switch CRF per picture; linear ffmpeg encodes
+  get x264 `zones`.
+- **Per file** was `caramel-prior-1`: one CRF from the 25th percentile of sampled windows. It let the
+  hardest windows set the CRF for the easy majority, which is what a per-scene CRF avoids.
 
 ## Evaluation
 
@@ -109,5 +129,5 @@ hides the hard scenes that decide whether the target is met.
   (anime-heavy: SSIMULACRA2 and XPSNR tend to track line-art damage better than VMAF).
 - Whether a very cheap encoder-derived feature (for example x264 lookahead/`ultrafast` first-pass
   complexity) is worth its cost alongside the pure source features.
-- Answered: the estimate plugs into `pnmpeg` as `--aot-crf caramel-analysis`, per AOT chunk, and as
-  the standalone `--caramel-report`. See below.
+- Answered: the decider plugs into `pnmpeg` as a preset's `crf_mode = "caramel-analysis"`, as
+  `--aot-crf caramel-analysis` per AOT chunk, and as the standalone `--caramel-report`.

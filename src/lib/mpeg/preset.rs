@@ -305,6 +305,16 @@ pub struct PresetAudio {
     pub channels: Option<String>,
 }
 
+// How a preset's CRF is applied. `fixed` is the preset's CRF for every frame; `caramel-analysis`
+// treats it as the anchor and lets Caramel Analysis give each scene its own CRF around it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CrfMode {
+    #[default]
+    Fixed,
+    CaramelAnalysis,
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PresetFile {
@@ -328,6 +338,10 @@ pub struct PresetFile {
     // would be a worse default than one that simply encodes.
     #[serde(default)]
     pub idle: Option<bool>,
+    // A CRF per scene instead of one for the file. libx264 only: anything else encodes at its
+    // fixed CRF and says so in the log.
+    #[serde(default)]
+    pub crf_mode: CrfMode,
     #[serde(default)]
     pub video: PresetVideo,
     #[serde(default)]
@@ -351,6 +365,7 @@ pub struct ResolvedPreset {
     pub chunked: Option<bool>,
     // Whether the encode runs as background work. A built-in never declares it.
     pub idle: Option<bool>,
+    pub crf_mode: CrfMode,
     // True when this came off disk, so a log can say which of the two an encode used. An operator
     // who edits a preset and sees no change needs to know the file was never read.
     pub from_file: bool,
@@ -526,8 +541,26 @@ impl ResolvedPreset {
     // and the overlap it buys back is worth less than an encoder the whole cluster shares; a
     // scaling preset stays off because the two are usually run as a second output beside a
     // source-resolution one, and speculating on both doubles the load to save the smaller of them.
+    // This preset with x264 `zones` in its parameters, for an ffmpeg encode that follows scene CRFs it
+    // cannot decide itself. Both the gated encode and the handoff that adopts it are given the zoned
+    // preset, so its compatibility key covers the zones and nothing encoded without them is taken.
+    pub fn with_x264_zones(&self, zones: &str) -> ResolvedPreset {
+        let mut preset = self.clone();
+        apply_x264_zones(&mut preset.params, zones);
+        preset
+    }
+
+    // Whether a CRF per scene is what the encode gets. The chunk encoders switch CRF at every scene
+    // themselves; the ffmpeg paths are handed the scenes as x264 zones from a scene pass first.
+    pub fn caramel_analysis(&self) -> bool {
+        self.crf_mode == CrfMode::CaramelAnalysis && self.encodes_with_x264()
+    }
+
+    // A linear AOT encode is one ffmpeg process reading the download as it grows, so it would have
+    // to be given its zones before the scenes they describe have arrived. Under Caramel Analysis
+    // the work ahead of time is done by the chunk encoders instead, which decide as they go.
     pub fn wants_linear_aot(&self) -> bool {
-        self.aot.unwrap_or_else(|| self.aot_by_default())
+        !self.caramel_analysis() && self.aot.unwrap_or_else(|| self.aot_by_default())
     }
 
     fn aot_by_default(&self) -> bool {
@@ -570,10 +603,33 @@ impl ResolvedPreset {
             && self.chunked.unwrap_or_else(|| self.chunks_by_default())
     }
 
+    // Caramel Analysis chunks whenever it can: the chunk encoders are the path that applies scene
+    // CRFs while the source downloads, where every other path waits for a full scene pass.
     fn chunks_by_default(&self) -> bool {
-        self.x264_settings()
+        self.caramel_analysis() || self.x264_settings()
             .preset
             .is_some_and(|preset| CHUNKED_X264_PRESETS.contains(&preset.as_str()))
+    }
+}
+
+// Sets `zones` in a parameter list's `-x264-params`, adding one right after the codec when it has
+// none. Empty zones leave the list alone.
+pub fn apply_x264_zones(params: &mut Vec<FfmpegParams>, zones: &str) {
+    if zones.is_empty() {
+        return;
+    }
+    let existing = params.iter().position(|param| matches!(param, FfmpegParams::X264Params(_)));
+    let current = existing.and_then(|index| match &params[index] {
+        FfmpegParams::X264Params(value) => Some(value.to_string()),
+        _ => None,
+    });
+    let merged = crate::lib::mpeg::caramel::with_zones(current.as_deref(), zones).unwrap_or_default();
+    match existing {
+        Some(index) => params[index] = FfmpegParams::X264Params(Cow::Owned(merged)),
+        None => {
+            let at = params.iter().position(|param| matches!(param, FfmpegParams::Cv(_))).map_or(0, |index| index + 1);
+            params.insert(at, FfmpegParams::X264Params(Cow::Owned(merged)));
+        }
     }
 }
 
@@ -729,6 +785,7 @@ pub fn resolve(name: &str) -> Option<ResolvedPreset> {
         aot: (canonical == "av1").then_some(true),
         chunked: None,
         idle: None,
+        crf_mode: CrfMode::Fixed,
         from_file: false,
     })
 }
@@ -741,8 +798,15 @@ fn resolved_from_file(name: &str, file: &PresetFile) -> ResolvedPreset {
         aot: file.aot,
         chunked: file.chunked,
         idle: file.idle,
+        crf_mode: file.crf_mode,
         from_file: true,
     };
+    if file.crf_mode == CrfMode::CaramelAnalysis && !preset.encodes_with_x264() {
+        eprintln!(
+            "[Pandora] preset {} asks for caramel-analysis CRFs, which are libx264 only; it will encode at its fixed CRF",
+            name
+        );
+    }
     // A preset that asks for chunking it cannot have is a mistake worth naming. It runs — as one
     // linear encode, which is correct output — but silence would leave an operator waiting for a
     // speedup that was never going to arrive, and looking at the encoder rather than at the file.
@@ -944,6 +1008,38 @@ mod tests {
         // never resolves an encode of its own.
         assert!(!idle_encode_for("standard"));
         assert!(!idle_encode_for("no-such-preset"));
+    }
+
+    // Scene CRFs are applied by the chunk encoders as the source arrives, so a caramel preset chunks
+    // unless it says otherwise and never speculates linearly; anything not libx264 ignores the mode.
+    #[test]
+    fn a_caramel_preset_chunks_and_does_not_speculate_linearly() {
+        let declare = |toml: &str| resolved_from_file("test", &toml::from_str::<PresetFile>(toml).expect(toml));
+        let fixed = declare("[video]\ncodec = \"libx264\"\npreset = \"slow\"\n");
+        assert!(!fixed.caramel_analysis() && !fixed.wants_chunked_encode() && fixed.wants_linear_aot());
+        let caramel = declare("crf_mode = \"caramel-analysis\"\n[video]\ncodec = \"libx264\"\npreset = \"slow\"\n");
+        assert!(caramel.caramel_analysis() && caramel.wants_chunked_encode() && !caramel.wants_linear_aot());
+        let linear = declare("crf_mode = \"caramel-analysis\"\nchunked = false\naot = true\n[video]\ncodec = \"libx264\"\n");
+        assert!(linear.caramel_analysis() && !linear.wants_chunked_encode() && !linear.wants_linear_aot());
+        let hevc = declare("crf_mode = \"caramel-analysis\"\n[video]\ncodec = \"libx265\"\n");
+        assert!(!hevc.caramel_analysis());
+        for name in BUILTIN_PRESET_NAMES {
+            assert!(!resolve(name).expect(name).caramel_analysis(), "{name}");
+        }
+    }
+
+    #[test]
+    fn zones_join_the_x264_params_or_become_them() {
+        let standard = resolve("standard").unwrap();
+        let zoned = standard.with_x264_zones("0,99,crf=19");
+        let params = zoned.x264_settings().x264_params.unwrap();
+        assert!(params.ends_with(":zones=0,99,crf=19"), "{params}");
+        assert!(params.starts_with(&standard.x264_settings().x264_params.unwrap()));
+        assert_eq!(standard.with_x264_zones("").video_encoder_args(), standard.video_encoder_args());
+
+        let mut bare = vec![FfmpegParams::Cv(Cow::Borrowed("libx264")), FfmpegParams::Crf(17)];
+        apply_x264_zones(&mut bare, "5,9,crf=20");
+        assert!(matches!(&bare[1], FfmpegParams::X264Params(value) if value == "zones=5,9,crf=20"));
     }
 
     // Which presets a job may be gated on without being asked: the ones the gate can actually

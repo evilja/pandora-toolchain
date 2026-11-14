@@ -6,8 +6,8 @@ use pandora_toolchain::pnworker::server_effects::{load_server_settings, preset_f
 
 // `/caramel-analysis source:<link>` downloads one video the way `/subs` does — a pack is listed
 // and the requester picks a file in chat, armed by the caller with `Job::pick_file_first` — and
-// runs Caramel Analysis on it instead of encoding it. The estimate is anchored at the `preset`
-// option, or at the server's own `/edit` preset when that is not given.
+// runs Caramel Analysis on it instead of encoding it. Every scene's CRF is anchored at the
+// `preset` option, or at the server's own `/edit` preset when that is not given.
 pub async fn handle_caramel(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,
@@ -60,7 +60,7 @@ pub async fn handle_caramel(
         preset: Some(preset),
         anchor,
         verify,
-        sampling: Default::default(),
+        scenes: Default::default(),
     });
     Some(job)
 }

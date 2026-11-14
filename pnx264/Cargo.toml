@@ -12,3 +12,8 @@ description = "libx264 FFI for the Pandora parallel encode worker"
 
 [build-dependencies]
 cc = "1"
+
+[dependencies]
+# Caramel Analysis' scene decider, for a CRF per scene inside a chunk. Pure Rust, extraction-ready
+# like this crate.
+caramel-kernel = { path = "../caramel-kernel" }

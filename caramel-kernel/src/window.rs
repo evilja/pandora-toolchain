@@ -1,8 +1,6 @@
-// A sample window: a short run of consecutive frames from one point of the source.
-//
-// Caramel Analysis never reads a whole video. It reads a handful of short windows spread across it,
-// and every temporal feature is measured only between frames of the same window — the gap between
-// two windows is minutes of content the encoder will never predict across.
+// A window: a short run of consecutive frames, measured together. A scene's CRF is decided from the
+// window at its start (see `scene`), and every temporal feature is measured only between frames of
+// the same window — the pair that straddles a cut is a new keyframe, not motion.
 
 use crate::frame::{Frame, Plane};
 use crate::spatial::{self, SpatialFeatures};
@@ -54,6 +52,19 @@ impl WindowAnalyzer {
             chroma: Vec::new(),
             temporal: Vec::new(),
             previous: None,
+        }
+    }
+
+    // The spatial half of `push`, with the pair against the previous frame measured by the caller —
+    // the scene decider compares every frame for cuts anyway, and measuring it twice would double the
+    // most expensive step. `None` for the window's first frame.
+    pub fn push_measured(&mut self, frame: &Frame, temporal: Option<&TemporalFeatures>) {
+        self.spatial.push(spatial::analyze_luma(&frame.y));
+        if let (Some(u), Some(v)) = (frame.u, frame.v) {
+            self.chroma.push(0.5 * (spatial::sobel_si(&u) + spatial::sobel_si(&v)));
+        }
+        if let Some(pair) = temporal {
+            self.temporal.push(*pair);
         }
     }
 

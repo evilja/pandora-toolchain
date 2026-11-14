@@ -22,6 +22,13 @@ const HISTOGRAM_BINS: usize = 32;
 const CUT_HISTOGRAM: f64 = 0.5;
 const CUT_HISTOGRAM_WITH_RESIDUAL: f64 = 0.25;
 const CUT_RESIDUAL: f64 = 15.0;
+// Two shots with the same palette — common in anime, where a scene keeps its colour script across
+// cuts — are not told apart by their histograms. They are by the encoder's own test: a frame the
+// previous one predicts worse than the frame predicts itself is a new shot. x264's scenecut is the
+// same comparison of inter cost against intra cost. The floor keeps grain, which is unpredictable
+// both ways, from passing it.
+const CUT_INTER_TO_INTRA: f64 = 2.0;
+const CUT_INTER_FLOOR: f64 = 6.0;
 
 #[derive(Clone, Debug)]
 pub struct LowRes {
@@ -63,8 +70,26 @@ pub struct TemporalFeatures {
     pub mc_residual: f64,
     // Mean motion-vector length, in full-resolution pixels.
     pub motion_px: f64,
+    // Mean absolute error of predicting each low-resolution pixel from its left and upper
+    // neighbours: a cheap stand-in for what the frame costs coded on its own.
+    pub intra_residual: f64,
     pub histogram_distance: f64,
     pub cut: bool,
+}
+
+fn intra_residual(lowres: &LowRes) -> f64 {
+    if lowres.width < 2 || lowres.height < 2 {
+        return 0.0;
+    }
+    let mut total = 0u64;
+    for y in 1..lowres.height {
+        let (row, above) = (&lowres.data[y * lowres.width..(y + 1) * lowres.width], &lowres.data[(y - 1) * lowres.width..y * lowres.width]);
+        for x in 1..lowres.width {
+            let prediction = (row[x - 1] as u32 + above[x] as u32 + 1) / 2;
+            total += (row[x] as u32).abs_diff(prediction) as u64;
+        }
+    }
+    total as f64 / ((lowres.width - 1) * (lowres.height - 1)) as f64
 }
 
 #[inline]
@@ -172,6 +197,7 @@ pub fn compare(
     current: &LowRes,
 ) -> TemporalFeatures {
     let ti = temporal_information(previous_full, current_full);
+    let intra = intra_residual(current);
     let distance = {
         let (a, b) = (histogram(previous), histogram(current));
         0.5 * a.iter().zip(b.iter()).map(|(p, q)| (p - q).abs()).sum::<f64>()
@@ -181,7 +207,13 @@ pub fn compare(
         || current.width != previous.width
         || current.height != previous.height
     {
-        return TemporalFeatures { ti, histogram_distance: distance, cut: distance > CUT_HISTOGRAM, ..Default::default() };
+        return TemporalFeatures {
+            ti,
+            intra_residual: intra,
+            histogram_distance: distance,
+            cut: distance > CUT_HISTOGRAM,
+            ..Default::default()
+        };
     }
     let blocks_x = current.width / SEARCH_BLOCK;
     let blocks_y = current.height / SEARCH_BLOCK;
@@ -212,9 +244,11 @@ pub fn compare(
         zero_residual: zero as f64 / pixels,
         mc_residual,
         motion_px: length / blocks * LOWRES_FACTOR as f64,
+        intra_residual: intra,
         histogram_distance: distance,
         cut: distance > CUT_HISTOGRAM
-            || (distance > CUT_HISTOGRAM_WITH_RESIDUAL && mc_residual > CUT_RESIDUAL),
+            || (distance > CUT_HISTOGRAM_WITH_RESIDUAL && mc_residual > CUT_RESIDUAL)
+            || (mc_residual > CUT_INTER_FLOOR && mc_residual > CUT_INTER_TO_INTRA * intra),
     }
 }
 
@@ -263,6 +297,36 @@ mod tests {
         assert_eq!(features.ti, 0.0);
         assert_eq!(features.mc_residual, 0.0);
         assert!(!features.cut);
+    }
+
+    // Same values, rearranged: the histograms agree and only prediction can tell the shots apart.
+    #[test]
+    fn a_cut_between_shots_with_one_palette_is_still_a_cut() {
+        let a = textured(0.0);
+        let b = picture(320, 192, |x, y| {
+            let (x, y) = (x as f64, y as f64);
+            128.0 + 50.0 * ((y * 0.23 + 1.0).sin() + (x * 0.13).cos() * (y * 0.07).sin())
+        });
+        let (pa, pb) = (plane(&a, 320, 192), plane(&b, 320, 192));
+        let features = compare(&pa, &pb, &downsample(&pa), &downsample(&pb));
+        assert!(features.histogram_distance < CUT_HISTOGRAM_WITH_RESIDUAL, "{features:?}");
+        assert!(features.cut, "{features:?}");
+    }
+
+    // Grain is as unpredictable from the last frame as from the neighbouring pixels.
+    #[test]
+    fn grain_on_a_still_shot_is_not_a_cut() {
+        let mut noise = crate::spatial::tests::Noise::new(7);
+        let mut grain = |seed: f64| {
+            picture(320, 192, |x, y| 128.0 + 30.0 * ((x as f64 * 0.05 + seed).sin() * (y as f64 * 0.04).cos()))
+                .into_iter()
+                .map(|value| (value as f64 + noise.gaussian() * 6.0).clamp(0.0, 255.0) as u8)
+                .collect::<Vec<u8>>()
+        };
+        let (a, b) = (grain(0.0), grain(0.0));
+        let (pa, pb) = (plane(&a, 320, 192), plane(&b, 320, 192));
+        let features = compare(&pa, &pb, &downsample(&pa), &downsample(&pb));
+        assert!(!features.cut, "{features:?}");
     }
 
     #[test]

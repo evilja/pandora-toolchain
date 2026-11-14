@@ -1,4 +1,4 @@
-// The CRF model: from window features to a CRF.
+// The CRF model: from the features measured at the start of a scene to that scene's CRF.
 //
 // The estimate is an *offset from an anchor*. The anchor is the CRF the encoder configuration was
 // chosen at for typical content (a preset's own CRF), and every factor below moves it by a bounded
@@ -7,6 +7,10 @@
 // CRF-to-quality curve of a particular encoder, preset and AQ configuration — and lets one table of
 // factors serve x264, x265 and SVT-AV1 presets alike.
 //
+// There is no file-wide CRF. A release is a sequence of scenes that need different things — a
+// static dialogue shot and a grainy night scene in one episode — and a single CRF has to be set for
+// the hardest of them, overspending on the rest. Each scene is decided on its own.
+//
 // The factor table is a general prior drawn from common encoding practice, not a fit to measured
 // data. Every threshold and weight is a named constant here so a calibration pass against
 // brute-force CRF searches can replace them without touching the feature code.
@@ -14,19 +18,33 @@
 use crate::window::WindowFeatures;
 use serde::Serialize;
 
-pub const MODEL_VERSION: &str = "caramel-prior-1";
+pub const MODEL_VERSION: &str = "caramel-scene-1";
 
-// The furthest the estimate may move from the anchor in either direction.
+// The furthest a scene's CRF may move from the anchor in either direction.
 const MAX_RAISE: f64 = 4.0;
 const MAX_LOWER: f64 = 4.0;
-// The file's CRF has to hold in its hard scenes, so it is read off a low quantile of the windows
-// rather than their mean: a quality target is met on the frames that are hardest to encode.
-const WINDOW_QUANTILE: f64 = 0.25;
-// Windows at which a raise is trusted in full. Fewer windows scale a raise down (never a cut),
-// since an unsampled hard scene is the failure that costs visible quality.
-const FULL_CONFIDENCE_WINDOWS: f64 = 8.0;
-// Granularity of the reported CRF.
+// Frames measured at which a raise is trusted in full. A scene too short to measure that many has
+// its raise scaled down (never a cut): a misjudged easy scene is the failure that costs quality.
+const FULL_CONFIDENCE_FRAMES: f64 = 6.0;
+// A scene with no frame pair to measure motion on knows half of what it would.
+const NO_MOTION_CONFIDENCE: f64 = 0.5;
+// Granularity of the reported CRF. Coarse on purpose: a scene's CRF moving by a tenth between two
+// shots of the same content is noise, and every change is a rate-control reconfiguration.
 const CRF_STEP: f64 = 0.5;
+// Where banding starts to count, as a share of the frame in smooth gradient blocks. Fitted to the
+// distribution of real TV anime releases: cel fills with soft shading put 30–70% of a typical frame
+// in such blocks, and the anchor is already the right CRF for typical content — x264's aq-mode 3
+// spends on flat and dark blocks by itself. Only frames that are mostly gradient, a sky or a dark
+// fade, are past what the anchor already covers. Thresholds of 5–35% put every anime frame at the
+// full penalty and every scene at the lower bound, which leaves nothing for a per-scene CRF to vary.
+const BANDING_FROM: f64 = 0.55;
+const BANDING_FULL: f64 = 0.90;
+const BANDING_DELTA: f64 = -1.5;
+const DARK_BANDING_FROM: f64 = 0.45;
+const DARK_BANDING_FULL: f64 = 0.85;
+const DARK_BANDING_DELTA: f64 = -1.0;
+// A still shot is scrutinised, but stills are also most of what a typical anime episode is.
+const STILL_DELTA: f64 = -0.25;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct SourceContext {
@@ -69,32 +87,18 @@ pub struct Contribution {
     pub delta: f64,
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
-pub struct WindowEstimate {
-    pub position_seconds: f64,
-    pub frames: usize,
-    pub adjustment: f64,
-    pub crf: f32,
-}
-
 #[derive(Clone, Debug, Serialize)]
-pub struct Estimate {
-    pub model: &'static str,
+pub struct SceneEstimate {
     pub crf: f32,
     pub anchor_crf: f32,
     // The applied offset from the anchor, before rounding.
     pub adjustment: f64,
-    pub window_adjustment: f64,
-    pub global_adjustment: f64,
+    // Every factor's delta summed, before confidence and bounds.
+    pub raw_adjustment: f64,
     pub confidence: f64,
-    pub windows_analyzed: usize,
     pub frames_analyzed: usize,
-    pub cuts: usize,
-    pub global: Vec<Contribution>,
-    // Each window factor's mean delta: what drove the estimate, for the report.
-    pub typical: Vec<Contribution>,
-    // A CRF per window, the raw material for per-scene zones.
-    pub windows: Vec<WindowEstimate>,
+    // The scene's own factors, then the ones that depend on the source and the encode.
+    pub contributions: Vec<Contribution>,
 }
 
 fn ramp(value: f64, low: f64, high: f64) -> f64 {
@@ -178,12 +182,12 @@ fn window_contributions(window: &WindowFeatures, banding_gain: f64) -> Vec<Contr
     factors.push(Contribution {
         factor: "banding",
         value: spatial.gradient_share,
-        delta: -2.0 * ramp(spatial.gradient_share, 0.05, 0.35) * banding_gain,
+        delta: BANDING_DELTA * ramp(spatial.gradient_share, BANDING_FROM, BANDING_FULL) * banding_gain,
     });
     factors.push(Contribution {
         factor: "dark-banding",
         value: spatial.dark_gradient_share,
-        delta: -1.0 * ramp(spatial.dark_gradient_share, 0.02, 0.15) * banding_gain,
+        delta: DARK_BANDING_DELTA * ramp(spatial.dark_gradient_share, DARK_BANDING_FROM, DARK_BANDING_FULL) * banding_gain,
     });
     // Hard outlines over flat fills ring at high CRF, and the flat fill around them shows it.
     factors.push(Contribution {
@@ -196,7 +200,7 @@ fn window_contributions(window: &WindowFeatures, banding_gain: f64) -> Vec<Contr
     factors.push(Contribution {
         factor: "texture-masking",
         value: spatial.si,
-        delta: 1.0 * ramp(spatial.si, 30.0, 80.0) * (1.0 - ramp(spatial.gradient_share, 0.05, 0.35)),
+        delta: 1.0 * ramp(spatial.si, 30.0, 80.0) * (1.0 - ramp(spatial.gradient_share, BANDING_FROM, BANDING_FULL)),
     });
     // Unpredictable motion masks artefacts, and x264's qcomp already spends less on such frames, so
     // the raise is modest. A near-static window is scrutinised and gets a small cut.
@@ -205,7 +209,7 @@ fn window_contributions(window: &WindowFeatures, banding_gain: f64) -> Vec<Contr
             factor: "motion-masking",
             value: temporal.mc_residual,
             delta: 1.5 * ramp(temporal.mc_residual, 2.0, 10.0)
-                - 0.5 * (1.0 - ramp(temporal.mc_residual, 0.5, 2.0)),
+                + STILL_DELTA * (1.0 - ramp(temporal.mc_residual, 0.5, 2.0)),
         });
     }
     // Saturated chroma detail suffers first under 4:2:0 and a high chroma QP offset.
@@ -219,101 +223,41 @@ fn window_contributions(window: &WindowFeatures, banding_gain: f64) -> Vec<Contr
     factors
 }
 
-fn weighted_quantile(values: &mut [(f64, f64)], quantile: f64) -> f64 {
-    values.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let total: f64 = values.iter().map(|(_, weight)| weight).sum();
-    let mut seen = 0.0;
-    for &(value, weight) in values.iter() {
-        seen += weight;
-        if seen >= quantile * total {
-            return value;
-        }
-    }
-    values.last().map_or(0.0, |(value, _)| *value)
-}
-
 fn round_crf(value: f64, encode: &EncodeContext) -> f32 {
     let rounded = (value / CRF_STEP).round() * CRF_STEP;
     (rounded as f32).clamp(encode.crf_floor, encode.crf_ceiling)
 }
 
-pub fn estimate(windows: &[WindowFeatures], source: &SourceContext, encode: &EncodeContext) -> Estimate {
+// One scene's CRF from the window measured at its start.
+pub fn estimate_scene(window: &WindowFeatures, source: &SourceContext, encode: &EncodeContext) -> SceneEstimate {
     let anchor = encode.anchor_crf as f64;
+    if window.frames == 0 {
+        return SceneEstimate {
+            crf: round_crf(anchor, encode),
+            anchor_crf: encode.anchor_crf,
+            adjustment: 0.0,
+            raw_adjustment: 0.0,
+            confidence: 0.0,
+            frames_analyzed: 0,
+            contributions: Vec::new(),
+        };
+    }
     let banding_gain = if source.bit_depth > 8 && encode.output_bit_depth <= 8 { 1.25 } else { 1.0 };
-    let measured: Vec<&WindowFeatures> = windows.iter().filter(|window| window.frames > 0).collect();
-    let detail = if measured.is_empty() {
-        0.0
-    } else {
-        measured.iter().map(|window| window.spatial.si).sum::<f64>() / measured.len() as f64
-    };
-    let global = global_contributions(source, encode, detail);
-    let global_adjustment: f64 = global.iter().map(|factor| factor.delta).sum();
-
-    let mut per_window = Vec::with_capacity(measured.len());
-    let mut typical: Vec<Contribution> = Vec::new();
-    let mut weighted = Vec::with_capacity(measured.len());
-    for window in &measured {
-        let factors = window_contributions(window, banding_gain);
-        let adjustment: f64 = factors.iter().map(|factor| factor.delta).sum();
-        for factor in &factors {
-            match typical.iter_mut().find(|known| known.factor == factor.factor) {
-                Some(known) => {
-                    known.value += factor.value;
-                    known.delta += factor.delta;
-                }
-                None => typical.push(*factor),
-            }
-        }
-        weighted.push((adjustment, window.frames as f64));
-        per_window.push(WindowEstimate {
-            position_seconds: window.position_seconds,
-            frames: window.frames,
-            adjustment,
-            crf: round_crf(
-                anchor + (adjustment + global_adjustment).clamp(-MAX_LOWER, MAX_RAISE),
-                encode,
-            ),
-        });
-    }
-    // Averaged over the windows that measured each factor; motion is absent from single-frame ones.
-    for factor in typical.iter_mut() {
-        let count = measured
-            .iter()
-            .filter(|window| factor.factor != "motion-masking" || window.temporal.is_some())
-            .filter(|window| factor.factor != "chroma-detail" || window.chroma_si.is_some())
-            .count()
-            .max(1) as f64;
-        factor.value /= count;
-        factor.delta /= count;
-    }
-
-    let window_adjustment = if weighted.is_empty() { 0.0 } else { weighted_quantile(&mut weighted, WINDOW_QUANTILE) };
-    let temporal_coverage = if measured.is_empty() {
-        0.0
-    } else {
-        measured.iter().filter(|window| window.temporal.is_some()).count() as f64 / measured.len() as f64
-    };
-    let confidence = (measured.len() as f64 / FULL_CONFIDENCE_WINDOWS).min(1.0) * (0.5 + 0.5 * temporal_coverage);
-    let mut adjustment = if measured.is_empty() { 0.0 } else { window_adjustment + global_adjustment };
-    if adjustment > 0.0 {
-        adjustment *= confidence;
-    }
-    let adjustment = adjustment.clamp(-MAX_LOWER, MAX_RAISE);
-
-    Estimate {
-        model: MODEL_VERSION,
+    let mut contributions = window_contributions(window, banding_gain);
+    contributions.extend(global_contributions(source, encode, window.spatial.si));
+    let raw_adjustment: f64 = contributions.iter().map(|factor| factor.delta).sum();
+    let confidence = (window.frames as f64 / FULL_CONFIDENCE_FRAMES).min(1.0)
+        * if window.temporal.is_some() { 1.0 } else { NO_MOTION_CONFIDENCE };
+    let scaled = if raw_adjustment > 0.0 { raw_adjustment * confidence } else { raw_adjustment };
+    let adjustment = scaled.clamp(-MAX_LOWER, MAX_RAISE);
+    SceneEstimate {
         crf: round_crf(anchor + adjustment, encode),
         anchor_crf: encode.anchor_crf,
         adjustment,
-        window_adjustment,
-        global_adjustment,
+        raw_adjustment,
         confidence,
-        windows_analyzed: measured.len(),
-        frames_analyzed: measured.iter().map(|window| window.frames).sum(),
-        cuts: measured.iter().map(|window| window.cuts).sum(),
-        global,
-        typical,
-        windows: per_window,
+        frames_analyzed: window.frames,
+        contributions,
     }
 }
 
@@ -355,8 +299,8 @@ mod tests {
     }
 
     #[test]
-    fn no_windows_means_the_anchor() {
-        let estimate = estimate(&[], &source(), &EncodeContext::anchored(17.0));
+    fn an_unmeasured_scene_keeps_the_anchor() {
+        let estimate = estimate_scene(&WindowFeatures::default(), &source(), &EncodeContext::anchored(17.0));
         assert_eq!(estimate.crf, 17.0);
         assert_eq!(estimate.confidence, 0.0);
     }
@@ -364,37 +308,47 @@ mod tests {
     #[test]
     fn grain_lowers_the_crf_and_clean_moving_content_raises_it() {
         let encode = EncodeContext::anchored(17.0);
-        let grainy: Vec<_> = (0..10).map(|_| window(grainy_film(), 3.0)).collect();
-        let clean: Vec<_> = (0..10).map(|_| window(clean_anime(), 6.0)).collect();
-        let grainy = estimate(&grainy, &source(), &encode);
-        let clean = estimate(&clean, &source(), &encode);
+        let grainy = estimate_scene(&window(grainy_film(), 3.0), &source(), &encode);
+        let clean = estimate_scene(&window(clean_anime(), 6.0), &source(), &encode);
         assert!(grainy.crf < 17.0, "{grainy:?}");
         assert!(clean.crf > 17.0, "{clean:?}");
     }
 
     #[test]
-    fn hard_windows_decide_the_file_crf() {
+    fn a_short_scene_has_its_raise_shrunk_but_not_its_cut() {
         let encode = EncodeContext::anchored(17.0);
-        let mut windows: Vec<_> = (0..7).map(|_| window(clean_anime(), 6.0)).collect();
-        windows.extend((0..3).map(|_| window(grainy_film(), 3.0)));
-        let mixed = estimate(&windows, &source(), &encode);
-        let easy = estimate(&windows[..7], &source(), &encode);
-        assert!(mixed.crf < easy.crf, "mixed {mixed:?} easy {easy:?}");
-        assert_eq!(mixed.windows.len(), 10);
+        let short = |spatial, mc| WindowFeatures { frames: 2, ..window(spatial, mc) };
+        assert!(
+            estimate_scene(&short(clean_anime(), 6.0), &source(), &encode).adjustment
+                < estimate_scene(&window(clean_anime(), 6.0), &source(), &encode).adjustment
+        );
+        assert_eq!(
+            estimate_scene(&short(grainy_film(), 3.0), &source(), &encode).adjustment,
+            estimate_scene(&window(grainy_film(), 3.0), &source(), &encode).adjustment
+        );
+        // A single frame has no motion to measure, which halves what a raise is trusted with.
+        let still = WindowFeatures { temporal: None, ..window(clean_anime(), 6.0) };
+        assert_eq!(estimate_scene(&still, &source(), &encode).confidence, NO_MOTION_CONFIDENCE);
     }
 
+    // The anchor is the right CRF for typical content, so typical content must land on it. These are
+    // the median features of the windows measured on two real 1080p TV anime releases: most of every
+    // frame is smooth cel shading, and the shot is nearly still.
     #[test]
-    fn few_windows_shrink_a_raise_but_not_a_cut() {
-        let encode = EncodeContext::anchored(17.0);
-        let many: Vec<_> = (0..8).map(|_| window(clean_anime(), 6.0)).collect();
-        let few = estimate(&many[..2], &source(), &encode);
-        let full = estimate(&many, &source(), &encode);
-        assert!(few.adjustment < full.adjustment);
-
-        let grainy: Vec<_> = (0..8).map(|_| window(grainy_film(), 3.0)).collect();
-        let few = estimate(&grainy[..2], &source(), &encode);
-        let full = estimate(&grainy, &source(), &encode);
-        assert_eq!(few.adjustment, full.adjustment);
+    fn a_typical_anime_scene_stays_at_the_anchor() {
+        let typical = SpatialFeatures {
+            si: 26.0,
+            noise_sigma: 0.75,
+            gradient_share: 0.57,
+            dark_gradient_share: 0.35,
+            line_art_share: 0.07,
+            ..Default::default()
+        };
+        let estimate = estimate_scene(&window(typical, 0.3), &source(), &EncodeContext::anchored(21.0));
+        assert!((estimate.crf - 21.0).abs() <= 1.0, "{estimate:?}");
+        // A frame that is all dark gradient is past what the anchor covers, and is cut.
+        let fade = SpatialFeatures { gradient_share: 0.87, dark_gradient_share: 0.86, ..typical };
+        assert!(estimate_scene(&window(fade, 0.3), &source(), &EncodeContext::anchored(21.0)).crf <= 19.0);
     }
 
     #[test]
@@ -407,30 +361,25 @@ mod tests {
             ..Default::default()
         };
         let encode = EncodeContext { output_height: Some(360), ..EncodeContext::anchored(17.0) };
-        let windows: Vec<_> = (0..10).map(|_| window(worst, 0.0)).collect();
-        let estimate = estimate(&windows, &source(), &encode);
-        assert_eq!(estimate.crf, 13.0);
+        assert_eq!(estimate_scene(&window(worst, 0.0), &source(), &encode).crf, 13.0);
     }
 
     #[test]
     fn a_low_bitrate_is_not_starved_when_the_content_is_simply_easy() {
         let encode = EncodeContext::anchored(17.0);
         let flat = SpatialFeatures { si: 2.0, ..clean_anime() };
-        let windows: Vec<_> = (0..10).map(|_| window(flat, 3.0)).collect();
         let tiny = SourceContext { video_bitrate: Some(500_000.0), ..source() };
-        let estimate = estimate(&windows, &tiny, &encode);
-        let bitrate = estimate.global.iter().find(|factor| factor.factor == "source-bits-per-pixel").unwrap();
+        let estimate = estimate_scene(&window(flat, 3.0), &tiny, &encode);
+        let bitrate = estimate.contributions.iter().find(|factor| factor.factor == "source-bits-per-pixel").unwrap();
         assert_eq!(bitrate.delta, 0.0);
     }
 
     #[test]
     fn a_starved_source_tolerates_a_higher_crf_than_a_remux() {
         let encode = EncodeContext::anchored(17.0);
-        let windows: Vec<_> = (0..10).map(|_| window(clean_anime(), 3.0)).collect();
+        let scene = window(clean_anime(), 3.0);
         let starved = SourceContext { video_bitrate: Some(2_000_000.0), ..source() };
         let remux = SourceContext { video_bitrate: Some(35_000_000.0), ..source() };
-        assert!(
-            estimate(&windows, &starved, &encode).crf > estimate(&windows, &remux, &encode).crf
-        );
+        assert!(estimate_scene(&scene, &starved, &encode).crf > estimate_scene(&scene, &remux, &encode).crf);
     }
 }

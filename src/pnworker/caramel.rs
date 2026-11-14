@@ -1,13 +1,13 @@
 // The `Caramel` job: download a source exactly as `/subs` does, then run Caramel Analysis on it
-// instead of encoding it, and report the CRF it would have chosen.
+// instead of encoding it, and report the CRF it gives every scene.
 //
 // It exists so the analysis can be tried on real releases from Discord or the API without an
-// encode: the result is the estimate, what drove it, and — when asked — a small verification that
-// encodes sample clips at the estimated and anchor CRFs and measures them against the source.
+// encode: the result is the scene list with each scene's CRF and what drove it, and — when asked —
+// a small verification that encodes the scenes moved furthest from the anchor at their own CRF and
+// at fixed CRFs and measures both against the source.
 
 use crate::lib::mpeg::caramel::{
-    CaramelReport, CaramelRequest, Sampling, VerifyEncoder, VerifyRequest, run_caramel_analysis,
-    run_verification,
+    CaramelReport, SceneRequest, VerifyEncoder, VerifyRequest, probe_source, run_scene_analysis, run_verification,
 };
 use crate::lib::mpeg::preset::resolve as resolve_preset;
 use crate::pnworker::core::{CommData, Stage};
@@ -15,36 +15,68 @@ use crate::pnworker::messages::{
     CARAMEL_DONE, CARAMEL_FAIL, CARAMEL_PROG, CARAMEL_VERIFY_PROG, JOB_CANCELLED, MessagePayload,
 };
 use crate::pnworker::util::job_cancelled;
+use caramel_kernel::SceneConfig;
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 use tokio::sync::mpsc::Sender;
 
 // Finished reports, one `<job_id>.json` each: what the API serves and Discord attaches.
 pub const CARAMEL_REPORT_ROOT: &str = "DB/cache/caramel";
 const REPORT_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
-// A verification that names no CRFs measures the estimate against the anchor it moved from.
-const VERIFY_CLIP_SECONDS: f64 = 2.0;
-const VERIFY_MAX_CLIPS: usize = 6;
-const VERIFY_CRFS_CEILING: usize = 6;
-const VERIFY_CLIPS_CEILING: usize = 16;
+// A verification measures a handful of scenes, each at its own CRF and at every fixed CRF listed.
+const VERIFY_CLIP_SECONDS: f64 = 4.0;
+const VERIFY_MAX_SCENES: usize = 6;
+const VERIFY_CRFS_CEILING: usize = 4;
+const VERIFY_SCENES_CEILING: usize = 16;
 const VERIFY_SECONDS_CEILING: f64 = 10.0;
+// How often the message shows how far the scene pass has got.
+const PROGRESS_INTERVAL: Duration = Duration::from_secs(10);
+// The embed lists this many verified scenes; the attached report has them all.
+const VERIFY_LINES: usize = 6;
 
 #[derive(Clone, Debug, Default)]
 pub struct VerifySettings {
-    // Empty for the estimate and the anchor.
+    // Fixed CRFs to compare the scene CRFs with; empty for the anchor alone.
     pub crfs: Vec<f32>,
     pub clip_seconds: Option<f64>,
-    pub max_clips: Option<usize>,
+    pub max_scenes: Option<usize>,
+}
+
+// Overrides of how scenes are found and measured, for experiments. Anything left out is the
+// default every encode uses.
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+pub struct SceneOverrides {
+    #[serde(default)]
+    pub analysis_frames: Option<usize>,
+    #[serde(default)]
+    pub min_scene_frames: Option<usize>,
+    #[serde(default)]
+    pub max_scene_frames: Option<usize>,
+}
+
+impl SceneOverrides {
+    pub fn config(&self) -> SceneConfig {
+        let defaults = SceneConfig::default();
+        SceneConfig {
+            analysis_frames: self.analysis_frames.unwrap_or(defaults.analysis_frames),
+            min_scene_frames: self.min_scene_frames.unwrap_or(defaults.min_scene_frames),
+            max_scene_frames: self.max_scene_frames.unwrap_or(defaults.max_scene_frames),
+        }
+        .sanitised()
+    }
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct CaramelJobRequest {
-    // Canonical preset name the estimate is anchored at; None for `standard`.
+    // Canonical preset name the scenes are anchored at; None for `standard`.
     pub preset: Option<String>,
     // Overrides the preset's own CRF as the anchor.
     pub anchor: Option<f32>,
     pub verify: Option<VerifySettings>,
-    pub sampling: Sampling,
+    pub scenes: SceneOverrides,
 }
 
 pub type CaramelData = (PathBuf, u64, CaramelJobRequest);
@@ -76,10 +108,10 @@ pub async fn cleanup_expired_caramel_reports() {
     }
 }
 
-// The CRFs a verification measures: the ones asked for, or the estimate and its anchor. Bounded,
-// because each one is a real encode of every clip.
-fn verify_crfs(asked: &[f32], estimate: f32, anchor: f32) -> Vec<f32> {
-    let mut crfs: Vec<f32> = if asked.is_empty() { vec![estimate, anchor] } else { asked.to_vec() };
+// The fixed CRFs a verification compares with: the ones asked for, or the anchor. Bounded, because
+// each one is a real encode of every chosen scene.
+fn verify_crfs(asked: &[f32], anchor: f32) -> Vec<f32> {
+    let mut crfs: Vec<f32> = if asked.is_empty() { vec![anchor] } else { asked.to_vec() };
     crfs.retain(|crf| crf.is_finite() && (0.0..=51.0).contains(crf));
     crfs.sort_by(|a, b| a.total_cmp(b));
     crfs.dedup();
@@ -87,41 +119,112 @@ fn verify_crfs(asked: &[f32], estimate: f32, anchor: f32) -> Vec<f32> {
     crfs
 }
 
-// The embed's verification lines: numbers and units only, so they read the same in every locale.
+fn percent(part: u64, whole: u64) -> f64 {
+    if whole == 0 { 0.0 } else { part as f64 * 100.0 / whole as f64 }
+}
+
+// Where the frames went relative to the anchor: numbers and arrows only, the same in every locale.
+fn anchor_split(report: &CaramelReport) -> String {
+    let summary = &report.summary;
+    format!(
+        "↓{:.0}% · ={:.0}% · ↑{:.0}%",
+        percent(summary.frames_below_anchor, summary.frames),
+        percent(summary.frames_at_anchor, summary.frames),
+        percent(summary.frames_above_anchor, summary.frames),
+    )
+}
+
+// The CRF distribution, by share of frames.
+fn histogram(report: &CaramelReport) -> String {
+    let summary = &report.summary;
+    summary
+        .histogram
+        .iter()
+        .map(|bin| format!("`{}` {:.0}%", bin.crf, percent(bin.frames, summary.frames)))
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+// What moved the scenes, across the whole source: every factor's delta averaged over frames, the
+// largest first.
+fn drivers(report: &CaramelReport) -> String {
+    let mut totals: Vec<(&str, f64)> = Vec::new();
+    for scene in &report.scenes {
+        for factor in &scene.contributions {
+            let weighted = factor.delta * scene.frames as f64;
+            match totals.iter_mut().find(|(name, _)| *name == factor.factor) {
+                Some(total) => total.1 += weighted,
+                None => totals.push((factor.factor, weighted)),
+            }
+        }
+    }
+    let frames = report.summary.frames.max(1) as f64;
+    let mut factors: Vec<(&str, f64)> = totals
+        .into_iter()
+        .map(|(name, total)| (name, total / frames))
+        .filter(|(_, delta)| delta.abs() >= 0.05)
+        .collect();
+    factors.sort_by(|a, b| b.1.abs().total_cmp(&a.1.abs()));
+    if factors.is_empty() {
+        return "—".to_string();
+    }
+    factors.iter().map(|(name, delta)| format!("`{name}` {delta:+.2}")).collect::<Vec<_>>().join(", ")
+}
+
+fn timestamp(seconds: f64) -> String {
+    let total = seconds.max(0.0) as u64;
+    format!("{}:{:02}", total / 60, total % 60)
+}
+
+// The embed's verification lines, numbers and units only so they read the same in every locale:
+// each measured scene at its own CRF against the fixed ones, then every clip pooled per strategy.
 fn verify_lines(report: &CaramelReport) -> String {
     let Some(verify) = &report.verify else {
         return String::new();
     };
-    verify
-        .points
+    let fps = report.source.fps.max(1.0);
+    let mut lines: Vec<String> = verify
+        .scenes
         .iter()
-        .map(|point| {
+        .take(VERIFY_LINES)
+        .map(|scene| {
+            let fixed = scene
+                .fixed
+                .iter()
+                .map(|measure| format!("CRF {} {:.4} · {:.0} kbps", measure.crf, measure.mean_ssim, measure.kbps))
+                .collect::<Vec<_>>()
+                .join(" | ");
             format!(
-                "`CRF {}` SSIM {:.4} (↓{:.4}) · PSNR {:.2} dB (↓{:.2}) · {:.0} kbps",
-                point.crf, point.mean_ssim, point.min_ssim, point.mean_psnr, point.min_psnr, point.kbps
+                "`{}` **CRF {}** SSIM {:.4} · {:.0} kbps | {}",
+                timestamp(scene.start_frame as f64 / fps),
+                scene.scene_crf,
+                scene.adaptive.mean_ssim,
+                scene.adaptive.kbps,
+                fixed,
+            )
+        })
+        .collect();
+    let adaptive = &verify.adaptive;
+    let fixed = verify
+        .fixed
+        .iter()
+        .map(|total| {
+            format!(
+                "CRF {} SSIM {:.4} (↓{:.4}) · {:.0} kbps · Δ {:+.1}%",
+                total.crf.unwrap_or_default(),
+                total.mean_ssim,
+                total.min_ssim,
+                total.kbps,
+                -total.adaptive_saving_percent,
             )
         })
         .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn drivers(report: &CaramelReport) -> String {
-    let estimate = &report.estimate;
-    let mut factors: Vec<_> = estimate
-        .typical
-        .iter()
-        .chain(estimate.global.iter())
-        .filter(|factor| factor.delta.abs() >= 0.05)
-        .collect();
-    factors.sort_by(|a, b| b.delta.abs().total_cmp(&a.delta.abs()));
-    if factors.is_empty() {
-        return "—".to_string();
-    }
-    factors
-        .iter()
-        .map(|factor| format!("`{}` {:+.2}", factor.factor, factor.delta))
-        .collect::<Vec<_>>()
-        .join(", ")
+        .join(" | ");
+    lines.push(format!(
+        "Σ SSIM {:.4} (↓{:.4}) · {:.0} kbps | {}",
+        adaptive.mean_ssim, adaptive.min_ssim, adaptive.kbps, fixed
+    ));
+    lines.join("\n")
 }
 
 pub async fn run_caramel_job(
@@ -150,49 +253,71 @@ pub async fn run_caramel_job(
     let settings = preset.x264_settings();
     let anchor = request.anchor.or(settings.crf.map(f32::from)).unwrap_or(17.0);
     let input = directory.join("contents").join("torrent").join("input.mkv");
-    tx.send((job_id, MessagePayload::Static(CARAMEL_PROG), None)).await.ok();
+    let progress = |done: u64, total: u64| {
+        let shown = if total == 0 { 0 } else { (done * 100 / total).min(99) };
+        (job_id, MessagePayload::Progress(CARAMEL_PROG, vec![shown.to_string()]), None)
+    };
+    tx.send(progress(0, 0)).await.ok();
 
     let encode = caramel_kernel::EncodeContext {
         output_height: preset.scale_height(),
         ..caramel_kernel::EncodeContext::anchored(anchor)
     };
-    let sampling = request.sampling;
-    let analysis_input = input.clone();
-    let analysed = tokio::task::spawn_blocking(move || {
-        run_caramel_analysis(&CaramelRequest {
-            input: &analysis_input,
-            range: None,
-            fps: None,
-            encode,
-            workers: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(4),
-            decoder_threads: 0,
-            sampling,
+    let scenes = request.scenes.config();
+    // Only for the percentage: the analysis probes the source again for itself.
+    let total_frames = probe_source(&input)
+        .ok()
+        .and_then(|probe| probe.duration.map(|duration| (duration * probe.context.fps) as u64))
+        .unwrap_or(0);
+    let decoded = Arc::new(AtomicU64::new(0));
+    let analysis = {
+        let (input, decoded, cancel) = (input.clone(), decoded.clone(), directory.join("CANCEL"));
+        tokio::task::spawn_blocking(move || {
+            run_scene_analysis(&SceneRequest {
+                input: &input,
+                range: None,
+                fps: None,
+                encode,
+                scenes,
+                workers: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(8),
+                decoder_threads: 0,
+                cancel_file: Some(cancel),
+                progress: Some(&decoded),
+            })
         })
-    })
-    .await;
+    };
+    tokio::pin!(analysis);
+    let analysed = loop {
+        tokio::select! {
+            result = &mut analysis => break result,
+            _ = tokio::time::sleep(PROGRESS_INTERVAL) => {
+                tx.send(progress(decoded.load(Ordering::Relaxed), total_frames)).await.ok();
+            }
+        }
+    };
+    if job_cancelled(&directory) {
+        return cancelled().await;
+    }
     let mut report = match analysed {
         Ok(Ok(report)) => report,
         Ok(Err(error)) => return fail(error).await,
         Err(error) => return fail(format!("the analysis stopped: {error}")).await,
     };
-    if job_cancelled(&directory) {
-        return cancelled().await;
-    }
 
     if let Some(verify) = &request.verify {
-        let crfs = verify_crfs(&verify.crfs, report.estimate.crf, anchor);
+        let crfs = verify_crfs(&verify.crfs, anchor);
         let listed = crfs.iter().map(|crf| crf.to_string()).collect::<Vec<_>>().join(", ");
         tx.send((job_id, MessagePayload::Progress(CARAMEL_VERIFY_PROG, vec![listed]), None))
             .await
             .ok();
         let verify_request = VerifyRequest {
-            crfs,
+            compare_crfs: crfs,
             clip_seconds: verify
                 .clip_seconds
                 .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
                 .unwrap_or(VERIFY_CLIP_SECONDS)
                 .min(VERIFY_SECONDS_CEILING),
-            max_clips: verify.max_clips.unwrap_or(VERIFY_MAX_CLIPS).clamp(1, VERIFY_CLIPS_CEILING),
+            max_scenes: verify.max_scenes.unwrap_or(VERIFY_MAX_SCENES).clamp(1, VERIFY_SCENES_CEILING),
             // Non-x264 presets are still measured with libx264 at x264's defaults: the anchor CRF
             // means something different there, and the report says which encoder it used.
             encoder: if preset.encodes_with_x264() {
@@ -233,16 +358,18 @@ pub async fn run_caramel_job(
     if let Some(error) = &report.verify_error {
         verify_text = format!("⚠ {error}");
     }
-    let estimate = &report.estimate;
+    let summary = &report.summary;
     let args = vec![
-        estimate.crf.to_string(),
+        summary.scenes.to_string(),
         preset_name,
-        estimate.anchor_crf.to_string(),
-        format!("{:+.2}", estimate.adjustment),
-        format!("{:.2}", estimate.confidence),
-        estimate.windows_analyzed.to_string(),
-        estimate.frames_analyzed.to_string(),
+        summary.min_crf.to_string(),
+        summary.max_crf.to_string(),
+        format!("{:.2}", summary.mean_crf),
+        summary.anchor_crf.to_string(),
+        anchor_split(&report),
+        summary.frames.to_string(),
         format!("{:.1}", report.elapsed_ms as f64 / 1000.0),
+        histogram(&report),
         drivers(&report),
         verify_text,
         // Never printed: the frontend attaches it and the progress row embeds it.
@@ -262,15 +389,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn verification_defaults_to_the_estimate_and_its_anchor() {
-        assert_eq!(verify_crfs(&[], 18.5, 17.0), vec![17.0, 18.5]);
-        assert_eq!(verify_crfs(&[], 17.0, 17.0), vec![17.0]);
+    fn verification_compares_with_the_anchor_by_default() {
+        assert_eq!(verify_crfs(&[], 17.0), vec![17.0]);
     }
 
     #[test]
     fn verification_crfs_are_bounded_and_ordered() {
-        let asked = [30.0, 14.0, f32::NAN, 99.0, 16.0, 18.0, 20.0, 22.0, 24.0, 26.0];
-        let crfs = verify_crfs(&asked, 0.0, 0.0);
-        assert_eq!(crfs, vec![14.0, 16.0, 18.0, 20.0, 22.0, 24.0]);
+        let asked = [30.0, 14.0, f32::NAN, 99.0, 16.0, 18.0, 20.0];
+        assert_eq!(verify_crfs(&asked, 0.0), vec![14.0, 16.0, 18.0, 20.0]);
+    }
+
+    #[test]
+    fn scene_overrides_fall_back_to_the_defaults() {
+        assert_eq!(SceneOverrides::default().config(), SceneConfig::default());
+        let tight = SceneOverrides { analysis_frames: Some(0), max_scene_frames: Some(5), ..Default::default() }.config();
+        assert_eq!(tight.analysis_frames, 1);
+        assert_eq!(tight.max_scene_frames, SceneConfig::default().min_scene_frames);
     }
 }

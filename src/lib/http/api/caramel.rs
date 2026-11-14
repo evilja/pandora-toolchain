@@ -1,5 +1,5 @@
-// Caramel Analysis over the API: queue an analysis of a source link, read its report back, and
-// read what the model and its sampling plan are, for clients that calibrate against it.
+// Caramel Analysis over the API: queue an analysis of a source link, read its scene report back,
+// and read what the model and its scene settings are, for clients that calibrate against it.
 
 use super::core::{ApiAuth, AppState, effective_server_id, row_is_visible, submit_with_progress};
 use axum::{
@@ -10,9 +10,9 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use crate::lib::mpeg::caramel::{CARAMEL_ANALYSIS, Sampling, SamplingPlan};
+use crate::lib::mpeg::caramel::CARAMEL_ANALYSIS;
 use crate::lib::p2p::nyaaise::nyaaise;
-use crate::pnworker::caramel::{CaramelJobRequest, VerifySettings, read_report};
+use crate::pnworker::caramel::{CaramelJobRequest, SceneOverrides, VerifySettings, read_report};
 use crate::pnworker::core::{Concat, Job, JobType};
 use crate::pnworker::server_effects::{load_server_settings, preset_from_name};
 
@@ -31,11 +31,13 @@ pub(super) struct CaramelReq {
     preset: Option<String>,
     #[serde(default)]
     anchor: Option<f32>,
-    // `true` for the default verification, or `{ crfs, clip_seconds, max_clips }`.
+    // `true` for the default verification, or `{ crfs, clip_seconds, max_scenes }`, where `crfs`
+    // are the fixed CRFs the scene CRFs are compared with (the anchor when absent).
     #[serde(default)]
     verify: Option<serde_json::Value>,
+    // `{ analysis_frames, min_scene_frames, max_scene_frames }`, each optional.
     #[serde(default)]
-    sampling: Option<Sampling>,
+    scenes: Option<SceneOverrides>,
 }
 
 fn parse_verify(value: Option<&serde_json::Value>) -> Result<Option<VerifySettings>, String> {
@@ -57,7 +59,11 @@ fn parse_verify(value: Option<&serde_json::Value>) -> Result<Option<VerifySettin
             Ok(Some(VerifySettings {
                 crfs,
                 clip_seconds: fields.get("clip_seconds").and_then(|value| value.as_f64()),
-                max_clips: fields.get("max_clips").and_then(|value| value.as_u64()).map(|n| n as usize),
+                max_scenes: fields
+                    .get("max_scenes")
+                    .or_else(|| fields.get("max_clips"))
+                    .and_then(|value| value.as_u64())
+                    .map(|n| n as usize),
             }))
         }
         _ => Err("verify must be a boolean or an object".to_string()),
@@ -140,7 +146,7 @@ pub(super) async fn submit(
         preset: Some(preset.clone()),
         anchor: req.anchor,
         verify,
-        sampling: req.sampling.unwrap_or_default(),
+        scenes: req.scenes.unwrap_or_default(),
     });
     let progress = json!({ "type": "caramel", "phase": "queued", "torrent": link, "preset": preset });
     submit_with_progress(&st, &auth, job, Some(progress)).await
@@ -166,15 +172,13 @@ pub(super) async fn report(
     }
 }
 
-// What a report was produced by: the model version and the sampling plans it uses by default.
+// What a report was produced by: the model version and the scene settings every encode uses.
 pub(super) async fn model() -> Response {
     Json(json!({
         "model": caramel_kernel::MODEL_VERSION,
         "aot_crf": CARAMEL_ANALYSIS,
-        "sampling": {
-            "file": SamplingPlan::default_for(false),
-            "range": SamplingPlan::default_for(true),
-        },
+        "crf_mode": CARAMEL_ANALYSIS,
+        "scenes": caramel_kernel::SceneConfig::default(),
     }))
     .into_response()
 }
@@ -188,9 +192,11 @@ mod tests {
         assert!(parse_verify(None).unwrap().is_none());
         assert!(parse_verify(Some(&json!(false))).unwrap().is_none());
         assert!(parse_verify(Some(&json!(true))).unwrap().unwrap().crfs.is_empty());
-        let settings = parse_verify(Some(&json!({ "crfs": [16, 18.5], "max_clips": 3 }))).unwrap().unwrap();
+        let settings = parse_verify(Some(&json!({ "crfs": [16, 18.5], "max_scenes": 3 }))).unwrap().unwrap();
         assert_eq!(settings.crfs, vec![16.0, 18.5]);
-        assert_eq!(settings.max_clips, Some(3));
+        assert_eq!(settings.max_scenes, Some(3));
+        // The name it had when verification sampled clips rather than scenes still works.
+        assert_eq!(parse_verify(Some(&json!({ "max_clips": 2 }))).unwrap().unwrap().max_scenes, Some(2));
         assert!(parse_verify(Some(&json!({ "crfs": ["x"] }))).is_err());
         assert!(parse_verify(Some(&json!("yes"))).is_err());
     }

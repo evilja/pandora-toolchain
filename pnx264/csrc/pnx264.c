@@ -207,9 +207,42 @@ int pnx264_encode( pnx264_enc *e,
     e->pic_in.i_type = X264_TYPE_AUTO;
 
     int size = x264_encoder_encode( e->h, &nal, &i_nal, &e->pic_in, &e->pic_out );
+    /* The frame took ownership of any parameter change attached to it (see pnx264_set_crf);
+     * the next frame continues with whatever that change left in force. */
+    e->pic_in.param = NULL;
     if( size < 0 )
         return -1;
     return collect( nal, i_nal, out );
+}
+
+/* A new CRF from the next frame passed to pnx264_encode onwards, frame-accurately.
+ *
+ * This is the mechanism x264's own --zones uses: a copy of the encoder's parameters attached to a
+ * picture is applied when that picture is coded, through x264_encoder_reconfig_apply, which
+ * re-initialises rate control for the new rf_constant. Zones need every boundary at open time; a
+ * per-picture change does not, which is what lets a scene's CRF be decided while the stream
+ * arrives. "From this frame forwards" is in coded order, so a B-frame displayed just before the
+ * change but coded after it takes the new CRF — at a cut, where x264 has placed a keyframe, there
+ * is no such frame.
+ *
+ * The copy is built exactly as x264's zone parser builds its own: the current parameters, with
+ * `opaque` cleared because it holds strings the encoder still owns, freed by x264 after use. */
+int pnx264_set_crf( pnx264_enc *e, float crf )
+{
+    if( e->pic_in.param )
+    {
+        e->pic_in.param->rc.f_rf_constant = crf;
+        return 0;
+    }
+    x264_param_t *p = malloc( sizeof(*p) );
+    if( !p )
+        return -1;
+    x264_encoder_parameters( e->h, p );
+    p->opaque = NULL;
+    p->param_free = free;
+    p->rc.f_rf_constant = crf;
+    e->pic_in.param = p;
+    return 0;
 }
 
 int pnx264_flush( pnx264_enc *e, const uint8_t **out )
@@ -275,6 +308,8 @@ void pnx264_close( pnx264_enc *e )
 {
     if( !e )
         return;
+    /* A change set after the last frame was never handed to x264, so it is still ours. */
+    free( e->pic_in.param );
     if( e->h )
         x264_encoder_close( e->h );
     free( e );
