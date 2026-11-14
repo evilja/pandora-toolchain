@@ -14,7 +14,7 @@
 use crate::lib::bin::resolve_runtime_binary;
 use caramel_kernel::{
     Contribution, EncodeContext, Frame, MODEL_VERSION, Plane, SceneConfig, SceneDecider, SceneDecision, SceneStart,
-    SourceContext,
+    SourceContext, TemporalFeatures,
 };
 use serde::Serialize;
 use std::fmt;
@@ -113,6 +113,9 @@ pub struct SceneEntry {
     pub crf: f32,
     // What began the scene: the start of the analysis or of a segment, a cut, or a long-scene split.
     pub start: SceneStart,
+    // For a cut: the histogram distance and residuals of the pair that was read as one.
+    pub cut: Option<TemporalFeatures>,
+    pub cut_pairs_within: usize,
     pub adjustment: f64,
     pub raw_adjustment: f64,
     pub confidence: f64,
@@ -384,6 +387,8 @@ fn segment_scenes(segment: &SegmentResult, fps: f64) -> Vec<SceneEntry> {
                 start_seconds: decision.start_frame as f64 / fps,
                 crf: decision.crf,
                 start: decision.start,
+                cut: decision.cut,
+                cut_pairs_within: decision.cut_pairs_within,
                 adjustment: estimate.adjustment,
                 raw_adjustment: estimate.raw_adjustment,
                 confidence: estimate.confidence,
@@ -857,6 +862,8 @@ mod tests {
             start_seconds: 0.0,
             crf,
             start: SceneStart::Cut,
+            cut: None,
+            cut_pairs_within: 0,
             adjustment: 0.0,
             raw_adjustment: 0.0,
             confidence: 1.0,

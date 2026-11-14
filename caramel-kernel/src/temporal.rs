@@ -92,6 +92,38 @@ fn intra_residual(lowres: &LowRes) -> f64 {
     total as f64 / ((lowres.width - 1) * (lowres.height - 1)) as f64
 }
 
+// The previous frame with the current frame's mean and contrast: the gain and offset of x264's
+// weighted prediction, fitted from the two frames' statistics. A fade or a flash changes every pixel
+// by one rule, and the encoder predicts that for almost nothing, so it is compared through this
+// rather than raw. Two real shots still differ after it, in shape rather than in level. The gain is
+// bounded so a frame that is nearly flat is shifted, not stretched into noise.
+const WEIGHT_GAIN_MIN: f64 = 0.25;
+const WEIGHT_GAIN_MAX: f64 = 4.0;
+const WEIGHT_FLAT_DEVIATION: f64 = 1.0;
+
+fn mean_deviation(lowres: &LowRes) -> (f64, f64) {
+    let n = lowres.data.len().max(1) as f64;
+    let mean = lowres.data.iter().map(|&v| v as f64).sum::<f64>() / n;
+    let variance = lowres.data.iter().map(|&v| (v as f64 - mean).powi(2)).sum::<f64>() / n;
+    (mean, variance.sqrt())
+}
+
+fn weighted(previous: &LowRes, current: &LowRes) -> LowRes {
+    let (previous_mean, previous_deviation) = mean_deviation(previous);
+    let (current_mean, current_deviation) = mean_deviation(current);
+    let gain = if previous_deviation < WEIGHT_FLAT_DEVIATION || current_deviation < WEIGHT_FLAT_DEVIATION {
+        1.0
+    } else {
+        (current_deviation / previous_deviation).clamp(WEIGHT_GAIN_MIN, WEIGHT_GAIN_MAX)
+    };
+    let data = previous
+        .data
+        .iter()
+        .map(|&v| ((v as f64 - previous_mean) * gain + current_mean).round().clamp(0.0, 255.0) as u8)
+        .collect();
+    LowRes { width: previous.width, height: previous.height, data }
+}
+
 #[inline]
 fn block_sad(current: &LowRes, previous: &LowRes, x: usize, y: usize, dx: i32, dy: i32) -> u32 {
     let mut sad = 0u32;
@@ -198,6 +230,7 @@ pub fn compare(
 ) -> TemporalFeatures {
     let ti = temporal_information(previous_full, current_full);
     let intra = intra_residual(current);
+    let previous = &weighted(previous, current);
     let distance = {
         let (a, b) = (histogram(previous), histogram(current));
         0.5 * a.iter().zip(b.iter()).map(|(p, q)| (p - q).abs()).sum::<f64>()
@@ -327,6 +360,30 @@ mod tests {
         let (pa, pb) = (plane(&a, 320, 192), plane(&b, 320, 192));
         let features = compare(&pa, &pb, &downsample(&pa), &downsample(&pb));
         assert!(!features.cut, "{features:?}");
+    }
+
+    // Fades change every pixel by the same rule, which an encoder predicts with weighted prediction
+    // and is not a new shot: a flat dark frame brightening one code value a frame (its histogram
+    // jumps a bin every eight), and line art washing out to white (the frame's own detail falls
+    // towards nothing while each step stays several code values).
+    #[test]
+    fn fades_are_not_cuts() {
+        let flat = |level: f64| picture(320, 192, |x, _| level + x as f64 * 0.002);
+        let wash = |t: f64| {
+            picture(320, 192, |x, y| {
+                let art = if (x / 24 + y / 24) % 2 == 0 { 60.0 } else { 140.0 };
+                art + (235.0 - art) * t
+            })
+        };
+        let pairs: Vec<(Vec<u8>, Vec<u8>)> = (0..16)
+            .map(|i| (flat(28.0 + i as f64), flat(29.0 + i as f64)))
+            .chain((0..12).map(|i| (wash(i as f64 / 12.0), wash((i + 1) as f64 / 12.0))))
+            .collect();
+        for (index, (a, b)) in pairs.iter().enumerate() {
+            let (pa, pb) = (plane(a, 320, 192), plane(b, 320, 192));
+            let features = compare(&pa, &pb, &downsample(&pa), &downsample(&pb));
+            assert!(!features.cut, "pair {index}: {features:?}");
+        }
     }
 
     #[test]

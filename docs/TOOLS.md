@@ -109,7 +109,9 @@ in one episode each get their own. The feature extraction, cut detection and mod
 chunk encoder, and `src/lib/mpeg/caramel.rs` runs it over a whole file and verifies it.
 
 - **Scenes.** `caramel_kernel::SceneDecider` is fed every frame in display order. Each frame is
-  compared with the one before for a cut: a large histogram distance, a medium one with real motion
+  compared with the one before for a cut, after the previous frame has been given the current one's
+  mean and contrast (x264's weighted-prediction gain and offset), so fades and flashes are not cuts.
+  A cut is a large histogram distance, a medium one with real motion
   residual, or a motion-compensated residual more than twice the frame's own intra residual (a cut
   between shots that share one palette). A cut within `min_scene_frames` (12) of the last is ignored.
   A scene that runs past `max_scene_frames` (250) is split and decided again. The first
@@ -142,7 +144,8 @@ chunk encoder, and `src/lib/mpeg/caramel.rs` runs it over a whole file and verif
   the active preset as the anchor (`--aot-crf` overrides it) and writes the JSON report to `-o`, or to
   stdout for `-o -`. Nothing is encoded. Every frame is decoded, split into contiguous segments of at
   least 2400 frames decoded in parallel; each seeks accurately to its first frame. The report lists
-  every scene (start, frames, how it started, CRF, contributions), the frame-weighted CRF
+  every scene (start, frames, how it started, the pair read as its cut and how many later measured
+  pairs also read as cuts, CRF, contributions), the frame-weighted CRF
   distribution, and the `zones` string a linear encode would use.
 - **`--caramel-verify <auto|crf,crf,…>`** (with `--caramel-report`) also encodes up to six 4 s clips
   from the scenes moved furthest from the anchor. Each is encoded at its scene CRF and at every listed

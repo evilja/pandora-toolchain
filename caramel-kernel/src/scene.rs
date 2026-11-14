@@ -13,7 +13,7 @@
 
 use crate::frame::{Frame, Plane};
 use crate::model::{EncodeContext, SceneEstimate, SourceContext, estimate_scene};
-use crate::temporal::{self, LowRes};
+use crate::temporal::{self, LowRes, TemporalFeatures};
 use crate::window::WindowAnalyzer;
 use serde::Serialize;
 
@@ -67,6 +67,11 @@ pub struct SceneDecision {
     pub start_frame: u64,
     pub crf: f32,
     pub start: SceneStart,
+    // The frame pair that was read as the cut, so a report shows what the detector saw.
+    pub cut: Option<TemporalFeatures>,
+    // Pairs inside the measured frames that also read as cuts but came too soon after this one. A
+    // scene whose every pair is one is a fade, flash or effect the detector cannot follow.
+    pub cut_pairs_within: usize,
     pub estimate: SceneEstimate,
 }
 
@@ -84,6 +89,7 @@ pub struct SceneDecider {
     pushed: u64,
     scene_start: u64,
     scene_kind: SceneStart,
+    scene_cut: Option<TemporalFeatures>,
     // Present while the current scene is still being measured.
     analyzer: Option<WindowAnalyzer>,
     measured: usize,
@@ -100,6 +106,7 @@ impl SceneDecider {
             pushed: 0,
             scene_start: 0,
             scene_kind: SceneStart::Start,
+            scene_cut: None,
             analyzer: None,
             measured: 0,
             decided: false,
@@ -142,6 +149,7 @@ impl SceneDecider {
             }
             self.scene_start = index;
             self.scene_kind = kind;
+            self.scene_cut = if kind == SceneStart::Cut { pair } else { None };
             self.analyzer = Some(WindowAnalyzer::new(index as f64 / self.source.fps.max(1.0)));
             self.measured = 0;
             self.decided = false;
@@ -172,7 +180,14 @@ impl SceneDecider {
         let features = self.analyzer.take().map(WindowAnalyzer::finish).unwrap_or_default();
         let estimate = estimate_scene(&features, &self.source, &self.encode);
         self.decided = true;
-        SceneDecision { start_frame: self.scene_start, crf: estimate.crf, start: self.scene_kind, estimate }
+        SceneDecision {
+            start_frame: self.scene_start,
+            crf: estimate.crf,
+            start: self.scene_kind,
+            cut: self.scene_cut,
+            cut_pairs_within: features.cuts,
+            estimate,
+        }
     }
 
     // The previous frame is kept as a packed copy, in a buffer reused from frame to frame: the
@@ -246,6 +261,8 @@ mod tests {
         let starts: Vec<_> = decisions.iter().map(|d| (d.start_frame, d.start)).collect();
         assert_eq!(starts, vec![(0, SceneStart::Start), (30, SceneStart::Cut)]);
         assert!(decisions[1].crf < decisions[0].crf, "{decisions:?}");
+        // The cut carries the pair that was read as one; the first scene has none.
+        assert!(decisions[0].cut.is_none() && decisions[1].cut.is_some_and(|pair| pair.cut));
     }
 
     #[test]

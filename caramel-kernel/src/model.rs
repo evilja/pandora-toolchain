@@ -18,7 +18,7 @@
 use crate::window::WindowFeatures;
 use serde::Serialize;
 
-pub const MODEL_VERSION: &str = "caramel-scene-1";
+pub const MODEL_VERSION: &str = "caramel-scene-2";
 
 // The furthest a scene's CRF may move from the anchor in either direction.
 const MAX_RAISE: f64 = 4.0;

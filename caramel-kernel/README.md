@@ -9,7 +9,7 @@ standard presets, 18 for `veryslow`, 25 for the low-bitrate one). A fixed CRF ov
 easy material (flat anime, static dialogue scenes) and can underspend on hard material (heavy
 grain, fast action, dark gradients). The goal here is to pick the CRF from the content.
 
-## Implementation: `caramel-scene-1`
+## Implementation: `caramel-scene-2`
 
 **Caramel Analysis** gives every scene its own CRF. It is a prior built from published encoding
 practice and calibrated against the feature distribution of real releases, not yet against
@@ -27,7 +27,9 @@ are Pandora's job (`src/lib/mpeg/caramel.rs` and `pnx264::scenes`; see `docs/TOO
     small mean step: banding risk), dark gradient, line art (edges over flat fill), and dark.
 - `temporal` — P.910 TI, plus a quarter-resolution 8×8 block motion search (predictors and a small
   diamond, ±8). It gives the zero-motion and motion-compensated residual, the mean motion, and the
-  intra residual of the same low-resolution frame (left/up DPCM). A pair is a cut when the
+  intra residual of the same low-resolution frame (left/up DPCM). The previous frame is first given
+  the current one's mean and contrast — x264's weighted-prediction gain and offset — so a fade or a
+  flash, which the encoder predicts almost for free, is not read as a new shot. A pair is a cut when the
   histogram distance is large, when it is moderate and the motion residual is real, or when motion
   compensation predicts the frame worse than twice as badly as the frame predicts itself — the
   last catches a cut between two shots that share one palette.
@@ -60,6 +62,15 @@ two real 1080p TV anime releases at the full penalty and the lower bound, becaus
 for, and x264's aq-mode 3 already spends on it. The thresholds now start where a frame is mostly
 gradient, so typical scenes sit at the anchor and skies and dark fades are cut. A unit test pins
 those releases' median features to the anchor.
+
+`caramel-scene-2` compares frames through weighted prediction. The first full-episode scene report
+(`caramel-scene-1`, 1080p TV anime) found 777 scenes in 24 minutes, with long runs of scenes
+exactly `min_scene_frames` long. In 41 of those runs, every measured pair was a cut. Those runs were
+fades: a flat frame brightening by a code value a frame jumps a histogram bin every few frames, and
+a wash-out to white drives the frame's own intra residual towards zero while each step stays
+several code values. A report now records, for each cut, the pair that was read as one (`cut`) and
+how many later pairs in the measured frames also were (`cut_pairs_within`), so a run of false cuts
+shows its cause.
 
 The coefficients are still a starting point. Use `--caramel-verify` / `verify:true` (SSIM, PSNR and
 bitrate of real scenes at their own CRF and at fixed CRFs) to collect the evidence that calibrates
