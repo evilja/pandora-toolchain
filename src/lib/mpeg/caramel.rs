@@ -597,16 +597,33 @@ pub struct VerifyReport {
 }
 
 // The scenes a verification measures: the ones moved furthest from the anchor, longest first among
-// equals, in the order they play.
+// equals, taken in turn from below and above the anchor, in the order they play. Ranking by
+// distance alone filled every slot from whichever side the model pushes further — on a real
+// episode, six banding scenes at −2 to −2.5 — and left the scenes it raised unmeasured.
 fn verify_scenes(scenes: &[SceneEntry], anchor: f32, max: usize) -> Vec<usize> {
-    let mut candidates: Vec<usize> = (0..scenes.len()).filter(|&index| scenes[index].frames >= VERIFY_MIN_FRAMES).collect();
-    candidates.sort_by(|&a, &b| {
-        let distance = |index: usize| (scenes[index].crf - anchor).abs();
-        distance(b).total_cmp(&distance(a)).then(scenes[b].frames.cmp(&scenes[a].frames))
-    });
-    candidates.truncate(max);
-    candidates.sort_unstable();
-    candidates
+    let ranked = |keep: &dyn Fn(f32) -> bool| {
+        let mut side: Vec<usize> =
+            (0..scenes.len()).filter(|&index| scenes[index].frames >= VERIFY_MIN_FRAMES && keep(scenes[index].crf)).collect();
+        side.sort_by(|&a, &b| {
+            let distance = |index: usize| (scenes[index].crf - anchor).abs();
+            distance(b).total_cmp(&distance(a)).then(scenes[b].frames.cmp(&scenes[a].frames))
+        });
+        side
+    };
+    let mut below = ranked(&|crf| crf < anchor).into_iter();
+    let mut above = ranked(&|crf| crf > anchor).into_iter();
+    let mut chosen = Vec::new();
+    loop {
+        let (a, b) = (below.next(), above.next());
+        if a.is_none() && b.is_none() {
+            break;
+        }
+        chosen.extend(a.into_iter().chain(b));
+    }
+    chosen.extend(ranked(&|crf| crf == anchor));
+    chosen.truncate(max);
+    chosen.sort_unstable();
+    chosen
 }
 
 struct ClipMeasurement {
@@ -917,6 +934,24 @@ mod tests {
         // The 8-frame scene is too short to measure; 19.0 twice is a tie broken by length.
         assert_eq!(verify_scenes(&scenes, 17.0, 2), vec![3, 4]);
         assert_eq!(verify_scenes(&scenes, 17.0, 10), vec![0, 2, 3, 4]);
+    }
+
+    // The first real verify (anchor 21, scenes 18.5–22.5) measured six scenes, all below the
+    // anchor, because the model lowers further than it raises. A raised scene has to get a slot.
+    #[test]
+    fn verification_measures_both_sides_of_the_anchor() {
+        let scenes = [
+            scene(0, 100, 18.5),
+            scene(100, 100, 18.5),
+            scene(200, 100, 19.0),
+            scene(300, 100, 22.0),
+            scene(400, 100, 19.0),
+            scene(500, 100, 21.5),
+        ];
+        assert_eq!(verify_scenes(&scenes, 21.0, 2), vec![0, 3]);
+        assert_eq!(verify_scenes(&scenes, 21.0, 4), vec![0, 1, 3, 5]);
+        // One side running out leaves the rest of the slots to the other.
+        assert_eq!(verify_scenes(&scenes, 21.0, 5), vec![0, 1, 2, 3, 5]);
     }
 
     #[test]
