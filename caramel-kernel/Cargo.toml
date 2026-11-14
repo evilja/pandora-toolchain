@@ -1,0 +1,17 @@
+# Detached from the root crate's workspace the same way kagami-trace is, so the analysis kernel
+# stays buildable and testable on its own and never depends back on Pandora.
+[workspace]
+members = ["."]
+resolver = "3"
+
+[package]
+name = "caramel-kernel"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Caramel Analysis: content-adaptive CRF estimation from source features"
+license = "GPL-3.0-or-later"
+readme = "README.md"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }

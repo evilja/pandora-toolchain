@@ -24,6 +24,10 @@ use pandora_toolchain::lib::logging::diag::{exit_reason, memory_line, process_rs
 use pandora_toolchain::lib::logging::tool::ToolLog;
 use pandora_toolchain::lib::mpeg::studio::{studio_ffmpeg_params, write_ffconcat, StudioRenderManifest};
 use pandora_toolchain::lib::mpeg::subs::{ExtractOutcome, extract_subtitle, ffprobe_subtitle_streams};
+use pandora_toolchain::lib::mpeg::caramel::{
+    AotCrf, CaramelRequest, FrameRange, VerifyEncoder, VerifyRequest, run_caramel_analysis, run_verification,
+    summary_line,
+};
 use pandora_toolchain::lib::protocol::core::{Protocol, Schema, ToolInfo};
 use std::str::FromStr;
 use clap::Parser;
@@ -121,8 +125,20 @@ struct Args {
     #[arg(long, hide = true)]
     fps_den: Option<u32>,
 
+    /// CRF of an `--aot-chunk` encode: a number, or `caramel-analysis[:<anchor>]` to estimate it
+    /// from the chunk's own frames. With `--caramel-report`, a number is the anchor.
     #[arg(long, hide = true)]
-    aot_crf: Option<f32>,
+    aot_crf: Option<AotCrf>,
+
+    /// Run Caramel Analysis on --input and write its JSON report to --output (`-` for stdout).
+    /// The anchor is the selected preset's CRF; `--start-frame`/`--frame-count` limit it to a range.
+    #[arg(long)]
+    caramel_report: bool,
+
+    /// With --caramel-report: also encode sample clips with the preset's x264 settings and measure
+    /// them. `auto` for the estimate and the anchor, or a comma-separated list of CRFs.
+    #[arg(long)]
+    caramel_verify: Option<String>,
 
     #[arg(long, hide = true)]
     aot_preset: Option<String>,
@@ -536,6 +552,50 @@ fn start_idle_gated_encode(
         std::thread::sleep(Duration::from_millis(50));
     }
     Ok(IdleGatedEncode { handle: Some(handle), error })
+}
+
+fn caramel_range(args: &Args) -> Option<FrameRange> {
+    args.start_frame.zip(args.frame_count).map(|(start, frames)| FrameRange { start, frames })
+}
+
+fn caramel_fps(args: &Args) -> Option<f64> {
+    match (args.fps_num, args.fps_den) {
+        (Some(num), Some(den)) if num > 0 && den > 0 => Some(num as f64 / den as f64),
+        _ => None,
+    }
+}
+
+// The CRF one AOT chunk encodes at. `caramel-analysis` measures the chunk's own frames — a chunk is
+// bounded by natural IDRs, which mostly sit on scene cuts, so this is close to a CRF per scene. It
+// runs single-threaded beside the other chunk encoders, and a failed analysis encodes at the anchor:
+// AOT work is disposable, and the anchor is the CRF the chunk would have had without it.
+fn aot_chunk_crf(args: &Args, preset_crf: f32, log: &mut ToolLog) -> f32 {
+    match args.aot_crf {
+        None => 18.0,
+        Some(AotCrf::Fixed(crf)) => crf,
+        Some(AotCrf::CaramelAnalysis { anchor }) => {
+            let anchor = anchor.unwrap_or(preset_crf);
+            let request = CaramelRequest {
+                input: Path::new(&args.input),
+                range: caramel_range(args),
+                fps: caramel_fps(args),
+                encode: caramel_kernel::EncodeContext::anchored(anchor),
+                workers: 1,
+                decoder_threads: 1,
+                sampling: Default::default(),
+            };
+            match run_caramel_analysis(&request) {
+                Ok(report) => {
+                    log.line(&summary_line(&report));
+                    report.estimate.crf
+                }
+                Err(error) => {
+                    log.line(&format!("caramel analysis failed ({error}); encoding at the anchor CRF {anchor}"));
+                    anchor
+                }
+            }
+        }
+    }
 }
 
 fn planner_encoder_config(preset: Option<&ResolvedPreset>) -> pnx264::Config {
@@ -1242,6 +1302,76 @@ async fn main() {
         ));
     }
     let x264_config = planner_encoder_config(active_preset.as_ref());
+    if args.caramel_report {
+        let anchor = match args.aot_crf {
+            Some(AotCrf::Fixed(crf)) | Some(AotCrf::CaramelAnalysis { anchor: Some(crf) }) => crf,
+            _ => x264_config.crf,
+        };
+        let request = CaramelRequest {
+            input: Path::new(&args.input),
+            range: caramel_range(&args),
+            fps: caramel_fps(&args),
+            encode: caramel_kernel::EncodeContext {
+                output_height: active_preset.as_ref().and_then(ResolvedPreset::scale_height),
+                ..caramel_kernel::EncodeContext::anchored(anchor)
+            },
+            workers: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(4),
+            decoder_threads: 0,
+            sampling: Default::default(),
+        };
+        match run_caramel_analysis(&request) {
+            Ok(mut report) => {
+                log.line(&summary_line(&report));
+                if let Some(list) = args.caramel_verify.as_deref() {
+                    let mut crfs: Vec<f32> = list
+                        .split(|c: char| c == ',' || c.is_whitespace())
+                        .filter_map(|value| value.trim().parse().ok())
+                        .collect();
+                    if crfs.is_empty() {
+                        crfs = vec![report.estimate.crf, anchor];
+                        crfs.sort_by(|a, b| a.total_cmp(b));
+                        crfs.dedup();
+                    }
+                    let settings = active_preset.as_ref().map(ResolvedPreset::x264_settings).unwrap_or_default();
+                    let output = PathBuf::from(&args.output);
+                    let scratch = output
+                        .parent()
+                        .filter(|parent| !parent.as_os_str().is_empty() && args.output != "-")
+                        .unwrap_or_else(|| Path::new("."))
+                        .join(format!(".caramel-verify-{}", std::process::id()));
+                    let verify = VerifyRequest {
+                        crfs,
+                        clip_seconds: 2.0,
+                        max_clips: 6,
+                        encoder: VerifyEncoder {
+                            preset: settings.preset,
+                            tune: settings.tune,
+                            x264_params: settings.x264_params,
+                        },
+                        scratch,
+                        cancel_file: args.cancelfile.as_deref().map(PathBuf::from),
+                    };
+                    match run_verification(&report, &verify) {
+                        Ok(result) => report.verify = Some(result),
+                        Err(error) => report.verify_error = Some(error),
+                    }
+                }
+                let json = serde_json::to_string_pretty(&report).unwrap();
+                if args.output == "-" {
+                    println!("{json}");
+                } else if let Err(error) = std::fs::write(&args.output, json + "\n") {
+                    eprintln!("pnmpeg: cannot write {}: {error}", args.output);
+                    std::process::exit(1);
+                }
+                return;
+            }
+            Err(error) => {
+                log.line(&format!("caramel analysis failed: {error}"));
+                eprintln!("pnmpeg caramel analysis failed: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
     if args.linear_prefix {
         let Some(job_id) = args.aot_job_id else {
             eprintln!("pnmpeg: --aot-job-id is required with --linear-prefix");
@@ -1355,7 +1485,7 @@ async fn main() {
             std::process::exit(2);
         };
         let encoder = pnx264::Config {
-            crf: args.aot_crf.unwrap_or(18.0),
+            crf: aot_chunk_crf(&args, x264_config.crf, &mut log),
             threads: 1,
             preset: args.aot_preset.clone(),
             tune: args.aot_tune.clone(),

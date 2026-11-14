@@ -44,6 +44,7 @@ cargo build                        # all binaries; --bin <name> for one
 cargo test --lib                   # unit tests, seconds to run
 cargo test --lib <filter>          # single test or module, e.g. nyaaise::tests
 cargo test -p kagami-trace         # the sub-crate's own tests
+cargo test -p caramel-kernel       # Caramel Analysis' feature/model crate
 ./start.sh                         # clean + build + run pndc in a restart loop
 ```
 
@@ -57,7 +58,7 @@ Always commit finished work and push it to `main` — do not ask first, and do n
 
 ## Architecture
 
-**One crate, many binaries.** `src/bin/*.rs` are separate processes: `pndc` (Discord bot + worker runtime + HTTP API, the only long-running one), and the tools `pncurl`, `pnp2p`, `pnmpeg`, `pnass`, `pnkagami`, `pnprotocol`, `pntrace`. `kagami-trace/` is a path dependency that must stay extraction-ready — it never depends back on Pandora (`pntrace` and `src/libkagami/tracing.rs` hold the Pandora-side glue).
+**One crate, many binaries.** `src/bin/*.rs` are separate processes: `pndc` (Discord bot + worker runtime + HTTP API, the only long-running one), and the tools `pncurl`, `pnp2p`, `pnmpeg`, `pnass`, `pnkagami`, `pnprotocol`, `pntrace`. `kagami-trace/` is a path dependency that must stay extraction-ready — it never depends back on Pandora (`pntrace` and `src/libkagami/tracing.rs` hold the Pandora-side glue). `caramel-kernel/` follows the same rule: it takes decoded planes and returns features and a CRF estimate, while `src/lib/mpeg/caramel.rs` owns ffmpeg/ffprobe, sampling and verification.
 
 **Non-obvious module wiring.** `src/lib.rs` maps directories with `#[path]` (`lib/mod.rs`, `lumiere-broker/mod.rs`). `src/helpers/` is *not* part of the library — `src/bin/pndc.rs` pulls it in with `#[path = "../helpers/pndc.rs"]`, and `helpers/handlers/mod.rs` starts with `use super::*`, so handlers see the binary's imports. Adding a handler means creating `src/helpers/handlers/<name>.rs` and declaring `mod <name>;` there.
 

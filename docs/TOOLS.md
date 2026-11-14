@@ -100,6 +100,41 @@ parallel audio passes use 192 kbit/s.
 The file format and its `hardware` tag are described in [WORKER.md](WORKER.md) and
 [LINK.md](LINK.md#purpose); reference copies of every built-in live in `presets/`.
 
+## `pnmpeg` Caramel Analysis
+
+Caramel Analysis estimates the highest CRF a source holds at the preset's quality from the source
+alone, without trial encodes. The feature extraction and the model are in `caramel-kernel/` (see its
+README for the method); `src/lib/mpeg/caramel.rs` decodes the samples and runs the optional
+verification.
+
+- **Sampling.** One ffprobe call reads the size, frame rate, bit depth, codec and bitrate (Matroska
+  `BPS` tags, then the container bitrate). Each window is its own ffmpeg process that seeks with
+  `-noaccurate_seek`, so it starts on a keyframe and decodes only the frames it measures, written as
+  y4m. Two requested positions that land on the same keyframe are measured once. A whole file is
+  sampled with 6 frames every 40 s, 6–24 windows. A frame range (an AOT chunk) is sampled every 8 s,
+  2–6 windows. Up to four windows decode in parallel.
+- **Estimate.** Each window's features (P.910 SI/TI, edge density, Immerkær noise σ over the flattest
+  pixels, smooth/gradient/dark/line-art block shares, chroma SI, quarter-resolution
+  motion-compensated residual, cut detection) give it a bounded CRF offset from the anchor. The file
+  takes the weighted 25th percentile of those offsets, so the hard windows decide, plus global
+  factors for output resolution and source bits per pixel. A raise is scaled by confidence (how many
+  windows, how much temporal coverage); a cut never is. The offset is bounded to −4…+4 and rounded to
+  0.5. Reports are stamped with `caramel_kernel::MODEL_VERSION`.
+- **`--aot-crf <value>`** (hidden). It sets the CRF of AOT chunks: a number (`-12`…`63`),
+  `caramel-analysis` (anchored at the preset's CRF), or `caramel-analysis:<crf>` (anchored at
+  `<crf>`). Each chunk is analysed over its own frame range with one worker and one decoder thread.
+  If the analysis fails, the chunk logs why and encodes at the anchor.
+- **`--caramel-report`** analyses the whole input (`-i`) with the active preset as the anchor
+  (`--aot-crf` overrides it) and writes the JSON report to `-o`, or to stdout for `-o -`. Nothing is
+  encoded.
+- **`--caramel-verify <auto|crf,crf,…>`** (with `--caramel-report`) also encodes up to six 2 s clips,
+  chosen from the hardest windows first, at each CRF (`auto` means the estimate and the anchor). It
+  uses libx264 with the preset's preset, tune and x264 params, then compares each clip against the
+  source with ffmpeg's `ssim` and `psnr` filters. A clip is a fixed frame count from the keyframe
+  both passes seek to: with `-noaccurate_seek`, an input `-t` counts from the requested timestamp
+  and can end before the keyframe's first frame. Scratch files go in a hidden directory beside the
+  output and are removed afterwards. `--cancelfile` is checked before each clip.
+
 ## `pnmpeg` image watermark
 
 `--logo <file>` composites a picture over every frame, appended to whatever `-vf` chain the preset
