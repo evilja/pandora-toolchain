@@ -122,6 +122,10 @@ pub fn orchestrator_refusal(job: &Job) -> Option<&'static str> {
         JobType::SubsMedia => {
             Some("The subtitle editor's video is transcoded and served by the coordinator, and this coordinator runs no encodes")
         }
+        // Not leased yet: the analysis runs in this process, beside the report it writes.
+        JobType::Caramel => {
+            Some("Caramel Analysis runs on the coordinator, and this coordinator runs no encodes")
+        }
         _ => None,
     }
 }

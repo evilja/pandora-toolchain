@@ -2,7 +2,7 @@ use crate::lib::db::core::JobDb;
 use crate::pnworker::core::Stage;
 use crate::pnworker::estimate::remaining_secs_active;
 use crate::pnworker::messages::{
-    BACKUPALL_PROG, ENCODE_CONCAT_PROG, SUBSMEDIA_DONE, SUBSMEDIA_FAIL, SUBSMEDIA_PROG, ENCODE_PROG, MessagePayload, PROBE_ROW, TORRENT_PROG,
+    BACKUPALL_PROG, CARAMEL_DONE, CARAMEL_FAIL, CARAMEL_PROG, CARAMEL_VERIFY_PROG, ENCODE_CONCAT_PROG, SUBSMEDIA_DONE, SUBSMEDIA_FAIL, SUBSMEDIA_PROG, ENCODE_PROG, MessagePayload, PROBE_ROW, TORRENT_PROG,
     TORRENT_PROG_SELECT, UPLOAD_BACKUP_PROG, UPLOAD_DONE, UPLOAD_PROG,
 };
 
@@ -108,6 +108,32 @@ pub(crate) async fn persist_side_effects(
         let v = serde_json::json!({
             "type": "subsmedia", "percent": 100, "ready": true, "token": args.get(0),
         });
+        db.update_progress(job_id, &v.to_string()).await.ok();
+    } else if *id == CARAMEL_PROG {
+        let v = serde_json::json!({ "type": "caramel", "phase": "analysis" });
+        db.update_progress(job_id, &v.to_string()).await.ok();
+    } else if *id == CARAMEL_VERIFY_PROG {
+        let v = serde_json::json!({ "type": "caramel", "phase": "verify", "crfs": args.get(0) });
+        db.update_progress(job_id, &v.to_string()).await.ok();
+    } else if *id == CARAMEL_DONE {
+        // The whole report rides in the row, so a client polling `/jobs/:id` has it without a
+        // second request; `/caramel/reports/:id` serves the same file for as long as it is kept.
+        let report = match args.last() {
+            Some(path) => tokio::fs::read(path)
+                .await
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok()),
+            None => None,
+        };
+        let v = serde_json::json!({
+            "type": "caramel", "done": true, "percent": 100,
+            "crf": args.get(0).and_then(|crf| crf.parse::<f64>().ok()),
+            "preset": args.get(1),
+            "report": report,
+        });
+        db.update_progress(job_id, &v.to_string()).await.ok();
+    } else if *id == CARAMEL_FAIL {
+        let v = serde_json::json!({ "type": "caramel", "error": args.get(0) });
         db.update_progress(job_id, &v.to_string()).await.ok();
     } else if *id == SUBSMEDIA_FAIL {
         let v = serde_json::json!({ "type": "subsmedia", "error": args.get(0) });

@@ -277,6 +277,7 @@ mod tests {
             keep: None,
             keycode: None,
             preview: None,
+            caramel: None,
             studio: None,
             batch: None,
             batch_parent: None,

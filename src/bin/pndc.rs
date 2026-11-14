@@ -783,6 +783,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("encode", 0),
     ("studio", 0),
     ("subs", 0),
+    ("caramel-analysis", 0),
     ("backup", 0),
     ("distribute", 0),
     ("backupall", 0),
@@ -1031,6 +1032,13 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Extract the subtitle tracks embedded in a video.",
             usage: "/subs torrent:<link>",
             details: "Downloads the video and writes every text subtitle track it carries to a file, named by track ordinal, language, and title. One track comes back on its own; several come back as a zip. Image-based tracks (PGS, VobSub) are reported as skipped because they hold bitmaps rather than text. When the torrent holds more than one video, its file list is shown first and you pick one by sending its index as a plain number in the channel, exactly as `/encode do` asks.",
+        },
+        HelpCommand {
+            section: "encode",
+            name: "caramel-analysis",
+            summary: "Estimate the CRF a source needs without encoding it.",
+            usage: "/caramel-analysis source:<link> [preset:<name>] [anchor:<crf>] [verify:true] [verify_crfs:<list>]",
+            details: "Downloads the video and runs Caramel Analysis on it: a few short windows spread across the source are measured for grain, banding risk, line art, texture, motion and chroma detail, and the result is the highest CRF the content should hold, as an offset from the preset's own CRF (the server's /edit preset unless `preset` is given; `anchor` overrides the CRF). The embed lists the factors that moved the estimate and the full JSON report is attached. `verify:true` also encodes short sample clips at the estimate and the anchor (or at `verify_crfs`, e.g. `16,18,20`) and reports SSIM, PSNR and bitrate for each, which takes minutes rather than seconds. When the torrent holds more than one video, its file list is shown first and you pick one by sending its index as a plain number in the channel, exactly as `/encode do` asks.",
         },
         HelpCommand {
             section: "encode",
@@ -2465,6 +2473,12 @@ impl EventHandler for Handler {
                         self.tx.send(JobClass::Job(job)).await.unwrap();
                     }
                 }
+                "caramel-analysis" => {
+                    if let Some(mut job) = handle_caramel(&ctx, &command).await {
+                        job.pick_file_first();
+                        self.tx.send(JobClass::Job(job)).await.unwrap();
+                    }
+                }
                 "backup" => {
                     let keep = match keep_request_from_options(&ctx, &command).await {
                         Some(keep) => keep,
@@ -3064,6 +3078,20 @@ impl EventHandler for Handler {
                     CreateCommandOption::new(CommandOptionType::String, "torrent", "Torrent URL, magnet link, Google Drive link, or direct video link")
                         .required(true)
                 ),
+            CreateCommand::new("caramel-analysis")
+                .description("Estimate the CRF a source needs from its content, without encoding it")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "source", "Torrent URL, magnet link, Google Drive link, or direct video link")
+                        .required(true)
+                )
+                .add_option(CreateCommandOption::new(CommandOptionType::String, "preset", "Preset to anchor at (default: this server's preset)"))
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Number, "anchor", "CRF to anchor at instead of the preset's own")
+                        .min_number_value(0.0)
+                        .max_number_value(51.0)
+                )
+                .add_option(CreateCommandOption::new(CommandOptionType::Boolean, "verify", "Also encode sample clips and measure SSIM/PSNR (slow)"))
+                .add_option(CreateCommandOption::new(CommandOptionType::String, "verify_crfs", "CRFs to verify, e.g. 16,18,20 (default: the estimate and the anchor)")),
             CreateCommand::new("gitsync")
                 .description("Sync with the git repo"),
             CreateCommand::new("gitforce")

@@ -3,6 +3,7 @@ mod account;
 mod logs;
 mod studio;
 mod subs;
+mod caramel;
 mod token;
 mod workers;
 mod link;

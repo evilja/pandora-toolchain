@@ -662,6 +662,30 @@ args = 1
 text = "🎞️ 字幕エディター用動画"
 args = 0
 
+[JOB_TYPE_CARAMEL]
+text = "🍮 Caramel 解析"
+args = 0
+
+[CARAMEL_PROG]
+text = "Caramel 解析がソースをサンプリングしています…"
+args = 0
+
+[CARAMEL_VERIFY_PROG]
+text = "推定を検証中: サンプルクリップを CRF {} でエンコードしています…"
+args = 1
+
+[CARAMEL_DONE]
+text = "Caramel 解析: **CRF {}**（プリセット `{}`、基準 {}、{}、信頼度 {}）。\n{} ウィンドウ / {} フレームを {} 秒で解析しました。\n要因: {}\n{}"
+args = 10
+
+[CARAMEL_FAIL]
+text = "Caramel 解析に失敗しました: {}"
+args = 1
+
+[CARAMEL_UNKNOWN_PRESET]
+text = "`{}` はプリセットではありません。`standard` や `veryslow` など、`/edit preset` が受け付ける名前を使ってください。"
+args = 1
+
 [LINK_NODE_FAILED]
 text = "このジョブを実行したノードが失敗を報告しました: {}"
 args = 1

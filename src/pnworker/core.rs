@@ -79,6 +79,8 @@ pub enum WorkerMsg {
     Subs(SubsData),
     // The browser editor's copy of a linked video; same payload as `/subs`, different output.
     SubsMedia(SubsData),
+    // Caramel Analysis of a downloaded source, with the settings it was asked for.
+    Caramel(crate::pnworker::caramel::CaramelData),
 }
 
 pub const STRUCT: [&str; 3] = ["contents", "work", "log"];
@@ -95,6 +97,7 @@ pub async fn pn_worker(mut rx: Receiver<JobClass>) {
     cleanup_studios_startup().await;
     cleanup_expired_hls().await;
     crate::pnworker::subs_media::cleanup_expired_subs_media().await;
+    crate::pnworker::caramel::cleanup_expired_caramel_reports().await;
 
     let mut queue: Vec<Job> = vec![];
     let mut shrine: TypedShrine<WorkerMsg> = TypedShrine::new();
@@ -720,7 +723,8 @@ async fn queue_new_job(
         JobType::Probe => queue_probe_job(db, queue, shrine, job).await,
         // A browser-editor source needs exactly what an extraction does — the one video file —
         // so it queues the same way and only differs once downloaded.
-        JobType::Subs | JobType::SubsMedia => queue_subs_job(db, queue, shrine, job).await,
+        // Caramel Analysis reads the same single video, so it queues the same way too.
+        JobType::Subs | JobType::SubsMedia | JobType::Caramel => queue_subs_job(db, queue, shrine, job).await,
         JobType::Pancode => queue_pancode_job(db, queue, shrine, job).await,
         JobType::Batch => queue_batch_job(db, queue, shrine, job).await,
         JobType::Backup | JobType::Distribute => queue_backup_job(db, queue, shrine, job).await,
@@ -2028,6 +2032,7 @@ fn job_type_label(job_type: JobType) -> &'static str {
         JobType::Batch => "batch",
         JobType::Subs => "subs",
         JobType::SubsMedia => "subs-media",
+        JobType::Caramel => "caramel",
         JobType::GitForce => "gitforce",
         JobType::Restart => "restart",
     }
@@ -3985,14 +3990,14 @@ async fn do_job_progression_things(
         }
 
         if job.ready == Stage::Downloaded {
-            if matches!(job.job_type, JobType::Subs | JobType::SubsMedia) {
+            if matches!(job.job_type, JobType::Subs | JobType::SubsMedia | JobType::Caramel) {
                 job.worker = "prw-pending".to_string();
                 db.update_worker(job.job_id, &job.worker).await.ok();
                 let data = (job.directory.clone(), job.job_id);
-                let msg = if job.job_type == JobType::SubsMedia {
-                    WorkerMsg::SubsMedia(data)
-                } else {
-                    WorkerMsg::Subs(data)
+                let msg = match job.job_type {
+                    JobType::SubsMedia => WorkerMsg::SubsMedia(data),
+                    JobType::Caramel => WorkerMsg::Caramel((data.0, data.1, job.caramel.clone().unwrap_or_default())),
+                    _ => WorkerMsg::Subs(data),
                 };
                 if !dispatch_or_kill(
                     shrine,
@@ -4667,6 +4672,7 @@ pub enum JobType {
     Restart = 019,
     SubsMedia = 020,
     Distribute = 021,
+    Caramel = 022,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -5016,6 +5022,8 @@ pub struct Job {
     pub keycode: Option<KeycodeRequest>,
     pub preview: Option<PreviewRequest>,
     pub studio: Option<StudioJobRequest>,
+    // Set on a `Caramel` job: the preset it is anchored at and what else it was asked to do.
+    pub caramel: Option<crate::pnworker::caramel::CaramelJobRequest>,
     // Set on the parent that owns the multi-file download; `batch_parent` is set on the per-episode
     // encodes it spawns. Exactly one of the two is ever populated.
     pub batch: Option<BatchRequest>,
@@ -5092,7 +5100,7 @@ impl Job {
     // web submit has no chat to answer in, and a Drive or direct link is one file by construction
     // — the prober refuses them for that reason.
     pub fn pick_file_first(&mut self) {
-        if !matches!(self.job_type, JobType::Encode | JobType::Subs | JobType::Backup | JobType::Distribute)
+        if !matches!(self.job_type, JobType::Encode | JobType::Subs | JobType::Caramel | JobType::Backup | JobType::Distribute)
             || self.pick_then.is_some()
             || !matches!(self.frontend, Frontend::Discord { .. })
             || !matches!(self.torrent, TorrentType::Link(_) | TorrentType::Magnet(_))
@@ -5197,6 +5205,7 @@ impl Job {
             keep: None,
             keycode: None,
             preview: None,
+            caramel: None,
             studio: None,
             batch: None,
             batch_parent: None,
@@ -5302,6 +5311,7 @@ impl Job {
             keep: None,
             keycode: None,
             preview: None,
+            caramel: None,
             studio: None,
             batch: None,
             batch_parent: None,

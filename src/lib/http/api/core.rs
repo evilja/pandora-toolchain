@@ -232,6 +232,9 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/jobs/keycode", post(submit_keycode))
         .route("/jobs/:id/cancel", post(cancel_job))
         .route("/subs/media", post(super::subs::submit_media))
+        .route("/jobs/caramel", post(super::caramel::submit))
+        .route("/caramel/reports/:id", get(super::caramel::report))
+        .route("/caramel/model", get(super::caramel::model))
         .route("/workers", get(super::workers::workers))
         .route("/workers/summary", get(super::workers::summary))
         .route("/events", get(super::workers::events))
@@ -1300,11 +1303,11 @@ async fn cancel_job(
     if !row_is_visible(&st, &auth, &row).await {
         return (StatusCode::NOT_FOUND, "no such job").into_response();
     }
-    let cancellable = [JobType::Encode, JobType::Studio, JobType::StudioPreview, JobType::SubsMedia]
+    let cancellable = [JobType::Encode, JobType::Studio, JobType::StudioPreview, JobType::SubsMedia, JobType::Caramel]
         .iter()
         .any(|job_type| row.job_type == *job_type as u16 as i64);
     if !cancellable {
-        return (StatusCode::FORBIDDEN, "only encode, Studio and subtitle-editor video jobs can be cancelled through the API").into_response();
+        return (StatusCode::FORBIDDEN, "only encode, Studio, subtitle-editor video and Caramel Analysis jobs can be cancelled through the API").into_response();
     }
     if row.archived != 0 || matches!(row.stage, 6 | 7 | 8 | 9) {
         return (StatusCode::CONFLICT, "job is already terminal").into_response();

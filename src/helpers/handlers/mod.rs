@@ -4,6 +4,7 @@ mod probe;
 mod batch;
 mod listing;
 mod subs;
+mod caramel;
 mod backup;
 mod distribute;
 mod smartcode;
@@ -70,6 +71,7 @@ pub use self::listing::{
 };
 use self::batch::probe_rows;
 pub use self::subs::handle_subs;
+pub use self::caramel::handle_caramel;
 pub use self::backup::handle_backup;
 pub use self::distribute::handle_distribute;
 pub use self::smartcode::{handle_smartcode, handle_smartcode_preview};

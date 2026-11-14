@@ -69,6 +69,7 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     | WorkerMsg::StudioPreview(_)
                     | WorkerMsg::Subs(_)
                     | WorkerMsg::SubsMedia(_)
+                    | WorkerMsg::Caramel(_)
             ) {
                 pending.push_back(msg);
             }
@@ -93,7 +94,8 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     | WorkerMsg::Preview((_, _, _, _, job_id, _))
                     | WorkerMsg::StudioPreview((_, _, job_id))
                     | WorkerMsg::Subs((_, job_id))
-                    | WorkerMsg::SubsMedia((_, job_id)) => *job_id,
+                    | WorkerMsg::SubsMedia((_, job_id))
+                    | WorkerMsg::Caramel((_, job_id, _)) => *job_id,
                     _ => unreachable!(),
                 };
                 tx2.send((
@@ -135,6 +137,9 @@ pub async fn pn_probeworker(mut rx: Receiver<WorkerMsg>, tx: Sender<CommData>, p
                     }
                     WorkerMsg::SubsMedia((directory, job_id)) => {
                         crate::pnworker::subs_media::run_subs_media_job(directory, job_id, &pnmpeg_path2, &tx2).await;
+                    }
+                    WorkerMsg::Caramel((directory, job_id, request)) => {
+                        crate::pnworker::caramel::run_caramel_job(directory, job_id, request, &tx2).await;
                     }
                     _ => unreachable!(),
                 }

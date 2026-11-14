@@ -27,6 +27,7 @@ pub mod keep;
 pub mod batch;
 pub mod studio;
 pub mod subs_media;
+pub mod caramel;
 pub mod link;
 pub mod boot;
 

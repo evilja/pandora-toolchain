@@ -154,6 +154,11 @@ pub const SUBS_ATTACHMENT_MISSING: &str = "SUBS_ATTACHMENT_MISSING";
 pub const SUBSMEDIA_PROG: &str = "SUBSMEDIA_PROG";
 pub const SUBSMEDIA_DONE: &str = "SUBSMEDIA_DONE";
 pub const SUBSMEDIA_FAIL: &str = "SUBSMEDIA_FAIL";
+pub const CARAMEL_PROG: &str = "CARAMEL_PROG";
+pub const CARAMEL_VERIFY_PROG: &str = "CARAMEL_VERIFY_PROG";
+pub const CARAMEL_DONE: &str = "CARAMEL_DONE";
+pub const CARAMEL_FAIL: &str = "CARAMEL_FAIL";
+pub const CARAMEL_UNKNOWN_PRESET: &str = "CARAMEL_UNKNOWN_PRESET";
 pub const PREVIEW_DONE: &str = "PREVIEW_DONE";
 pub const PREVIEW_FAIL: &str = "PREVIEW_FAIL";
 pub const STUDIO_PREVIEW_DONE: &str = "STUDIO_PREVIEW_DONE";
@@ -233,6 +238,7 @@ pub const JOB_TYPE_STUDIO_PREVIEW: &str = "JOB_TYPE_STUDIO_PREVIEW";
 pub const JOB_TYPE_BATCH: &str = "JOB_TYPE_BATCH";
 pub const JOB_TYPE_SUBS: &str = "JOB_TYPE_SUBS";
 pub const JOB_TYPE_SUBS_MEDIA: &str = "JOB_TYPE_SUBS_MEDIA";
+pub const JOB_TYPE_CARAMEL: &str = "JOB_TYPE_CARAMEL";
 pub const JOB_TYPE_UNKNOWN: &str = "JOB_TYPE_UNKNOWN";
 pub const VALUE_NONE: &str = "VALUE_NONE";
 pub const VALUE_NOT_AVAILABLE: &str = "VALUE_NOT_AVAILABLE";
@@ -809,6 +815,7 @@ pub fn get_job_type_text(job_type: JobType, lang: &str) -> String {
         JobType::Batch => JOB_TYPE_BATCH,
         JobType::Subs => JOB_TYPE_SUBS,
         JobType::SubsMedia => JOB_TYPE_SUBS_MEDIA,
+        JobType::Caramel => JOB_TYPE_CARAMEL,
         _ => JOB_TYPE_UNKNOWN,
     };
     get_message(id, lang)
@@ -963,6 +970,7 @@ mod tests {
             keep: None,
             keycode: None,
             preview: None,
+            caramel: None,
             studio: None,
             batch: None,
             batch_parent: None,

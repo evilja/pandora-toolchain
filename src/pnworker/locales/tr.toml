@@ -662,6 +662,30 @@ args = 1
 text = "🎞️ Altyazı editörü videosu"
 args = 0
 
+[JOB_TYPE_CARAMEL]
+text = "🍮 Caramel Analizi"
+args = 0
+
+[CARAMEL_PROG]
+text = "Caramel Analizi kaynağı örnekliyor…"
+args = 0
+
+[CARAMEL_VERIFY_PROG]
+text = "Tahmin doğrulanıyor: örnek klipler CRF {} ile kodlanıyor…"
+args = 1
+
+[CARAMEL_DONE]
+text = "Caramel Analizi: **CRF {}**, `{}` ön ayarı için (çapa {}, {}, güven {}).\n{} pencere / {} kare {} sn içinde örneklendi.\nEtkenler: {}\n{}"
+args = 10
+
+[CARAMEL_FAIL]
+text = "Caramel Analizi başarısız oldu: {}"
+args = 1
+
+[CARAMEL_UNKNOWN_PRESET]
+text = "`{}` bir ön ayar değil. `/edit preset` tarafından kabul edilen bir ad kullanın, örneğin `standard` veya `veryslow`."
+args = 1
+
 [LINK_NODE_FAILED]
 text = "Bu işi çalıştıran düğüm bir hata bildirdi: {}"
 args = 1

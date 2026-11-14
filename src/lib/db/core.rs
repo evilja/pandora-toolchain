@@ -703,6 +703,7 @@ pub fn job_type_label(job_type: i64) -> &'static str {
         17 => "Subs",
         20 => "SubsMedia",
         21 => "Distribute",
+        22 => "Caramel",
         _ => "Unknown",
     }
 }
