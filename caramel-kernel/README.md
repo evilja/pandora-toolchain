@@ -66,7 +66,8 @@ Decoding, encoding and verification are Pandora's job (`src/lib/mpeg/caramel.rs`
 open-licensed 1080p sources (Morevna Project episodes 3 and 4 and Sita Sings the Blues for flat
 animation, Pepper & Carrot episodes 4 and 6 for painted animation, Sintel for CG, Tears of Steel
 and the Xiph derf sequences for live action), cut into 359 two-second scenes. Each was encoded with
-libx264 at CRF 11 to 29 in steps of two and measured per frame with XPSNR, SSIM, PSNR and VMAF.
+libx264 as Pandora's `standard` preset runs it (preset `fast`, aq-mode 3, aq-strength 0.8) at CRF
+11 to 29 in steps of two, and measured per frame with XPSNR, SSIM, PSNR and VMAF.
 
 What it found:
 
@@ -89,8 +90,8 @@ What it found:
 - One 1080p frame costs 0.42 ms on one core of an Apple M4 (2400 fps), down from 1.86 ms when
   every frame was measured.
 
-What it does not cover: every source was 1080p, 8-bit and clean; the encoder was libx264 at preset
-`medium`; there is no banding metric in the consensus, and grainy film and 10-bit sources are not
+What it does not cover: every source was 1080p, 8-bit and clean; the encoder settings were the
+`standard` preset's only; there is no banding metric in the consensus, and grainy film and 10-bit sources are not
 in the corpus. Other output resolutions get a prior, not a fit. Use `--caramel-verify` /
 `verify:true` on real releases to check it where the corpus does not reach; a report's `features`
 and `votes` per scene are what a refit needs. A refitted model gets a new `MODEL_VERSION`.

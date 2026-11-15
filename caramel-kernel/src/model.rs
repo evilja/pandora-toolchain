@@ -24,8 +24,9 @@
 // raised scene 0.15 dB at the 95th percentile against the target and saves 1–7% of the bytes,
 // depending on the source, where an oracle would save a few points more.
 //
-// What it does not know: every fitted source is 1080p and 8-bit, and the encoder was x264 at preset
-// medium with Pandora's AQ. Other resolutions get a small prior (`output-resolution`), not a fit.
+// What it does not know: every fitted source is 1080p and 8-bit, and the encoder was x264 as
+// Pandora's `standard` preset runs it (preset fast, aq-mode 3, aq-strength 0.8). Other resolutions
+// get a small prior (`output-resolution`), not a fit.
 
 use crate::window::WindowFeatures;
 use serde::Serialize;
