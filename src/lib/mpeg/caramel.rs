@@ -659,6 +659,24 @@ fn kbps(bytes: u64, frames: u64, fps: f64) -> f64 {
     if frames == 0 || fps <= 0.0 { 0.0 } else { bytes as f64 * 8.0 / (frames as f64 / fps) / 1000.0 }
 }
 
+// The filter graph that compares an encoded clip (input 1) with the source it was cut from (input
+// 0, already sought to the clip's first frame). ffmpeg's `ssim` and `psnr` pair frames by
+// timestamp, and the two streams' timestamps are not the same numbers: Matroska stores them in
+// whole milliseconds, a frame at 23.976 fps lasts 41.708 of them, and the clip's are rounded from
+// zero where the source's are rounded from wherever the scene starts. Rebased to zero the two
+// drift a millisecond apart, and a frame whose partner is a millisecond late is compared with the
+// partner's neighbour. Whether that happens depends on where in the second the scene starts. On a
+// still it changes nothing; on a moving shot it read SSIM 0.959 for an encode that measures 0.997,
+// and the same at every CRF. So both sides are renumbered: frame n is at n seconds.
+fn measurement_graph(frames: u64, ssim_file: &str, psnr_file: &str) -> String {
+    const BY_INDEX: &str = "settb=1/1000,setpts=N*1000";
+    format!(
+        "[1:v]{BY_INDEX},split[e1][e2];\
+         [0:v]trim=end_frame={frames},format=yuv420p,{BY_INDEX},split[r1][r2];\
+         [e1][r1]ssim=stats_file={ssim_file}:shortest=1;[e2][r2]psnr=stats_file={psnr_file}:shortest=1"
+    )
+}
+
 // One clip at one CRF: encode it, then decode the source again from the same frame and compare.
 // Both passes seek accurately to the scene's first frame and take the same frame count, so they
 // cover exactly the frames the scene's CRF was decided for.
@@ -700,11 +718,7 @@ fn measure_clip(
     // The filter graph names its stats files relative to the working directory, which keeps paths
     // with `:` or `\` (both special inside a filter graph) out of it entirely.
     let (ssim_file, psnr_file) = (format!("{name}.ssim"), format!("{name}.psnr"));
-    let graph = format!(
-        "[1:v]setpts=PTS-STARTPTS,split[e1][e2];\
-         [0:v]trim=end_frame={frames},format=yuv420p,setpts=PTS-STARTPTS,split[r1][r2];\
-         [e1][r1]ssim=stats_file={ssim_file}:shortest=1;[e2][r2]psnr=stats_file={psnr_file}:shortest=1"
-    );
+    let graph = measurement_graph(frames, &ssim_file, &psnr_file);
     let mut measure = Command::new(ffmpeg);
     measure.current_dir(&request.scratch).args(["-v", "error", "-nostdin"]);
     if let Some(seek) = &seek {
@@ -877,6 +891,16 @@ mod tests {
         assert_eq!(stat_value(psnr, "psnr_avg"), Some(100.0));
         assert_eq!(stat_value("n:4 mse_avg:2.01 psnr_avg:45.10", "psnr_avg"), Some(45.1));
         assert_eq!(stat_value(ssim, "psnr_avg"), None);
+    }
+
+    // Frames are paired by their index in the clip, never by the timestamps the containers gave
+    // them: both sides of both comparisons are renumbered, and nothing is rebased from its PTS.
+    #[test]
+    fn verification_pairs_frames_by_index() {
+        let graph = measurement_graph(48, "a.ssim", "a.psnr");
+        assert_eq!(graph.matches("settb=1/1000,setpts=N*1000").count(), 2);
+        assert!(!graph.contains("STARTPTS"));
+        assert!(graph.contains("trim=end_frame=48") && graph.contains("stats_file=a.ssim") && graph.contains("stats_file=a.psnr"));
     }
 
     fn scene(start_frame: u64, frames: u64, crf: f32) -> SceneEntry {
