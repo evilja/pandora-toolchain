@@ -9,7 +9,7 @@ standard presets, 18 for `veryslow`, 25 for the low-bitrate one). A fixed CRF ov
 easy material (flat anime, static dialogue scenes) and can underspend on hard material (heavy
 grain, fast action, dark gradients). The goal here is to pick the CRF from the content.
 
-## Implementation: `caramel-scene-3`
+## Implementation: `caramel-scene-4`
 
 **Caramel Analysis** gives every scene its own CRF. It moves the preset's own CRF (the *anchor*) by
 a bounded offset. It does not choose an absolute CRF, so a deployment that never turns it on encodes
@@ -58,11 +58,13 @@ Decoding, encoding and verification are Pandora's job (`src/lib/mpeg/caramel.rs`
   CRF, and then by the smallest of the four less 1.5. A raise is scaled by confidence (frames
   measured, temporal coverage); a cut is not. The output-resolution prior is added, the total is
   bounded to −4…+4 and rounded to 0.5. A report carries every metric's vote and the scene's
-  features, so a wrong CRF shows which metric and which measurement caused it.
+  features, so a wrong CRF shows which metric and which measurement caused it. A source deeper than
+  8 bits (`SourceContext::bit_depth`) is read by a second set of four predictors over the same
+  features, fitted for frames that may carry the dither of being brought down to 8 bits.
 
 ### Calibration
 
-`caramel-scene-3` is fitted to brute-force encodes. The corpus is 48 clips from eight
+`caramel-scene-4` is fitted to brute-force encodes. The corpus is 48 clips from eight
 open-licensed 1080p sources (Morevna Project episodes 3 and 4 and Sita Sings the Blues for flat
 animation, Pepper & Carrot episodes 4 and 6 for painted animation, Sintel for CG, Tears of Steel
 and the Xiph derf sequences for live action), cut into 359 two-second scenes. Each was encoded with
@@ -89,6 +91,20 @@ What it found:
   end (0.983).
 - One 1080p frame costs 0.42 ms on one core of an Apple M4 (2400 fps), down from 1.86 ms when
   every frame was measured.
+- A 10-bit source reaches the decider as 8-bit frames, and ffmpeg dithers on the way down. Every
+  corpus clip was measured again as such a source (sub-code-value gradients added in 10 bits, then
+  the default conversion): noise reads σ 1.06 where a flat-animation clip has 0.01 and the finest
+  detail energy about three times what it is, while SI, TI, motion and the smooth share do not move. The 8-bit
+  predictors answer with 1.4 to 5 CRF more bits, depending on the metric: nothing is raised, a quarter of
+  the scenes are lowered and the encode is 3% larger than at the fixed anchor. Measured against
+  the 10-bit picture, encodes of dithered and of plainly rounded frames score the same at every
+  CRF (XPSNR within 0.3 dB, SSIM within 0.17 dB, on four kinds of content), so the dither is not
+  something to spend bits on. Predictors fitted to dithered frames alone get the bytes back but
+  lean on small differences in the dither itself, and are 4 to 20 CRF too low on a deep source that
+  carries none. Fitted to both readings of every scene they are 1.9 to 2.7 CRF off per metric on
+  an unseen source in either reading, the encode is 1.2–2.4% smaller than at the fixed anchor,
+  and a raised scene falls 0.11–0.38 dB below the target at the 95th percentile. Those are the
+  predictors a deep source gets.
 
 On a real release (a 24-minute 1080p TV anime episode from an 8 Mbps H.264 web source, anchor 21)
 the model keeps 93% of the frames at the anchor, lowers 4% and raises 2%. Cuts fell from 754 to
@@ -100,9 +116,15 @@ frames of a 23.976 fps source with their neighbours, and its figures for moving 
 The source reads noisier (σ 0.65) than any flat animation in the corpus (σ 0.01): a compressed web
 source carries the previous encoder's noise, and the corpus has pristine animation only.
 
-What it does not cover: every source was 1080p, 8-bit and clean; the encoder settings were the
-`standard` preset's only; there is no banding metric in the consensus, and grainy film and 10-bit sources are not
-in the corpus. Other output resolutions get a prior, not a fit. Use `--caramel-verify` /
+On a 10-bit release (a 24-minute 1080p episode from a 3.2 Mbps HEVC Blu-ray encode, anchor 21)
+`caramel-scene-3` raised nothing and lowered 13% of the frames, with the median scene reading
+noise σ 1.19 and fine detail 0.219 — the dither's figures, not the picture's. The deep predictors,
+given the features that report stored, raise 5% of the frames and lower 3%.
+
+What it does not cover: every source was 1080p and clean, and the 10-bit ones are the 8-bit ones
+with simulated depth; the encoder settings were the `standard` preset's only; there is no banding
+metric in the consensus — which matters most exactly where dither is, since dither is there to hide
+banding — and grainy film is not in the corpus. Other output resolutions get a prior, not a fit. Use `--caramel-verify` /
 `verify:true` on real releases to check it where the corpus does not reach — with `spread` it
 measures scenes at even steps through the video over a ladder of CRFs, in the model's own metrics; a report's `features`
 and `votes` per scene are what a refit needs. A refitted model gets a new `MODEL_VERSION`.
@@ -115,6 +137,9 @@ chroma, source bits per pixel) calibrated against the feature distribution of re
 against measured quality. `caramel-scene-2` compared frames through weighted prediction after the
 first full-episode report showed fades read as runs of cuts. Its cut test still looked at one pair
 alone: a 24-minute episode came out as 772 scenes, 220 of them exactly `min_scene_frames` long.
+`caramel-scene-3` replaced the table with predictors fitted to measured encodes and the cut test
+with one that looks at the pairs around a candidate. It read the dither of a 10-bit source as grain
+and detail, and gave such a release more bits throughout.
 
 ## Problem statement
 

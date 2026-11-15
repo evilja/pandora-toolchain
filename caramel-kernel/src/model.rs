@@ -24,14 +24,24 @@
 // raised scene 0.15 dB at the 95th percentile against the target and saves 1–7% of the bytes,
 // depending on the source, where an oracle would save a few points more.
 //
-// What it does not know: every fitted source is 1080p and 8-bit, and the encoder was x264 as
-// Pandora's `standard` preset runs it (preset fast, aq-mode 3, aq-strength 0.8). Other resolutions
-// get a small prior (`output-resolution`), not a fit.
+// A source deeper than 8 bits has its own predictors. The frames the decider is given are 8-bit, and
+// bringing a 10-bit picture down dithers it: every flat area arrives with a fine pattern that reads
+// as noise (sigma 1.06 where flat animation has 0.01) and as fine detail (about three times the
+// energy), and the predictors above answer it with 1.4 to 5 CRF more bits, depending on the metric. The pattern costs the
+// encode nothing that the metrics count — measured against the 10-bit picture, encodes of dithered
+// and of plainly rounded frames score the same at every CRF — so the right offsets are the ones the
+// same picture has in 8 bits. `DEEP_PREDICTORS` are fitted to those offsets from both readings of
+// every scene, clean and dithered, which leaves them trusting noise and fine detail only as far as
+// the two readings agree: a deep source's dither may be anywhere between none and all of it.
+//
+// What it does not know: every fitted source is 1080p, the deep sources are simulated from the
+// 8-bit ones, and the encoder was x264 as Pandora's `standard` preset runs it (preset fast,
+// aq-mode 3, aq-strength 0.8). Other resolutions get a small prior (`output-resolution`), not a fit.
 
 use crate::window::WindowFeatures;
 use serde::Serialize;
 
-pub const MODEL_VERSION: &str = "caramel-scene-3";
+pub const MODEL_VERSION: &str = "caramel-scene-4";
 
 // The furthest a scene's CRF may move from the anchor in either direction.
 const MAX_RAISE: f64 = 4.0;
@@ -106,6 +116,50 @@ const PREDICTORS: [Predictor; 4] = [
     },
 ];
 
+// The same eight inputs for frames brought down from a deeper source. Dither lifts the top of the
+// noise and fine-detail ranges a little.
+const DEEP_INPUT_RANGE: [(f64, f64); INPUTS] = [
+    (-1.386, 1.416),
+    (-5.809, 0.003),
+    (-1.386, 3.648),
+    (0.0, 1.0),
+    (-1.386, 4.167),
+    (-5.809, -0.063),
+    (-1.386, 4.981),
+    (-1.386, 4.499),
+];
+
+// Least squares over every scene read twice — as it is, and as a 10-bit source dithered down to 8
+// bits — against the one set of offsets, at the same anchors. Fine detail weighs about half of what
+// it does above and SSIM's reading of noise is all but gone; the share of smooth blocks carries what
+// they gave up.
+const DEEP_PREDICTORS: [Predictor; 4] = [
+    Predictor {
+        metric: "xpsnr",
+        intercept: -11.1556,
+        weights: [0.7599, -2.0333, -0.9224, 5.8412, 1.7263, -1.1685, 0.9566, 0.7769],
+        anchor: -0.0797,
+    },
+    Predictor {
+        metric: "xpsnr-low",
+        intercept: -10.0106,
+        weights: [0.6890, -1.8835, -1.0906, 6.5046, 2.0798, -0.9880, 0.6246, 0.3663],
+        anchor: -0.0885,
+    },
+    Predictor {
+        metric: "ssim",
+        intercept: -11.8885,
+        weights: [-0.3709, -1.5283, -1.7942, 12.1063, 2.5612, -0.3414, 0.5977, 0.0488],
+        anchor: -0.1107,
+    },
+    Predictor {
+        metric: "vmaf-low",
+        intercept: -7.3637,
+        weights: [1.1102, -1.7416, 4.5084, 3.7028, -0.5346, -1.2250, 0.2730, -0.9324],
+        anchor: 0.1499,
+    },
+];
+
 #[derive(Clone, Debug, Serialize)]
 pub struct SourceContext {
     pub width: u32,
@@ -116,6 +170,14 @@ pub struct SourceContext {
     // ffprobe codec name of the source, e.g. `h264`, `hevc`, `av1`.
     pub codec: Option<String>,
     pub bit_depth: u8,
+}
+
+impl SourceContext {
+    // Whether the frames the decider sees were brought down from a deeper picture. They are always
+    // 8-bit, whatever the encode writes.
+    pub fn is_deep(&self) -> bool {
+        self.bit_depth > 8
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -199,9 +261,9 @@ fn log_level(value: f64) -> f64 {
     (value.max(0.0) + 0.25).ln()
 }
 
-// The predictors' inputs for one window, in the order of `INPUT_RANGE`. A window with no frame pair
-// is read as a still: there is nothing to say it moves.
-fn inputs(window: &WindowFeatures) -> [f64; INPUTS] {
+// The predictors' inputs for one window, in the order of `INPUT_RANGE`, held inside `range`. A
+// window with no frame pair is read as a still: there is nothing to say it moves.
+fn inputs(window: &WindowFeatures, range: &[(f64, f64); INPUTS]) -> [f64; INPUTS] {
     let spatial = &window.spatial;
     let temporal = window.temporal.unwrap_or_default();
     let raw = [
@@ -216,17 +278,19 @@ fn inputs(window: &WindowFeatures) -> [f64; INPUTS] {
     ];
     let mut held = [0.0; INPUTS];
     for (index, value) in raw.into_iter().enumerate() {
-        let (low, high) = INPUT_RANGE[index];
+        let (low, high) = range[index];
         held[index] = if value.is_finite() { value.clamp(low, high) } else { low };
     }
     held
 }
 
-// Every metric's offset for a window at an anchor.
-pub fn votes(window: &WindowFeatures, anchor_crf: f64) -> Vec<MetricVote> {
-    let inputs = inputs(window);
+// Every metric's offset for a window at an anchor. `deep` says the frames came from a source deeper
+// than 8 bits, and so may carry its dither.
+pub fn votes(window: &WindowFeatures, anchor_crf: f64, deep: bool) -> Vec<MetricVote> {
+    let (range, predictors) = if deep { (&DEEP_INPUT_RANGE, &DEEP_PREDICTORS) } else { (&INPUT_RANGE, &PREDICTORS) };
+    let inputs = inputs(window, range);
     let anchor = anchor_crf.clamp(FITTED_ANCHORS.0, FITTED_ANCHORS.1) - REFERENCE_ANCHOR;
-    PREDICTORS
+    predictors
         .iter()
         .map(|predictor| MetricVote {
             metric: predictor.metric,
@@ -289,7 +353,7 @@ pub fn estimate_scene(window: &WindowFeatures, source: &SourceContext, encode: &
             contributions: Vec::new(),
         };
     }
-    let votes = votes(window, anchor);
+    let votes = votes(window, anchor, source.is_deep());
     let (agreed, binding) = consensus(&votes);
     let contributions =
         vec![Contribution { factor: "consensus", value: binding, delta: agreed }, resolution_contribution(source, encode)];
@@ -356,7 +420,15 @@ mod tests {
     }
 
     fn offsets(window: &WindowFeatures, anchor: f64) -> Vec<f64> {
-        votes(window, anchor).iter().map(|vote| vote.offset).collect()
+        votes(window, anchor, false).iter().map(|vote| vote.offset).collect()
+    }
+
+    fn deep_source() -> SourceContext {
+        SourceContext { codec: Some("hevc".to_string()), bit_depth: 10, ..source() }
+    }
+
+    fn deep_offsets(window: &WindowFeatures, anchor: f64) -> Vec<f64> {
+        votes(window, anchor, true).iter().map(|vote| vote.offset).collect()
     }
 
     fn close(got: &[f64], want: [f64; 4]) -> bool {
@@ -372,6 +444,67 @@ mod tests {
     const PAINTED: [f64; 8] = [0.0303, 0.6462, 34.05, 10.36, 2.943, 4.16, 0.0579, 0.1547];
     // A crowd of runners, live action (derf crowd_run).
     const CROWD: [f64; 8] = [2.0411, 0.0219, 93.8, 14.32, 6.712, 1.357, 0.2223, 0.25];
+
+    // The same four scenes as the kernel measures them when the clip is a 10-bit source brought down
+    // to 8 bits: noise near 1.06 and fine detail near 0.22 whatever the picture, the rest unmoved.
+    const FLAT_PAN_DITHERED: [f64; 8] = [1.0588, 0.817, 31.52, 27.79, 14.26, 89.7, 0.2312, 0.1794];
+    const CG_CLOSE_UP_DITHERED: [f64; 8] = [1.1481, 0.3861, 26.67, 3.68, 1.52, 1.356, 0.2088, 0.2185];
+    const PAINTED_DITHERED: [f64; 8] = [1.0625, 0.6459, 34.02, 10.36, 2.945, 4.308, 0.2232, 0.1553];
+    const CROWD_DITHERED: [f64; 8] = [2.2483, 0.0219, 93.8, 14.32, 6.711, 1.349, 0.2257, 0.25];
+
+    // Dither is not difficulty. Read by the 8-bit predictors the dithered pan loses its raise and
+    // every metric calls an ordinary painted shot hard, which the encodes say is 1 to 3 CRF easy. The
+    // deep predictors keep the pan raised, by less than its 8-bit reading because they have less to
+    // go on, and read the painted shot as its 8-bit self.
+    #[test]
+    fn a_deep_source_is_not_given_bits_for_its_dither() {
+        let encode = EncodeContext::anchored(19.0);
+        let pan = window(FLAT_PAN_DITHERED);
+        assert!(offsets(&pan, 19.0).iter().any(|offset| *offset < MARGIN), "{:?}", offsets(&pan, 19.0));
+        assert_eq!(estimate_scene(&pan, &source(), &encode).crf, 19.0);
+        assert!(close(&deep_offsets(&pan, 19.0), [4.67, 4.00, 4.46, 3.65]), "{:?}", deep_offsets(&pan, 19.0));
+        assert_eq!(estimate_scene(&pan, &deep_source(), &encode).crf, 21.0);
+
+        let painted = window(PAINTED_DITHERED);
+        assert!(close(&offsets(&painted, 19.0), [-1.65, -0.65, -2.64, -1.49]), "{:?}", offsets(&painted, 19.0));
+        assert!(close(&deep_offsets(&painted, 19.0), [1.48, 1.78, 2.74, -0.19]), "{:?}", deep_offsets(&painted, 19.0));
+        assert_eq!(estimate_scene(&painted, &deep_source(), &encode).crf, 19.0);
+
+        // What was hard in 8 bits is still hard, and what the metrics dispute is still disputed.
+        let close_up = window(CG_CLOSE_UP_DITHERED);
+        assert!(close(&deep_offsets(&close_up, 19.0), [-2.82, -2.39, -2.60, -2.82]), "{:?}", deep_offsets(&close_up, 19.0));
+        assert_eq!(estimate_scene(&close_up, &deep_source(), &encode).crf, 18.0);
+        let crowd = window(CROWD_DITHERED);
+        assert!(close(&deep_offsets(&crowd, 19.0), [-2.68, -2.68, -5.81, 1.97]), "{:?}", deep_offsets(&crowd, 19.0));
+        assert_eq!(estimate_scene(&crowd, &deep_source(), &encode).crf, 19.0);
+    }
+
+    // A deep source need not carry dither at all — 8-bit content in a 10-bit container, or flat
+    // areas that sit on whole 8-bit values. The deep predictors read the undithered scenes within a
+    // CRF or so of what they read dithered, and the medians of the corpus's kinds of source stay at
+    // the anchor in either reading.
+    #[test]
+    fn the_deep_predictors_hold_with_and_without_dither() {
+        for (clean, dithered) in [(FLAT_PAN, FLAT_PAN_DITHERED), (CG_CLOSE_UP, CG_CLOSE_UP_DITHERED), (PAINTED, PAINTED_DITHERED), (CROWD, CROWD_DITHERED)] {
+            let (a, b) = (deep_offsets(&window(clean), 19.0), deep_offsets(&window(dithered), 19.0));
+            assert!(a.iter().zip(&b).all(|(a, b)| (a - b).abs() < 1.9), "{a:?} {b:?}");
+        }
+        for typical in [
+            [0.378, 0.471, 31.3, 6.94, 2.57, 4.46, 0.120, 0.174],
+            [0.0139, 0.633, 51.4, 8.63, 2.65, 2.96, 0.0502, 0.097],
+            [0.199, 0.311, 34.0, 8.79, 4.04, 2.27, 0.0769, 0.211],
+            [0.0824, 0.555, 39.1, 10.5, 3.57, 5.21, 0.0694, 0.161],
+            [1.1061, 0.4713, 31.27, 6.943, 2.567, 4.46, 0.2141, 0.1748],
+            [1.0614, 0.7064, 39.92, 6.329, 2.465, 5.768, 0.226, 0.1173],
+            [1.0533, 0.3412, 31.42, 8.398, 3.507, 2.0, 0.2201, 0.1863],
+            [1.0621, 0.5811, 39.62, 11.85, 3.941, 6.783, 0.2232, 0.1577],
+        ] {
+            for anchor in [15.0, 19.0, 21.0, 23.0] {
+                let estimate = estimate_scene(&window(typical), &deep_source(), &EncodeContext::anchored(anchor));
+                assert_eq!(estimate.crf, anchor, "{estimate:?}");
+            }
+        }
+    }
 
     #[test]
     fn an_unmeasured_scene_keeps_the_anchor() {
