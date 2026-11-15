@@ -93,9 +93,10 @@ What it found:
 On a real release (a 24-minute 1080p TV anime episode from an 8 Mbps H.264 web source, anchor 21)
 the model keeps 93% of the frames at the anchor, lowers 4% and raises 2%. Cuts fell from 754 to
 343 and scenes of exactly `min_scene_frames` from 220 to 10; the analysis ran at 452 fps where
-`caramel-scene-2` ran at 276. The verified lowered scenes were below typical quality at the anchor
-(SSIM 0.980 and 0.989) and the raised ones were stills that lose nothing at CRF 25 and cost almost
-nothing at any CRF, so on this release the model protects hard scenes and saves no bytes. The
+`caramel-scene-2` ran at 276. Of the three lowered scenes that were verified, two were below
+typical quality at the anchor (SSIM 0.980 and 0.989) and one was not by SSIM (0.993). The three
+raised ones were stills that lose nothing at CRF 25 and cost almost nothing at any CRF. So on this
+release the model protects hard scenes and saves no bytes. The
 source reads noisier (σ 0.65) than any flat animation in the corpus (σ 0.01): a compressed web
 source carries the previous encoder's noise, and the corpus has pristine animation only.
 
