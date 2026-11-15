@@ -177,7 +177,10 @@ What it does, once the queue has been empty for five minutes and no encode holds
 `DB/work/.foreground-encode`:
 
 1. If the dataset has grown by `caramel_research_retrain` scenes since the last training, run
-   `pnmpeg --caramel-train --train-install`. The gate above decides whether anything changes.
+   `pnmpeg --caramel-train --train-install --preset <caramel_research_preset>`. The gate above
+   decides whether anything changes. Naming the preset trains on the scenes encoded with its
+   settings and no others, so a dataset copied in from a machine whose preset differs cannot
+   outvote this machine's own measurements.
 2. Otherwise take the next source and run `pnmpeg --caramel-lab` on it into
    `DB/caramel/dataset/<slug>.jsonl`. Sources, in order: files under `DB/caramel/sources/` (any
    depth to four; `.mkv`, `.mp4`, `.m2ts`, `.webm` of 37 MB or more), then

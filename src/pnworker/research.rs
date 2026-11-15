@@ -380,13 +380,16 @@ async fn measure(candidate: &Candidate, config: &ResearchConfig, pnmpeg: &str, s
     true
 }
 
-// Fits a model to the dataset and installs it if it may replace the one in use.
-async fn retrain(pnmpeg: &str, scenes: usize, state: &mut ResearchState) {
+// Fits a model to the dataset and installs it if it may replace the one in use. It is trained for
+// the preset the worker measures with: scenes that were encoded with other settings — a dataset
+// copied from another machine, or one from before the preset was edited — are left out, however
+// many of them there are.
+async fn retrain(pnmpeg: &str, preset: &str, scenes: usize, state: &mut ResearchState) {
     save_state(state, "training");
     let _ = std::fs::create_dir_all(LOG_DIRECTORY);
     let cancel_file = Path::new(LOG_DIRECTORY).join("train.cancel");
     let mut command = background_command(pnmpeg);
-    command.args(["--caramel-train", "--train-install", "-i", DATASET_DIRECTORY, "-o", "-"]);
+    command.args(["--caramel-train", "--train-install", "--preset", preset, "-i", DATASET_DIRECTORY, "-o", "-"]);
     command.arg("--logfile").arg(Path::new(LOG_DIRECTORY).join("train.log"));
     match run_while_idle(command, &cancel_file, Some(Duration::from_secs(1800))).await {
         // Training is seconds to minutes and has no cancel file to read: a stop is a kill, and it
@@ -514,7 +517,7 @@ async fn work(config: &ResearchConfig, env: &HashMap<String, String>) -> bool {
     dataset_series.sort();
     dataset_series.dedup();
     if dataset.len() >= state.trained_scenes + config.retrain {
-        retrain(&pnmpeg, dataset.len(), &mut state).await;
+        retrain(&pnmpeg, &config.preset, dataset.len(), &mut state).await;
         save_state(&mut state, "idle");
         return true;
     }
