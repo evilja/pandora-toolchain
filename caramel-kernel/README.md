@@ -119,14 +119,29 @@ predictors of `caramel-scene-5`, given the features that report stored, are 0.3 
 (2.7 off per scene) and 5.0 below on SSIM. They raise 12 of the 48 — stills and fast action — by
 0.5 to 2 CRF; eleven of those stay within 0.07 dB of the target on XPSNR and its worst frames, one
 falls 0.88 dB below, and the 48 scenes come out 2.1% smaller. Over the whole episode they raise
-23% of the frames and lower 1%. The episode is 851 scenes; `caramel-scene-2` cut it into 772 with
+23% of the frames and lower 1%. Deployed, the sixteen scenes it moved furthest were measured the
+same way: the seven it lowered were all short of the target at the anchor, by 0.2 to 5.6 CRF on
+XPSNR, and of the nine it raised seven stay above the target, one is 0.13 dB short on its worst
+frames, and one — raised 3 CRF — ends 1.7 dB below it there, having been 0.4 dB below at the
+anchor. That is the model's error showing where it is largest; nothing in the eight features
+tells that scene from the easy ones beside it. The episode is 851 scenes; `caramel-scene-2` cut it into 772 with
 220 of them exactly `min_scene_frames` long, where there are now 10, and analysed it at 276 fps
 where the deployment now runs 420.
 
 On a 10-bit release (a 24-minute 1080p episode from a 3.2 Mbps HEVC Blu-ray encode, anchor 21)
 `caramel-scene-3` raised nothing and lowered 13% of the frames, with the median scene reading
-noise σ 1.19 and fine detail 0.219 — the dither's figures, not the picture's. From the features
-that report stored, `caramel-scene-5` raises 5% of the frames and lowers 3%.
+noise σ 1.19 and fine detail 0.219 — the dither's figures, not the picture's. `caramel-scene-5`
+raises 5% of the frames and lowers 3%, and 48 scenes at even steps, encoded at CRF 15 to 27 and
+compared with the 10-bit source, say that is right: the release is typical content (41.7 dB of
+XPSNR at the anchor where the target is 41.1), the XPSNR vote is 0.2 CRF below what the encodes
+allow on average and 2.0 off per scene, the worst-frames vote the same, and the SSIM vote 2.8
+below. None of the 48 is raised; two are lowered, both short of the target at the anchor by 2 to
+3.5 CRF. The dithered half of the fit is simulated, and this is the check that the simulation
+reads like a real 10-bit source.
+
+Adding one release's measured scenes to the fit does not improve the other's (2.2 against 2.2 CRF
+on XPSNR for the web release, 2.0 against 1.9 for the 10-bit one): at about two CRF per scene the
+eight features are the limit, not the corpus.
 
 Earlier figures from verification are not quoted: until it paired frames by index it compared some
 frames of a 23.976 fps source with their neighbours, and until it compared a 10-bit source at 10
