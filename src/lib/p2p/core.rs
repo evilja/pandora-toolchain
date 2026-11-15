@@ -13,6 +13,7 @@ use crate::{lib_pn_data, lib_pn_emit, lib_pn_schema};
 
 pub use crate::lib::torrent::{magnet_info_hash, torrent_info_hash};
 
+pub(crate) const PROXY_TOO_SLOW_OPCODE: &str = "7";
 const MAX_TORRENT_FILE_SIZE: u64 = 64 * 1024 * 1024;
 
 pub struct P2p {
@@ -74,6 +75,22 @@ impl P2p {
         }
     }
 
+    fn report_slow_proxy(&self, proto: &Protocol, neg: &str) {
+        if let Some(log) = &self.log {
+            crate::lib::sync::lock(log).line("proxy download speed stayed below 5 MiB/s for over 30 seconds; switching to direct (verified pieces retained)");
+        }
+        println!(
+            "{}",
+            lib_pn_emit!(
+                protocol = proto,
+                negkey = neg,
+                schema = [leaf, leaf],
+                data = [PROXY_TOO_SLOW_OPCODE, "PROXY_TOO_SLOW"]
+            )
+            .unwrap()
+        );
+    }
+
     pub async fn probe_torrent(
         &self,
         torrent_path: &str,
@@ -122,6 +139,7 @@ impl P2p {
             .client
             .download(&source, save_path, options, |event| match event {
                 DownloadEvent::ProxyFallback => self.log_proxy_fallback(),
+                DownloadEvent::ProxyTooSlow => self.report_slow_proxy(proto, &neg),
                 DownloadEvent::FileSelected { path, .. } => {
                     let name = portable_path(&path);
                     println!(
@@ -219,6 +237,7 @@ impl P2p {
             .client
             .download(&source, save_path, options, |event| match event {
                 DownloadEvent::ProxyFallback => self.log_proxy_fallback(),
+                DownloadEvent::ProxyTooSlow => self.report_slow_proxy(proto, &neg),
                 DownloadEvent::Progress {
                     downloaded_bytes,
                     total_bytes,

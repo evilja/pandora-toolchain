@@ -155,6 +155,11 @@ impl PieceScheduler {
     pub(crate) fn required_count(&self) -> usize {
         self.required_count
     }
+
+    // Call after joining the old peer tasks so the new route can reclaim interrupted pieces.
+    pub(crate) fn clear_in_flight(&self) {
+        self.state.lock().unwrap().in_flight.fill(0);
+    }
 }
 
 pub(crate) async fn fetch_metadata(
@@ -807,6 +812,23 @@ mod tests {
         scheduler.complete(first);
         let duplicate = scheduler.claim(&available).unwrap();
         assert!(duplicate == second || duplicate == third);
+    }
+
+    #[test]
+    fn switching_routes_reclaims_interrupted_pieces_and_keeps_finished_ones() {
+        let scheduler = PieceScheduler::new(vec![true; 4]);
+        let available = [true; 4];
+        assert_eq!(scheduler.claim(&available), Some(0));
+        assert_eq!(scheduler.claim(&available), Some(1));
+        assert_eq!(scheduler.claim(&available), Some(2));
+        scheduler.complete(0);
+        assert_eq!(scheduler.claim(&available), Some(3));
+
+        scheduler.clear_in_flight();
+
+        assert_eq!(scheduler.claim(&available), Some(1));
+        assert_eq!(scheduler.claim(&available), Some(2));
+        assert_eq!(scheduler.claim(&available), Some(3));
     }
 
     #[test]

@@ -1,12 +1,16 @@
-// Worker-owned proxy health: each torrent subprocess keeps the routing it started with.
+// Worker-owned health and throughput decisions for new torrent subprocesses.
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use crate::lib::sync::lock;
 use crate::lib::torrent::ProxyConfig;
 use tokio::process::Command;
 use tokio::task::JoinHandle;
 
 static USE_PROXY: AtomicBool = AtomicBool::new(false);
+static BYPASS_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
+const BYPASS_DURATION: Duration = Duration::from_secs(30 * 60);
 const DEFAULT_URL: &str = "https://nyaa.si/";
 const PROXY_KEYS: [&str; 3] = ["PNP2P_PROXY", "ALL_PROXY", "all_proxy"];
 
@@ -24,6 +28,7 @@ impl Drop for Monitor {
 // proxy is bypassed, and a failed check stays bypassed until a later check succeeds.
 pub(crate) async fn start() -> Monitor {
     USE_PROXY.store(false, Ordering::Relaxed);
+    *lock(&BYPASS_UNTIL) = None;
     let proxy = match ProxyConfig::from_env() {
         Ok(Some(proxy)) => proxy,
         Ok(None) => return Monitor(None),
@@ -80,27 +85,40 @@ fn publish(healthy: bool, initial: bool) {
     let previous = USE_PROXY.swap(healthy, Ordering::Relaxed);
     if initial || previous != healthy {
         eprintln!(
-            "[Pandora proxy] {}; new torrent tools will connect {}",
+            "[Pandora proxy] health check {}",
             if healthy {
-                "health check passed"
+                "passed"
             } else {
-                "health check failed"
-            },
-            if healthy {
-                "through the proxy"
-            } else {
-                "directly until a health check passes"
+                "failed; new torrent tools will connect directly"
             }
         );
     }
 }
 
-pub(crate) fn apply_to_command(command: &mut Command) {
-    apply_routing(command, USE_PROXY.load(Ordering::Relaxed));
+pub(crate) fn report_low_speed() {
+    let mut bypass_until = lock(&BYPASS_UNTIL);
+    let now = Instant::now();
+    if !bypass_active(*bypass_until, now) {
+        *bypass_until = Some(now + BYPASS_DURATION);
+        eprintln!("[Pandora proxy] sustained low download speed; new torrent tools will connect directly for 30 minutes");
+    }
 }
 
-fn apply_routing(command: &mut Command, healthy: bool) {
-    if !healthy {
+pub(crate) fn apply_to_command(command: &mut Command) {
+    apply_routing(
+        command,
+        USE_PROXY.load(Ordering::Relaxed),
+        *lock(&BYPASS_UNTIL),
+        Instant::now(),
+    );
+}
+
+fn bypass_active(bypass_until: Option<Instant>, now: Instant) -> bool {
+    bypass_until.is_some_and(|until| now < until)
+}
+
+fn apply_routing(command: &mut Command, healthy: bool, bypass_until: Option<Instant>, now: Instant) {
+    if !healthy || bypass_active(bypass_until, now) {
         // Clearing only PNP2P_PROXY would let ProxyConfig fall back to ALL_PROXY.
         for key in PROXY_KEYS {
             command.env_remove(key);
@@ -112,6 +130,26 @@ fn apply_routing(command: &mut Command, healthy: bool) {
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn cooldown_overrides_healthy_proxy_until_expiry() {
+        let now = Instant::now();
+        let until = now + BYPASS_DURATION;
+        for (healthy, time, bypassed) in [
+            (true, until - Duration::from_secs(1), true),
+            (true, until, false),
+            (false, until, true),
+        ] {
+            let mut command = Command::new("pnp2p");
+            apply_routing(&mut command, healthy, Some(until), time);
+            for key in PROXY_KEYS {
+                assert_eq!(
+                    command.as_std().get_envs().any(|(name, value)| name == key && value.is_none()),
+                    bypassed
+                );
+            }
+        }
+    }
 
     #[tokio::test]
     async fn health_follows_proxy_failure_and_recovery_without_direct_fallback() {
@@ -146,7 +184,7 @@ mod tests {
         for healthy in [true, false, true] {
             assert_eq!(probe(&client, "http://health.invalid/").await, healthy);
             let mut command = Command::new("pnp2p");
-            apply_routing(&mut command, healthy);
+            apply_routing(&mut command, healthy, None, Instant::now());
             let removed: Vec<_> = command
                 .as_std()
                 .get_envs()

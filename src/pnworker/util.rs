@@ -1,3 +1,4 @@
+use crate::lib::p2p::core::PROXY_TOO_SLOW_OPCODE;
 use crate::lib::protocol::core::{Protocol, TypeC};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -230,6 +231,12 @@ where
                 negotiated = true;
             }
         } else if let Ok(data) = proto.extract_data(&line) {
+            if torrent
+                && data.get(0).and_then(TypeC::as_str) == Some(PROXY_TOO_SLOW_OPCODE)
+            {
+                crate::pnworker::proxy_health::report_low_speed();
+                continue;
+            }
             if let Some(result) = on_line(&data) {
                 child.kill().await.ok();
                 return result;

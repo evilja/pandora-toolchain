@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use tokio::sync::{Semaphore, mpsc, watch};
 use tokio::task::{JoinHandle, JoinSet};
-use tokio::time::sleep;
+use tokio::time::{Instant, sleep, sleep_until};
 
 use super::error::{Result, TorrentError};
 use super::metainfo::{Magnet, Metainfo, TorrentFile};
@@ -22,6 +22,54 @@ const DEFAULT_PIPELINE: usize = 32;
 const DEFAULT_CANDIDATES: usize = 256;
 const DEFAULT_TRACKER_ROUNDS: usize = 3;
 const MAX_TORRENT_FILE_SIZE: usize = 64 * 1024 * 1024;
+const SPEED_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
+const LOW_SPEED_DURATION: Duration = Duration::from_secs(30);
+const MIN_PROXY_BYTES_PER_SECOND: f64 = (5 * 1024 * 1024) as f64;
+
+struct DownloadSpeed {
+    last_sample: Instant,
+    last_bytes: u64,
+    slow_since: Option<Instant>,
+}
+
+impl DownloadSpeed {
+    fn new(now: Instant) -> Self {
+        Self {
+            last_sample: now,
+            last_bytes: 0,
+            slow_since: None,
+        }
+    }
+
+    fn sample(&mut self, now: Instant, downloaded_bytes: u64) {
+        let elapsed = now - self.last_sample;
+        let bytes = downloaded_bytes - self.last_bytes;
+        if (bytes as f64) < MIN_PROXY_BYTES_PER_SECOND * elapsed.as_secs_f64() {
+            self.slow_since.get_or_insert(self.last_sample);
+        } else {
+            self.slow_since = None;
+        }
+        self.last_sample = now;
+        self.last_bytes = downloaded_bytes;
+    }
+
+    fn is_slow(&self) -> bool {
+        self.slow_since
+            .is_some_and(|start| self.last_sample - start > LOW_SPEED_DURATION)
+    }
+}
+
+// Keep sampling even when no pieces arrive. The caller drops this future before changing the
+// byte count, and the last completed sample survives when the caller starts waiting again.
+async fn wait_for_low_speed(speed: &mut Option<DownloadSpeed>, downloaded_bytes: u64) {
+    let Some(speed) = speed else {
+        return std::future::pending().await;
+    };
+    while !speed.is_slow() {
+        sleep_until(speed.last_sample + SPEED_SAMPLE_INTERVAL).await;
+        speed.sample(Instant::now(), downloaded_bytes);
+    }
+}
 
 fn retryable_route_error(error: &TorrentError) -> bool {
     matches!(
@@ -122,6 +170,8 @@ pub struct DownloadOptions {
 pub enum DownloadEvent {
     // The proxy route exhausted its network attempts; this session now connects directly.
     ProxyFallback,
+    // Sustained low throughput forced this session onto the direct route.
+    ProxyTooSlow,
     Metadata {
         name: String,
         files: Vec<TorrentFile>,
@@ -515,6 +565,11 @@ impl TorrentClient {
         let mut written_pieces = 0usize;
         let mut downloaded_bytes = 0u64;
         let mut written = HashSet::new();
+        let mut speed = route
+            .config
+            .proxy
+            .as_ref()
+            .map(|_| DownloadSpeed::new(Instant::now()));
         for file in files.iter().filter(|file| file.done) {
             event(DownloadEvent::FileComplete {
                 index: file.index,
@@ -527,6 +582,16 @@ impl TorrentClient {
             if *cancel.borrow() {
                 tasks.abort_all();
                 return Err(TorrentError::Cancelled);
+            }
+            if speed.as_ref().is_some_and(DownloadSpeed::is_slow) {
+                route = route.direct()?;
+                event(DownloadEvent::ProxyTooSlow);
+                tasks.shutdown().await;
+                scheduler.clear_in_flight();
+                speed = None;
+                tracker_round = 0;
+                tried.clear();
+                candidate_errors.clear();
             }
             if tasks.is_empty() {
                 while let Ok(piece) = piece_receiver.try_recv() {
@@ -550,6 +615,7 @@ impl TorrentClient {
                     if route.config.proxy.is_some() {
                         route = route.direct()?;
                         event(DownloadEvent::ProxyFallback);
+                        speed = None;
                         tracker_round = 0;
                         tried.clear();
                         candidate_errors.clear();
@@ -561,22 +627,28 @@ impl TorrentClient {
                         describe_candidate_errors(&candidate_errors),
                     )));
                 }
-                if tracker_round > 0 {
-                    sleep(Duration::from_secs(
-                        2u64.saturating_pow(tracker_round as u32).min(30),
-                    ))
-                    .await;
-                }
+                let announce = async {
+                    if tracker_round > 0 {
+                        sleep(Duration::from_secs(
+                            2u64.saturating_pow(tracker_round as u32).min(30),
+                        ))
+                        .await;
+                    }
+                    route
+                        .trackers
+                        .announce_all(
+                            &metainfo.trackers,
+                            metainfo.info_hash,
+                            metainfo.selected_length(selected.as_ref()),
+                        )
+                        .await
+                };
+                let peers = tokio::select! {
+                    peers = announce => peers,
+                    () = wait_for_low_speed(&mut speed, downloaded_bytes) => continue,
+                };
                 tracker_round += 1;
-                match route
-                    .trackers
-                    .announce_all(
-                        &metainfo.trackers,
-                        metainfo.info_hash,
-                        metainfo.selected_length(selected.as_ref()),
-                    )
-                    .await
-                {
+                match peers {
                     Ok(peers) => spawn_peer_tasks(
                         &mut tasks,
                         peers,
@@ -601,6 +673,7 @@ impl TorrentClient {
                     if route.config.proxy.is_some() {
                         route = route.direct()?;
                         event(DownloadEvent::ProxyFallback);
+                        speed = None;
                         tracker_round = 0;
                         tried.clear();
                         candidate_errors.clear();
@@ -626,6 +699,7 @@ impl TorrentClient {
             }
 
             tokio::select! {
+                () = wait_for_low_speed(&mut speed, downloaded_bytes) => {}
                 piece = piece_receiver.recv() => {
                     let Some(piece) = piece else {
                         return Err(TorrentError::peer("all piece workers stopped unexpectedly"));
@@ -1201,6 +1275,26 @@ mod tests {
         tracker_task.await.unwrap();
         peer_task.await.unwrap();
         tokio::fs::remove_dir_all(destination).await.unwrap();
+    }
+
+    #[test]
+    fn proxy_speed_requires_more_than_thirty_continuous_slow_seconds() {
+        let start = Instant::now();
+        let mut speed = DownloadSpeed::new(start);
+        for seconds in 1..=30 {
+            speed.sample(start + Duration::from_secs(seconds), 0);
+            assert!(!speed.is_slow());
+        }
+
+        let threshold = MIN_PROXY_BYTES_PER_SECOND as u64;
+        speed.sample(start + Duration::from_secs(31), threshold);
+        assert!(speed.slow_since.is_none());
+        for seconds in 32..=61 {
+            speed.sample(start + Duration::from_secs(seconds), threshold);
+            assert!(!speed.is_slow());
+        }
+        speed.sample(start + Duration::from_secs(62), threshold);
+        assert!(speed.is_slow());
     }
 
     #[test]
