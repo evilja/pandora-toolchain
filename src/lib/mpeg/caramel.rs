@@ -13,7 +13,7 @@
 
 use crate::lib::bin::resolve_runtime_binary;
 use caramel_kernel::{
-    Contribution, EncodeContext, Frame, MODEL_VERSION, MetricVote, Plane, SceneConfig, SceneDecider, SceneDecision,
+    Contribution, EncodeContext, Frame, MetricVote, Plane, SceneConfig, SceneDecider, SceneDecision,
     SceneStart, SourceContext, TemporalFeatures, WindowFeatures,
 };
 use serde::Serialize;
@@ -185,7 +185,7 @@ impl CrfDistribution {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct CaramelReport {
-    pub model: &'static str,
+    pub model: String,
     pub input: String,
     pub source: SourceContext,
     pub encode: EncodeContext,
@@ -312,7 +312,7 @@ struct SegmentResult {
 
 // The accurate-seek target that makes `frame` the first frame decoded: half a frame early, so a
 // timestamp rounded either way still lands on it and not on its neighbour.
-fn seek_seconds(frame: u64, fps: f64) -> Option<String> {
+pub(crate) fn seek_seconds(frame: u64, fps: f64) -> Option<String> {
     (frame > 0).then(|| format!("{:.6}", (frame as f64 - 0.5) / fps))
 }
 
@@ -478,7 +478,7 @@ pub fn run_scene_analysis(request: &SceneRequest) -> Result<CaramelReport, Strin
     let frames = scenes.iter().map(|scene| scene.frames).sum();
     let anchor = request.encode.anchor_crf;
     Ok(CaramelReport {
-        model: MODEL_VERSION,
+        model: caramel_kernel::model_version(),
         input: request.input.display().to_string(),
         source,
         encode: request.encode,
@@ -506,6 +506,7 @@ pub fn scene_crf(source: &SourceContext, encode: &EncodeContext, scenes: SceneCo
         source_bitrate: source.video_bitrate,
         source_codec: source.codec.clone(),
         source_bit_depth: source.bit_depth,
+        model: caramel_kernel::curve::active().map(|model| model.version.clone()),
     }
 }
 
@@ -519,7 +520,7 @@ fn stat_value(line: &str, key: &str) -> Option<f64> {
     token.parse::<f64>().ok().map(|value| value.min(100.0))
 }
 
-fn stats_column(path: &Path, key: &str) -> Vec<f64> {
+pub(crate) fn stats_column(path: &Path, key: &str) -> Vec<f64> {
     std::fs::read_to_string(path)
         .unwrap_or_default()
         .lines()
@@ -527,7 +528,7 @@ fn stats_column(path: &Path, key: &str) -> Vec<f64> {
         .collect()
 }
 
-fn run_quiet(command: &mut Command, what: &str) -> Result<(), String> {
+pub(crate) fn run_quiet(command: &mut Command, what: &str) -> Result<(), String> {
     let output = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -760,7 +761,7 @@ fn measurement_graph(frames: u64, deep: bool, ssim_file: &str, psnr_file: &str, 
 // One frame's XPSNR out of a line of the `xpsnr` filter's stats file (`n: 1  XPSNR y: 46.2
 // XPSNR u: 53.7  XPSNR v: 52.2`): the three planes' errors weighted 4:1:1, as the ground truth
 // the model is fitted to weighted them. The file's closing average line is not a frame.
-fn xpsnr_frame(line: &str) -> Option<f64> {
+pub(crate) fn xpsnr_frame(line: &str) -> Option<f64> {
     if !line.trim_start().starts_with("n:") {
         return None;
     }
@@ -775,7 +776,7 @@ fn xpsnr_frame(line: &str) -> Option<f64> {
 
 // Whether this ffmpeg has a filter. `-h filter=<name>` describes one it has under `Filter <name>`
 // and says `Unknown filter` otherwise.
-fn has_filter(ffmpeg: &Path, name: &str) -> bool {
+pub(crate) fn has_filter(ffmpeg: &Path, name: &str) -> bool {
     Command::new(ffmpeg)
         .args(["-hide_banner", "-v", "error", "-h", &format!("filter={name}")])
         .stdin(Stdio::null())
@@ -784,7 +785,7 @@ fn has_filter(ffmpeg: &Path, name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn ffmpeg_version(ffmpeg: &Path) -> String {
+pub(crate) fn ffmpeg_version(ffmpeg: &Path) -> String {
     Command::new(ffmpeg)
         .arg("-version")
         .stdin(Stdio::null())
@@ -800,7 +801,7 @@ fn ffmpeg_version(ffmpeg: &Path) -> String {
 // minute for a clip from an episode's first minute and seven minutes for twelve clips, where the
 // same twelve take four seconds once the reading is bounded. Two frames more than the clip, so
 // that rounding cannot take a frame the comparison needs.
-fn read_limit_seconds(frames: u64, fps: f64) -> String {
+pub(crate) fn read_limit_seconds(frames: u64, fps: f64) -> String {
     format!("{:.6}", (frames + 2) as f64 / fps)
 }
 

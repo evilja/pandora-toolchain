@@ -9,9 +9,40 @@
 // the scene's length.
 
 use crate::y4m;
+use caramel_kernel::curve::{self, Model};
 use caramel_kernel::{EncodeContext, Frame, Plane, SceneConfig, SceneDecider, SourceContext};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+// Where every model a machine has installed is kept, one file per version, relative to the
+// process. An encode names the model it decides with, and chunks started before a retrained model
+// was installed are finished with the one they were started with.
+pub const MODEL_DIRECTORY: &str = "DB/caramel/models";
+
+// A version is a file name and a `key=value` value: letters, digits, dots and dashes.
+pub fn valid_version(version: &str) -> bool {
+    !version.is_empty() && version.len() <= 96 && !version.starts_with('.') && version.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+}
+
+pub fn model_file(version: &str) -> PathBuf {
+    Path::new(MODEL_DIRECTORY).join(format!("{version}.model"))
+}
+
+// The model of that name: the one this process has active, the one built in, or the installed
+// file. None when there is no such model here.
+pub fn load_model(version: &str) -> Option<Arc<Model>> {
+    if !valid_version(version) {
+        return None;
+    }
+    curve::active()
+        .filter(|model| model.version == version)
+        .or_else(|| curve::builtin().filter(|model| model.version == version))
+        .or_else(|| {
+            let model = Model::from_text(&std::fs::read_to_string(model_file(version)).ok()?).ok()?;
+            (model.version == version).then(|| Arc::new(model))
+        })
+}
 
 #[derive(Clone, Debug)]
 pub struct SceneCrf {
@@ -24,6 +55,8 @@ pub struct SceneCrf {
     pub source_bitrate: Option<f64>,
     pub source_codec: Option<String>,
     pub source_bit_depth: u8,
+    // The version of the network scenes are decided with; None for the fitted predictors.
+    pub model: Option<String>,
 }
 
 impl Default for SceneCrf {
@@ -35,6 +68,7 @@ impl Default for SceneCrf {
             source_bitrate: None,
             source_codec: None,
             source_bit_depth: 8,
+            model: curve::active().map(|model| model.version.clone()),
         }
     }
 }
@@ -64,13 +98,17 @@ impl SceneCrf {
         if let Some(codec) = self.source_codec.as_deref().filter(|codec| codec.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')) {
             pairs.push(format!("codec={codec}"));
         }
+        if let Some(model) = self.model.as_deref().filter(|model| valid_version(model)) {
+            pairs.push(format!("model={model}"));
+        }
         pairs.join(":")
     }
 
     // The inverse of `to_arg`. Unknown keys are refused rather than skipped: a chunk encoder that
     // half-understood its instructions would decide scenes unlike its siblings.
     pub fn from_arg(text: &str) -> Result<Self, String> {
-        let mut value = Self::default();
+        // Settings that name no model were written for the fitted predictors.
+        let mut value = Self { model: None, ..Self::default() };
         for pair in text.trim().split(':').filter(|pair| !pair.is_empty()) {
             let (key, raw) = pair.split_once('=').ok_or_else(|| format!("`{pair}` is not key=value"))?;
             let number = || raw.parse::<u64>().map_err(|_| format!("`{pair}` is not a number"));
@@ -83,6 +121,7 @@ impl SceneCrf {
                 "height" => value.output_height = Some(number()? as u32),
                 "bitrate" => value.source_bitrate = Some(raw.parse().map_err(|_| format!("`{pair}` is not a number"))?),
                 "codec" => value.source_codec = Some(raw.to_string()),
+                "model" if valid_version(raw) => value.model = Some(raw.to_string()),
                 _ => return Err(format!("unknown caramel setting `{key}`")),
             }
         }
@@ -142,7 +181,7 @@ impl SceneSchedule {
         let fps = if fps_den == 0 { 0.0 } else { fps_num as f64 / fps_den as f64 };
         let (source, encode) = caramel.contexts(width, height, fps, anchor);
         Self {
-            decider: Some(SceneDecider::new(caramel.scenes, source, encode)),
+            decider: Some(SceneDecider::new(caramel.scenes, source, encode).with_model(caramel.model.as_deref().and_then(load_model))),
             pending: VecDeque::new(),
             upcoming: VecDeque::new(),
             current: anchor,
@@ -342,12 +381,20 @@ mod tests {
             source_bitrate: Some(4_500_000.5),
             source_codec: Some("hevc".into()),
             source_bit_depth: 10,
+            model: Some("caramel-neural-1.900-a1b2c3".into()),
         };
         let parsed = SceneCrf::from_arg(&settings.to_arg()).unwrap();
         assert_eq!(parsed.to_arg(), settings.to_arg());
         assert_eq!((parsed.source_bitrate, parsed.scenes), (settings.source_bitrate, settings.scenes));
         assert_eq!(SceneCrf::from_arg(&SceneCrf::default().to_arg()).unwrap().to_arg(), SceneCrf::default().to_arg());
         assert!(SceneCrf::from_arg("depth=8:mystery=1").is_err());
+        // The model is named, and a name that could not be a file's is refused. Settings that name
+        // none are the fitted predictors', whatever this process has active.
+        assert_eq!(parsed.model.as_deref(), Some("caramel-neural-1.900-a1b2c3"));
+        assert!(settings.to_arg().ends_with(":model=caramel-neural-1.900-a1b2c3"));
+        assert!(SceneCrf::from_arg("depth=8:model=../../etc/passwd").is_err());
+        assert_eq!(SceneCrf::from_arg("depth=8").unwrap().model, None);
+        assert!(load_model("no-such-model").is_none() && load_model("../x").is_none());
     }
 
     #[test]

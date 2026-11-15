@@ -5,10 +5,10 @@
 use crate::frame::Frame;
 use crate::spatial::{self, SpatialFeatures};
 use crate::temporal::TemporalFeatures;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 // Means of `TemporalFeatures` over a window's pairs.
-#[derive(Clone, Copy, Debug, Default, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct TemporalSummary {
     pub ti: f64,
     pub zero_residual: f64,
@@ -18,7 +18,7 @@ pub struct TemporalSummary {
     pub residual_energy: [f64; 5],
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct WindowFeatures {
     // Where the window starts in the source, in seconds; a label for reports and per-scene output.
     pub position_seconds: f64,

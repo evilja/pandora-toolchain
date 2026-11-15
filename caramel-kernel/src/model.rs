@@ -40,10 +40,17 @@
 // pristine ones, and the encoder was x264 as Pandora's `standard` preset runs it (preset fast,
 // aq-mode 3, aq-strength 0.8). Other resolutions get a small prior (`output-resolution`), not a fit.
 
+use crate::curve;
 use crate::window::WindowFeatures;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
+// The fitted predictors below: what decides a scene when there is no network to.
 pub const MODEL_VERSION: &str = "caramel-scene-6";
+
+// The name of what decides scenes in this process: the active network's, else the predictors'.
+pub fn model_version() -> String {
+    curve::active().map_or_else(|| MODEL_VERSION.to_string(), |model| model.version.clone())
+}
 
 // The furthest a scene's CRF may move from the anchor in either direction.
 const MAX_RAISE: f64 = 4.0;
@@ -67,6 +74,9 @@ const CRF_STEP: f64 = 0.5;
 // The anchors the fit covers. An anchor outside them is read as the nearest one inside.
 const FITTED_ANCHORS: (f64, f64) = (15.0, 23.0);
 const REFERENCE_ANCHOR: f64 = 19.0;
+// The anchors a network's curves are read at. They are drawn from CRF 10 to 34 and a vote looks up
+// to eight either way; an anchor outside this is read as the nearest inside.
+const CURVE_ANCHORS: (f64, f64) = (14.0, 28.0);
 
 // The features a predictor reads, in the order of its coefficients. Each is on a log scale — what
 // matters is whether there is twice as much grain, not 0.1 more — and is held inside the range the
@@ -124,7 +134,7 @@ const PREDICTORS: [Predictor; 4] = [
     },
 ];
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SourceContext {
     pub width: u32,
     pub height: u32,
@@ -165,6 +175,9 @@ impl EncodeContext {
 pub struct MetricVote {
     pub metric: &'static str,
     pub offset: f64,
+    // How far a model's networks disagree about the offset, in CRF. Zero from the fitted predictors,
+    // which have no second opinion.
+    pub spread: f64,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -184,7 +197,7 @@ pub struct SceneEstimate {
     pub raw_adjustment: f64,
     pub confidence: f64,
     pub frames_analyzed: usize,
-    // The four metrics' offsets for the scene, in the order of `PREDICTORS`.
+    // The metrics' offsets for the scene: the ones it was decided on.
     pub votes: Vec<MetricVote>,
     // What moved the scene: `consensus`, what the votes agree on (its value is the vote that held
     // the others back), then the factors that depend on the source and the encode.
@@ -252,6 +265,7 @@ pub fn votes(window: &WindowFeatures, anchor_crf: f64) -> Vec<MetricVote> {
             offset: predictor.intercept
                 + predictor.weights.iter().zip(inputs).map(|(weight, input)| weight * input).sum::<f64>()
                 + predictor.anchor * anchor,
+            spread: 0.0,
         })
         .collect()
 }
@@ -293,8 +307,26 @@ fn round_crf(value: f64, encode: &EncodeContext) -> f32 {
     (rounded as f32).clamp(encode.crf_floor, encode.crf_ceiling)
 }
 
-// One scene's CRF from the window measured at its start.
+// One scene's CRF from the window measured at its start, by the model this process decides with.
 pub fn estimate_scene(window: &WindowFeatures, source: &SourceContext, encode: &EncodeContext) -> SceneEstimate {
+    estimate_scene_with(curve::active().as_deref(), window, source, encode)
+}
+
+// What a network's curves say about a window: the votes of the metrics a scene is decided on, and
+// what they agree on.
+fn curve_votes(model: &curve::Model, window: &WindowFeatures, source: &SourceContext, anchor: f64) -> (Vec<MetricVote>, f64, f64) {
+    let inputs = crate::inputs::inputs(window, source.bit_depth > 8);
+    let all = model.votes(&inputs, anchor.clamp(CURVE_ANCHORS.0, CURVE_ANCHORS.1));
+    let agreed = curve::consensus(&all, model.margin);
+    let votes = (0..curve::METRICS)
+        .filter(|metric| curve::DECIDES[*metric])
+        .map(|metric| MetricVote { metric: curve::METRIC_NAMES[metric], offset: all[metric].offset, spread: all[metric].spread })
+        .collect();
+    (votes, agreed.offset, agreed.binding)
+}
+
+// The same with the model named: a network, or None for the fitted predictors.
+pub fn estimate_scene_with(model: Option<&curve::Model>, window: &WindowFeatures, source: &SourceContext, encode: &EncodeContext) -> SceneEstimate {
     let anchor = encode.anchor_crf as f64;
     if window.frames == 0 || window.measured == 0 {
         return SceneEstimate {
@@ -308,8 +340,14 @@ pub fn estimate_scene(window: &WindowFeatures, source: &SourceContext, encode: &
             contributions: Vec::new(),
         };
     }
-    let votes = votes(window, anchor);
-    let (agreed, binding) = consensus(&votes);
+    let (votes, agreed, binding) = match model {
+        Some(model) => curve_votes(model, window, source, anchor),
+        None => {
+            let votes = votes(window, anchor);
+            let (agreed, binding) = consensus(&votes);
+            (votes, agreed, binding)
+        }
+    };
     let contributions =
         vec![Contribution { factor: "consensus", value: binding, delta: agreed }, resolution_contribution(source, encode)];
     let raw_adjustment: f64 = contributions.iter().map(|factor| factor.delta).sum();
@@ -335,6 +373,11 @@ mod tests {
     use super::*;
     use crate::spatial::SpatialFeatures;
     use crate::window::TemporalSummary;
+
+    // The fitted predictors, whatever network this build carries.
+    fn linear_scene(window: &WindowFeatures, source: &SourceContext, encode: &EncodeContext) -> SceneEstimate {
+        estimate_scene_with(None, window, source, encode)
+    }
 
     fn source() -> SourceContext {
         SourceContext {
@@ -419,16 +462,16 @@ mod tests {
         }
         let pan = window(FLAT_PAN_DITHERED);
         assert!(close(&offsets(&pan, 19.0), [4.67, 4.00, 4.46, 3.65]), "{:?}", offsets(&pan, 19.0));
-        assert_eq!(estimate_scene(&pan, &source(), &encode).crf, 21.0);
+        assert_eq!(linear_scene(&pan, &source(), &encode).crf, 21.0);
         let painted = window(PAINTED_DITHERED);
         assert!(close(&offsets(&painted, 19.0), [1.48, 1.78, 2.74, -0.19]), "{:?}", offsets(&painted, 19.0));
-        assert_eq!(estimate_scene(&painted, &source(), &encode).crf, 19.0);
+        assert_eq!(linear_scene(&painted, &source(), &encode).crf, 19.0);
         let close_up = window(CG_CLOSE_UP_DITHERED);
         assert!(close(&offsets(&close_up, 19.0), [-2.82, -2.39, -2.60, -2.82]), "{:?}", offsets(&close_up, 19.0));
-        assert_eq!(estimate_scene(&close_up, &source(), &encode).crf, 18.0);
+        assert_eq!(linear_scene(&close_up, &source(), &encode).crf, 18.0);
         let crowd = window(CROWD_DITHERED);
         assert!(close(&offsets(&crowd, 19.0), [-2.68, -2.68, -5.81, 1.97]), "{:?}", offsets(&crowd, 19.0));
-        assert_eq!(estimate_scene(&crowd, &source(), &encode).crf, 19.0);
+        assert_eq!(linear_scene(&crowd, &source(), &encode).crf, 19.0);
         // The medians of the corpus's kinds of source, read as dithered, stay at the anchor.
         for typical in [
             [1.1061, 0.4713, 31.27, 6.943, 2.567, 4.46, 0.2141, 0.1748],
@@ -437,7 +480,7 @@ mod tests {
             [1.0621, 0.5811, 39.62, 11.85, 3.941, 6.783, 0.2232, 0.1577],
         ] {
             for anchor in [15.0, 19.0, 21.0, 23.0] {
-                let estimate = estimate_scene(&window(typical), &source(), &EncodeContext::anchored(anchor));
+                let estimate = linear_scene(&window(typical), &source(), &EncodeContext::anchored(anchor));
                 assert_eq!(estimate.crf, anchor, "{estimate:?}");
             }
         }
@@ -452,18 +495,18 @@ mod tests {
         let encode = EncodeContext::anchored(21.0);
         let still = window(WEB_STILL);
         assert!(close(&offsets(&still, 21.0), [7.41, 7.04, 8.07, 3.30]), "{:?}", offsets(&still, 21.0));
-        assert_eq!(estimate_scene(&still, &source(), &encode).crf, 23.0);
+        assert_eq!(linear_scene(&still, &source(), &encode).crf, 23.0);
         let action = window(WEB_ACTION);
         assert!(close(&offsets(&action, 21.0), [3.51, 3.14, 3.23, 5.75]), "{:?}", offsets(&action, 21.0));
-        assert_eq!(estimate_scene(&action, &source(), &encode).crf, 22.5);
+        assert_eq!(linear_scene(&action, &source(), &encode).crf, 22.5);
         let texture = window(WEB_TEXTURE);
         assert!(close(&offsets(&texture, 21.0), [-2.21, -1.89, -2.93, -4.26]), "{:?}", offsets(&texture, 21.0));
-        assert_eq!(estimate_scene(&texture, &source(), &encode).crf, 20.5);
+        assert_eq!(linear_scene(&texture, &source(), &encode).crf, 20.5);
     }
 
     #[test]
     fn an_unmeasured_scene_keeps_the_anchor() {
-        let estimate = estimate_scene(&WindowFeatures::default(), &source(), &EncodeContext::anchored(17.0));
+        let estimate = linear_scene(&WindowFeatures::default(), &source(), &EncodeContext::anchored(17.0));
         assert_eq!(estimate.crf, 17.0);
         assert_eq!(estimate.confidence, 0.0);
         assert!(estimate.votes.is_empty());
@@ -475,7 +518,7 @@ mod tests {
     fn a_fast_pan_over_flat_shading_is_raised() {
         let scene = window(FLAT_PAN);
         assert!(close(&offsets(&scene, 19.0), [6.47, 5.46, 6.00, 5.01]), "{:?}", offsets(&scene, 19.0));
-        let estimate = estimate_scene(&scene, &source(), &EncodeContext::anchored(19.0));
+        let estimate = linear_scene(&scene, &source(), &EncodeContext::anchored(19.0));
         assert_eq!(estimate.crf, 22.5, "{estimate:?}");
         assert_eq!(estimate.contributions[0].factor, "consensus");
         assert!((estimate.contributions[0].value - 5.01).abs() < 0.06);
@@ -486,7 +529,7 @@ mod tests {
     fn a_noisy_cg_close_up_is_lowered() {
         let scene = window(CG_CLOSE_UP);
         assert!(close(&offsets(&scene, 19.0), [-2.85, -2.45, -2.28, -3.05]), "{:?}", offsets(&scene, 19.0));
-        let estimate = estimate_scene(&scene, &source(), &EncodeContext::anchored(19.0));
+        let estimate = linear_scene(&scene, &source(), &EncodeContext::anchored(19.0));
         assert_eq!(estimate.crf, 18.0, "{estimate:?}");
     }
 
@@ -495,10 +538,10 @@ mod tests {
     #[test]
     fn typical_and_disputed_scenes_stay_at_the_anchor() {
         let encode = EncodeContext::anchored(19.0);
-        let painted = estimate_scene(&window(PAINTED), &source(), &encode);
+        let painted = linear_scene(&window(PAINTED), &source(), &encode);
         assert!(close(&offsets(&window(PAINTED), 19.0), [1.85, 2.04, 3.78, -0.23]), "{painted:?}");
         assert_eq!(painted.crf, 19.0);
-        let crowd = estimate_scene(&window(CROWD), &source(), &encode);
+        let crowd = linear_scene(&window(CROWD), &source(), &encode);
         assert!(close(&offsets(&window(CROWD), 19.0), [-2.72, -2.72, -5.78, 1.89]), "{crowd:?}");
         assert_eq!(crowd.crf, 19.0);
         // The medians of the four kinds of source in the corpus: CG, flat animation, live action
@@ -510,7 +553,7 @@ mod tests {
             [0.0824, 0.555, 39.1, 10.5, 3.57, 5.21, 0.0694, 0.161],
         ] {
             for anchor in [15.0, 17.0, 21.0, 23.0] {
-                let estimate = estimate_scene(&window(typical), &source(), &EncodeContext::anchored(anchor));
+                let estimate = linear_scene(&window(typical), &source(), &EncodeContext::anchored(anchor));
                 assert_eq!(estimate.crf, anchor, "{estimate:?}");
             }
         }
@@ -521,17 +564,17 @@ mod tests {
         let encode = EncodeContext::anchored(19.0);
         let short = |figures| WindowFeatures { frames: 2, measured: 1, ..window(figures) };
         assert!(
-            estimate_scene(&short(FLAT_PAN), &source(), &encode).adjustment
-                < estimate_scene(&window(FLAT_PAN), &source(), &encode).adjustment
+            linear_scene(&short(FLAT_PAN), &source(), &encode).adjustment
+                < linear_scene(&window(FLAT_PAN), &source(), &encode).adjustment
         );
         assert_eq!(
-            estimate_scene(&short(CG_CLOSE_UP), &source(), &encode).adjustment,
-            estimate_scene(&window(CG_CLOSE_UP), &source(), &encode).adjustment
+            linear_scene(&short(CG_CLOSE_UP), &source(), &encode).adjustment,
+            linear_scene(&window(CG_CLOSE_UP), &source(), &encode).adjustment
         );
         // A single frame has no motion to measure, which halves what a raise is trusted with, and is
         // read as a still.
         let single = WindowFeatures { temporal: None, ..window(FLAT_PAN) };
-        let estimate = estimate_scene(&single, &source(), &encode);
+        let estimate = linear_scene(&single, &source(), &encode);
         assert_eq!(estimate.confidence, NO_MOTION_CONFIDENCE);
         let still = WindowFeatures { temporal: Some(TemporalSummary::default()), ..window(FLAT_PAN) };
         assert_eq!(offsets(&single, 19.0), offsets(&still, 19.0));
@@ -543,15 +586,15 @@ mod tests {
     fn a_window_with_a_cut_inside_is_not_raised() {
         let encode = EncodeContext::anchored(19.0);
         let split = |figures| WindowFeatures { cuts: 1, ..window(figures) };
-        assert!(estimate_scene(&window(FLAT_PAN), &source(), &encode).crf > 19.0);
-        let estimate = estimate_scene(&split(FLAT_PAN), &source(), &encode);
+        assert!(linear_scene(&window(FLAT_PAN), &source(), &encode).crf > 19.0);
+        let estimate = linear_scene(&split(FLAT_PAN), &source(), &encode);
         assert_eq!((estimate.crf, estimate.confidence), (19.0, 0.0));
         assert!(estimate.raw_adjustment > 0.0);
         assert_eq!(
-            estimate_scene(&split(CG_CLOSE_UP), &source(), &encode).crf,
-            estimate_scene(&window(CG_CLOSE_UP), &source(), &encode).crf
+            linear_scene(&split(CG_CLOSE_UP), &source(), &encode).crf,
+            linear_scene(&window(CG_CLOSE_UP), &source(), &encode).crf
         );
-        assert!(estimate_scene(&split(CG_CLOSE_UP), &source(), &encode).crf < 19.0);
+        assert!(linear_scene(&split(CG_CLOSE_UP), &source(), &encode).crf < 19.0);
     }
 
     // A scene unlike anything in the corpus is read as the nearest thing that was, and whatever the
@@ -565,7 +608,7 @@ mod tests {
         ];
         for figures in extreme {
             for anchor in [8.0, 19.0, 30.0] {
-                let estimate = estimate_scene(&window(figures), &source(), &EncodeContext::anchored(anchor));
+                let estimate = linear_scene(&window(figures), &source(), &EncodeContext::anchored(anchor));
                 assert!(estimate.votes.iter().all(|vote| vote.offset.is_finite()), "{estimate:?}");
                 assert!((estimate.crf - anchor as f32).abs() <= 4.0, "{estimate:?}");
             }
@@ -577,15 +620,52 @@ mod tests {
     #[test]
     fn a_smaller_output_is_given_more_bits() {
         let small = EncodeContext { output_height: Some(720), ..EncodeContext::anchored(19.0) };
-        assert_eq!(estimate_scene(&window(PAINTED), &source(), &small).crf, 18.5);
+        assert_eq!(linear_scene(&window(PAINTED), &source(), &small).crf, 18.5);
         // And the resolution prior counts against a raise the metrics agreed on.
-        let full = estimate_scene(&window(FLAT_PAN), &source(), &EncodeContext::anchored(19.0));
-        assert!(estimate_scene(&window(FLAT_PAN), &source(), &small).adjustment < full.adjustment);
+        let full = linear_scene(&window(FLAT_PAN), &source(), &EncodeContext::anchored(19.0));
+        assert!(linear_scene(&window(FLAT_PAN), &source(), &small).adjustment < full.adjustment);
         // A letterboxed 1080p picture is 1080p, and its 720p encode is 720p.
         let scope = SourceContext { height: 800, ..source() };
-        let estimate = estimate_scene(&window(PAINTED), &scope, &EncodeContext::anchored(19.0));
+        let estimate = linear_scene(&window(PAINTED), &scope, &EncodeContext::anchored(19.0));
         assert_eq!((estimate.crf, estimate.contributions[1].value), (19.0, 1080.0));
         let scaled = EncodeContext { output_height: Some(534), ..EncodeContext::anchored(19.0) };
-        assert_eq!(estimate_scene(&window(PAINTED), &scope, &scaled).contributions[1].value, 721.0);
+        assert_eq!(linear_scene(&window(PAINTED), &scope, &scaled).contributions[1].value, 721.0);
+    }
+
+    // A network decides in place of the predictors when one is given: its votes carry its
+    // disagreement, its own margin is applied, and the bounds, the short-scene confidence and the
+    // refusal of a window with a cut inside hold as they do without it.
+    #[test]
+    fn a_network_decides_when_there_is_one() {
+        let mut model = curve::tests::flat_model(1.0);
+        let encode = EncodeContext::anchored(19.0);
+        // Every scene reads as typical content: nothing moves, and banding's slack is not a raise.
+        let typical = estimate_scene_with(Some(&model), &window(PAINTED), &source(), &encode);
+        assert_eq!((typical.crf, typical.votes.len()), (19.0, 5));
+        assert_eq!(typical.votes.iter().map(|vote| vote.metric).collect::<Vec<_>>(), ["xpsnr", "xpsnr-low", "ssim", "vmaf-low", "banding"]);
+        // Every level a unit and a half up: six CRF easy by every metric, less the margin, held to
+        // the bound.
+        for member in &mut model.members {
+            for metric in 0..curve::METRICS {
+                member.layers[1].bias[metric * curve::KNOT_COUNT + 3] = 1.5;
+            }
+        }
+        let easy = estimate_scene_with(Some(&model), &window(PAINTED), &source(), &encode);
+        assert!((easy.raw_adjustment - 4.5).abs() < 1e-6, "{easy:?}");
+        assert_eq!(easy.crf, 23.0);
+        let split = WindowFeatures { cuts: 1, ..window(PAINTED) };
+        assert_eq!(estimate_scene_with(Some(&model), &split, &source(), &encode).crf, 19.0);
+        // Networks that disagree by more than the scene is easy leave it where it is.
+        for metric in 0..curve::METRICS {
+            model.members[1].layers[1].bias[metric * curve::KNOT_COUNT + 3] = -1.5;
+        }
+        let disputed = estimate_scene_with(Some(&model), &window(PAINTED), &source(), &encode);
+        assert_eq!(disputed.crf, 19.0);
+        assert!(disputed.votes.iter().all(|vote| vote.spread > 5.0), "{disputed:?}");
+        // An anchor outside what the curves cover is read as the nearest inside, and stays bounded.
+        for anchor in [6.0, 40.0] {
+            let estimate = estimate_scene_with(Some(&model), &window(PAINTED), &source(), &EncodeContext::anchored(anchor));
+            assert!((estimate.crf - anchor as f32).abs() <= 4.0 && estimate.votes.iter().all(|vote| vote.offset.is_finite()), "{estimate:?}");
+        }
     }
 }

@@ -22,7 +22,8 @@
 // changed the decision comes out the same and costs an encoder nothing.
 
 use crate::frame::Frame;
-use crate::model::{EncodeContext, SceneEstimate, SourceContext, estimate_scene};
+use crate::curve;
+use crate::model::{EncodeContext, SceneEstimate, SourceContext, estimate_scene_with};
 use crate::temporal::{self, CUT_PAIRS_AFTER, CUT_PAIRS_BEFORE, LowRes, TemporalFeatures};
 use crate::window::{self, FrameMeasure, WindowAnalyzer, WindowFeatures};
 use serde::Serialize;
@@ -104,6 +105,8 @@ pub struct SceneDecider {
     config: SceneConfig,
     source: SourceContext,
     encode: EncodeContext,
+    // The network scenes are decided with; None for the fitted predictors.
+    model: Option<std::sync::Arc<curve::Model>>,
     pushed: u64,
     // Frames whose scene is settled: every frame before this index.
     settled: u64,
@@ -126,6 +129,7 @@ impl SceneDecider {
             config: config.sanitised(),
             source,
             encode,
+            model: curve::active(),
             pushed: 0,
             settled: 0,
             scene_start: 0,
@@ -137,6 +141,13 @@ impl SceneDecider {
             arrived: VecDeque::new(),
             residuals: VecDeque::new(),
         }
+    }
+
+    // Decides with `model` instead of the one the process has active: for encoders that must decide
+    // as others already did, whatever has been installed since. None is the fitted predictors.
+    pub fn with_model(mut self, model: Option<std::sync::Arc<curve::Model>>) -> Self {
+        self.model = model;
+        self
     }
 
     // Frames pushed so far whose CRF is known: everything before this index may be encoded.
@@ -248,7 +259,7 @@ impl SceneDecider {
 
     fn decide(&mut self) -> SceneDecision {
         let features = self.analyzer.take().map(WindowAnalyzer::finish).unwrap_or_default();
-        let estimate = estimate_scene(&features, &self.source, &self.encode);
+        let estimate = estimate_scene_with(self.model.as_deref(), &features, &self.source, &self.encode);
         self.decided = true;
         SceneDecision {
             start_frame: self.scene_start,
@@ -276,7 +287,7 @@ mod tests {
     }
 
     fn decider(config: SceneConfig) -> SceneDecider {
-        SceneDecider::new(config, source(), EncodeContext::anchored(17.0))
+        SceneDecider::new(config, source(), EncodeContext::anchored(17.0)).with_model(None)
     }
 
     fn clean(shift: f64) -> Vec<u8> {

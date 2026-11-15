@@ -38,3 +38,9 @@ getrandom = "0.2"
 resvg = { version = "0.47", default-features = false }
 ab_glyph = "0.2"
 age = "0.12.1"
+
+# Caramel's kernel reads every pixel of a video and fits its own model. Unoptimised it is many times
+# slower, which turns an idle minute's work into most of an hour, so it is optimised in dev builds
+# too. The rest of Pandora is not.
+[profile.dev.package.caramel-kernel]
+opt-level = 3

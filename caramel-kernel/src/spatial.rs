@@ -6,7 +6,7 @@
 // statistics by sampling noise.
 
 use crate::frame::Plane;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 // Side of the square blocks the banding and line-art classification works on, in luma pixels.
 pub const BLOCK: usize = 16;
@@ -42,7 +42,7 @@ pub const DETAIL_FLOORS: [f64; 5] = [0.5, 1.0, 2.0, 4.0, 8.0];
 const LAPLACIAN_GAIN: f64 = 6.0;
 const LAPLACIAN_BINS: usize = 64;
 
-#[derive(Clone, Copy, Debug, Default, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct SpatialFeatures {
     // ITU-T P.910 spatial information: the standard deviation of the Sobel magnitude.
     pub si: f64,
