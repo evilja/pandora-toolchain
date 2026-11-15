@@ -2,17 +2,20 @@
 // window at its start (see `scene`), and every temporal feature is measured only between frames of
 // the same window — the pair that straddles a cut is a new keyframe, not motion.
 
-use crate::frame::{Frame, Plane};
+use crate::frame::Frame;
 use crate::spatial::{self, SpatialFeatures};
-use crate::temporal::{self, LowRes, TemporalFeatures};
+use crate::temporal::TemporalFeatures;
 use serde::Serialize;
 
+// Means of `TemporalFeatures` over a window's pairs.
 #[derive(Clone, Copy, Debug, Default, Serialize)]
 pub struct TemporalSummary {
     pub ti: f64,
     pub zero_residual: f64,
     pub mc_residual: f64,
     pub motion_px: f64,
+    pub changed_share: f64,
+    pub residual_energy: [f64; 5],
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -20,8 +23,11 @@ pub struct WindowFeatures {
     // Where the window starts in the source, in seconds; a label for reports and per-scene output.
     pub position_seconds: f64,
     pub frames: usize,
+    // How many of them were measured by themselves; the rest only against their neighbours.
+    pub measured: usize,
+    // Cuts inside the window: ones that came too soon after the last to start a scene of their own.
     pub cuts: usize,
-    // Means over the window's frames.
+    // Means over the window's measured frames.
     pub spatial: SpatialFeatures,
     pub chroma_si: Option<f64>,
     // Means over the window's frame pairs, excluding the pairs that straddle a cut: a cut is a new
@@ -29,69 +35,58 @@ pub struct WindowFeatures {
     pub temporal: Option<TemporalSummary>,
 }
 
-struct Previous {
-    luma: Vec<u8>,
-    width: usize,
-    height: usize,
-    lowres: LowRes,
+// What is measured on one frame by itself.
+#[derive(Clone, Copy, Debug)]
+pub struct FrameMeasure {
+    pub spatial: SpatialFeatures,
+    pub chroma_si: Option<f64>,
+}
+
+// The expensive step of the analysis: every pixel of the frame is read, where the comparison between
+// frames reads a sixteenth of them. A caller measures only the frames a window will hold.
+pub fn measure(frame: &Frame) -> FrameMeasure {
+    FrameMeasure {
+        spatial: spatial::analyze_luma(&frame.y),
+        chroma_si: match (frame.u, frame.v) {
+            (Some(u), Some(v)) => Some(0.5 * (spatial::sobel_si(&u) + spatial::sobel_si(&v))),
+            _ => None,
+        },
+    }
 }
 
 pub struct WindowAnalyzer {
     position_seconds: f64,
+    frames: usize,
     spatial: Vec<SpatialFeatures>,
     chroma: Vec<f64>,
     temporal: Vec<TemporalFeatures>,
-    previous: Option<Previous>,
+    cuts: usize,
 }
 
 impl WindowAnalyzer {
     pub fn new(position_seconds: f64) -> Self {
-        Self {
-            position_seconds,
-            spatial: Vec::new(),
-            chroma: Vec::new(),
-            temporal: Vec::new(),
-            previous: None,
-        }
+        Self { position_seconds, frames: 0, spatial: Vec::new(), chroma: Vec::new(), temporal: Vec::new(), cuts: 0 }
     }
 
-    // The spatial half of `push`, with the pair against the previous frame measured by the caller —
-    // the scene decider compares every frame for cuts anyway, and measuring it twice would double the
-    // most expensive step. `None` for the window's first frame.
-    pub fn push_measured(&mut self, frame: &Frame, temporal: Option<&TemporalFeatures>) {
-        self.spatial.push(spatial::analyze_luma(&frame.y));
-        if let (Some(u), Some(v)) = (frame.u, frame.v) {
-            self.chroma.push(0.5 * (spatial::sobel_si(&u) + spatial::sobel_si(&v)));
+    // The next frame of the window. `measure` is there for the frames the caller chose to measure —
+    // a few, spread over the window, say as much as all of them. `pair` is the frame's comparison
+    // with the one before it — None for the window's first frame — and `cut` says that pair
+    // straddles a cut.
+    pub fn push(&mut self, measure: Option<FrameMeasure>, pair: Option<&TemporalFeatures>, cut: bool) {
+        self.frames += 1;
+        if let Some(measure) = measure {
+            self.spatial.push(measure.spatial);
+            self.chroma.extend(measure.chroma_si);
         }
-        if let Some(pair) = temporal {
-            self.temporal.push(*pair);
+        match pair {
+            Some(_) if cut => self.cuts += 1,
+            Some(pair) => self.temporal.push(*pair),
+            None => {}
         }
-    }
-
-    pub fn push(&mut self, frame: &Frame) {
-        self.spatial.push(spatial::analyze_luma(&frame.y));
-        if let (Some(u), Some(v)) = (frame.u, frame.v) {
-            self.chroma.push(0.5 * (spatial::sobel_si(&u) + spatial::sobel_si(&v)));
-        }
-        let lowres = temporal::downsample(&frame.y);
-        if let Some(previous) = &self.previous {
-            if let Some(plane) = Plane::new(&previous.luma, previous.width, previous.height, previous.width) {
-                self.temporal.push(temporal::compare(&plane, &frame.y, &previous.lowres, &lowres));
-            }
-        }
-        // The previous frame is kept as a packed copy: the caller's buffer is only borrowed until
-        // it decodes the next frame into it.
-        let mut luma = Vec::with_capacity(frame.y.width * frame.y.height);
-        for y in 0..frame.y.height {
-            luma.extend_from_slice(frame.y.row(y));
-        }
-        self.previous = Some(Previous { luma, width: frame.y.width, height: frame.y.height, lowres });
     }
 
     pub fn finish(self) -> WindowFeatures {
-        let frames = self.spatial.len();
-        let cuts = self.temporal.iter().filter(|pair| pair.cut).count();
-        let continuous: Vec<&TemporalFeatures> = self.temporal.iter().filter(|pair| !pair.cut).collect();
+        let continuous = &self.temporal;
         let temporal = (!continuous.is_empty()).then(|| {
             let n = continuous.len() as f64;
             TemporalSummary {
@@ -99,12 +94,16 @@ impl WindowAnalyzer {
                 zero_residual: continuous.iter().map(|pair| pair.zero_residual).sum::<f64>() / n,
                 mc_residual: continuous.iter().map(|pair| pair.mc_residual).sum::<f64>() / n,
                 motion_px: continuous.iter().map(|pair| pair.motion_px).sum::<f64>() / n,
+                changed_share: continuous.iter().map(|pair| pair.changed_share).sum::<f64>() / n,
+                residual_energy: [0, 1, 2, 3, 4]
+                    .map(|floor| continuous.iter().map(|pair| pair.residual_energy[floor]).sum::<f64>() / n),
             }
         });
         WindowFeatures {
             position_seconds: self.position_seconds,
-            frames,
-            cuts,
+            frames: self.frames,
+            measured: self.spatial.len(),
+            cuts: self.cuts,
             spatial: mean_spatial(&self.spatial),
             chroma_si: (!self.chroma.is_empty())
                 .then(|| self.chroma.iter().sum::<f64>() / self.chroma.len() as f64),
@@ -129,24 +128,32 @@ fn mean_spatial(frames: &[SpatialFeatures]) -> SpatialFeatures {
         line_art_share: mean(|f| f.line_art_share),
         dark_share: mean(|f| f.dark_share),
         mean_luma: mean(|f| f.mean_luma),
+        detail_energy: [0, 1, 2, 3, 4].map(|floor| frames.iter().map(|f| f.detail_energy[floor]).sum::<f64>() / n),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frame::Plane;
     use crate::spatial::tests::picture;
+    use crate::temporal;
 
     #[test]
     fn a_cut_inside_a_window_is_counted_and_kept_out_of_the_motion_figures() {
         let still = picture(320, 192, |x, y| 128.0 + 40.0 * ((x as f64 * 0.2).sin() * (y as f64 * 0.3).cos()));
         let other = picture(320, 192, |x, y| if (x / 40 + y / 40) % 2 == 0 { 20.0 } else { 235.0 });
         let mut window = WindowAnalyzer::new(12.5);
-        for data in [&still, &still, &other, &other] {
-            window.push(&Frame::luma(Plane::new(data, 320, 192, 320).unwrap()));
+        let mut previous: Option<temporal::LowRes> = None;
+        for (index, data) in [&still, &still, &other, &other].into_iter().enumerate() {
+            let frame = Frame::luma(Plane::new(data, 320, 192, 320).unwrap());
+            let lowres = temporal::downsample(&frame.y);
+            let pair = previous.as_ref().map(|previous| temporal::compare(previous, &lowres));
+            window.push((index != 1).then(|| measure(&frame)), pair.as_ref(), index == 2);
+            previous = Some(lowres);
         }
         let features = window.finish();
-        assert_eq!(features.frames, 4);
+        assert_eq!((features.frames, features.measured), (4, 3));
         assert_eq!(features.cuts, 1);
         let temporal = features.temporal.unwrap();
         assert_eq!(temporal.mc_residual, 0.0);

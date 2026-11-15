@@ -109,21 +109,28 @@ in one episode each get their own. The feature extraction, cut detection and mod
 chunk encoder, and `src/lib/mpeg/caramel.rs` runs it over a whole file and verifies it.
 
 - **Scenes.** `caramel_kernel::SceneDecider` is fed every frame in display order. Each frame is
-  compared with the one before for a cut, after the previous frame has been given the current one's
-  mean and contrast (x264's weighted-prediction gain and offset), so fades and flashes are not cuts.
-  A cut is a large histogram distance, a medium one with real motion
-  residual, or a motion-compensated residual more than twice the frame's own intra residual (a cut
-  between shots that share one palette). A cut within `min_scene_frames` (12) of the last is ignored.
-  A scene that runs past `max_scene_frames` (250) is split and decided again. The first
-  `analysis_frames` (12) of each scene are measured, and the scene's CRF is decided as soon as they
-  have been, so an encoder holds back at most that many frames.
-- **Estimate.** A scene's features (P.910 SI, Immerkær noise σ over the flattest pixels,
-  gradient/dark-gradient/line-art block shares, chroma SI, quarter-resolution motion-compensated
-  residual) give it a bounded offset from the anchor. Output resolution and source bits per pixel
-  are added on top. Banding only counts once most of a frame is smooth gradient, since cel shading
-  puts half of a typical anime frame there and the anchor already covers it. A raise is scaled by
-  confidence (frames measured, temporal coverage); a cut never is. The offset is bounded to −4…+4 and
-  rounded to 0.5. Reports are stamped with `caramel_kernel::MODEL_VERSION`.
+  compared with the one before on a quarter-resolution copy, after the previous frame has been given
+  the current one's mean and contrast (x264's weighted-prediction gain and offset), so fades and
+  flashes are not cuts. A pair is a cut *candidate* on a large histogram distance, a medium one with
+  real motion residual, or a motion-compensated residual more than twice the frame's own intra
+  residual (a cut between shots that share one palette). A candidate is a cut only when most of the
+  frame changed and its residual stands out from the three pairs before it and the two after it, so
+  fast action and pose changes are not runs of cuts; a frame's scene is therefore settled two frames
+  after it arrives. A cut within `min_scene_frames` (12) of the last is ignored. A scene that runs
+  past `max_scene_frames` (48, two seconds) is split and decided again; where nothing changed the
+  CRF comes out the same and no switch happens. The first `analysis_frames` (12) of each scene
+  decide its CRF, four of them measured in full, so an encoder holds back at most that many frames
+  plus two.
+- **Estimate.** Four linear predictors, one per quality metric (XPSNR, its worst frames, SSIM,
+  VMAF's worst frames), each estimate from the scene's features (noise σ, fine-detail and residual
+  energy, zero-motion residual, P.910 SI and TI, motion, smooth-block share) how far its CRF could
+  move from the anchor and still score what typical content scores at the anchor. They were fitted
+  to brute-force x264 encodes of 359 scenes (see `caramel-kernel/README.md` for the corpus, the
+  error and what it does not cover). The scene moves only when all four agree on the direction by
+  more than 1.5 CRF, and then by the smallest of them less 1.5, so most scenes stay at the anchor.
+  The output-resolution prior is added on top; a letterboxed picture is named by its 16:9 frame. A
+  raise is scaled by confidence (frames measured, temporal coverage); a cut never is. The offset is
+  bounded to −4…+4 and rounded to 0.5. Reports are stamped with `caramel_kernel::MODEL_VERSION`.
 - **Presets.** `crf_mode = "caramel-analysis"` in a libx264 preset file makes every encode with it
   per-scene, anchored at its `crf`. Such a preset chunks by default and never runs linear AOT, which
   could not know the scene CRFs. When the job runs linearly anyway (idle-gated, or a fallback), the
@@ -145,8 +152,8 @@ chunk encoder, and `src/lib/mpeg/caramel.rs` runs it over a whole file and verif
   stdout for `-o -`. Nothing is encoded. Every frame is decoded, split into contiguous segments of at
   least 2400 frames decoded in parallel; each seeks accurately to its first frame. The report lists
   every scene (start, frames, how it started, the pair read as its cut and how many later measured
-  pairs also read as cuts, CRF, contributions), the frame-weighted CRF
-  distribution, and the `zones` string a linear encode would use.
+  pairs also read as cuts, CRF, each metric's vote, contributions, measured features), the
+  frame-weighted CRF distribution, and the `zones` string a linear encode would use.
 - **`--caramel-verify <auto|crf,crf,…>`** (with `--caramel-report`) also encodes up to six 4 s clips
   from the scenes moved furthest from the anchor, taken in turn from below and above it so both
   directions get measured (one side fills the remaining slots when the other runs out). Each is

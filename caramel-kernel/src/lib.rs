@@ -19,7 +19,7 @@ pub mod temporal;
 pub mod window;
 
 pub use frame::{Frame, Plane};
-pub use model::{Contribution, EncodeContext, MODEL_VERSION, SceneEstimate, SourceContext, estimate_scene};
+pub use model::{Contribution, EncodeContext, MODEL_VERSION, MetricVote, SceneEstimate, SourceContext, estimate_scene};
 pub use scene::{SceneConfig, SceneDecider, SceneDecision, SceneStart};
 pub use spatial::SpatialFeatures;
 pub use temporal::TemporalFeatures;

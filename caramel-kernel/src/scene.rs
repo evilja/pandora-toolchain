@@ -6,20 +6,35 @@
 // An encoder in front of it therefore only has to hold back the few frames of a scene that arrive
 // before its decision: everything after streams straight through at the decided CRF.
 //
-// Deciding from a scene's opening frames is what makes it streamable, and it is enough because a
-// scene is the unit that is homogeneous — a shot does not turn from clean line art into film grain
-// halfway through. A scene that runs past `max_scene_frames` is decided again from that point, so a
-// long pan or a missed cut cannot carry one decision across minutes of different content.
+// Whether a frame starts a scene is settled `CUT_PAIRS_AFTER` frames after it arrives, because a
+// cut is told from fast motion by what follows it (see `temporal::is_cut`). Those few frames are the
+// only ones held back in the middle of a scene.
+//
+// Comparing frames is cheap and done for all of them. Measuring a frame reads every pixel of it and
+// is done for `MEASURED_FRAMES` of a scene's opening, spread evenly: against brute-force encodes,
+// four frames of twelve predicted a scene's CRF as well as all twelve did, and one did not.
+//
+// Deciding from a scene's opening frames is what makes it streamable, and it holds for about two
+// seconds: a shot keeps its grain and its drawing style, but not its motion — a character who
+// stands for a second and then runs is one shot. Measured on brute-force encodes, the second two
+// seconds of a shot wanted a CRF more than one away from the first's in half the shots. A scene
+// that runs past `max_scene_frames` is therefore decided again from that point; where nothing has
+// changed the decision comes out the same and costs an encoder nothing.
 
-use crate::frame::{Frame, Plane};
+use crate::frame::Frame;
 use crate::model::{EncodeContext, SceneEstimate, SourceContext, estimate_scene};
-use crate::temporal::{self, LowRes, TemporalFeatures};
-use crate::window::WindowAnalyzer;
+use crate::temporal::{self, CUT_PAIRS_AFTER, CUT_PAIRS_BEFORE, LowRes, TemporalFeatures};
+use crate::window::{self, FrameMeasure, WindowAnalyzer, WindowFeatures};
 use serde::Serialize;
+use std::collections::VecDeque;
+
+// How many of a scene's opening frames are measured by themselves.
+pub const MEASURED_FRAMES: usize = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct SceneConfig {
-    // Frames measured at the start of every scene. Also how many frames an encoder holds back.
+    // Frames at the start of every scene its CRF is decided from. Also how many frames an encoder
+    // holds back.
     pub analysis_frames: usize,
     // A cut sooner than this after the last one is ignored, so a flash or a run of false cuts in
     // fast action does not make every few frames a scene of its own.
@@ -30,9 +45,9 @@ pub struct SceneConfig {
 
 impl Default for SceneConfig {
     fn default() -> Self {
-        // Half a second of measurement at 24 fps, and x264's own default keyint as the longest a
-        // decision lasts.
-        Self { analysis_frames: 12, min_scene_frames: 12, max_scene_frames: 250 }
+        // Half a second of measurement at 24 fps, deciding two seconds: the scene length the model
+        // in `model` was fitted on. A longer measurement was no better, a longer scene was worse.
+        Self { analysis_frames: 12, min_scene_frames: 12, max_scene_frames: 48 }
     }
 }
 
@@ -69,17 +84,20 @@ pub struct SceneDecision {
     pub start: SceneStart,
     // The frame pair that was read as the cut, so a report shows what the detector saw.
     pub cut: Option<TemporalFeatures>,
-    // Pairs inside the measured frames that also read as cuts but came too soon after this one. A
-    // scene whose every pair is one is a fade, flash or effect the detector cannot follow.
+    // Cuts inside the measured frames that came too soon after this one to start a scene.
     pub cut_pairs_within: usize,
     pub estimate: SceneEstimate,
+    // What was measured, as the model was given it.
+    pub features: WindowFeatures,
 }
 
-struct Previous {
-    luma: Vec<u8>,
-    width: usize,
-    height: usize,
-    lowres: LowRes,
+// A frame that has arrived and whose scene is not settled yet.
+struct Arrived {
+    pair: Option<TemporalFeatures>,
+    // The pair passed `temporal::may_be_cut` against these residuals of the pairs before it.
+    may_be_cut: bool,
+    before: Vec<f64>,
+    measure: Option<FrameMeasure>,
 }
 
 pub struct SceneDecider {
@@ -87,14 +105,19 @@ pub struct SceneDecider {
     source: SourceContext,
     encode: EncodeContext,
     pushed: u64,
+    // Frames whose scene is settled: every frame before this index.
+    settled: u64,
     scene_start: u64,
     scene_kind: SceneStart,
     scene_cut: Option<TemporalFeatures>,
     // Present while the current scene is still being measured.
     analyzer: Option<WindowAnalyzer>,
-    measured: usize,
     decided: bool,
-    previous: Option<Previous>,
+    previous: Option<LowRes>,
+    // The frames from `settled` to `pushed`, oldest first.
+    arrived: VecDeque<Arrived>,
+    // Residuals of the last `CUT_PAIRS_BEFORE` pairs that arrived, oldest first.
+    residuals: VecDeque<f64>,
 }
 
 impl SceneDecider {
@@ -104,19 +127,21 @@ impl SceneDecider {
             source,
             encode,
             pushed: 0,
+            settled: 0,
             scene_start: 0,
             scene_kind: SceneStart::Start,
             scene_cut: None,
             analyzer: None,
-            measured: 0,
             decided: false,
             previous: None,
+            arrived: VecDeque::new(),
+            residuals: VecDeque::new(),
         }
     }
 
     // Frames pushed so far whose CRF is known: everything before this index may be encoded.
     pub fn decided_frames(&self) -> u64 {
-        if self.decided { self.pushed } else { self.scene_start }
+        if self.decided { self.settled } else { self.scene_start }
     }
 
     pub fn pushed(&self) -> u64 {
@@ -124,56 +149,101 @@ impl SceneDecider {
     }
 
     // The next frame, in display order. Returns the decisions it made final — usually none, at most
-    // two (the scene it ended, and the new one when a single frame is all `analysis_frames` asks).
+    // two (the scene that ended, and the new one when its measurement is already complete).
     pub fn push(&mut self, frame: &Frame) -> Vec<SceneDecision> {
-        let mut decisions = Vec::new();
-        let index = self.pushed;
         let lowres = temporal::downsample(&frame.y);
-        let pair = self.previous.as_ref().and_then(|previous| {
-            let plane = Plane::new(&previous.luma, previous.width, previous.height, previous.width)?;
-            Some(temporal::compare(&plane, &frame.y, &previous.lowres, &lowres))
-        });
+        let pair = self.previous.as_ref().map(|previous| temporal::compare(previous, &lowres));
+        let before: Vec<f64> = self.residuals.iter().copied().collect();
+        let may_be_cut = pair.as_ref().is_some_and(|pair| temporal::may_be_cut(pair, &before));
+        // The frame is measured when its place in its scene's opening is one of the measured ones.
+        // Its scene is the one it arrives in, the one a split is about to start, or the one a cut
+        // still being weighed would start.
+        let position = self.pushed - self.scene_start;
+        let split = self.config.max_scene_frames as u64;
+        let position = if position >= split { position - split } else { position };
+        let opens_scene = may_be_cut
+            || self.is_measured(position)
+            || self.arrived.iter().enumerate().any(|(ahead, arrived)| {
+                arrived.may_be_cut && self.is_measured(self.pushed - self.settled - ahead as u64)
+            });
+        if let Some(pair) = &pair {
+            if self.residuals.len() == CUT_PAIRS_BEFORE {
+                self.residuals.pop_front();
+            }
+            self.residuals.push_back(pair.mc_residual);
+        }
+        self.arrived.push_back(Arrived { pair, may_be_cut, before, measure: opens_scene.then(|| window::measure(frame)) });
+        self.previous = Some(lowres);
+        self.pushed += 1;
+        let mut decisions = Vec::new();
+        while self.arrived.len() > CUT_PAIRS_AFTER {
+            self.settle(true, &mut decisions);
+        }
+        decisions
+    }
+
+    // Whether the frame `position` frames into a scene is one of its measured ones.
+    fn is_measured(&self, position: u64) -> bool {
+        let stride = (self.config.analysis_frames / MEASURED_FRAMES).max(1) as u64;
+        position < self.config.analysis_frames as u64 && position % stride == 0
+    }
+
+    // The end of the stream: decides a scene that ended before it was fully measured. The last
+    // frames join the scene before them — a scene of two frames would be decided from nothing.
+    pub fn finish(mut self) -> Option<SceneDecision> {
+        let mut decisions = Vec::new();
+        while !self.arrived.is_empty() {
+            self.settle(false, &mut decisions);
+        }
+        decisions.extend(self.close());
+        decisions.pop()
+    }
+
+    // Settles the oldest arrived frame: it starts a scene or joins the current one.
+    fn settle(&mut self, cuts: bool, decisions: &mut Vec<SceneDecision>) {
+        let Some(frame) = self.arrived.pop_front() else {
+            return;
+        };
+        let index = self.settled;
         let length = index - self.scene_start;
+        let cut = cuts
+            && frame.may_be_cut
+            && frame.pair.as_ref().is_some_and(|pair| {
+                let after: Vec<f64> =
+                    self.arrived.iter().filter_map(|next| next.pair.as_ref().map(|pair| pair.mc_residual)).collect();
+                temporal::is_cut(pair, &frame.before, &after)
+            });
         let boundary = if index == 0 {
             Some(SceneStart::Start)
-        } else if pair.as_ref().is_some_and(|pair| pair.cut) && length >= self.config.min_scene_frames as u64 {
+        } else if cut && length >= self.config.min_scene_frames as u64 {
             Some(SceneStart::Cut)
-        } else if length >= self.config.max_scene_frames as u64 {
+        } else if cuts && length >= self.config.max_scene_frames as u64 {
             Some(SceneStart::Split)
         } else {
             None
         };
         if let Some(kind) = boundary {
-            if let Some(decision) = self.close() {
-                decisions.push(decision);
-            }
+            decisions.extend(self.close());
             self.scene_start = index;
             self.scene_kind = kind;
-            self.scene_cut = if kind == SceneStart::Cut { pair } else { None };
+            self.scene_cut = if kind == SceneStart::Cut { frame.pair } else { None };
             self.analyzer = Some(WindowAnalyzer::new(index as f64 / self.source.fps.max(1.0)));
-            self.measured = 0;
             self.decided = false;
         }
+        self.settled += 1;
+        // A frame measured for a scene that did not come to be is not one of this scene's measured
+        // frames. The pair into a scene's first frame belongs to the scene before it.
+        let measure = frame.measure.filter(|_| self.is_measured(index - self.scene_start));
         if let Some(analyzer) = self.analyzer.as_mut() {
-            // The pair into a scene's first frame belongs to the scene before it.
-            analyzer.push_measured(frame, if boundary.is_some() { None } else { pair.as_ref() });
-            self.measured += 1;
-            if self.measured >= self.config.analysis_frames {
+            analyzer.push(measure, if boundary.is_some() { None } else { frame.pair.as_ref() }, cut);
+            if self.settled - self.scene_start >= self.config.analysis_frames as u64 {
                 decisions.push(self.decide());
             }
         }
-        self.remember(frame, lowres);
-        self.pushed += 1;
-        decisions
-    }
-
-    // The end of the stream: decides a scene that ended before it was fully measured.
-    pub fn finish(mut self) -> Option<SceneDecision> {
-        self.close()
     }
 
     fn close(&mut self) -> Option<SceneDecision> {
-        (self.pushed > 0 && !self.decided).then(|| self.decide())
+        (self.settled > 0 && !self.decided).then(|| self.decide())
     }
 
     fn decide(&mut self) -> SceneDecision {
@@ -187,26 +257,15 @@ impl SceneDecider {
             cut: self.scene_cut,
             cut_pairs_within: features.cuts,
             estimate,
+            features,
         }
-    }
-
-    // The previous frame is kept as a packed copy, in a buffer reused from frame to frame: the
-    // caller's planes are only borrowed until it decodes the next frame into them.
-    fn remember(&mut self, frame: &Frame, lowres: LowRes) {
-        let (width, height) = (frame.y.width, frame.y.height);
-        let mut luma = self.previous.take().map(|previous| previous.luma).unwrap_or_default();
-        luma.clear();
-        luma.reserve(width * height);
-        for y in 0..height {
-            luma.extend_from_slice(frame.y.row(y));
-        }
-        self.previous = Some(Previous { luma, width, height, lowres });
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frame::Plane;
     use crate::spatial::tests::{Noise, picture};
 
     const W: usize = 320;
@@ -261,8 +320,10 @@ mod tests {
         let starts: Vec<_> = decisions.iter().map(|d| (d.start_frame, d.start)).collect();
         assert_eq!(starts, vec![(0, SceneStart::Start), (30, SceneStart::Cut)]);
         assert!(decisions[1].crf < decisions[0].crf, "{decisions:?}");
+        // Every frame of a scene's opening is compared with the one before; four are measured.
+        assert!(decisions.iter().all(|d| d.features.frames == 12 && d.features.measured == MEASURED_FRAMES));
         // The cut carries the pair that was read as one; the first scene has none.
-        assert!(decisions[0].cut.is_none() && decisions[1].cut.is_some_and(|pair| pair.cut));
+        assert!(decisions[0].cut.is_none() && decisions[1].cut.is_some_and(|pair| pair.candidate));
     }
 
     #[test]
@@ -271,7 +332,9 @@ mod tests {
         let mut scenes = decider(SceneConfig { analysis_frames: 5, ..Default::default() });
         for (index, data) in frames.iter().enumerate() {
             scenes.push(&Frame::luma(Plane::new(data, W, H, W).unwrap()));
-            let expected = if index < 4 { 0 } else { index as u64 + 1 };
+            // The scene is decided once its fifth frame is settled, two frames after it arrived,
+            // and from then on only the frames still being weighed as cuts are held.
+            let expected = if index < 4 + CUT_PAIRS_AFTER { 0 } else { (index - CUT_PAIRS_AFTER) as u64 + 1 };
             assert_eq!(scenes.decided_frames(), expected, "after frame {index}");
         }
     }
@@ -308,6 +371,28 @@ mod tests {
         let starts: Vec<_> = decisions.iter().map(|d| (d.start_frame, d.start)).collect();
         assert_eq!(starts, vec![(0, SceneStart::Start), (30, SceneStart::Split), (60, SceneStart::Split)]);
         assert!(decisions.windows(2).all(|pair| pair[0].crf == pair[1].crf));
+    }
+
+    // Fast action is one scene. Every frame here is a different piece of one busy picture, further
+    // from the last than motion compensation reaches, so every pair looks like a cut by itself —
+    // and none of them stands out from the pairs around it.
+    #[test]
+    fn fast_motion_is_not_a_run_of_cuts() {
+        let busy = |shift: usize| {
+            picture(W, H, |x, y| {
+                let (x, y) = ((x + shift * 97) / 32, (y + shift * 53) / 32);
+                ((x * 2654435761 + y * 40503 + x * y * 97) % 251) as f64
+            })
+        };
+        let frames: Vec<Vec<u8>> = (0..40).map(busy).collect();
+        let planes: Vec<LowRes> =
+            frames.iter().map(|data| temporal::downsample(&Plane::new(data, W, H, W).unwrap())).collect();
+        let candidates = planes.windows(2).filter(|pair| temporal::compare(&pair[0], &pair[1]).candidate).count();
+        assert_eq!(candidates, 39);
+        let mut scenes = decider(SceneConfig::default());
+        let mut decisions = run(&mut scenes, &frames);
+        decisions.extend(scenes.finish());
+        assert_eq!(decisions.len(), 1, "{decisions:?}");
     }
 
     #[test]

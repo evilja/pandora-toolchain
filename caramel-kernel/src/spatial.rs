@@ -33,6 +33,14 @@ const LINE_ART_FLAT_MIN: f64 = 0.35;
 // Share of the frame, lowest gradient first, whose Laplacian response is read as noise.
 const NOISE_SAMPLE_SHARE: f64 = 0.4;
 const NOISE_BINS: usize = 256;
+// The noise floors the fine detail is weighed against, in code values. An encoder at a given
+// quantiser adds noise of some such level everywhere and removes whatever detail lies under it, so
+// what a frame loses is the part of its detail below the floor. The floors span what CRF 10–30 does.
+pub const DETAIL_FLOORS: [f64; 5] = [0.5, 1.0, 2.0, 4.0, 8.0];
+// The Laplacian of unit noise has a deviation of 6, and its largest counted response is past the
+// highest floor.
+const LAPLACIAN_GAIN: f64 = 6.0;
+const LAPLACIAN_BINS: usize = 64;
 
 #[derive(Clone, Copy, Debug, Default, Serialize)]
 pub struct SpatialFeatures {
@@ -49,6 +57,10 @@ pub struct SpatialFeatures {
     pub line_art_share: f64,
     pub dark_share: f64,
     pub mean_luma: f64,
+    // Fine detail below each of `DETAIL_FLOORS`: the mean of min(h², floor²) over the frame, h being
+    // the high-pass response in code values. Flat fills and already-compressed pictures have almost
+    // none at any floor; grain and texture fill each floor to its square.
+    pub detail_energy: [f64; 5],
 }
 
 #[derive(Clone, Copy, Default)]
@@ -98,6 +110,7 @@ pub fn analyze_luma(plane: &Plane) -> SpatialFeatures {
     let mut noise_sum = [0f64; NOISE_BINS];
     let (mut samples, mut edges) = (0u64, 0u64);
     let (mut magnitude_sum, mut magnitude_squares, mut luma_sum) = (0f64, 0f64, 0f64);
+    let mut laplacian_count = [0u32; LAPLACIAN_BINS];
 
     let mut y = 1;
     while y + 1 < height {
@@ -125,6 +138,7 @@ pub fn analyze_luma(plane: &Plane) -> SpatialFeatures {
             let bin = ((magnitude * 0.5) as usize).min(NOISE_BINS - 1);
             noise_count[bin] += 1;
             noise_sum[bin] += lap.unsigned_abs() as f64;
+            laplacian_count[(lap.unsigned_abs() as usize).min(LAPLACIAN_BINS - 1)] += 1;
             x += 2;
         }
         y += 2;
@@ -141,6 +155,15 @@ pub fn analyze_luma(plane: &Plane) -> SpatialFeatures {
         edge_density: edges as f64 / n,
         noise_sigma: noise_sigma(&noise_count, &noise_sum, samples),
         mean_luma: luma_sum / n,
+        detail_energy: DETAIL_FLOORS.map(|floor| {
+            let limit = (floor * LAPLACIAN_GAIN).powi(2);
+            let sum: f64 = laplacian_count
+                .iter()
+                .enumerate()
+                .map(|(response, &count)| count as f64 * ((response * response) as f64).min(limit))
+                .sum();
+            sum / n / (LAPLACIAN_GAIN * LAPLACIAN_GAIN)
+        }),
         ..Default::default()
     };
     classify_blocks(&blocks, blocks_x, blocks_y, &mut features);

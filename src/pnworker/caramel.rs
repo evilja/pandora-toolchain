@@ -7,7 +7,8 @@
 // at fixed CRFs and measures both against the source.
 
 use crate::lib::mpeg::caramel::{
-    CaramelReport, SceneRequest, VerifyEncoder, VerifyRequest, probe_source, run_scene_analysis, run_verification,
+    CaramelReport, SceneEntry, SceneRequest, VerifyEncoder, VerifyRequest, probe_source, run_scene_analysis,
+    run_verification,
 };
 use crate::lib::mpeg::preset::resolve as resolve_preset;
 use crate::pnworker::core::{CommData, Stage};
@@ -145,30 +146,42 @@ fn histogram(report: &CaramelReport) -> String {
         .join(" · ")
 }
 
-// What moved the scenes, across the whole source: every factor's delta averaged over frames, the
-// largest first.
-fn drivers(report: &CaramelReport) -> String {
+// Averages a named figure of every scene over the source's frames, keeping the order of first
+// appearance.
+fn frame_weighted<'a>(
+    report: &'a CaramelReport,
+    figures: impl Fn(&'a SceneEntry) -> Vec<(&'static str, f64)>,
+) -> Vec<(&'static str, f64)> {
     let mut totals: Vec<(&str, f64)> = Vec::new();
     for scene in &report.scenes {
-        for factor in &scene.contributions {
-            let weighted = factor.delta * scene.frames as f64;
-            match totals.iter_mut().find(|(name, _)| *name == factor.factor) {
+        for (name, value) in figures(scene) {
+            let weighted = value * scene.frames as f64;
+            match totals.iter_mut().find(|(known, _)| *known == name) {
                 Some(total) => total.1 += weighted,
-                None => totals.push((factor.factor, weighted)),
+                None => totals.push((name, weighted)),
             }
         }
     }
     let frames = report.summary.frames.max(1) as f64;
-    let mut factors: Vec<(&str, f64)> = totals
-        .into_iter()
-        .map(|(name, total)| (name, total / frames))
-        .filter(|(_, delta)| delta.abs() >= 0.05)
-        .collect();
+    totals.into_iter().map(|(name, total)| (name, total / frames)).collect()
+}
+
+// What moved the scenes, across the whole source: how far each quality metric would have let the
+// CRF go on average, then what was applied — the part all of them agreed on and the factors that
+// do not depend on the scene — the largest first.
+fn drivers(report: &CaramelReport) -> String {
+    let listed = |figures: &[(&str, f64)]| {
+        figures.iter().map(|(name, delta)| format!("`{name}` {delta:+.2}")).collect::<Vec<_>>().join(", ")
+    };
+    let votes = frame_weighted(report, |scene| scene.votes.iter().map(|vote| (vote.metric, vote.offset)).collect());
+    let mut factors: Vec<(&str, f64)> =
+        frame_weighted(report, |scene| scene.contributions.iter().map(|factor| (factor.factor, factor.delta)).collect())
+            .into_iter()
+            .filter(|(_, delta)| delta.abs() >= 0.05)
+            .collect();
     factors.sort_by(|a, b| b.1.abs().total_cmp(&a.1.abs()));
-    if factors.is_empty() {
-        return "—".to_string();
-    }
-    factors.iter().map(|(name, delta)| format!("`{name}` {delta:+.2}")).collect::<Vec<_>>().join(", ")
+    let applied = if factors.is_empty() { "—".to_string() } else { listed(&factors) };
+    if votes.is_empty() { applied } else { format!("{} → {}", listed(&votes), applied) }
 }
 
 fn timestamp(seconds: f64) -> String {

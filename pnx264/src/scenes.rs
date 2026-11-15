@@ -4,8 +4,9 @@
 // `SceneSchedule` sits between the decoder and `Encoder`. Every decoded frame is pushed in; a frame
 // comes back out once its scene's CRF is known, together with the CRF to switch to when it is the
 // first frame of a scene whose CRF differs from the last. Only a scene's first `analysis_frames`
-// frames are ever held back (owned copies, ~3 MB each at 1080p), so the delay and the memory are
-// bounded by that one number whatever the scene's length.
+// frames are ever held back, and after them the two the decider is still weighing as a cut (owned
+// copies, ~3 MB each at 1080p), so the delay and the memory are bounded by that one number whatever
+// the scene's length.
 
 use crate::y4m;
 use caramel_kernel::{EncodeContext, Frame, Plane, SceneConfig, SceneDecider, SourceContext};

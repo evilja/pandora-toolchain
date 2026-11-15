@@ -13,8 +13,8 @@
 
 use crate::lib::bin::resolve_runtime_binary;
 use caramel_kernel::{
-    Contribution, EncodeContext, Frame, MODEL_VERSION, Plane, SceneConfig, SceneDecider, SceneDecision, SceneStart,
-    SourceContext, TemporalFeatures,
+    Contribution, EncodeContext, Frame, MODEL_VERSION, MetricVote, Plane, SceneConfig, SceneDecider, SceneDecision,
+    SceneStart, SourceContext, TemporalFeatures, WindowFeatures,
 };
 use serde::Serialize;
 use std::fmt;
@@ -120,7 +120,12 @@ pub struct SceneEntry {
     pub raw_adjustment: f64,
     pub confidence: f64,
     pub frames_analyzed: usize,
+    // What each quality metric would let the scene's CRF move by, and what of that was applied.
+    pub votes: Vec<MetricVote>,
     pub contributions: Vec<Contribution>,
+    // What was measured on the scene's opening frames, as the model was given it: with `verify`,
+    // a report is a row of calibration data per scene.
+    pub features: WindowFeatures,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -393,7 +398,9 @@ fn segment_scenes(segment: &SegmentResult, fps: f64) -> Vec<SceneEntry> {
                 raw_adjustment: estimate.raw_adjustment,
                 confidence: estimate.confidence,
                 frames_analyzed: estimate.frames_analyzed,
+                votes: estimate.votes.clone(),
                 contributions: estimate.contributions.clone(),
+                features: decision.features.clone(),
             }
         })
         .collect()
@@ -885,7 +892,9 @@ mod tests {
             raw_adjustment: 0.0,
             confidence: 1.0,
             frames_analyzed: 12,
+            votes: Vec::new(),
             contributions: Vec::new(),
+            features: WindowFeatures::default(),
         }
     }
 

@@ -9,72 +9,100 @@ standard presets, 18 for `veryslow`, 25 for the low-bitrate one). A fixed CRF ov
 easy material (flat anime, static dialogue scenes) and can underspend on hard material (heavy
 grain, fast action, dark gradients). The goal here is to pick the CRF from the content.
 
-## Implementation: `caramel-scene-2`
+## Implementation: `caramel-scene-3`
 
-**Caramel Analysis** gives every scene its own CRF. It is a prior built from published encoding
-practice and calibrated against the feature distribution of real releases, not yet against
-measured quality. It moves the preset's own CRF (the *anchor*) by bounded offsets. It does not choose
-an absolute CRF, so a deployment that never turns it on encodes exactly as before. The crate depends
-only on `serde`: it takes decoded planes and runs no processes. Decoding, encoding and verification
-are Pandora's job (`src/lib/mpeg/caramel.rs` and `pnx264::scenes`; see `docs/TOOLS.md`).
+**Caramel Analysis** gives every scene its own CRF. It moves the preset's own CRF (the *anchor*) by
+a bounded offset. It does not choose an absolute CRF, so a deployment that never turns it on encodes
+exactly as before. The crate depends only on `serde`: it takes decoded planes and runs no processes.
+Decoding, encoding and verification are Pandora's job (`src/lib/mpeg/caramel.rs` and
+`pnx264::scenes`; see `docs/TOOLS.md`).
 
 - `frame` — borrowed `Plane` / `Frame` views over 8-bit planes (luma, and chroma when present).
 - `spatial` — per-frame luma features, evaluated on every second pixel of every second row:
   - P.910 SI (std of the Sobel magnitude) and edge density (magnitude > 64).
   - Immerkær's Laplacian noise σ, taken over the 40% of pixels with the lowest gradient so edges do
     not count as grain. Measured unbiased on synthetic grain: σ 1/2/4/6 reads as 1.04/2.03/4.02/6.01.
-  - Shares of 16×16 blocks that are smooth, gradient (smooth next to a smooth neighbour with a
-    small mean step: banding risk), dark gradient, line art (edges over flat fill), and dark.
-- `temporal` — P.910 TI, plus a quarter-resolution 8×8 block motion search (predictors and a small
-  diamond, ±8). It gives the zero-motion and motion-compensated residual, the mean motion, and the
-  intra residual of the same low-resolution frame (left/up DPCM). The previous frame is first given
+  - Fine-detail energy under five noise floors (0.5 to 8 code values): the mean of
+    min(h², floor²), h being the high-pass response. An encoder at some quantiser removes the detail
+    under its own noise floor, so this is what a frame has to lose.
+  - Shares of 16×16 blocks that are smooth, gradient, dark gradient, line art, and dark.
+- `temporal` — everything between two frames, on a quarter-resolution copy that is made once per
+  frame and kept instead of the frame. P.910 TI; a whole-frame motion vector found on a
+  sixteenth-resolution copy (±128 luma pixels), then an 8×8 block search from it and from the
+  neighbours' vectors. It gives the zero-motion and motion-compensated residual, the mean motion,
+  the share of blocks the search could not explain (`changed_share`), the residual energy under the
+  same five floors, and the intra residual of the frame itself. The previous frame is first given
   the current one's mean and contrast — x264's weighted-prediction gain and offset — so a fade or a
-  flash, which the encoder predicts almost for free, is not read as a new shot. A pair is a cut when the
-  histogram distance is large, when it is moderate and the motion residual is real, or when motion
-  compensation predicts the frame worse than twice as badly as the frame predicts itself — the
-  last catches a cut between two shots that share one palette.
-- `window` — `WindowAnalyzer` accumulates consecutive frames into `WindowFeatures`. Frame pairs
-  across a cut are kept out of the temporal means.
-- `scene` — `SceneDecider`, fed every frame in display order. It finds cuts (ignoring any within
-  `min_scene_frames` of the last), splits a scene past `max_scene_frames`, measures each scene's
-  first `analysis_frames` and decides its CRF as soon as it has. `decided_frames()` says how many
-  frames an encoder may release, so it holds back at most one scene's opening. Deciding from the
-  opening is what makes it streamable; it holds because a shot does not change character halfway,
-  and the split bounds the damage when one does.
-- `model` — `estimate_scene`. Each scene gets an offset from these factors:
-  - grain (down to −2.5; a small raise when the source is very clean)
-  - gradient banding and dark banding, from 55% and 45% of the frame respectively (stronger when a
-    >8-bit source goes to 8-bit)
-  - line art
-  - texture masking (only where there is no gradient)
-  - motion masking (a small cut for a still shot)
-  - chroma detail
-  - output resolution and source bits per pixel. The starved-source raise applies only when the
-    content is detailed, because a flat source is cheap rather than starved.
+  flash is not read as a new shot.
+- **Cuts** are judged in two steps. A pair is a *candidate* when its histogram distance is large,
+  when it is moderate and the motion residual is real, or when motion compensation predicts the
+  frame more than twice as badly as the frame predicts itself (a cut between two shots that share
+  one palette). A candidate is a cut only if most of the frame changed and its residual stands out
+  from the three pairs before it and the two after it: fast action, whip pans and fire are
+  candidates on every pair for as long as they last, and a pose change is one on a single pair
+  with the background where it was. On 231 hand-labelled candidates from 44 clips (157 cuts), the
+  candidate test alone made 143 false cuts; the full test makes 5 and misses 5.
+- `window` — `WindowAnalyzer` accumulates a scene's opening frames into `WindowFeatures`. Frame
+  pairs across a cut are kept out of the temporal means.
+- `scene` — `SceneDecider`, fed every frame in display order. It settles whether a frame starts a
+  scene two frames after it arrives, ignores cuts within `min_scene_frames` of the last, splits a
+  scene past `max_scene_frames` (48: two seconds), and decides each scene's CRF from its first
+  `analysis_frames` (12). Every frame is compared with the one before it; four of the twelve are
+  measured by themselves, which is the expensive step. `decided_frames()` says how many frames an
+  encoder may release, so it holds back at most one scene's opening plus two frames.
+- `model` — `estimate_scene`. Four linear predictors, one per quality metric (XPSNR, the worst
+  tenth of frames by XPSNR, SSIM, the worst tenth by VMAF), each estimate the CRF offset at which
+  the scene would score what typical content scores at the anchor. They read eight features: noise
+  σ, fine-detail energy, residual energy, zero-motion residual, TI, SI, motion in pixels and the
+  smooth-block share. The scene moves only when all four agree on the direction by more than 1.5
+  CRF, and then by the smallest of the four less 1.5. A raise is scaled by confidence (frames
+  measured, temporal coverage); a cut is not. The output-resolution prior is added, the total is
+  bounded to −4…+4 and rounded to 0.5. A report carries every metric's vote and the scene's
+  features, so a wrong CRF shows which metric and which measurement caused it.
 
-  A raise is scaled by confidence (frames measured, temporal coverage); a cut is not. The total is
-  bounded to −4…+4 and rounded to 0.5. Every factor's contribution is reported, so a wrong CRF shows
-  which term caused it.
+### Calibration
 
-Calibration so far: `caramel-prior-1`'s banding thresholds (5–35% of the frame) put every window of
-two real 1080p TV anime releases at the full penalty and the lower bound, because cel shading puts
-30–70% of a typical frame in smooth gradient blocks. That is content the anchor is already right
-for, and x264's aq-mode 3 already spends on it. The thresholds now start where a frame is mostly
-gradient, so typical scenes sit at the anchor and skies and dark fades are cut. A unit test pins
-those releases' median features to the anchor.
+`caramel-scene-3` is fitted to brute-force encodes. The corpus is 48 clips from eight
+open-licensed 1080p sources (Morevna Project episodes 3 and 4 and Sita Sings the Blues for flat
+animation, Pepper & Carrot episodes 4 and 6 for painted animation, Sintel for CG, Tears of Steel
+and the Xiph derf sequences for live action), cut into 359 two-second scenes. Each was encoded with
+libx264 at CRF 11 to 29 in steps of two and measured per frame with XPSNR, SSIM, PSNR and VMAF.
 
-`caramel-scene-2` compares frames through weighted prediction. The first full-episode scene report
-(`caramel-scene-1`, 1080p TV anime) found 777 scenes in 24 minutes, with long runs of scenes
-exactly `min_scene_frames` long. In 41 of those runs, every measured pair was a cut. Those runs were
-fades: a flat frame brightening by a code value a frame jumps a histogram bin every few frames, and
-a wash-out to white drives the frame's own intra residual towards zero while each step stays
-several code values. A report now records, for each cut, the pair that was read as one (`cut`) and
-how many later pairs in the measured frames also were (`cut_pairs_within`), so a run of false cuts
-shows its cause.
+What it found:
 
-The coefficients are still a starting point. Use `--caramel-verify` / `verify:true` (SSIM, PSNR and
-bitrate of real scenes at their own CRF and at fixed CRFs) to collect the evidence that calibrates
-them. A calibrated model gets a new `MODEL_VERSION`.
+- Quality falls by about 0.49 dB of XPSNR per CRF and size by 13% per CRF. At a fixed CRF the sources are not equally good: flat animation scores what typical content
+  scores 4–5 CRF lower, live action 4–6 CRF higher. Equalising quality across scenes would cost
+  bytes overall, not save them: a fixed CRF already starves hard scenes.
+- The metrics disagree about which scenes are easy, by several CRF. A model of any single one moves
+  scenes the others say should stay.
+- Leaving one source out and predicting it from the rest, a mean offset is 3.4 CRF off per metric
+  and the eight features 2.0. Measuring four frames of a scene's opening predicts as well as
+  measuring all twelve (2.00 against 2.00); a 24-frame opening gains 0.09.
+- The second two seconds of a shot want a CRF more than one away from the first's in half the
+  shots, hence the two-second split.
+- With the consensus rule, on sources the fit never saw and anchors 17 to 21: 18–20% of scenes are
+  raised and 3–6% lowered, the encode is 1.3–1.9% smaller than at the fixed anchor, and a raised
+  scene falls 0.14–0.18 dB below the target at the 95th percentile, 1.1 dB at worst. By source at
+  anchor 19 the size is 0.93–0.97 for four of the five animation sources and 0.98–1.02 for the
+  fifth, the CG and the live action. The streaming decider reproduces the offline figure end to
+  end (0.983).
+- One 1080p frame costs 0.42 ms on one core of an Apple M4 (2400 fps), down from 1.86 ms when
+  every frame was measured.
+
+What it does not cover: every source was 1080p, 8-bit and clean; the encoder was libx264 at preset
+`medium`; there is no banding metric in the consensus, and grainy film and 10-bit sources are not
+in the corpus. Other output resolutions get a prior, not a fit. Use `--caramel-verify` /
+`verify:true` on real releases to check it where the corpus does not reach; a report's `features`
+and `votes` per scene are what a refit needs. A refitted model gets a new `MODEL_VERSION`.
+
+### History
+
+`caramel-prior-1` chose one CRF per file from sampled windows. `caramel-scene-1` and `-2` decided
+per scene from a table of hand-set factors (grain, banding, line art, texture and motion masking,
+chroma, source bits per pixel) calibrated against the feature distribution of real releases but not
+against measured quality. `caramel-scene-2` compared frames through weighted prediction after the
+first full-episode report showed fades read as runs of cuts. Its cut test still looked at one pair
+alone: a 24-minute episode came out as 772 scenes, 220 of them exactly `min_scene_frames` long.
 
 ## Problem statement
 
@@ -121,8 +149,8 @@ hides the hard scenes that decide whether the target is met.
 
 ## Granularity
 
-- **Per scene** (implemented): a CRF per shot, so a static dialogue scene and a fight scene get
-  different CRFs in the same episode. Chunk encoders switch CRF per picture; linear ffmpeg encodes
+- **Per scene** (implemented): a CRF per shot, and per two seconds of a longer one, so a static
+  dialogue scene and a fight scene get different CRFs in the same episode. Chunk encoders switch CRF per picture; linear ffmpeg encodes
   get x264 `zones`.
 - **Per file** was `caramel-prior-1`: one CRF from the 25th percentile of sampled windows. It let the
   hardest windows set the CRF for the easy majority, which is what a per-scene CRF avoids.
@@ -136,9 +164,10 @@ hides the hard scenes that decide whether the target is met.
 
 ## Open questions
 
-- Which quality metric and threshold define "visually transparent" for Pandora's releases
-  (anime-heavy: SSIMULACRA2 and XPSNR tend to track line-art damage better than VMAF).
-- Whether a very cheap encoder-derived feature (for example x264 lookahead/`ultrafast` first-pass
-  complexity) is worth its cost alongside the pure source features.
+- Which quality metric and threshold define "visually transparent" for Pandora's releases. The
+  model sidesteps it by requiring four metrics to agree; a banding metric (CAMBI) is the one most
+  likely to disagree with all four on dark gradients, and is not in the consensus yet.
+- Whether the fit carries to `veryslow`, to x265 and SVT-AV1 anchors, and to resolutions other
+  than 1080p.
 - Answered: the decider plugs into `pnmpeg` as a preset's `crf_mode = "caramel-analysis"`, as
   `--aot-crf caramel-analysis` per AOT chunk, and as the standalone `--caramel-report`.
