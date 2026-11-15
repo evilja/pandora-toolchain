@@ -162,9 +162,12 @@ chunk encoder, and `src/lib/mpeg/caramel.rs` runs it over a whole file and verif
   and compared against the source with ffmpeg's `ssim` and `psnr` filters. Both passes seek
   accurately to the scene's first frame and take the same frame count, and frames are paired by
   their index in the clip rather than by timestamp (Matroska's millisecond timestamps pair some
-  23.976 fps frames with their neighbours). The pooled totals give the
-  adaptive strategy's bitrate saving against each fixed CRF. Scratch files go in a hidden directory
-  beside the output and are removed afterwards. `--cancelfile` is checked before each clip.
+  23.976 fps frames with their neighbours). The encode renumbers its frames too, so irregular
+  source timestamps cannot make it repeat or drop one, and the measurement is told to read only
+  the clip's span of the source, so a clip costs the same wherever in the file it is. The pooled
+  totals give the adaptive strategy's bitrate saving against each fixed CRF. Scratch files go in a
+  hidden directory beside the output and are removed afterwards. `--cancelfile` is checked before
+  each clip.
 
 ## `pnmpeg` image watermark
 

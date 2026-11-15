@@ -677,6 +677,23 @@ fn measurement_graph(frames: u64, ssim_file: &str, psnr_file: &str) -> String {
     )
 }
 
+// How much of the source the measurement may read, from the clip's first frame. `trim` ends the
+// comparison after the clip's last frame, but not every ffmpeg stops reading there: on the
+// production server a clip took time in proportion to what was left of the file after it, half a
+// minute for a clip from an episode's first minute and seven minutes for twelve clips, where the
+// same twelve take four seconds once the reading is bounded. Two frames more than the clip, so
+// that rounding cannot take a frame the comparison needs.
+fn read_limit_seconds(frames: u64, fps: f64) -> String {
+    format!("{:.6}", (frames + 2) as f64 / fps)
+}
+
+// The encode's own renumbering: frame n at n frame-durations. Left to itself ffmpeg fits the frames
+// to their timestamps, repeating one where the source has a gap and dropping one where two share a
+// timestamp — a join between two files, a variable-rate section — and the clip then holds other
+// frames than the source it is compared with: three frames of a scene read SSIM 0.64 at every CRF.
+// On regular timestamps the encode is the same to the byte.
+const ENCODE_BY_INDEX: &str = "setpts=N/FRAME_RATE/TB";
+
 // One clip at one CRF: encode it, then decode the source again from the same frame and compare.
 // Both passes seek accurately to the scene's first frame and take the same frame count, so they
 // cover exactly the frames the scene's CRF was decided for.
@@ -701,7 +718,8 @@ fn measure_clip(
     encode
         .arg("-i")
         .arg(input)
-        .args(["-map", "0:v:0", "-frames:v", &frame_count, "-an", "-sn", "-dn", "-pix_fmt", "yuv420p", "-c:v", "libx264"]);
+        .args(["-map", "0:v:0", "-frames:v", &frame_count, "-an", "-sn", "-dn", "-vf", ENCODE_BY_INDEX])
+        .args(["-pix_fmt", "yuv420p", "-c:v", "libx264"]);
     if let Some(preset) = &request.encoder.preset {
         encode.args(["-preset", preset]);
     }
@@ -725,6 +743,7 @@ fn measure_clip(
         measure.args(["-ss", seek]);
     }
     measure
+        .args(["-t", &read_limit_seconds(frames, fps)])
         .arg("-i")
         .arg(input)
         .arg("-i")
@@ -895,6 +914,12 @@ mod tests {
 
     // Frames are paired by their index in the clip, never by the timestamps the containers gave
     // them: both sides of both comparisons are renumbered, and nothing is rebased from its PTS.
+    #[test]
+    fn the_measurement_reads_no_more_of_the_source_than_the_clip() {
+        let limit: f64 = read_limit_seconds(48, 24000.0 / 1001.0).parse().unwrap();
+        assert!(limit > 48.0 * 1001.0 / 24000.0 && limit < 51.0 * 1001.0 / 24000.0);
+    }
+
     #[test]
     fn verification_pairs_frames_by_index() {
         let graph = measurement_graph(48, "a.ssim", "a.psnr");
