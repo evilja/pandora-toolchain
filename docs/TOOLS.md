@@ -130,7 +130,8 @@ chunk encoder, and `src/lib/mpeg/caramel.rs` runs it over a whole file and verif
   error and what it does not cover). The scene moves only when all four agree on the direction by
   more than 1.5 CRF, and then by the smallest of them less 1.5, so most scenes stay at the anchor.
   The output-resolution prior is added on top; a letterboxed picture is named by its 16:9 frame. A
-  raise is scaled by confidence (frames measured, temporal coverage); a cut never is. The offset is
+  raise is scaled by confidence (frames measured, temporal coverage) and refused when a second cut
+  fell inside the measured frames (`cut_pairs_within`); a lowering never is. The offset is
   bounded to −4…+4 and rounded to 0.5. Reports are stamped with `caramel_kernel::MODEL_VERSION`.
 - **Presets.** `crf_mode = "caramel-analysis"` in a libx264 preset file makes every encode with it
   per-scene, anchored at its `crf`. Such a preset chunks by default and never runs linear AOT, which

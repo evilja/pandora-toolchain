@@ -43,7 +43,7 @@
 use crate::window::WindowFeatures;
 use serde::Serialize;
 
-pub const MODEL_VERSION: &str = "caramel-scene-5";
+pub const MODEL_VERSION: &str = "caramel-scene-6";
 
 // The furthest a scene's CRF may move from the anchor in either direction.
 const MAX_RAISE: f64 = 4.0;
@@ -56,6 +56,11 @@ const MARGIN: f64 = 1.5;
 const FULL_CONFIDENCE_FRAMES: f64 = 6.0;
 // A scene with no frame pair to measure motion on knows half of what it would.
 const NO_MOTION_CONFIDENCE: f64 = 0.5;
+// A window with a cut inside it is two shots measured as one, and the scene it decides is mostly the
+// second. On the real releases measured, the votes of such scenes were 3.5 CRF from what the encodes
+// allowed on the worst frames where the others were 2.1, and two of the three that were raised were
+// raised too far, one by 3 CRF for 1.7 dB. Refusing them costs 0.04% of the bytes on the corpus.
+const CUT_INSIDE_CONFIDENCE: f64 = 0.0;
 // Granularity of the reported CRF. Coarse on purpose: a scene's CRF moving by a tenth between two
 // shots of the same content is noise, and every change is a rate-control reconfiguration.
 const CRF_STEP: f64 = 0.5;
@@ -309,7 +314,8 @@ pub fn estimate_scene(window: &WindowFeatures, source: &SourceContext, encode: &
         vec![Contribution { factor: "consensus", value: binding, delta: agreed }, resolution_contribution(source, encode)];
     let raw_adjustment: f64 = contributions.iter().map(|factor| factor.delta).sum();
     let confidence = (window.frames as f64 / FULL_CONFIDENCE_FRAMES).min(1.0)
-        * if window.temporal.is_some() { 1.0 } else { NO_MOTION_CONFIDENCE };
+        * if window.temporal.is_some() { 1.0 } else { NO_MOTION_CONFIDENCE }
+        * if window.cuts == 0 { 1.0 } else { CUT_INSIDE_CONFIDENCE };
     let scaled = if raw_adjustment > 0.0 { raw_adjustment * confidence } else { raw_adjustment };
     let adjustment = scaled.clamp(-MAX_LOWER, MAX_RAISE);
     SceneEstimate {
@@ -529,6 +535,23 @@ mod tests {
         assert_eq!(estimate.confidence, NO_MOTION_CONFIDENCE);
         let still = WindowFeatures { temporal: Some(TemporalSummary::default()), ..window(FLAT_PAN) };
         assert_eq!(offsets(&single, 19.0), offsets(&still, 19.0));
+    }
+
+    // Two shots in one window: the easy one's raise is not given to the other, and a scene that
+    // reads hard is still given its bits.
+    #[test]
+    fn a_window_with_a_cut_inside_is_not_raised() {
+        let encode = EncodeContext::anchored(19.0);
+        let split = |figures| WindowFeatures { cuts: 1, ..window(figures) };
+        assert!(estimate_scene(&window(FLAT_PAN), &source(), &encode).crf > 19.0);
+        let estimate = estimate_scene(&split(FLAT_PAN), &source(), &encode);
+        assert_eq!((estimate.crf, estimate.confidence), (19.0, 0.0));
+        assert!(estimate.raw_adjustment > 0.0);
+        assert_eq!(
+            estimate_scene(&split(CG_CLOSE_UP), &source(), &encode).crf,
+            estimate_scene(&window(CG_CLOSE_UP), &source(), &encode).crf
+        );
+        assert!(estimate_scene(&split(CG_CLOSE_UP), &source(), &encode).crf < 19.0);
     }
 
     // A scene unlike anything in the corpus is read as the nearest thing that was, and whatever the

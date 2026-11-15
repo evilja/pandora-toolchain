@@ -9,7 +9,7 @@ standard presets, 18 for `veryslow`, 25 for the low-bitrate one). A fixed CRF ov
 easy material (flat anime, static dialogue scenes) and can underspend on hard material (heavy
 grain, fast action, dark gradients). The goal here is to pick the CRF from the content.
 
-## Implementation: `caramel-scene-5`
+## Implementation: `caramel-scene-6`
 
 **Caramel Analysis** gives every scene its own CRF. It moves the preset's own CRF (the *anchor*) by
 a bounded offset. It does not choose an absolute CRF, so a deployment that never turns it on encodes
@@ -56,13 +56,14 @@ Decoding, encoding and verification are Pandora's job (`src/lib/mpeg/caramel.rs`
   σ, fine-detail energy, residual energy, zero-motion residual, TI, SI, motion in pixels and the
   smooth-block share. The scene moves only when all four agree on the direction by more than 1.5
   CRF, and then by the smallest of the four less 1.5. A raise is scaled by confidence (frames
-  measured, temporal coverage); a cut is not. The output-resolution prior is added, the total is
+  measured, temporal coverage) and refused when a cut fell inside the measured frames — two shots
+  were read as one; a lowering is neither. The output-resolution prior is added, the total is
   bounded to −4…+4 and rounded to 0.5. A report carries every metric's vote and the scene's
   features, so a wrong CRF shows which metric and which measurement caused it.
 
 ### Calibration
 
-`caramel-scene-5` is fitted to brute-force encodes. The corpus is 48 clips from eight
+`caramel-scene-6` is fitted to brute-force encodes. The corpus is 48 clips from eight
 open-licensed 1080p sources (Morevna Project episodes 3 and 4 and Sita Sings the Blues for flat
 animation, Pepper & Carrot episodes 4 and 6 for painted animation, Sintel for CG, Tears of Steel
 and the Xiph derf sequences for live action), cut into 359 two-second scenes. Each was encoded with
@@ -123,8 +124,13 @@ falls 0.88 dB below, and the 48 scenes come out 2.1% smaller. Over the whole epi
 same way: the seven it lowered were all short of the target at the anchor, by 0.2 to 5.6 CRF on
 XPSNR, and of the nine it raised seven stay above the target, one is 0.13 dB short on its worst
 frames, and one — raised 3 CRF — ends 1.7 dB below it there, having been 0.4 dB below at the
-anchor. That is the model's error showing where it is largest; nothing in the eight features
-tells that scene from the easy ones beside it. The episode is 851 scenes; `caramel-scene-2` cut it into 772 with
+anchor. That scene has a cut inside its measured frames, one that came too soon after the last
+to start a scene of its own, so two shots were measured as one. Of the 112 scenes measured on this
+release and the next, eleven are like that: their worst-frames vote is 3.5 CRF from what the
+encodes allow where the others' is 2.1, and of the three that were raised two were raised too far
+(of the other eighteen raised, three). `caramel-scene-6` does not raise such a scene. On the
+corpus that gives up 0.04% of the bytes; on this episode the raised frames go from 23% to 19.5%.
+The episode is 851 scenes; `caramel-scene-2` cut it into 772 with
 220 of them exactly `min_scene_frames` long, where there are now 10, and analysed it at 276 fps
 where the deployment now runs 420.
 
@@ -169,7 +175,8 @@ with one that looks at the pairs around a candidate. Fitted on pristine frames, 
 of a 10-bit source — and what is left of it in a web release — as grain and detail: on real
 releases it raised almost nothing. `caramel-scene-4` gave sources deeper than 8 bits predictors
 fitted on both the pristine and the dithered reading of every scene; `caramel-scene-5` uses those
-for every source, after a web release measured the same way.
+for every source, after a web release measured the same way. `caramel-scene-6` is the same
+predictors, and no longer raises a scene whose measured frames hold a second cut.
 
 ## Problem statement
 
