@@ -16,6 +16,7 @@ Guidance for coding agents working in this repository.
 - **docs/LINK.md** — Pandora Mini linked nodes: `pndc --mini`, `pndc --orchestrator`, the lease protocol, what can be offloaded, failure handling.
 - **docs/SETUP.md** — first-run configuration (`pndc --setup`), the required-key trigger, and the no-TTY template path.
 - **docs/SUBTITLES.md** — the `/subs` browser subtitle editor: its files, document model, phone/desktop layout, and tools (HYDRA, timing, styles).
+- **docs/CARAMEL.md** — Caramel's CRF model: the lab (`pnmpeg --caramel-lab`), the dataset, training and its gate (`pnmpeg --caramel-train`), installed models, and the idle-time research worker.
 
 `CLAUDE.md` carries the same project policies; keep the two consistent when guidance or the doc set changes.
 

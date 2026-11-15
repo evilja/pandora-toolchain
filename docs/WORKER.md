@@ -165,6 +165,19 @@ AOT is globally idle-only. Every `enc-main` job holds `DB/work/.foreground-encod
 
 Parallel worker count is additionally capped from Linux `MemAvailable` after AOT processes are stopped. Defaults reserve 4096 MiB for the OS/other services and budget 800 MiB per 1080p VerySlow worker; `PN_PARALLEL_MEMORY_RESERVE_MIB` and `PN_PARALLEL_MEMORY_PER_WORKER_MIB` tune those safety estimates. This prevents CPU-count selection from invoking the OOM killer on a memory-constrained host.
 
+### Caramel research
+
+The one thing the machine does with a completely empty queue. With `caramel_research|pntools|on`
+in `env.pandora`, `pnworker::research` waits until the queue has held no job for five minutes and no
+encode holds `DB/work/.foreground-encode`, then measures scenes of sources nobody has measured yet
+for Caramel's CRF model and, after enough new scenes, retrains it — see
+[CARAMEL.md](CARAMEL.md#the-research-worker). It is not a job and has no worker, lane or slot: it
+runs `pnmpeg --caramel-lab` and `pnmpeg --caramel-train` as `nice -n 19` children of `pndc`, looks
+at the published snapshot's `queue_len` every two seconds, and on the first queued job of any kind
+— a background encode included — writes the child's cancel file, waits up to 30 s, kills it and
+clears its scratch clips. What it had finished is already in `DB/caramel/dataset/`. It is not
+started on a Mini node or an orchestrator, and a restart of `pndc` simply starts the wait again.
+
 ### Reading an AOT failure
 
 A speculative encoder that the kernel kills writes no message of its own, so the AOT paths record

@@ -143,9 +143,11 @@ chunk encoder, and `src/lib/mpeg/caramel.rs` runs it over a whole file and verif
   and are held back only until their scene is decided, and the CRF is switched per picture through
   `x264_picture_t.param`, exactly as x264's own zones are applied. A chunk starts a scene at its
   first frame, since nothing before it is visible. The planner writes the decider's settings to
-  `parallel-aot/caramel.context` and passes them to every chunk child as the hidden
-  `--aot-caramel`. Each finished chunk writes `<chunk>.scenes` (`start|crf` lines) beside it. A
-  chunk is reused only when that sidecar matches the mode: present under caramel, absent otherwise.
+  `parallel-aot/caramel.context` and passes them to every chunk child as the hidden `--aot-caramel`.
+  The context names the model (`model=<version>`), so every chunk of an encode decides with the one
+  its planner had, whatever is installed meanwhile. Each finished chunk writes `<chunk>.scenes`
+  (`start|crf` lines) beside it. A chunk is reused only when that sidecar matches the mode: present
+  under caramel, absent otherwise.
 - **`--aot-crf <value>`** (hidden). It sets the CRF of AOT chunks: a number (`-12`…`63`),
   `caramel-analysis` (anchored at the preset's CRF), or `caramel-analysis:<crf>` (anchored at
   `<crf>`).
@@ -178,6 +180,17 @@ chunk encoder, and `src/lib/mpeg/caramel.rs` runs it over a whole file and verif
   totals give the adaptive strategy's bitrate saving against each fixed CRF. Scratch files go in a
   hidden directory beside the output and are removed afterwards. `--cancelfile` is checked before
   each clip.
+- **`--caramel-lab`** measures scenes of the input for the model's dataset: each is encoded at
+  several CRFs with the preset's x264 settings — video only, no subtitles — and measured against
+  the source with XPSNR, SSIM, VMAF and CAMBI. Samples are appended to `-o`, a JSON-lines file;
+  the other `.jsonl` files beside it say which kinds of scene are already known. `--lab-scenes`,
+  `--lab-crfs`, `--lab-points`, `--lab-workers`, `--lab-source` and `--lab-series` are described
+  in [CARAMEL.md](CARAMEL.md#the-lab-pnmpeg---caramel-lab). Exit 0 done, 3 cancelled, 1 failed.
+- **`--caramel-train`** trains a model on the dataset directory given as `-i`, prints a JSON report
+  of what it scored on series it was not trained on, and writes the candidate to `-o` (`-` for
+  none). Exit 0 when the candidate may replace the model in use, 4 when it may not, 1 on an error;
+  `--train-install` installs an accepted one under `DB/caramel/models/` and points
+  `DB/caramel/active` at it. See [CARAMEL.md](CARAMEL.md#training-pnmpeg---caramel-train).
 
 ## `pnmpeg` image watermark
 
