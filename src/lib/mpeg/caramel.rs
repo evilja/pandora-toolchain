@@ -629,6 +629,8 @@ pub struct VerifyReport {
     pub encoder: VerifyEncoder,
     // The first line of `ffmpeg -version`: which build encoded and measured.
     pub ffmpeg: String,
+    // The depth the clips were compared at: 8, or 10 for a deeper source.
+    pub reference_bit_depth: u8,
     pub sample: VerifySample,
     pub clip_seconds: f64,
     pub scenes: Vec<VerifyScene>,
@@ -731,15 +733,25 @@ fn kbps(bytes: u64, frames: u64, fps: f64) -> f64 {
 // partner's neighbour. Whether that happens depends on where in the second the scene starts. On a
 // still it changes nothing; on a moving shot it read SSIM 0.959 for an encode that measures 0.997,
 // and the same at every CRF. So both sides are renumbered: frame n is at n seconds.
-fn measurement_graph(frames: u64, ssim_file: &str, psnr_file: &str, xpsnr_file: Option<&str>) -> String {
+//
+// A source deeper than 8 bits is compared at 10: the encode is raised to it, the source is not
+// brought down. Bringing it down dithers it, and the encoder is then marked down for not
+// reproducing the dither: the same encodes of a 10-bit clip read 1 to 2 dB of XPSNR lower against
+// its dithered frames than against the clip itself at CRF 18 and above, and the same at CRF 15,
+// where the dither survives the encode. Against the source, encodes of dithered and of plainly
+// rounded frames measure the same (within 0.3 dB on four kinds of content), which is the sense in
+// which dither is not something the encode has to carry.
+fn measurement_graph(frames: u64, deep: bool, ssim_file: &str, psnr_file: &str, xpsnr_file: Option<&str>) -> String {
     const BY_INDEX: &str = "settb=1/1000,setpts=N*1000";
+    let format = if deep { "yuv420p10le" } else { "yuv420p" };
+    let raised = if deep { "format=yuv420p10le," } else { "" };
     let (ways, third, xpsnr) = match xpsnr_file {
         Some(file) => (3, ("[e3]", "[r3]"), format!(";[e3][r3]xpsnr=stats_file={file}:shortest=1")),
         None => (2, ("", ""), String::new()),
     };
     format!(
-        "[1:v]{BY_INDEX},split={ways}[e1][e2]{};\
-         [0:v]trim=end_frame={frames},format=yuv420p,{BY_INDEX},split={ways}[r1][r2]{};\
+        "[1:v]{raised}{BY_INDEX},split={ways}[e1][e2]{};\
+         [0:v]trim=end_frame={frames},format={format},{BY_INDEX},split={ways}[r1][r2]{};\
          [e1][r1]ssim=stats_file={ssim_file}:shortest=1;[e2][r2]psnr=stats_file={psnr_file}:shortest=1{xpsnr}",
         third.0, third.1
     )
@@ -809,6 +821,7 @@ fn measure_clip(
     frames: u64,
     fps: f64,
     request: &VerifyRequest,
+    deep: bool,
     xpsnr: bool,
     crf: f32,
     name: &str,
@@ -842,7 +855,7 @@ fn measure_clip(
     // The filter graph names its stats files relative to the working directory, which keeps paths
     // with `:` or `\` (both special inside a filter graph) out of it entirely.
     let (ssim_file, psnr_file, xpsnr_file) = (format!("{name}.ssim"), format!("{name}.psnr"), format!("{name}.xpsnr"));
-    let graph = measurement_graph(frames, &ssim_file, &psnr_file, xpsnr.then_some(xpsnr_file.as_str()));
+    let graph = measurement_graph(frames, deep, &ssim_file, &psnr_file, xpsnr.then_some(xpsnr_file.as_str()));
     let mut measure = Command::new(ffmpeg);
     measure.current_dir(&request.scratch).args(["-v", "error", "-nostdin"]);
     if let Some(seek) = &seek {
@@ -916,6 +929,7 @@ pub fn run_verification(report: &CaramelReport, request: &VerifyRequest) -> Resu
     let ffmpeg: PathBuf = resolve_runtime_binary("ffmpeg").into();
     let ffmpeg = if ffmpeg.components().count() > 1 { std::fs::canonicalize(&ffmpeg).unwrap_or(ffmpeg) } else { ffmpeg };
     let xpsnr = has_filter(&ffmpeg, "xpsnr");
+    let deep = report.source.bit_depth > 8;
     let fps = report.source.fps;
     let clip_limit = (request.clip_seconds * fps).round().max(1.0) as u64;
     let fail = |error: String| {
@@ -932,7 +946,7 @@ pub fn run_verification(report: &CaramelReport, request: &VerifyRequest) -> Resu
             if request.cancel_file.as_ref().is_some_and(|path| path.exists()) {
                 return Err("cancelled".to_string());
             }
-            measure_clip(&ffmpeg, &input, scene.start_frame, frames, fps, request, xpsnr, crf, &name)
+            measure_clip(&ffmpeg, &input, scene.start_frame, frames, fps, request, deep, xpsnr, crf, &name)
         };
         let adaptive = match clip_at(scene.crf, format!("scene-{scene_index}")) {
             Ok(clip) => clip,
@@ -984,6 +998,7 @@ pub fn run_verification(report: &CaramelReport, request: &VerifyRequest) -> Resu
     Ok(VerifyReport {
         encoder: request.encoder.clone(),
         ffmpeg: ffmpeg_version(&ffmpeg),
+        reference_bit_depth: if deep { 10 } else { 8 },
         sample: request.sample,
         clip_seconds: request.clip_seconds,
         scenes,
@@ -1036,14 +1051,23 @@ mod tests {
 
     #[test]
     fn verification_pairs_frames_by_index() {
-        let graph = measurement_graph(48, "a.ssim", "a.psnr", None);
+        let graph = measurement_graph(48, false, "a.ssim", "a.psnr", None);
         assert_eq!(graph.matches("settb=1/1000,setpts=N*1000").count(), 2);
         assert!(!graph.contains("STARTPTS"));
         assert!(graph.contains("trim=end_frame=48") && graph.contains("stats_file=a.ssim") && graph.contains("stats_file=a.psnr"));
         assert!(graph.contains("split=2[e1][e2];") && !graph.contains("xpsnr"));
-        let graph = measurement_graph(48, "a.ssim", "a.psnr", Some("a.xpsnr"));
+        let graph = measurement_graph(48, false, "a.ssim", "a.psnr", Some("a.xpsnr"));
         assert!(graph.contains("split=3[e1][e2][e3];") && graph.contains("split=3[r1][r2][r3];"));
         assert!(graph.ends_with(";[e3][r3]xpsnr=stats_file=a.xpsnr:shortest=1"));
+    }
+
+    // A 10-bit source is never brought down to the encode's depth for the comparison: that would
+    // dither it, and the dither would be scored as detail the encode lost.
+    #[test]
+    fn a_deep_source_is_compared_at_its_own_depth() {
+        let graph = measurement_graph(48, true, "a.ssim", "a.psnr", None);
+        assert!(graph.starts_with("[1:v]format=yuv420p10le,settb"));
+        assert!(graph.contains("trim=end_frame=48,format=yuv420p10le,") && !graph.contains("format=yuv420p,"));
     }
 
     // Lines of a real stats file. The planes pool in the error domain, so luma's 46.24 dB with
