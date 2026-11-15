@@ -64,6 +64,19 @@ pub const FLAVOR_PATH: &str = "DB/config/global/environment/flavor.pandora";
 // replaced when this is set, since the setting is the request for that.
 pub const FFMPEG_BUILD: &str = "ffmpeg_build";
 
+// Caramel's research worker (`pnworker::research`): what a machine with an empty queue does for the
+// CRF model. Off unless `caramel_research` is `on`; then idle time goes to measuring scenes of
+// sources in `DB/caramel/sources/` and of past jobs' cached inputs, and to retraining the model
+// after every `caramel_research_retrain` new scenes (default 200). `caramel_research_feed` names an
+// RSS feed to find more sources on — without it nothing is ever downloaded for this.
+// `caramel_research_scenes` is how many scenes one source gives (default 40) and
+// `caramel_research_preset` the preset whose encoder settings are measured (default `standard`).
+pub const CARAMEL_RESEARCH: &str = "caramel_research";
+pub const CARAMEL_RESEARCH_FEED: &str = "caramel_research_feed";
+pub const CARAMEL_RESEARCH_SCENES: &str = "caramel_research_scenes";
+pub const CARAMEL_RESEARCH_RETRAIN: &str = "caramel_research_retrain";
+pub const CARAMEL_RESEARCH_PRESET: &str = "caramel_research_preset";
+
 // Encoder presets as editable files. A name with no file here falls back to the built-in table, so
 // an untouched deployment encodes exactly as it did before presets became configurable and an
 // operator opts one preset at a time out of the binary.

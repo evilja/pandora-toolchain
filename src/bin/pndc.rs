@@ -4282,6 +4282,12 @@ async fn main() {
     if !mini {
         pandora_toolchain::pnworker::boot::manager::spawn();
     }
+    // Idle time goes to Caramel's dataset on a machine that encodes its own queue. A node's idle
+    // time is its coordinator's to give, and an orchestrator has a queue that is never empty of
+    // other machines' work.
+    if !mini && !pandora_toolchain::pnworker::link::coordinator::is_orchestrator() {
+        pandora_toolchain::pnworker::research::spawn();
+    }
     if mini {
         if env.get(API_PORT).is_some_and(|port| port.trim().parse::<u16>().is_ok_and(|p| p != 0)) {
             println!("[Pandora] mini mode: api_port is set but no API will be served");

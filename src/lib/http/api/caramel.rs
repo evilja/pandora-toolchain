@@ -183,8 +183,12 @@ pub(super) async fn report(
 
 // What a report was produced by: the model version and the scene settings every encode uses.
 pub(super) async fn model() -> Response {
+    // The research worker's status reads the dataset from disk: megabytes of it, off this thread.
+    let research = tokio::task::spawn_blocking(crate::pnworker::research::status).await.unwrap_or(serde_json::Value::Null);
     Json(json!({
-        "model": caramel_kernel::MODEL_VERSION,
+        "model": crate::lib::mpeg::caramel_train::installed_version(),
+        // What the idle research worker has gathered and what its last training said.
+        "research": research,
         "aot_crf": CARAMEL_ANALYSIS,
         "crf_mode": CARAMEL_ANALYSIS,
         "scenes": caramel_kernel::SceneConfig::default(),

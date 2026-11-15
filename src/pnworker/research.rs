@@ -1,0 +1,689 @@
+// Caramel's research worker: what the machine does for the CRF model while it has no release to
+// make.
+//
+// When the queue is empty and has been for a while, the worker takes one source nobody has
+// measured yet, runs `pnmpeg --caramel-lab` on it — scenes encoded at several CRFs without
+// subtitles and measured against the source — and adds the result to `DB/caramel/dataset/`. Once
+// enough new scenes have come in it runs `pnmpeg --caramel-train --train-install`, which fits a
+// model to the whole dataset and installs it only if it is no worse than the one in use on scenes
+// that one has never seen. Then it takes the next source.
+//
+// A release always comes first. The lab runs at the lowest priority, and the moment the queue has
+// a job in it the worker asks the lab to stop, waits a little, and kills it; a scene that was half
+// measured is measured again next time and nothing else is lost. Nothing here touches a job, the
+// queue, or Discord: the worker only reads whether the queue is empty.
+//
+// Sources come from three places, none of them used unless the operator turns the worker on:
+// files dropped into `DB/caramel/sources/`, the inputs of past jobs still in the input cache, and
+// — only when a feed is named — releases found on an RSS feed, downloaded with `pnp2p` and
+// deleted once measured. A series is measured once or twice and then left alone: a model learns
+// from the fortieth show, not from the fortieth episode of one.
+
+use crate::lib::env::core::get_pandora_env;
+use crate::lib::env::standard::{CARAMEL_RESEARCH, CARAMEL_RESEARCH_FEED, CARAMEL_RESEARCH_PRESET, CARAMEL_RESEARCH_RETRAIN, CARAMEL_RESEARCH_SCENES, PNMPEG, PNP2P};
+use crate::lib::mpeg::caramel_lab::{read_dataset, series_key};
+use crate::lib::mpeg::caramel_train::{DATASET_DIRECTORY, installed_version};
+use crate::lib::watch::FeedItem;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+pub const SOURCES_DIRECTORY: &str = "DB/caramel/sources";
+pub const STATE_FILE: &str = "DB/caramel/research.json";
+const FETCH_DIRECTORY: &str = "DB/caramel/sources/fetched";
+const LOG_DIRECTORY: &str = "DB/caramel/log";
+const FOREGROUND_MARKER: &str = "DB/work/.foreground-encode";
+
+// How often the worker looks at the queue, and how long the queue must have been empty before it
+// starts: a queue that empties between two episodes of a batch is not an idle machine.
+const POLL: Duration = Duration::from_secs(20);
+const SETTLE: Duration = Duration::from_secs(300);
+// How long a lab asked to stop is given before it is killed.
+const STOP_GRACE: Duration = Duration::from_secs(30);
+// Sources of one series the dataset takes.
+const SERIES_SOURCES: usize = 2;
+// What a feed item must be to be worth downloading: one episode, not a batch and not a clip.
+const FETCH_BYTES: (u64, u64) = (150 << 20, 4 << 30);
+const FETCH_SEEDERS: u32 = 5;
+const FETCH_TIMEOUT: Duration = Duration::from_secs(45 * 60);
+const TORRENT_MAX_BYTES: usize = 4 << 20;
+// A feed that was just read is not read again for this long, however often the worker runs dry.
+const FEED_INTERVAL_SECS: u64 = 1800;
+const FEED_SEEN: usize = 2000;
+const VIDEO_EXTENSIONS: [&str; 4] = ["mkv", "mp4", "m2ts", "webm"];
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResearchConfig {
+    pub enabled: bool,
+    pub feed: Option<String>,
+    pub scenes: usize,
+    // New scenes between two trainings.
+    pub retrain: usize,
+    pub preset: String,
+}
+
+// The worker's settings out of `env.pandora`. Off unless `caramel_research` says on.
+pub fn research_config(env: &HashMap<String, String>) -> ResearchConfig {
+    let number = |key: &str, default: usize, low: usize, high: usize| env.get(key).and_then(|value| value.trim().parse::<usize>().ok()).unwrap_or(default).clamp(low, high);
+    ResearchConfig {
+        enabled: env.get(CARAMEL_RESEARCH).is_some_and(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "on" | "true" | "1" | "yes")),
+        feed: env.get(CARAMEL_RESEARCH_FEED).map(|value| value.trim().to_string()).filter(|value| !value.is_empty()),
+        scenes: number(CARAMEL_RESEARCH_SCENES, 40, 4, 400),
+        retrain: number(CARAMEL_RESEARCH_RETRAIN, 200, 20, 100_000),
+        preset: env.get(CARAMEL_RESEARCH_PRESET).map(|value| value.trim().to_ascii_lowercase()).filter(|value| !value.is_empty()).unwrap_or_else(|| "standard".to_string()),
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct SourceRecord {
+    pub series: String,
+    pub finished_unix: u64,
+    // `measured`, or why the source gave nothing: `failed`, `unreadable`.
+    pub outcome: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct ResearchState {
+    // Every source the worker is done with, by its id in the dataset.
+    #[serde(default)]
+    pub sources: BTreeMap<String, SourceRecord>,
+    // Feed items already downloaded or given up on, oldest first.
+    #[serde(default)]
+    pub feed_seen: Vec<String>,
+    #[serde(default)]
+    pub feed_read_unix: u64,
+    // Scenes in the dataset when a training last ran, and what it said.
+    #[serde(default)]
+    pub trained_scenes: usize,
+    #[serde(default)]
+    pub last_training: Option<Value>,
+    // What the worker is doing, for whoever asks.
+    #[serde(default)]
+    pub activity: String,
+    #[serde(default)]
+    pub updated_unix: u64,
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_secs()).unwrap_or(0)
+}
+
+pub fn load_state() -> ResearchState {
+    std::fs::read_to_string(STATE_FILE).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+}
+
+fn save_state(state: &mut ResearchState, activity: &str) {
+    state.activity = activity.to_string();
+    state.updated_unix = unix_now();
+    let scratch = format!("{STATE_FILE}.tmp");
+    if std::fs::create_dir_all(Path::new(STATE_FILE).parent().unwrap()).is_ok() && std::fs::write(&scratch, serde_json::to_string_pretty(state).unwrap()).is_ok() {
+        let _ = std::fs::rename(&scratch, STATE_FILE);
+    }
+}
+
+// What the API reports about the worker: whether it is on, what it is doing, and what it has.
+pub fn status() -> Value {
+    let config = research_config(&get_pandora_env());
+    let state = load_state();
+    let samples = read_dataset(Path::new(DATASET_DIRECTORY));
+    let mut series: Vec<&str> = samples.iter().map(|sample| sample.series.as_str()).collect();
+    series.sort_unstable();
+    series.dedup();
+    json!({
+        "enabled": config.enabled,
+        "feed": config.feed.is_some(),
+        "activity": state.activity,
+        "updated_at": state.updated_unix,
+        "model": installed_version(),
+        "scenes": samples.len(),
+        "series": series.len(),
+        "sources_done": state.sources.len(),
+        "scenes_at_last_training": state.trained_scenes,
+        "retrain_after": config.retrain,
+        "last_training": state.last_training,
+    })
+}
+
+// A source the worker could measure.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Candidate {
+    pub path: PathBuf,
+    pub source_id: String,
+    pub series: String,
+    // Downloaded for this and nothing else: removed once measured.
+    pub fetched: bool,
+}
+
+fn is_video(path: &Path) -> bool {
+    path.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| VIDEO_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str()))
+}
+
+fn videos_under(directory: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    let mut paths: Vec<PathBuf> = entries.filter_map(|entry| entry.ok().map(|entry| entry.path())).collect();
+    paths.sort();
+    for path in paths {
+        let hidden = path.file_name().and_then(|name| name.to_str()).is_none_or(|name| name.starts_with('.'));
+        if hidden {
+            continue;
+        }
+        if path.is_dir() {
+            if depth > 0 {
+                videos_under(&path, depth - 1, out);
+            }
+        } else if is_video(&path) && path.metadata().is_ok_and(|meta| meta.len() >= FETCH_BYTES.0 / 4) {
+            out.push(path);
+        }
+    }
+}
+
+// Every source on this machine, in the order they would be taken: the operator's own files first,
+// then what was downloaded for this, then the inputs of past jobs.
+pub fn local_candidates(sources: &Path, cache: &Path) -> Vec<Candidate> {
+    let mut files = Vec::new();
+    videos_under(sources, 4, &mut files);
+    let fetched_root = sources.join("fetched");
+    let mut out: Vec<Candidate> = files
+        .into_iter()
+        .map(|path| {
+            let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default().to_string();
+            Candidate { fetched: path.starts_with(&fetched_root), series: series_key(&name), source_id: name, path }
+        })
+        .collect();
+    out.sort_by_key(|candidate| candidate.fetched);
+    // A cached input has no name of its own — every one is `input.mkv` under a hash — and the same
+    // input sits there once per key it was asked for by. Its length tells two of them apart well
+    // enough, and it is its own series: nothing says which show it was.
+    let mut cached = Vec::new();
+    videos_under(cache, 1, &mut cached);
+    for path in cached {
+        let Ok(meta) = path.metadata() else { continue };
+        let source_id = format!("cached-input-{}", meta.len());
+        if out.iter().all(|other| other.source_id != source_id) {
+            out.push(Candidate { path, series: source_id.clone(), source_id, fetched: false });
+        }
+    }
+    out
+}
+
+// How many sources of each series the worker is done with or the dataset already holds.
+fn series_counts(state: &ResearchState, dataset_series: &[(String, String)]) -> HashMap<String, usize> {
+    let mut sources: BTreeMap<&str, &str> = dataset_series.iter().map(|(source, series)| (source.as_str(), series.as_str())).collect();
+    for (source, record) in &state.sources {
+        sources.entry(source.as_str()).or_insert(record.series.as_str());
+    }
+    let mut counts = HashMap::new();
+    for series in sources.values() {
+        *counts.entry(series.to_string()).or_insert(0) += 1;
+    }
+    counts
+}
+
+// The next source to measure: the first that is not done and whose series has room.
+pub fn pick(candidates: &[Candidate], state: &ResearchState, dataset_series: &[(String, String)]) -> Option<Candidate> {
+    let counts = series_counts(state, dataset_series);
+    candidates
+        .iter()
+        .find(|candidate| {
+            // A source the dataset holds scenes of but the worker never finished is carried on with.
+            let started = dataset_series.iter().any(|(source, _)| *source == candidate.source_id);
+            !state.sources.contains_key(&candidate.source_id) && (started || counts.get(&candidate.series).copied().unwrap_or(0) < SERIES_SOURCES)
+        })
+        .cloned()
+}
+
+// The feed item to download next: a single 1080p episode with seeders, of a series the dataset has
+// no room left for skipped, and nothing that was tried before.
+pub fn pick_feed_item(items: &[FeedItem], state: &ResearchState, dataset_series: &[(String, String)]) -> Option<FeedItem> {
+    let counts = series_counts(state, dataset_series);
+    items
+        .iter()
+        .find(|item| {
+            let sized = item.size_bytes.is_some_and(|bytes| (FETCH_BYTES.0..=FETCH_BYTES.1).contains(&bytes));
+            let seeded = item.seeders.is_some_and(|seeders| seeders >= FETCH_SEEDERS);
+            let full_hd = item.title.contains("1080");
+            let torrent = item.link.starts_with("https://") && item.link.ends_with(".torrent");
+            sized && seeded && full_hd && torrent && !state.feed_seen.contains(&item.key) && counts.get(&series_key(&format!("{}.mkv", item.title))).copied().unwrap_or(0) < SERIES_SOURCES
+        })
+        .cloned()
+}
+
+// Whether the machine has nothing to do for a release: the worker loop has said so and no encode
+// holds the foreground marker. Before the loop has published anything, it is not idle.
+fn queue_idle() -> bool {
+    let empty = crate::pnworker::snapshot::current().and_then(|snapshot| snapshot.get("queue_len").and_then(Value::as_u64)) == Some(0);
+    empty && !Path::new(FOREGROUND_MARKER).exists()
+}
+
+fn slug(text: &str) -> String {
+    let mut out: String = text.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
+    while out.contains("--") {
+        out = out.replace("--", "-");
+    }
+    let out = out.trim_matches('-');
+    let digest = format!("{:x}", md5::compute(text));
+    format!("{}-{}", &out[..out.len().min(60)], &digest[..8])
+}
+
+// A tool as a child at the lowest priority, with nothing inherited to write to.
+fn background_command(tool: &str) -> tokio::process::Command {
+    #[cfg(unix)]
+    let mut command = {
+        let mut command = tokio::process::Command::new("nice");
+        command.args(["-n", "19", tool]);
+        command
+    };
+    #[cfg(not(unix))]
+    let mut command = tokio::process::Command::new(tool);
+    command.stdin(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true);
+    command
+}
+
+enum Run {
+    // The tool ended by itself, with this exit code and this on its standard output.
+    Ended(i32, String),
+    // The queue filled, or the time ran out, and the tool was stopped.
+    Stopped,
+}
+
+// Runs a tool until it ends, the queue has a job, or `limit` passes. The tool is asked to stop
+// through its cancel file first.
+async fn run_while_idle(mut command: tokio::process::Command, cancel_file: &Path, limit: Option<Duration>) -> Run {
+    let _ = std::fs::remove_file(cancel_file);
+    command.stdout(Stdio::piped());
+    let Ok(mut child) = command.spawn() else {
+        return Run::Ended(-1, String::new());
+    };
+    let mut stdout = child.stdout.take();
+    let reader = tokio::spawn(async move {
+        let mut text = String::new();
+        if let Some(stdout) = stdout.as_mut() {
+            let _ = tokio::io::AsyncReadExt::read_to_string(stdout, &mut text).await;
+        }
+        text
+    });
+    let started = std::time::Instant::now();
+    loop {
+        tokio::select! {
+            status = child.wait() => {
+                let code = status.ok().and_then(|status| status.code()).unwrap_or(-1);
+                return Run::Ended(code, reader.await.unwrap_or_default());
+            }
+            _ = tokio::time::sleep(Duration::from_secs(2)) => {
+                if queue_idle() && limit.is_none_or(|limit| started.elapsed() < limit) {
+                    continue;
+                }
+                let _ = std::fs::write(cancel_file, b"research\n");
+                if tokio::time::timeout(STOP_GRACE, child.wait()).await.is_err() {
+                    let _ = child.kill().await;
+                }
+                let _ = std::fs::remove_file(cancel_file);
+                return Run::Stopped;
+            }
+        }
+    }
+}
+
+fn tool(env: &HashMap<String, String>, key: &str) -> Option<String> {
+    env.get(key).map(|path| path.trim().to_string()).filter(|path| !path.is_empty())
+}
+
+// The last line of a tool's output that is a JSON object: its summary.
+fn summary_json(output: &str) -> Option<Value> {
+    output.lines().rev().find_map(|line| serde_json::from_str::<Value>(line.trim()).ok().filter(Value::is_object))
+}
+
+// Measures one source. Returns whether the worker is done with it.
+async fn measure(candidate: &Candidate, config: &ResearchConfig, pnmpeg: &str, state: &mut ResearchState) -> bool {
+    save_state(state, &format!("measuring {}", candidate.source_id));
+    let _ = std::fs::create_dir_all(LOG_DIRECTORY);
+    let name = slug(&candidate.source_id);
+    let cancel_file = Path::new(LOG_DIRECTORY).join(format!("{name}.cancel"));
+    let mut command = background_command(pnmpeg);
+    command.args(["--caramel-lab", "--preset", &config.preset, "--lab-scenes", &config.scenes.to_string(), "--lab-source", &candidate.source_id, "--lab-series", &candidate.series]);
+    command.arg("-i").arg(&candidate.path);
+    command.arg("-o").arg(Path::new(DATASET_DIRECTORY).join(format!("{name}.jsonl")));
+    command.arg("--cancelfile").arg(&cancel_file);
+    command.arg("--logfile").arg(Path::new(LOG_DIRECTORY).join(format!("{name}.log")));
+    let outcome = match run_while_idle(command, &cancel_file, None).await {
+        Run::Stopped => {
+            println!("[Caramel research] stopped measuring {} for the queue", candidate.source_id);
+            // A lab that had to be killed leaves the clips it was working on: gigabytes a release
+            // may need. The lab names its scratch after the dataset file.
+            let _ = std::fs::remove_dir_all(Path::new(DATASET_DIRECTORY).join(format!(".caramel-lab-{name}")));
+            return false;
+        }
+        // Stopped by its own cancel file before the kill.
+        Run::Ended(3, _) => return false,
+        Run::Ended(0, output) => {
+            let measured = summary_json(&output).and_then(|summary| summary.get("measured").and_then(Value::as_u64)).unwrap_or(0);
+            println!("[Caramel research] measured {measured} scenes of {}", candidate.source_id);
+            "measured"
+        }
+        Run::Ended(code, _) => {
+            println!("[Caramel research] {} could not be measured (pnmpeg exit {code})", candidate.source_id);
+            "failed"
+        }
+    };
+    state.sources.insert(candidate.source_id.clone(), SourceRecord { series: candidate.series.clone(), finished_unix: unix_now(), outcome: outcome.to_string() });
+    if candidate.fetched {
+        // The directory the download was saved into, directly under `fetched/`.
+        if let Some(directory) = candidate.path.ancestors().find(|ancestor| ancestor.parent().is_some_and(|parent| parent == Path::new(FETCH_DIRECTORY))) {
+            let _ = std::fs::remove_dir_all(directory);
+        }
+    }
+    true
+}
+
+// Fits a model to the dataset and installs it if it may replace the one in use.
+async fn retrain(pnmpeg: &str, scenes: usize, state: &mut ResearchState) {
+    save_state(state, "training");
+    let _ = std::fs::create_dir_all(LOG_DIRECTORY);
+    let cancel_file = Path::new(LOG_DIRECTORY).join("train.cancel");
+    let mut command = background_command(pnmpeg);
+    command.args(["--caramel-train", "--train-install", "-i", DATASET_DIRECTORY, "-o", "-"]);
+    command.arg("--logfile").arg(Path::new(LOG_DIRECTORY).join("train.log"));
+    match run_while_idle(command, &cancel_file, Some(Duration::from_secs(1800))).await {
+        // Training is seconds to minutes and has no cancel file to read: a stop is a kill, and it
+        // is run again when the machine is next idle.
+        Run::Stopped => {}
+        Run::Ended(code, output) => {
+            state.trained_scenes = scenes;
+            let report = summary_json(&output);
+            let line = report.as_ref().map(|report| {
+                format!(
+                    "{} from {} scenes: {}{}",
+                    report.get("version").and_then(Value::as_str).unwrap_or("?"),
+                    report.get("scenes").and_then(Value::as_u64).unwrap_or(0),
+                    report.get("reason").and_then(Value::as_str).unwrap_or(""),
+                    if report.get("installed").and_then(Value::as_bool) == Some(true) { " — installed" } else { "" },
+                )
+            });
+            println!("[Caramel research] training ended ({code}): {}", line.unwrap_or_else(|| "no report".to_string()));
+            state.last_training = report.map(|mut report| {
+                // The per-metric tables are in the log; the state keeps what a status needs.
+                if let Some(object) = report.as_object_mut() {
+                    object.remove("metrics");
+                    object.insert("at".to_string(), json!(unix_now()));
+                }
+                report
+            });
+        }
+    }
+}
+
+async fn fetch_torrent(link: &str, target: &Path) -> Result<(), String> {
+    let url = crate::lib::http::net::sanitize_fetch_url(link).await?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(40))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(concat!("Pandora/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let mut last = String::new();
+    for _ in 0..4 {
+        match client.get(&url).send().await {
+            Ok(mut response) if response.status().is_success() => {
+                let mut body = Vec::new();
+                while let Ok(Some(chunk)) = response.chunk().await {
+                    body.extend_from_slice(&chunk);
+                    if body.len() > TORRENT_MAX_BYTES {
+                        return Err("that is too large to be a .torrent".to_string());
+                    }
+                }
+                // A bencoded dictionary, or it is an error page.
+                if body.first() == Some(&b'd') {
+                    return tokio::fs::write(target, &body).await.map_err(|error| error.to_string());
+                }
+                last = "the answer was not a .torrent".to_string();
+            }
+            Ok(response) => last = format!("the tracker answered {}", response.status()),
+            Err(error) => last = error.to_string(),
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+    Err(last)
+}
+
+// Finds a release on the feed and downloads it. None when the feed has nothing new, the download
+// did not finish, or the queue filled meanwhile.
+async fn discover(feed: &str, env: &HashMap<String, String>, state: &mut ResearchState, dataset_series: &[(String, String)]) -> Option<()> {
+    if unix_now().saturating_sub(state.feed_read_unix) < FEED_INTERVAL_SECS {
+        return None;
+    }
+    let pnp2p = tool(env, PNP2P)?;
+    state.feed_read_unix = unix_now();
+    save_state(state, "reading the feed");
+    let items = match crate::lib::watch::fetch_feed(feed).await {
+        Ok(items) => items,
+        Err(error) => {
+            println!("[Caramel research] the feed could not be read: {error}");
+            return None;
+        }
+    };
+    let item = pick_feed_item(&items, state, dataset_series)?;
+    // Tried once, whatever comes of it: a release that will not download is not asked for again.
+    state.feed_seen.push(item.key.clone());
+    if state.feed_seen.len() > FEED_SEEN {
+        let extra = state.feed_seen.len() - FEED_SEEN;
+        state.feed_seen.drain(..extra);
+    }
+    save_state(state, &format!("downloading {}", item.title));
+    let directory = Path::new(FETCH_DIRECTORY).join(&item.key);
+    tokio::fs::create_dir_all(&directory).await.ok()?;
+    let _ = std::fs::create_dir_all(LOG_DIRECTORY);
+    let torrent = directory.join("fetch.torrent");
+    if let Err(error) = fetch_torrent(&item.link, &torrent).await {
+        println!("[Caramel research] {}: {error}", item.title);
+        let _ = std::fs::remove_dir_all(&directory);
+        return None;
+    }
+    let cancel_file = Path::new(LOG_DIRECTORY).join(format!("fetch-{}.cancel", item.key));
+    let mut command = background_command(&pnp2p);
+    command.arg("--opcode").arg(&torrent).arg("--nomagnet").arg("--save").arg(&directory);
+    command.args(["--tag", "caramel-research"]);
+    command.arg("--cancelfile").arg(&cancel_file);
+    command.arg("--logfile").arg(Path::new(LOG_DIRECTORY).join(format!("fetch-{}.log", item.key)));
+    match run_while_idle(command, &cancel_file, Some(FETCH_TIMEOUT)).await {
+        Run::Ended(0, _) => {
+            println!("[Caramel research] downloaded {}", item.title);
+            Some(())
+        }
+        _ => {
+            println!("[Caramel research] gave up on {}", item.title);
+            let _ = std::fs::remove_dir_all(&directory);
+            None
+        }
+    }
+}
+
+// One round of work on an idle machine. Returns whether anything was done, so the loop knows
+// whether to come straight back.
+async fn work(config: &ResearchConfig, env: &HashMap<String, String>) -> bool {
+    let Some(pnmpeg) = tool(env, PNMPEG) else {
+        return false;
+    };
+    let mut state = load_state();
+    let dataset = tokio::task::spawn_blocking(|| read_dataset(Path::new(DATASET_DIRECTORY))).await.unwrap_or_default();
+    let mut dataset_series: Vec<(String, String)> = dataset.iter().map(|sample| (sample.source_id.clone(), sample.series.clone())).collect();
+    dataset_series.sort();
+    dataset_series.dedup();
+    if dataset.len() >= state.trained_scenes + config.retrain {
+        retrain(&pnmpeg, dataset.len(), &mut state).await;
+        save_state(&mut state, "idle");
+        return true;
+    }
+    let candidates = local_candidates(Path::new(SOURCES_DIRECTORY), &PathBuf::from("DB").join("cache").join("inputs"));
+    if let Some(candidate) = pick(&candidates, &state, &dataset_series) {
+        let done = measure(&candidate, config, &pnmpeg, &mut state).await;
+        save_state(&mut state, "idle");
+        return done;
+    }
+    let found = match config.feed.as_deref() {
+        Some(feed) => discover(feed, env, &mut state, &dataset_series).await.is_some(),
+        None => false,
+    };
+    save_state(&mut state, if found { "idle" } else { "nothing left to measure" });
+    found
+}
+
+async fn run() {
+    let mut idle_since: Option<std::time::Instant> = None;
+    let mut announced = false;
+    loop {
+        tokio::time::sleep(POLL).await;
+        // Read every round, so the worker is turned on and off without a restart.
+        let env = get_pandora_env();
+        let config = research_config(&env);
+        if !config.enabled || !queue_idle() {
+            idle_since = None;
+            continue;
+        }
+        let since = *idle_since.get_or_insert_with(std::time::Instant::now);
+        if since.elapsed() < SETTLE {
+            continue;
+        }
+        if !announced {
+            println!("[Caramel research] the queue is idle; measuring for the CRF model (model {})", installed_version());
+            announced = true;
+        }
+        if !work(&config, &env).await {
+            // Nothing to do, or a job arrived: either way there is no hurry to look again.
+            tokio::time::sleep(Duration::from_secs(120)).await;
+        }
+    }
+}
+
+// Starts the worker. It does nothing until `caramel_research` is on and the queue is empty.
+pub fn spawn() {
+    tokio::spawn(run());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn env(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs.iter().map(|(key, value)| (key.to_string(), value.to_string())).collect()
+    }
+
+    #[test]
+    fn research_is_off_until_it_is_turned_on() {
+        let off = research_config(&env(&[]));
+        assert_eq!(off, ResearchConfig { enabled: false, feed: None, scenes: 40, retrain: 200, preset: "standard".to_string() });
+        assert!(!research_config(&env(&[(CARAMEL_RESEARCH, "off")])).enabled);
+        let on = research_config(&env(&[
+            (CARAMEL_RESEARCH, " On "),
+            (CARAMEL_RESEARCH_FEED, " https://example.org/?page=rss "),
+            (CARAMEL_RESEARCH_SCENES, "9000"),
+            (CARAMEL_RESEARCH_RETRAIN, "nonsense"),
+            (CARAMEL_RESEARCH_PRESET, "Quality"),
+        ]));
+        assert_eq!(on, ResearchConfig { enabled: true, feed: Some("https://example.org/?page=rss".to_string()), scenes: 400, retrain: 200, preset: "quality".to_string() });
+        assert_eq!(research_config(&env(&[(CARAMEL_RESEARCH_FEED, "  ")])).feed, None);
+    }
+
+    fn candidate(name: &str) -> Candidate {
+        Candidate { path: PathBuf::from(name), source_id: name.to_string(), series: series_key(name), fetched: false }
+    }
+
+    #[test]
+    fn a_series_is_measured_twice_and_then_left_alone() {
+        let candidates = [candidate("[G] Show - 01 (1080p).mkv"), candidate("[G] Show - 02 (1080p).mkv"), candidate("[G] Show - 03 (1080p).mkv"), candidate("[G] Other - 01 (1080p).mkv")];
+        let mut state = ResearchState::default();
+        let mut dataset: Vec<(String, String)> = Vec::new();
+        assert_eq!(pick(&candidates, &state, &dataset).unwrap().source_id, "[G] Show - 01 (1080p).mkv");
+        state.sources.insert("[G] Show - 01 (1080p).mkv".to_string(), SourceRecord { series: "show".to_string(), finished_unix: 1, outcome: "measured".to_string() });
+        assert_eq!(pick(&candidates, &state, &dataset).unwrap().source_id, "[G] Show - 02 (1080p).mkv");
+        // The second episode was started and stopped for the queue: it is in the dataset and not
+        // in the state, and is carried on with rather than counted against its series.
+        dataset.push(("[G] Show - 02 (1080p).mkv".to_string(), "show".to_string()));
+        assert_eq!(pick(&candidates, &state, &dataset).unwrap().source_id, "[G] Show - 02 (1080p).mkv");
+        state.sources.insert("[G] Show - 02 (1080p).mkv".to_string(), SourceRecord { series: "show".to_string(), finished_unix: 2, outcome: "measured".to_string() });
+        // Two of one show are enough: the third is passed over for another series.
+        assert_eq!(pick(&candidates, &state, &dataset).unwrap().source_id, "[G] Other - 01 (1080p).mkv");
+        state.sources.insert("[G] Other - 01 (1080p).mkv".to_string(), SourceRecord::default());
+        assert_eq!(pick(&candidates, &state, &dataset), None);
+    }
+
+    #[test]
+    fn a_feed_item_is_one_seeded_full_hd_episode_of_a_new_series() {
+        let item = |key: &str, title: &str, bytes: u64, seeders: u32| FeedItem {
+            key: key.to_string(),
+            title: title.to_string(),
+            link: format!("https://example.org/download/{key}.torrent"),
+            size_bytes: Some(bytes),
+            seeders: Some(seeders),
+        };
+        let gib = 1u64 << 30;
+        let items = [
+            item("a", "[G] Batch Show (01-12) (1080p)", 14 * gib, 90),
+            item("b", "[G] Small Show - 03 (720p)", gib / 2, 90),
+            item("c", "[G] Dead Show - 03 (1080p)", gib, 1),
+            item("d", "[G] Known Show - 09 (1080p)", gib, 90),
+            item("e", "[G] New Show - 03 (1080p)", gib, 90),
+            item("f", "[G] Newer Show - 01 (1080p)", gib, 90),
+        ];
+        let mut state = ResearchState::default();
+        let dataset = vec![("[G] Known Show - 07 (1080p).mkv".to_string(), "known show".to_string()), ("[G] Known Show - 08 (1080p).mkv".to_string(), "known show".to_string())];
+        assert_eq!(pick_feed_item(&items, &state, &dataset).unwrap().key, "e");
+        state.feed_seen.push("e".to_string());
+        assert_eq!(pick_feed_item(&items, &state, &dataset).unwrap().key, "f");
+        state.feed_seen.push("f".to_string());
+        assert_eq!(pick_feed_item(&items, &state, &dataset), None);
+        // A magnet, or a link that is not a .torrent over https, is not fetched.
+        let odd = FeedItem { link: "magnet:?xt=urn:btih:0".to_string(), ..item("g", "[G] Odd Show - 01 (1080p)", gib, 90) };
+        assert_eq!(pick_feed_item(&[odd], &ResearchState::default(), &dataset), None);
+    }
+
+    #[test]
+    fn local_sources_are_the_operators_then_fetched_then_cached() {
+        let root = std::env::temp_dir().join(format!("pandora-research-{}-{}", std::process::id(), unix_now()));
+        let (sources, cache) = (root.join("sources"), root.join("cache"));
+        let big = vec![0u8; (FETCH_BYTES.0 / 4) as usize];
+        let put = |path: PathBuf, bytes: &[u8]| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        };
+        put(sources.join("fetched").join("k1").join("[G] Fetched - 01 (1080p).mkv"), &big);
+        put(sources.join("[G] Mine - 05 (1080p).mkv"), &big);
+        put(sources.join("notes.txt"), b"not a video");
+        put(sources.join("tiny.mkv"), b"too small to be an episode");
+        put(sources.join(".hidden").join("[G] Hidden - 01.mkv"), &big);
+        // The same input under two keys, and a longer one.
+        put(cache.join("aaaa").join("input.mkv"), &big);
+        put(cache.join("bbbb").join("input.mkv"), &big);
+        put(cache.join("cccc").join("input.mkv"), &[big.as_slice(), b"more"].concat());
+        let found = local_candidates(&sources, &cache);
+        std::fs::remove_dir_all(&root).unwrap();
+        let ids: Vec<&str> = found.iter().map(|candidate| candidate.source_id.as_str()).collect();
+        let (short, long) = (format!("cached-input-{}", big.len()), format!("cached-input-{}", big.len() + 4));
+        assert_eq!(ids, ["[G] Mine - 05 (1080p).mkv", "[G] Fetched - 01 (1080p).mkv", short.as_str(), long.as_str()]);
+        assert_eq!(found.iter().map(|candidate| candidate.fetched).collect::<Vec<_>>(), [false, true, false, false]);
+        assert_eq!((found[0].series.as_str(), found[2].series.as_str()), ("mine", short.as_str()));
+    }
+
+    #[test]
+    fn names_become_file_names_and_summaries_are_found() {
+        let name = slug("[G] Some Show! - 03 (1080p) [ABCD].mkv");
+        assert!(name.starts_with("g-some-show-03-1080p-abcd-mkv-") && name.len() <= 70, "{name}");
+        assert_ne!(slug("a/b"), slug("a?b"));
+        let output = "noise\n{\"measured\":12,\"cancelled\":false}\n\n";
+        assert_eq!(summary_json(output).unwrap()["measured"], 12);
+        assert_eq!(summary_json("nothing here\n[1,2]\n"), None);
+    }
+
+    #[test]
+    fn state_reads_back_and_tolerates_older_files() {
+        let mut state = ResearchState { trained_scenes: 400, feed_seen: vec!["a".to_string()], ..Default::default() };
+        state.sources.insert("x.mkv".to_string(), SourceRecord { series: "x".to_string(), finished_unix: 5, outcome: "measured".to_string() });
+        let text = serde_json::to_string(&state).unwrap();
+        assert_eq!(serde_json::from_str::<ResearchState>(&text).unwrap(), state);
+        assert_eq!(serde_json::from_str::<ResearchState>("{}").unwrap(), ResearchState::default());
+    }
+}

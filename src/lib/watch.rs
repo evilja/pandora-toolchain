@@ -208,6 +208,24 @@ pub struct FeedItem {
     pub key: String,
     pub title: String,
     pub link: String,
+    // What a Nyaa feed says beyond RSS: the release's size and how many peers have all of it. None
+    // on a feed that does not say.
+    pub size_bytes: Option<u64>,
+    pub seeders: Option<u32>,
+}
+
+// `1.4 GiB` as bytes.
+fn size_bytes(text: &str) -> Option<u64> {
+    let (number, unit) = text.trim().split_once(' ')?;
+    let scale = match unit.trim() {
+        "B" | "Bytes" => 1.0,
+        "KiB" => 1024.0,
+        "MiB" => 1024.0 * 1024.0,
+        "GiB" => 1024.0 * 1024.0 * 1024.0,
+        "TiB" => 1024.0 * 1024.0 * 1024.0 * 1024.0,
+        _ => return None,
+    };
+    number.parse::<f64>().ok().filter(|value| value.is_finite() && *value >= 0.0).map(|value| (value * scale) as u64)
 }
 
 // RSS 2.0 items, in feed order (newest first on every feed that matters here). Only `title`,
@@ -230,6 +248,8 @@ pub fn parse_feed(xml: &str) -> Vec<FeedItem> {
                 key: short_key(&identity),
                 title,
                 link,
+                size_bytes: xml_field(body, "nyaa:size").and_then(|size| size_bytes(&size)),
+                seeders: xml_field(body, "nyaa:seeders").and_then(|seeders| seeders.trim().parse().ok()),
             })
         })
         .collect()
@@ -767,6 +787,16 @@ mod tests {
         assert_eq!(items[0].key, short_key("https://nyaa.si/view/200"));
         assert_eq!(items[0].key.len(), 10);
         assert_ne!(items[0].key, items[1].key);
+        // A plain RSS item says nothing about size or seeders; a Nyaa one does.
+        assert_eq!((items[0].size_bytes, items[0].seeders), (None, None));
+        let nyaa = parse_feed(
+            "<rss><channel><item><title>[G] Show - 01 (1080p)</title><link>https://nyaa.si/download/7.torrent</link>\
+             <nyaa:seeders>42</nyaa:seeders><nyaa:size>1.4 GiB</nyaa:size></item>\
+             <item><title>[G] Show - 02</title><link>https://nyaa.si/download/8.torrent</link><nyaa:size>much</nyaa:size></item></channel></rss>",
+        );
+        assert_eq!((nyaa[0].size_bytes, nyaa[0].seeders), (Some((1.4 * 1024.0 * 1024.0 * 1024.0) as u64), Some(42)));
+        assert_eq!((nyaa[1].size_bytes, nyaa[1].seeders), (None, None));
+        assert_eq!((size_bytes("700.5 MiB"), size_bytes("12 KiB"), size_bytes("-1 GiB")), (Some(734527488), Some(12288), None));
     }
 
     #[test]
