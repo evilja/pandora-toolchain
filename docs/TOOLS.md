@@ -156,10 +156,15 @@ chunk encoder, and `src/lib/mpeg/caramel.rs` runs it over a whole file and verif
   frame-weighted CRF distribution, and the `zones` string a linear encode would use.
 - **`--caramel-verify <auto|crf,crf,…>`** (with `--caramel-report`) also encodes up to six 4 s clips
   from the scenes moved furthest from the anchor, taken in turn from below and above it so both
-  directions get measured (one side fills the remaining slots when the other runs out). Each is
-  encoded at its scene CRF and at every listed
+  directions get measured (one side fills the remaining slots when the other runs out). With
+  `spread` in the list (`spread,15,19,23,27`) it takes 24 scenes at even steps through the video
+  instead, whatever the model did with them: over a ladder of CRFs that is ground truth for the
+  source, the CRF each scene should have had. Each is encoded at its scene CRF and at every listed
   fixed CRF (`auto` means the anchor), using libx264 with the preset's preset, tune and x264 params,
-  and compared against the source with ffmpeg's `ssim` and `psnr` filters. Both passes seek
+  and compared against the source with ffmpeg's `ssim` and `psnr` filters, and with `xpsnr` when
+  the ffmpeg has it (7.1 and later). Besides the per-clip means and minima, each clip reports
+  `ssim_db`, `xpsnr` and `xpsnr_low` — the figures the model's votes are fitted to — over the
+  frames after its first, which is a keyframe the whole encode would not have there. Both passes seek
   accurately to the scene's first frame and take the same frame count, and frames are paired by
   their index in the clip rather than by timestamp (Matroska's millisecond timestamps pair some
   23.976 fps frames with their neighbours). The encode renumbers its frames too, so irregular

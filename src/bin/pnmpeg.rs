@@ -25,7 +25,7 @@ use pandora_toolchain::lib::logging::tool::ToolLog;
 use pandora_toolchain::lib::mpeg::studio::{studio_ffmpeg_params, write_ffconcat, StudioRenderManifest};
 use pandora_toolchain::lib::mpeg::subs::{ExtractOutcome, extract_subtitle, ffprobe_subtitle_streams};
 use pandora_toolchain::lib::mpeg::caramel::{
-    AotCrf, FrameRange, SceneRequest, VerifyEncoder, VerifyRequest, probe_source, run_scene_analysis,
+    AotCrf, FrameRange, SceneRequest, VerifyEncoder, VerifyRequest, VerifySample, probe_source, run_scene_analysis,
     run_verification, scene_crf, summary_line,
 };
 use pandora_toolchain::lib::mpeg::preset::apply_x264_zones;
@@ -1388,10 +1388,15 @@ async fn main() {
                         .filter(|parent| !parent.as_os_str().is_empty() && args.output != "-")
                         .unwrap_or_else(|| Path::new("."))
                         .join(format!(".caramel-verify-{}", std::process::id()));
+                    // `spread` among the CRFs asks for scenes at even steps through the video rather
+                    // than the ones the model moved, and for more of them: that is a ground-truth
+                    // run, not a spot check.
+                    let spread = list.split(|c: char| c == ',' || c.is_whitespace()).any(|word| word.trim() == "spread");
                     let verify = VerifyRequest {
                         compare_crfs,
                         clip_seconds: 4.0,
-                        max_scenes: 6,
+                        max_scenes: if spread { 24 } else { 6 },
+                        sample: if spread { VerifySample::Spread } else { VerifySample::Moved },
                         encoder: VerifyEncoder {
                             preset: settings.preset,
                             tune: settings.tune,

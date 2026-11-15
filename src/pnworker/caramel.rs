@@ -7,7 +7,7 @@
 // at fixed CRFs and measures both against the source.
 
 use crate::lib::mpeg::caramel::{
-    CaramelReport, SceneEntry, SceneRequest, VerifyEncoder, VerifyRequest, probe_source, run_scene_analysis,
+    CaramelReport, SceneEntry, SceneRequest, VerifyEncoder, VerifyRequest, VerifySample, probe_source, run_scene_analysis,
     run_verification,
 };
 use crate::lib::mpeg::preset::resolve as resolve_preset;
@@ -30,8 +30,8 @@ const REPORT_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 // A verification measures a handful of scenes, each at its own CRF and at every fixed CRF listed.
 const VERIFY_CLIP_SECONDS: f64 = 4.0;
 const VERIFY_MAX_SCENES: usize = 6;
-const VERIFY_CRFS_CEILING: usize = 4;
-const VERIFY_SCENES_CEILING: usize = 16;
+const VERIFY_CRFS_CEILING: usize = 6;
+const VERIFY_SCENES_CEILING: usize = 48;
 const VERIFY_SECONDS_CEILING: f64 = 10.0;
 // How often the message shows how far the scene pass has got.
 const PROGRESS_INTERVAL: Duration = Duration::from_secs(10);
@@ -44,6 +44,7 @@ pub struct VerifySettings {
     pub crfs: Vec<f32>,
     pub clip_seconds: Option<f64>,
     pub max_scenes: Option<usize>,
+    pub sample: VerifySample,
 }
 
 // Overrides of how scenes are found and measured, for experiments. Anything left out is the
@@ -331,6 +332,7 @@ pub async fn run_caramel_job(
                 .unwrap_or(VERIFY_CLIP_SECONDS)
                 .min(VERIFY_SECONDS_CEILING),
             max_scenes: verify.max_scenes.unwrap_or(VERIFY_MAX_SCENES).clamp(1, VERIFY_SCENES_CEILING),
+            sample: verify.sample,
             // Non-x264 presets are still measured with libx264 at x264's defaults: the anchor CRF
             // means something different there, and the report says which encoder it used.
             encoder: if preset.encodes_with_x264() {
@@ -408,8 +410,8 @@ mod tests {
 
     #[test]
     fn verification_crfs_are_bounded_and_ordered() {
-        let asked = [30.0, 14.0, f32::NAN, 99.0, 16.0, 18.0, 20.0];
-        assert_eq!(verify_crfs(&asked, 0.0), vec![14.0, 16.0, 18.0, 20.0]);
+        let asked = [30.0, 14.0, f32::NAN, 99.0, 16.0, 18.0, 20.0, 22.0, 26.0, 14.0];
+        assert_eq!(verify_crfs(&asked, 0.0), vec![14.0, 16.0, 18.0, 20.0, 22.0, 26.0]);
     }
 
     #[test]

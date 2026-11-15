@@ -103,7 +103,8 @@ source carries the previous encoder's noise, and the corpus has pristine animati
 What it does not cover: every source was 1080p, 8-bit and clean; the encoder settings were the
 `standard` preset's only; there is no banding metric in the consensus, and grainy film and 10-bit sources are not
 in the corpus. Other output resolutions get a prior, not a fit. Use `--caramel-verify` /
-`verify:true` on real releases to check it where the corpus does not reach; a report's `features`
+`verify:true` on real releases to check it where the corpus does not reach — with `spread` it
+measures scenes at even steps through the video over a ladder of CRFs, in the model's own metrics; a report's `features`
 and `votes` per scene are what a refit needs. A refitted model gets a new `MODEL_VERSION`.
 
 ### History

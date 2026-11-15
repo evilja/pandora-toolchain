@@ -30,8 +30,11 @@ pub async fn handle_caramel(
         .then(|| VerifySettings {
             crfs: option_trimmed(command, "verify_crfs")
                 .map(|list| {
+                    // Four at most: the embed has one line per scene with every CRF on it. The API
+                    // takes more, for ground-truth runs nobody reads in an embed.
                     list.split(|c: char| c == ',' || c.is_whitespace())
                         .filter_map(|value| value.trim().parse::<f32>().ok())
+                        .take(4)
                         .collect()
                 })
                 .unwrap_or_default(),

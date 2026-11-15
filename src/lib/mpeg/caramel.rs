@@ -551,12 +551,35 @@ pub struct VerifyRequest {
     // The longest clip taken from one scene.
     pub clip_seconds: f64,
     pub max_scenes: usize,
+    pub sample: VerifySample,
     pub encoder: VerifyEncoder,
     // Where the clips are written while they are measured; removed afterwards.
     pub scratch: PathBuf,
     // Checked before every clip: a verification is minutes of encoding, and a cancel should not
     // have to wait for all of it.
     pub cancel_file: Option<PathBuf>,
+}
+
+// Which scenes a verification measures.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VerifySample {
+    // The scenes the model moved furthest from the anchor: was each move justified?
+    #[default]
+    Moved,
+    // Scenes at even steps through the video, whatever the model did with them. With a ladder of
+    // fixed CRFs this is ground truth for the source: the CRF each scene should have had.
+    Spread,
+}
+
+impl VerifySample {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "moved" => Some(Self::Moved),
+            "spread" => Some(Self::Spread),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -568,6 +591,14 @@ pub struct VerifyMeasure {
     pub min_psnr: f64,
     pub kbps: f64,
     pub bytes: u64,
+    // What the model's votes are fitted to, over the frames after the clip's first: a clip opens
+    // on a keyframe that an encode of the whole video would not have there, and that one frame is
+    // far better than the rest. SSIM as −10·log10(1 − mean); XPSNR pooled over the frames' errors
+    // and over the worst tenth of them. The XPSNR pair is absent when this ffmpeg has no `xpsnr`
+    // filter (it arrived in 7.1).
+    pub ssim_db: f64,
+    pub xpsnr: Option<f64>,
+    pub xpsnr_low: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -596,6 +627,9 @@ pub struct VerifyTotal {
 #[derive(Clone, Debug, Serialize)]
 pub struct VerifyReport {
     pub encoder: VerifyEncoder,
+    // The first line of `ffmpeg -version`: which build encoded and measured.
+    pub ffmpeg: String,
+    pub sample: VerifySample,
     pub clip_seconds: f64,
     pub scenes: Vec<VerifyScene>,
     pub adaptive: VerifyTotal,
@@ -607,7 +641,10 @@ pub struct VerifyReport {
 // equals, taken in turn from below and above the anchor, in the order they play. Ranking by
 // distance alone filled every slot from whichever side the model pushes further — on a real
 // episode, six banding scenes at −2 to −2.5 — and left the scenes it raised unmeasured.
-fn verify_scenes(scenes: &[SceneEntry], anchor: f32, max: usize) -> Vec<usize> {
+fn verify_scenes(scenes: &[SceneEntry], anchor: f32, max: usize, sample: VerifySample) -> Vec<usize> {
+    if sample == VerifySample::Spread {
+        return spread_scenes(scenes, max);
+    }
     let ranked = |keep: &dyn Fn(f32) -> bool| {
         let mut side: Vec<usize> =
             (0..scenes.len()).filter(|&index| scenes[index].frames >= VERIFY_MIN_FRAMES && keep(scenes[index].crf)).collect();
@@ -633,9 +670,23 @@ fn verify_scenes(scenes: &[SceneEntry], anchor: f32, max: usize) -> Vec<usize> {
     chosen
 }
 
+// Scenes long enough to measure, at even steps through the video: the middle of each of `max`
+// equal runs of them. Nothing about the scene decides whether it is taken, so what is measured
+// says how the whole source behaves and not only where the model acted.
+fn spread_scenes(scenes: &[SceneEntry], max: usize) -> Vec<usize> {
+    let eligible: Vec<usize> = (0..scenes.len()).filter(|&index| scenes[index].frames >= VERIFY_MIN_FRAMES).collect();
+    if eligible.len() <= max {
+        return eligible;
+    }
+    (0..max).map(|slot| eligible[(2 * slot + 1) * eligible.len() / (2 * max)]).collect()
+}
+
+#[derive(Clone)]
 struct ClipMeasurement {
     ssim: Vec<f64>,
     psnr: Vec<f64>,
+    // Empty when XPSNR was not measured.
+    xpsnr: Vec<f64>,
     bytes: u64,
 }
 
@@ -643,6 +694,14 @@ impl ClipMeasurement {
     fn measure(&self, crf: f32, fps: f64) -> VerifyMeasure {
         let mean = |values: &[f64]| if values.is_empty() { 0.0 } else { values.iter().sum::<f64>() / values.len() as f64 };
         let min = |values: &[f64]| if values.is_empty() { 0.0 } else { values.iter().copied().fold(f64::INFINITY, f64::min) };
+        // Without the opening keyframe, unless that is all there is.
+        fn settled(values: &[f64]) -> &[f64] {
+            if values.len() > 1 { &values[1..] } else { values }
+        }
+        let xpsnr = settled(&self.xpsnr);
+        let mut worst = xpsnr.to_vec();
+        worst.sort_by(|a, b| a.total_cmp(b));
+        worst.truncate((xpsnr.len() / 10).max(1));
         VerifyMeasure {
             crf,
             mean_ssim: mean(&self.ssim),
@@ -651,6 +710,10 @@ impl ClipMeasurement {
             min_psnr: min(&self.psnr),
             kbps: kbps(self.bytes, self.ssim.len() as u64, fps),
             bytes: self.bytes,
+            ssim_db: -10.0 * (1.0 - mean(settled(&self.ssim))).max(1e-6).log10(),
+            xpsnr: (!xpsnr.is_empty())
+                .then(|| -10.0 * mean(&xpsnr.iter().map(|db| 10f64.powf(-db / 10.0)).collect::<Vec<_>>()).log10()),
+            xpsnr_low: (!xpsnr.is_empty()).then(|| mean(&worst)),
         }
     }
 }
@@ -668,13 +731,55 @@ fn kbps(bytes: u64, frames: u64, fps: f64) -> f64 {
 // partner's neighbour. Whether that happens depends on where in the second the scene starts. On a
 // still it changes nothing; on a moving shot it read SSIM 0.959 for an encode that measures 0.997,
 // and the same at every CRF. So both sides are renumbered: frame n is at n seconds.
-fn measurement_graph(frames: u64, ssim_file: &str, psnr_file: &str) -> String {
+fn measurement_graph(frames: u64, ssim_file: &str, psnr_file: &str, xpsnr_file: Option<&str>) -> String {
     const BY_INDEX: &str = "settb=1/1000,setpts=N*1000";
+    let (ways, third, xpsnr) = match xpsnr_file {
+        Some(file) => (3, ("[e3]", "[r3]"), format!(";[e3][r3]xpsnr=stats_file={file}:shortest=1")),
+        None => (2, ("", ""), String::new()),
+    };
     format!(
-        "[1:v]{BY_INDEX},split[e1][e2];\
-         [0:v]trim=end_frame={frames},format=yuv420p,{BY_INDEX},split[r1][r2];\
-         [e1][r1]ssim=stats_file={ssim_file}:shortest=1;[e2][r2]psnr=stats_file={psnr_file}:shortest=1"
+        "[1:v]{BY_INDEX},split={ways}[e1][e2]{};\
+         [0:v]trim=end_frame={frames},format=yuv420p,{BY_INDEX},split={ways}[r1][r2]{};\
+         [e1][r1]ssim=stats_file={ssim_file}:shortest=1;[e2][r2]psnr=stats_file={psnr_file}:shortest=1{xpsnr}",
+        third.0, third.1
     )
+}
+
+// One frame's XPSNR out of a line of the `xpsnr` filter's stats file (`n: 1  XPSNR y: 46.2
+// XPSNR u: 53.7  XPSNR v: 52.2`): the three planes' errors weighted 4:1:1, as the ground truth
+// the model is fitted to weighted them. The file's closing average line is not a frame.
+fn xpsnr_frame(line: &str) -> Option<f64> {
+    if !line.trim_start().starts_with("n:") {
+        return None;
+    }
+    let error = |plane: &str| {
+        let token = line.split(plane).nth(1)?.split_whitespace().next()?;
+        let db = if token.starts_with("inf") { 100.0 } else { token.parse::<f64>().ok()?.min(100.0) };
+        Some(10f64.powf(-db / 10.0))
+    };
+    let pooled = (4.0 * error("XPSNR y:")? + error("XPSNR u:")? + error("XPSNR v:")?) / 6.0;
+    Some(-10.0 * pooled.log10())
+}
+
+// Whether this ffmpeg has a filter. `-h filter=<name>` describes one it has under `Filter <name>`
+// and says `Unknown filter` otherwise.
+fn has_filter(ffmpeg: &Path, name: &str) -> bool {
+    Command::new(ffmpeg)
+        .args(["-hide_banner", "-v", "error", "-h", &format!("filter={name}")])
+        .stdin(Stdio::null())
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).contains(&format!("Filter {name}")))
+        .unwrap_or(false)
+}
+
+fn ffmpeg_version(ffmpeg: &Path) -> String {
+    Command::new(ffmpeg)
+        .arg("-version")
+        .stdin(Stdio::null())
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8_lossy(&output.stdout).lines().next().map(|line| line.trim().to_string()))
+        .unwrap_or_default()
 }
 
 // How much of the source the measurement may read, from the clip's first frame. `trim` ends the
@@ -704,6 +809,7 @@ fn measure_clip(
     frames: u64,
     fps: f64,
     request: &VerifyRequest,
+    xpsnr: bool,
     crf: f32,
     name: &str,
 ) -> Result<ClipMeasurement, String> {
@@ -735,8 +841,8 @@ fn measure_clip(
 
     // The filter graph names its stats files relative to the working directory, which keeps paths
     // with `:` or `\` (both special inside a filter graph) out of it entirely.
-    let (ssim_file, psnr_file) = (format!("{name}.ssim"), format!("{name}.psnr"));
-    let graph = measurement_graph(frames, &ssim_file, &psnr_file);
+    let (ssim_file, psnr_file, xpsnr_file) = (format!("{name}.ssim"), format!("{name}.psnr"), format!("{name}.xpsnr"));
+    let graph = measurement_graph(frames, &ssim_file, &psnr_file, xpsnr.then_some(xpsnr_file.as_str()));
     let mut measure = Command::new(ffmpeg);
     measure.current_dir(&request.scratch).args(["-v", "error", "-nostdin"]);
     if let Some(seek) = &seek {
@@ -753,9 +859,14 @@ fn measure_clip(
     let measured = ClipMeasurement {
         ssim: stats_column(&request.scratch.join(&ssim_file), "All"),
         psnr: stats_column(&request.scratch.join(&psnr_file), "psnr_avg"),
+        xpsnr: std::fs::read_to_string(request.scratch.join(&xpsnr_file))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(xpsnr_frame)
+            .collect(),
         bytes,
     };
-    for file in [clip, request.scratch.join(&ssim_file), request.scratch.join(&psnr_file)] {
+    for file in [clip, request.scratch.join(&ssim_file), request.scratch.join(&psnr_file), request.scratch.join(&xpsnr_file)] {
         std::fs::remove_file(file).ok();
     }
     if measured.ssim.is_empty() {
@@ -770,7 +881,7 @@ fn total(crf: Option<f32>, clips: &[&ClipMeasurement], fps: f64) -> VerifyTotal 
     let psnr: Vec<f64> = clips.iter().flat_map(|clip| clip.psnr.iter().copied()).collect();
     let bytes = clips.iter().map(|clip| clip.bytes).sum();
     let frames = ssim.len() as u64;
-    let pooled = ClipMeasurement { ssim, psnr, bytes }.measure(crf.unwrap_or_default(), fps);
+    let pooled = ClipMeasurement { ssim, psnr, xpsnr: Vec::new(), bytes }.measure(crf.unwrap_or_default(), fps);
     VerifyTotal {
         crf,
         frames,
@@ -790,7 +901,7 @@ pub fn run_verification(report: &CaramelReport, request: &VerifyRequest) -> Resu
     compare.retain(|crf| crf.is_finite());
     compare.sort_by(|a, b| a.total_cmp(b));
     compare.dedup();
-    let chosen = verify_scenes(&report.scenes, anchor, request.max_scenes.max(1));
+    let chosen = verify_scenes(&report.scenes, anchor, request.max_scenes.max(1), request.sample);
     if chosen.is_empty() {
         return Err(format!("no scene is at least {VERIFY_MIN_FRAMES} frames long"));
     }
@@ -804,6 +915,7 @@ pub fn run_verification(report: &CaramelReport, request: &VerifyRequest) -> Resu
     // directory: without this it cannot start at all. A bare `ffmpeg` is found on PATH either way.
     let ffmpeg: PathBuf = resolve_runtime_binary("ffmpeg").into();
     let ffmpeg = if ffmpeg.components().count() > 1 { std::fs::canonicalize(&ffmpeg).unwrap_or(ffmpeg) } else { ffmpeg };
+    let xpsnr = has_filter(&ffmpeg, "xpsnr");
     let fps = report.source.fps;
     let clip_limit = (request.clip_seconds * fps).round().max(1.0) as u64;
     let fail = |error: String| {
@@ -820,7 +932,7 @@ pub fn run_verification(report: &CaramelReport, request: &VerifyRequest) -> Resu
             if request.cancel_file.as_ref().is_some_and(|path| path.exists()) {
                 return Err("cancelled".to_string());
             }
-            measure_clip(&ffmpeg, &input, scene.start_frame, frames, fps, request, crf, &name)
+            measure_clip(&ffmpeg, &input, scene.start_frame, frames, fps, request, xpsnr, crf, &name)
         };
         let adaptive = match clip_at(scene.crf, format!("scene-{scene_index}")) {
             Ok(clip) => clip,
@@ -829,7 +941,7 @@ pub fn run_verification(report: &CaramelReport, request: &VerifyRequest) -> Resu
         let mut fixed = Vec::with_capacity(compare.len());
         for (crf_index, &crf) in compare.iter().enumerate() {
             let clip = if crf == scene.crf {
-                ClipMeasurement { ssim: adaptive.ssim.clone(), psnr: adaptive.psnr.clone(), bytes: adaptive.bytes }
+                adaptive.clone()
             } else {
                 match clip_at(crf, format!("scene-{scene_index}-fixed-{crf_index}")) {
                     Ok(clip) => clip,
@@ -871,6 +983,8 @@ pub fn run_verification(report: &CaramelReport, request: &VerifyRequest) -> Resu
         .collect();
     Ok(VerifyReport {
         encoder: request.encoder.clone(),
+        ffmpeg: ffmpeg_version(&ffmpeg),
+        sample: request.sample,
         clip_seconds: request.clip_seconds,
         scenes,
         adaptive,
@@ -922,10 +1036,57 @@ mod tests {
 
     #[test]
     fn verification_pairs_frames_by_index() {
-        let graph = measurement_graph(48, "a.ssim", "a.psnr");
+        let graph = measurement_graph(48, "a.ssim", "a.psnr", None);
         assert_eq!(graph.matches("settb=1/1000,setpts=N*1000").count(), 2);
         assert!(!graph.contains("STARTPTS"));
         assert!(graph.contains("trim=end_frame=48") && graph.contains("stats_file=a.ssim") && graph.contains("stats_file=a.psnr"));
+        assert!(graph.contains("split=2[e1][e2];") && !graph.contains("xpsnr"));
+        let graph = measurement_graph(48, "a.ssim", "a.psnr", Some("a.xpsnr"));
+        assert!(graph.contains("split=3[e1][e2][e3];") && graph.contains("split=3[r1][r2][r3];"));
+        assert!(graph.ends_with(";[e3][r3]xpsnr=stats_file=a.xpsnr:shortest=1"));
+    }
+
+    // Lines of a real stats file. The planes pool in the error domain, so luma's 46.24 dB with
+    // chroma seven dB better comes out above luma and far below the plain mean of the three.
+    #[test]
+    fn xpsnr_is_read_per_frame_and_pooled_over_the_planes() {
+        let frame = xpsnr_frame("n:    2  XPSNR y: 46.2406  XPSNR u: 53.6679  XPSNR v: 52.2130").unwrap();
+        assert!((frame - 47.55).abs() < 0.01, "{frame}");
+        assert!(xpsnr_frame("XPSNR average, 48 frames  y: 47.5224  u: 54.0708  v: 51.8638  (minimum: 47.5224)").is_none());
+        assert!((xpsnr_frame("n:    1  XPSNR y: inf  XPSNR u: inf  XPSNR v: inf").unwrap() - 100.0).abs() < 1e-9);
+    }
+
+    // The clip's first frame is its keyframe: SSIM 0.999 against 0.99 for the rest. Counting it
+    // would call the clip a fifth of a dB better than the encode it stands for.
+    #[test]
+    fn the_fitted_metrics_leave_out_the_opening_keyframe() {
+        let mut ssim = vec![0.99; 21];
+        ssim[0] = 0.999;
+        let mut xpsnr = vec![40.0; 21];
+        xpsnr[0] = 50.0;
+        xpsnr[7] = 36.0;
+        xpsnr[8] = 38.0;
+        let clip = ClipMeasurement { ssim, psnr: vec![40.0; 21], xpsnr, bytes: 1000 };
+        let measure = clip.measure(21.0, 24.0);
+        assert!((measure.ssim_db - 20.0).abs() < 1e-6);
+        assert!(measure.mean_ssim > 0.99);
+        // The worst tenth of twenty frames is two of them.
+        assert_eq!(measure.xpsnr_low, Some(37.0));
+        let pooled = measure.xpsnr.unwrap();
+        assert!(pooled < 40.0 && pooled > 39.5, "{pooled}");
+        let without = ClipMeasurement { xpsnr: Vec::new(), ..clip }.measure(21.0, 24.0);
+        assert_eq!((without.xpsnr, without.xpsnr_low), (None, None));
+    }
+
+    #[test]
+    fn a_spread_sample_steps_evenly_through_the_scenes_long_enough() {
+        let mut scenes: Vec<SceneEntry> = (0..100).map(|index| scene(index * 48, 48, if index < 50 { 25.0 } else { 21.0 })).collect();
+        scenes[10].frames = 8;
+        let chosen = verify_scenes(&scenes, 21.0, 4, VerifySample::Spread);
+        assert_eq!(chosen, vec![13, 38, 62, 87]);
+        // The same request for moved scenes would take the raised half alone.
+        assert!(verify_scenes(&scenes, 21.0, 4, VerifySample::Moved).iter().all(|&index| index < 50));
+        assert_eq!(verify_scenes(&scenes[..3], 21.0, 4, VerifySample::Spread), vec![0, 1, 2]);
     }
 
     fn scene(start_frame: u64, frames: u64, crf: f32) -> SceneEntry {
@@ -990,8 +1151,8 @@ mod tests {
     fn verification_takes_the_scenes_moved_furthest() {
         let scenes = [scene(0, 100, 17.0), scene(100, 8, 13.0), scene(108, 40, 19.0), scene(148, 90, 15.0), scene(238, 60, 19.0)];
         // The 8-frame scene is too short to measure; 19.0 twice is a tie broken by length.
-        assert_eq!(verify_scenes(&scenes, 17.0, 2), vec![3, 4]);
-        assert_eq!(verify_scenes(&scenes, 17.0, 10), vec![0, 2, 3, 4]);
+        assert_eq!(verify_scenes(&scenes, 17.0, 2, VerifySample::Moved), vec![3, 4]);
+        assert_eq!(verify_scenes(&scenes, 17.0, 10, VerifySample::Moved), vec![0, 2, 3, 4]);
     }
 
     // The first real verify (anchor 21, scenes 18.5–22.5) measured six scenes, all below the
@@ -1006,10 +1167,10 @@ mod tests {
             scene(400, 100, 19.0),
             scene(500, 100, 21.5),
         ];
-        assert_eq!(verify_scenes(&scenes, 21.0, 2), vec![0, 3]);
-        assert_eq!(verify_scenes(&scenes, 21.0, 4), vec![0, 1, 3, 5]);
+        assert_eq!(verify_scenes(&scenes, 21.0, 2, VerifySample::Moved), vec![0, 3]);
+        assert_eq!(verify_scenes(&scenes, 21.0, 4, VerifySample::Moved), vec![0, 1, 3, 5]);
         // One side running out leaves the rest of the slots to the other.
-        assert_eq!(verify_scenes(&scenes, 21.0, 5), vec![0, 1, 2, 3, 5]);
+        assert_eq!(verify_scenes(&scenes, 21.0, 5, VerifySample::Moved), vec![0, 1, 2, 3, 5]);
     }
 
     #[test]

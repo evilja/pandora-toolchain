@@ -10,7 +10,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use crate::lib::mpeg::caramel::CARAMEL_ANALYSIS;
+use crate::lib::mpeg::caramel::{CARAMEL_ANALYSIS, VerifySample};
 use crate::lib::p2p::nyaaise::nyaaise;
 use crate::pnworker::caramel::{CaramelJobRequest, SceneOverrides, VerifySettings, read_report};
 use crate::pnworker::core::{Concat, Job, JobType};
@@ -31,8 +31,9 @@ pub(super) struct CaramelReq {
     preset: Option<String>,
     #[serde(default)]
     anchor: Option<f32>,
-    // `true` for the default verification, or `{ crfs, clip_seconds, max_scenes }`, where `crfs`
-    // are the fixed CRFs the scene CRFs are compared with (the anchor when absent).
+    // `true` for the default verification, or `{ crfs, clip_seconds, max_scenes, sample }`, where
+    // `crfs` are the fixed CRFs the scene CRFs are compared with (the anchor when absent) and
+    // `sample` says which scenes are measured.
     #[serde(default)]
     verify: Option<serde_json::Value>,
     // `{ analysis_frames, min_scene_frames, max_scene_frames }`, each optional.
@@ -56,8 +57,16 @@ fn parse_verify(value: Option<&serde_json::Value>) -> Result<Option<VerifySettin
                     .collect::<Result<_, _>>()?,
                 Some(_) => return Err("verify.crfs must be an array of numbers".to_string()),
             };
+            let sample = match fields.get("sample") {
+                None | Some(serde_json::Value::Null) => VerifySample::default(),
+                Some(value) => value
+                    .as_str()
+                    .and_then(VerifySample::from_name)
+                    .ok_or("verify.sample must be \"moved\" or \"spread\"")?,
+            };
             Ok(Some(VerifySettings {
                 crfs,
+                sample,
                 clip_seconds: fields.get("clip_seconds").and_then(|value| value.as_f64()),
                 max_scenes: fields
                     .get("max_scenes")
@@ -198,6 +207,10 @@ mod tests {
         // The name it had when verification sampled clips rather than scenes still works.
         assert_eq!(parse_verify(Some(&json!({ "max_clips": 2 }))).unwrap().unwrap().max_scenes, Some(2));
         assert!(parse_verify(Some(&json!({ "crfs": ["x"] }))).is_err());
+        assert_eq!(settings.sample, VerifySample::Moved);
+        let spread = parse_verify(Some(&json!({ "sample": "spread", "max_scenes": 48 }))).unwrap().unwrap();
+        assert_eq!(spread.sample, VerifySample::Spread);
+        assert!(parse_verify(Some(&json!({ "sample": "random" }))).is_err());
         assert!(parse_verify(Some(&json!("yes"))).is_err());
     }
 
