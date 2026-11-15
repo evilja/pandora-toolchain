@@ -200,6 +200,28 @@ struct Args {
     #[arg(long, default_value_t = 1)]
     train_seed: u64,
 
+    /// With --caramel-train: the width of each hidden layer of a network (default `32,32`) and
+    /// how many networks are trained per fold of the dataset (default 2; there are five folds).
+    #[arg(long)]
+    train_hidden: Option<String>,
+
+    #[arg(long)]
+    train_networks: Option<usize>,
+
+    #[arg(long, hide = true)]
+    train_decay: Option<f64>,
+
+    #[arg(long, hide = true)]
+    train_rate: Option<f64>,
+
+    #[arg(long, hide = true)]
+    train_epochs: Option<usize>,
+
+    /// With --caramel-train: write to this file, one JSON line per scene and anchor, what the
+    /// networks that never trained on a scene's series voted for it and what its encodes allowed.
+    #[arg(long)]
+    train_scenes: Option<String>,
+
     #[arg(long, hide = true)]
     aot_preset: Option<String>,
 
@@ -747,7 +769,20 @@ fn caramel_train(args: &Args, preset: Option<&ResolvedPreset>, log: &mut ToolLog
         let settings = preset.x264_settings();
         pandora_toolchain::lib::mpeg::caramel_lab::encoder_key(&VerifyEncoder { preset: settings.preset, tune: settings.tune, x264_params: settings.x264_params })
     });
-    let request = TrainRequest { samples: &samples, encoder, current: caramel_kernel::curve::active(), refit_targets: args.train_refit, seed: args.train_seed };
+    let mut config = caramel_kernel::train::TrainConfig { seed: args.train_seed, ..Default::default() };
+    if let Some(hidden) = args.train_hidden.as_deref() {
+        let widths: Vec<usize> = hidden.split(',').filter_map(|width| width.trim().parse().ok()).filter(|width| (1..=512).contains(width)).collect();
+        if widths.is_empty() || widths.len() > 4 {
+            eprintln!("pnmpeg caramel train: --train-hidden takes one to four widths between 1 and 512, like `32,32`");
+            return 1;
+        }
+        config.hidden = widths;
+    }
+    config.per_fold = args.train_networks.unwrap_or(config.per_fold);
+    config.decay = args.train_decay.unwrap_or(config.decay);
+    config.rate = args.train_rate.unwrap_or(config.rate);
+    config.epochs = args.train_epochs.unwrap_or(config.epochs);
+    let request = TrainRequest { samples: &samples, encoder, current: caramel_kernel::curve::active(), refit_targets: args.train_refit, config };
     let mut outcome = match train_dataset(&request) {
         Ok(outcome) => outcome,
         Err(error) => {
@@ -760,6 +795,14 @@ fn caramel_train(args: &Args, preset: Option<&ResolvedPreset>, log: &mut ToolLog
         if let Err(error) = std::fs::write(&args.output, outcome.model.to_text()) {
             log.line(&format!("caramel train: could not write {}: {error}", args.output));
             eprintln!("pnmpeg caramel train: could not write {}: {error}", args.output);
+            return 1;
+        }
+    }
+    if let Some(path) = args.train_scenes.as_deref() {
+        let lines: String = outcome.scenes.iter().map(|scene| serde_json::to_string(scene).unwrap() + "\n").collect();
+        if let Err(error) = std::fs::write(path, lines) {
+            log.line(&format!("caramel train: could not write {path}: {error}"));
+            eprintln!("pnmpeg caramel train: could not write {path}: {error}");
             return 1;
         }
     }

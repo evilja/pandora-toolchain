@@ -202,12 +202,29 @@ pub struct TrainRequest<'a> {
     pub current: Option<Arc<Model>>,
     // Take the targets from the samples even when there is a model in use.
     pub refit_targets: bool,
-    pub seed: u64,
+    // The networks' shape and how they are trained. Its version and encoder are set here.
+    pub config: TrainConfig,
+}
+
+// One scene at one anchor, as networks that never trained on its series judged it: what each
+// metric's vote was, how far the networks disagreed, what the scene's encodes allowed, and what the
+// candidate would have done. The report's figures are sums over these.
+#[derive(Clone, Debug, Serialize)]
+pub struct HeldOutScene {
+    pub source_id: String,
+    pub series: String,
+    pub start_frame: u64,
+    pub anchor: f64,
+    pub votes: Vec<f64>,
+    pub spreads: Vec<f64>,
+    pub allowed: Vec<Option<f64>>,
+    pub offset: f64,
 }
 
 pub struct TrainOutcome {
     pub model: Model,
     pub report: TrainReport,
+    pub scenes: Vec<HeldOutScene>,
 }
 
 fn hash(text: &str) -> u64 {
@@ -270,7 +287,7 @@ pub fn train_dataset(request: &TrainRequest) -> Result<TrainOutcome, String> {
     let kept: Vec<LabSample> = request.samples.iter().filter(|sample| sample.encoder == encoder).cloned().collect();
     let samples = training_samples(&kept);
     let typical = request.current.as_ref().filter(|_| !request.refit_targets).map(|model| model.typical);
-    let config = TrainConfig { version: MODEL_FAMILY.to_string(), encoder: encoder.clone(), seed: request.seed, ..Default::default() };
+    let config = TrainConfig { version: MODEL_FAMILY.to_string(), encoder: encoder.clone(), ..request.config.clone() };
     let mut trained = train::train(&samples, &config, typical)?;
     // The version says which training this is: the family, how many scenes, and a mark of the
     // weights themselves, so two trainings never share a file.
@@ -279,6 +296,22 @@ pub fn train_dataset(request: &TrainRequest) -> Result<TrainOutcome, String> {
     let policy = train::simulate(&samples, &model.typical, &train::decisions(&samples, &trained.held_out, &model.typical, model.margin));
     let predictors = train::simulate(&samples, &model.typical, &predictor_decisions(&kept));
     let (accepted, reason, judged) = verdict(request.current.as_deref(), &trained, &samples, &policy);
+    let mut scenes = Vec::new();
+    for (index, members) in trained.held_out.iter().enumerate().filter(|(index, members)| !members.is_empty() && samples[*index].observations.len() >= 2) {
+        for anchor in train::ANCHORS {
+            let votes = curve::votes_of(members, &model.typical, anchor);
+            scenes.push(HeldOutScene {
+                source_id: kept[index].source_id.clone(),
+                series: kept[index].series.clone(),
+                start_frame: kept[index].start_frame,
+                anchor,
+                votes: votes.iter().map(|vote| vote.offset).collect(),
+                spreads: votes.iter().map(|vote| vote.spread).collect(),
+                allowed: curve::measured_votes(&samples[index].observations, &model.typical, anchor).to_vec(),
+                offset: train::applied(&curve::consensus(&votes, model.margin)),
+            });
+        }
+    }
     let report = TrainReport {
         version: model.version.clone(),
         encoder,
@@ -301,7 +334,7 @@ pub fn train_dataset(request: &TrainRequest) -> Result<TrainOutcome, String> {
         installed: false,
         elapsed_ms: started.elapsed().as_millis(),
     };
-    Ok(TrainOutcome { model: trained.model, report })
+    Ok(TrainOutcome { model: trained.model, report, scenes })
 }
 
 #[cfg(test)]
@@ -360,6 +393,10 @@ mod tests {
         }
     }
 
+    fn seeded(seed: u64) -> TrainConfig {
+        TrainConfig { seed, ..Default::default() }
+    }
+
     fn dataset(series: std::ops::Range<usize>, collected: u64) -> Vec<LabSample> {
         series.flat_map(|series| (0..30).map(move |scene| sample(series, scene, collected))).collect()
     }
@@ -367,9 +404,9 @@ mod tests {
     #[test]
     fn a_first_model_needs_a_dataset_that_could_teach_one() {
         let small = dataset(0..3, 100);
-        let outcome = train_dataset(&TrainRequest { samples: &small, encoder: None, current: None, refit_targets: false, seed: 1 }).unwrap();
+        let outcome = train_dataset(&TrainRequest { samples: &small, encoder: None, current: None, refit_targets: false, config: seeded(1) }).unwrap();
         assert!(!outcome.report.accepted && outcome.report.reason.contains("a first model needs"), "{}", outcome.report.reason);
-        assert!(train_dataset(&TrainRequest { samples: &[], encoder: None, current: None, refit_targets: false, seed: 1 }).is_err());
+        assert!(train_dataset(&TrainRequest { samples: &[], encoder: None, current: None, refit_targets: false, config: seeded(1) }).is_err());
     }
 
     #[test]
@@ -377,13 +414,16 @@ mod tests {
         let mut samples = dataset(0..8, 100);
         // Samples made with other settings are another dataset.
         samples.push(LabSample { encoder: "x264|slow|-|".to_string(), ..sample(9, 0, 100) });
-        let first = train_dataset(&TrainRequest { samples: &samples, encoder: None, current: None, refit_targets: false, seed: 1 }).unwrap();
+        let first = train_dataset(&TrainRequest { samples: &samples, encoder: None, current: None, refit_targets: false, config: seeded(1) }).unwrap();
         let report = &first.report;
         assert_eq!((report.scenes, report.series, report.other_encoders, report.members), (240, 8, 1, 10));
         assert!(report.accepted, "{}", report.reason);
         assert!(report.version.starts_with("caramel-neural-1.240-") && pnx264::scenes::valid_version(&report.version), "{}", report.version);
         assert_eq!(first.model.encoder, "x264|fast|-|aq-mode=3");
         assert!(report.error < 1.0, "{report:?}");
+        // Every scene is judged at every anchor by networks that did not train on its series.
+        assert_eq!(first.scenes.len(), 240 * train::ANCHORS.len());
+        assert_eq!(first.scenes.iter().filter(|scene| scene.offset > 0.0).count() as f64 / first.scenes.len() as f64, report.policy.raised_share);
         // The noisier scene is the harder one, and the lab is guided by what the model says.
         let guide = ModelGuide(Arc::new(first.model.clone()));
         let (quiet, noisy) = (sample(0, 0, 0), sample(0, 3, 0));
@@ -392,13 +432,13 @@ mod tests {
         assert!(low < high && guide.band(curve::BITS).is_none());
         // Retrained on the same scenes, there is nothing new to judge it on.
         let current = Some(Arc::new(first.model.clone()));
-        let same = train_dataset(&TrainRequest { samples: &samples, encoder: None, current: current.clone(), refit_targets: false, seed: 2 }).unwrap();
+        let same = train_dataset(&TrainRequest { samples: &samples, encoder: None, current: current.clone(), refit_targets: false, config: seeded(2) }).unwrap();
         assert!(!same.report.accepted && same.report.fresh_scenes == 0, "{}", same.report.reason);
         assert_ne!(same.report.version, report.version);
         assert_eq!(same.model.typical, first.model.typical);
         // With four more series measured since, it is, and it wins or ties.
         samples.extend(dataset(10..14, 900));
-        let more = train_dataset(&TrainRequest { samples: &samples, encoder: Some("x264|fast|-|aq-mode=3".to_string()), current, refit_targets: false, seed: 2 }).unwrap();
+        let more = train_dataset(&TrainRequest { samples: &samples, encoder: Some("x264|fast|-|aq-mode=3".to_string()), current, refit_targets: false, config: seeded(2) }).unwrap();
         assert_eq!(more.report.fresh_scenes, 120);
         assert!(more.report.accepted, "{}", more.report.reason);
         assert_eq!(more.report.current.as_deref(), Some(report.version.as_str()));

@@ -96,6 +96,7 @@ Samples made with different encoder settings are different datasets: a model is 
 ```
 pnmpeg --caramel-train -i DB/caramel/dataset -o <candidate.model | ->
        [--preset <name>] [--train-install] [--train-refit] [--train-seed 1]
+       [--train-hidden 32,32] [--train-networks 2] [--train-scenes <file>]
 ```
 
 Trains a candidate on every sample of one encoder key — the named preset's, or the one most
@@ -134,6 +135,12 @@ in use, 4 when it may not, 1 on an error. `--train-install` installs an accepted
   `banding_p95`, and `needed` — the share of lowerings whose scene really was short of the target),
   `predictors` (the same for the linear predictors, on the same scenes and targets), `current`,
   `fresh_scenes`, `current_error`, `candidate_error`, `accepted`, `reason`, `installed`.
+
+`--train-scenes <file>` writes what the report's figures are sums of: one JSON line per scene and
+anchor with the `votes` and `spreads` of the networks that never trained on the scene's series,
+what its encodes `allowed`, per metric in the report's order, and the `offset` the candidate would
+have applied. It is where to look when a series is judged badly. `--train-hidden` sets the width
+of each hidden layer and `--train-networks` how many networks are trained per fold.
 
 A candidate is named `caramel-neural-1.<scenes>-<hash>`: the family (it changes when the inputs,
 metrics or curve shape do), how many scenes it was trained on, and six hex digits of its weights.
