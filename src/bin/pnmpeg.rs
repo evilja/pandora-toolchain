@@ -28,6 +28,8 @@ use pandora_toolchain::lib::mpeg::caramel::{
     AotCrf, FrameRange, SceneRequest, VerifyEncoder, VerifyRequest, VerifySample, probe_source, run_scene_analysis,
     run_verification, scene_crf, summary_line,
 };
+use pandora_toolchain::lib::mpeg::caramel_lab::{LabGuide, LabRequest, LabSample, read_dataset, run_lab, series_key};
+use pandora_toolchain::lib::mpeg::caramel_train::{self, ModelGuide, TrainRequest, train_dataset};
 use pandora_toolchain::lib::mpeg::preset::apply_x264_zones;
 use pandora_toolchain::lib::protocol::core::{Protocol, Schema, ToolInfo};
 use std::str::FromStr;
@@ -147,6 +149,56 @@ struct Args {
     /// comma-separated list of fixed CRFs.
     #[arg(long)]
     caramel_verify: Option<String>,
+
+    /// Measure scenes of --input for Caramel's dataset: each is encoded at several CRFs with the
+    /// selected preset's x264 settings and measured against the source. Samples are appended to
+    /// --output, a JSON-lines file; the other `.jsonl` files beside it say what is already known.
+    #[arg(long)]
+    caramel_lab: bool,
+
+    /// With --caramel-lab: how many scenes of this source the dataset should hold.
+    #[arg(long, default_value_t = 40)]
+    lab_scenes: usize,
+
+    /// With --caramel-lab: encode every scene at exactly these CRFs instead of searching.
+    #[arg(long)]
+    lab_crfs: Option<String>,
+
+    /// With --caramel-lab: the most encodes a searched scene gets.
+    #[arg(long, default_value_t = 7)]
+    lab_points: usize,
+
+    /// With --caramel-lab: scenes measured at once.
+    #[arg(long, default_value_t = 3)]
+    lab_workers: usize,
+
+    /// With --caramel-lab: the source's id in the dataset (default: the input's file name) and the
+    /// series it belongs to (default: read from the file name).
+    #[arg(long)]
+    lab_source: Option<String>,
+
+    #[arg(long)]
+    lab_series: Option<String>,
+
+    /// Train a Caramel model on the dataset directory given as --input and print what it scored
+    /// on sources it was not trained on. --output, when it is not `-`, gets the candidate as a
+    /// model file. The exit code is 0 for a candidate that may replace the model in use and 4 for
+    /// one that may not.
+    #[arg(long)]
+    caramel_train: bool,
+
+    /// With --caramel-train: install the candidate when it is accepted, so encodes that start
+    /// afterwards decide with it.
+    #[arg(long)]
+    train_install: bool,
+
+    /// With --caramel-train: take what typical content scores from this dataset instead of from
+    /// the model in use.
+    #[arg(long)]
+    train_refit: bool,
+
+    #[arg(long, default_value_t = 1)]
+    train_seed: u64,
 
     #[arg(long, hide = true)]
     aot_preset: Option<String>,
@@ -608,6 +660,126 @@ fn caramel_encode_context(preset: Option<&ResolvedPreset>, anchor: f32) -> caram
         output_height: preset.and_then(ResolvedPreset::scale_height),
         ..caramel_kernel::EncodeContext::anchored(anchor)
     }
+}
+
+// `--caramel-lab`: analyse the input, then measure scenes of it into the dataset file. The exit
+// code says whether anything was added, so a caller can tell a source with nothing left to give
+// from one that failed.
+fn caramel_lab(args: &Args, preset: Option<&ResolvedPreset>, anchor: f32, log: &mut ToolLog) -> i32 {
+    let input = Path::new(&args.input);
+    let file_name = input.file_name().and_then(|name| name.to_str()).unwrap_or(&args.input).to_string();
+    let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(8);
+    let cancel_file = args.cancelfile.as_deref().map(PathBuf::from);
+    let report = match run_scene_analysis(&SceneRequest {
+        input,
+        range: caramel_range(args),
+        fps: caramel_fps(args),
+        encode: caramel_encode_context(preset, anchor),
+        scenes: caramel_kernel::SceneConfig::default(),
+        workers,
+        decoder_threads: 0,
+        cancel_file: cancel_file.clone(),
+        progress: None,
+    }) {
+        Ok(report) => report,
+        Err(error) => {
+            log.line(&format!("caramel lab: analysis failed: {error}"));
+            eprintln!("pnmpeg caramel lab: analysis failed: {error}");
+            return 1;
+        }
+    };
+    log.line(&summary_line(&report));
+    let settings = preset.map(ResolvedPreset::x264_settings).unwrap_or_default();
+    let dataset = PathBuf::from(&args.output);
+    let directory = dataset.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or_else(|| Path::new(".")).to_path_buf();
+    let source_id = args.lab_source.clone().unwrap_or_else(|| file_name.clone());
+    // The model in use says where a scene's curve is in doubt and which scenes it knows least.
+    let guide = caramel_kernel::curve::active().map(ModelGuide);
+    // What the rest of the dataset already holds: a scene like one of those is not new.
+    let known: Vec<[f64; caramel_kernel::inputs::INPUTS]> =
+        read_dataset(&directory).iter().filter(|sample| sample.source_id != source_id).map(LabSample::inputs).collect();
+    let request = LabRequest {
+        report: &report,
+        source_id,
+        series: args.lab_series.clone().unwrap_or_else(|| series_key(&file_name)),
+        encoder: VerifyEncoder { preset: settings.preset, tune: settings.tune, x264_params: settings.x264_params },
+        scenes: args.lab_scenes,
+        ladder: args
+            .lab_crfs
+            .as_deref()
+            .unwrap_or_default()
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter_map(|value| value.trim().parse::<f64>().ok())
+            .filter(|crf| (0.0..=51.0).contains(crf))
+            .collect(),
+        max_points: args.lab_points,
+        workers: args.lab_workers,
+        // Named after the dataset file, so a lab that was killed has its clips cleared by the next
+        // one for the same source, and two labs on different sources never share a directory.
+        scratch: directory.join(format!(".caramel-lab-{}", dataset.file_stem().and_then(|stem| stem.to_str()).unwrap_or("scratch"))),
+        dataset,
+        known,
+        guide: guide.as_ref().map(|guide| guide as &dyn LabGuide),
+        cancel_file,
+    };
+    match run_lab(&request) {
+        Ok(summary) => {
+            let line = serde_json::to_string(&summary).unwrap();
+            log.line(&format!("caramel lab: {line}"));
+            println!("{line}");
+            if summary.cancelled { 3 } else { 0 }
+        }
+        Err(error) => {
+            log.line(&format!("caramel lab failed: {error}"));
+            eprintln!("pnmpeg caramel lab failed: {error}");
+            1
+        }
+    }
+}
+
+// `--caramel-train`: fit a model to the dataset, judge it against the one in use, and install it
+// when asked to and allowed to.
+fn caramel_train(args: &Args, preset: Option<&ResolvedPreset>, log: &mut ToolLog) -> i32 {
+    let samples = read_dataset(Path::new(&args.input));
+    // With a preset named, train for its encoder settings; otherwise for the ones most of the
+    // dataset was made with.
+    let encoder = args.preset.as_deref().and(preset).map(|preset| {
+        let settings = preset.x264_settings();
+        pandora_toolchain::lib::mpeg::caramel_lab::encoder_key(&VerifyEncoder { preset: settings.preset, tune: settings.tune, x264_params: settings.x264_params })
+    });
+    let request = TrainRequest { samples: &samples, encoder, current: caramel_kernel::curve::active(), refit_targets: args.train_refit, seed: args.train_seed };
+    let mut outcome = match train_dataset(&request) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            log.line(&format!("caramel train failed: {error}"));
+            eprintln!("pnmpeg caramel train failed: {error}");
+            return 1;
+        }
+    };
+    if args.output != "-" && !args.output.is_empty() {
+        if let Err(error) = std::fs::write(&args.output, outcome.model.to_text()) {
+            log.line(&format!("caramel train: could not write {}: {error}", args.output));
+            eprintln!("pnmpeg caramel train: could not write {}: {error}", args.output);
+            return 1;
+        }
+    }
+    if outcome.report.accepted && args.train_install {
+        match caramel_train::install(&outcome.model) {
+            Ok(file) => {
+                outcome.report.installed = true;
+                log.line(&format!("caramel train: installed {}", file.display()));
+            }
+            Err(error) => {
+                log.line(&format!("caramel train: install failed: {error}"));
+                eprintln!("pnmpeg caramel train: install failed: {error}");
+                return 1;
+            }
+        }
+    }
+    let line = serde_json::to_string(&outcome.report).unwrap();
+    log.line(&format!("caramel train: {line}"));
+    println!("{line}");
+    if outcome.report.accepted { 0 } else { 4 }
 }
 
 // How a chunk encoder under Caramel Analysis decides scenes for this source: what its container says
@@ -1357,6 +1529,17 @@ async fn main() {
         ));
     }
     let x264_config = planner_encoder_config(active_preset.as_ref());
+    // Every encode on this machine decides scenes with the model that was installed last.
+    let caramel_model = caramel_train::activate();
+    if active_preset.as_ref().is_some_and(|preset| preset.caramel_analysis()) || args.caramel_lab || args.caramel_report || args.caramel_train {
+        log.line(&format!("caramel model {caramel_model}"));
+    }
+    if args.caramel_train {
+        std::process::exit(caramel_train(&args, active_preset.as_ref(), &mut log));
+    }
+    if args.caramel_lab {
+        std::process::exit(caramel_lab(&args, active_preset.as_ref(), x264_config.crf, &mut log));
+    }
     if args.caramel_report {
         let anchor = match args.aot_crf {
             Some(AotCrf::Fixed(crf)) | Some(AotCrf::CaramelAnalysis { anchor: Some(crf) }) => crf,

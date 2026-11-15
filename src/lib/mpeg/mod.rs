@@ -1,5 +1,7 @@
 pub mod core;
 pub mod caramel;
+pub mod caramel_lab;
+pub mod caramel_train;
 pub mod signature;
 pub mod hls;
 pub mod logo;

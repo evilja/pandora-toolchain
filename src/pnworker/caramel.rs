@@ -287,6 +287,9 @@ pub async fn run_caramel_job(
     let analysis = {
         let (input, decoded, cancel) = (input.clone(), decoded.clone(), directory.join("CANCEL"));
         tokio::task::spawn_blocking(move || {
+            // The report is of what an encode started now would decide: with the model installed
+            // on this machine, which a research worker may have replaced since `pndc` started.
+            crate::lib::mpeg::caramel_train::activate();
             run_scene_analysis(&SceneRequest {
                 input: &input,
                 range: None,
