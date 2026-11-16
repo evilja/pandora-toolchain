@@ -558,6 +558,17 @@ pub(crate) mod tests {
         }
     }
 
+    // The model this build carries is the one trained on the measured dataset (538 scenes from 17
+    // series): it parses, decides by the detailed-scene rule, and is the one in use when nothing is
+    // installed. A new built-in model changes this test on purpose.
+    #[test]
+    fn the_builtin_model_is_the_one_trained_for_this_build() {
+        let model = builtin().expect("builtin.model holds a model");
+        assert_eq!(model.version, "caramel-neural-1.538-04e16c");
+        assert_eq!((model.members.len(), model.gain), (10, 0.75));
+        assert!(model.detail < 0.0 && model.detail > -VOTE_LIMIT, "{}", model.detail);
+        assert_eq!(active().map(|model| model.version.clone()), Some(model.version.clone()));
+    }
     #[test]
     fn a_line_is_read_between_and_past_its_points() {
         let line = [(10.0, 50.0), (20.0, 40.0), (30.0, 38.0)];
