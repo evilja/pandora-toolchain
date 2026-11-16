@@ -56,7 +56,7 @@ find — the active one, the built-in one, or a file under `DB/caramel/models/`.
 ```
 pnmpeg --caramel-lab --preset standard -i <video> -o DB/caramel/dataset/<name>.jsonl
        [--lab-scenes 40] [--lab-crfs 11,15,19,23,27,31] [--lab-points 7] [--lab-workers 3]
-       [--lab-source <id>] [--lab-series <name>] [--cancelfile <path>]
+       [--lab-deband-crfs 17,20] [--lab-source <id>] [--lab-series <name>] [--cancelfile <path>]
 ```
 
 The input is analysed as `--caramel-report` analyses it, then some of its scenes are encoded at
@@ -81,6 +81,12 @@ several CRFs and measured against the source. One scene is one line of the outpu
   encodes to start (14, 21, 28), then the gap where the measured curve bends or crosses the quality
   the model aims at is split, up to `--lab-points` encodes. A scene whose first three points land
   where the model said they would gets no more.
+- **Deband points.** Every scene is also encoded at each of `--lab-deband-crfs` (default 17 and
+  20; empty for none) with the `deband` treatment: `gradfun=strength=1.2:radius=16` before the
+  encoder, at 8 bits, and `deblock=-2,-2` after the preset's x264 params. Those points carry
+  `treatment: "deband"` and are not part of the scene's curves, so the CRF model is trained on the
+  plain encodes alone. They are there for a per-scene deband decision, which is not made yet (see
+  [Why deband points](#why-deband-points)).
 - **Exit code.** 0 done, 3 stopped by the cancel file, 1 failed. The last line of standard output
   is a JSON summary (`eligible`, `already`, `measured`, `failed`, `points`, `cancelled`).
 
@@ -95,13 +101,38 @@ episodes filed under different names would let a network be tested on a show it 
 probed `source` (size, fps, bitrate, codec, bit depth), `encoder` (`x264|<preset>|<tune>|<sorted
 x264 params>`), `start_frame`, `scene_frames`, `frames`, the decider's `features` for the scene's
 opening, `cut_pairs_within`, `reference_bit_depth`, `cambi_source`, `cambi_source_high`, `points`
-(`crf`, `bytes`, `xpsnr`, `xpsnr_low`, `ssim_db`, `vmaf`, `vmaf_low`, `cambi`, `cambi_high`),
+(`crf`, `bytes`, `xpsnr`, `xpsnr_low`, `ssim_db`, `vmaf`, `vmaf_low`, `cambi`, `cambi_high`, and
+`treatment` on a treated encode only),
 `picked` (`spread` or `novel`), the guiding `model` and its `surprise`, `collected_unix`,
 `elapsed_ms`. Files are append-only and a line that does not parse is skipped. The dataset holds
 numbers, never video.
 
 Samples made with different encoder settings are different datasets: a model is trained for one
 `encoder` key and the others are left out and counted.
+
+### Why deband points
+
+x264 adds banding to smooth gradients even at CRF 17 and even from sources with none. On the scenes
+where the dataset's encodes added the most banding, the worst tenth of the frames scored 17–25 CAMBI
+at CRF 17 and about as much at 22. The lossless 8-bit conversion alone scored 0, so the banding
+comes from the encoder, and raising or lowering the CRF barely changes it. Measured on 12 such
+scenes against the plain encode at the same CRF (medians):
+
+| Variant | CRF 17: bytes, CAMBI, XPSNR | CRF 22: bytes, CAMBI, XPSNR |
+|---|---|---|
+| `gradfun` | −3%, −4.3, −0.49 dB | −4%, +0.5, −0.34 dB |
+| `gradfun` + `deblock=-2,-2` (`deband`) | −3%, −4.7, −0.34 dB | −3%, +0.5, −0.32 dB |
+| `gradfun` + `deblock` + `psy-rd=1.3,0.2` | +8%, −7.0, −0.08 dB | +5%, −0.1, −0.30 dB |
+| ffmpeg `deband` at 16 bits, error-diffused to 8 | −7%, +1.1, −2.73 dB | −15%, +0.4, −1.67 dB |
+| `psy-rd` + `deblock` without a filter | +18%, −0.3, +0.01 dB | +8%, −0.1, +0.03 dB |
+
+So dither has to be put back in before the encoder, and only at low CRFs does x264 keep it. On
+sources that band themselves (CAMBI above 15 before encoding) the filter repaints that banding,
+and XPSNR against the source drops by 1.5 to 5 dB: that may look better or worse, and the
+fidelity metrics cannot say which. `deblock` and `psy-rd` can change per scene through x264 zones
+and reconfiguration and the filter through `enable`; `aq-strength` and the deadzones cannot, as
+x264 ignores them in a zone. The deband points are what will teach a model which scenes are worth
+it.
 
 ## Training: `pnmpeg --caramel-train`
 

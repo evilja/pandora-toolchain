@@ -193,7 +193,8 @@ chunk encoder, and `src/lib/mpeg/caramel.rs` runs it over a whole file and verif
   several CRFs with the preset's x264 settings — video only, no subtitles — and measured against
   the source with XPSNR, SSIM, VMAF and CAMBI. Samples are appended to `-o`, a JSON-lines file;
   the other `.jsonl` files beside it say which kinds of scene are already known. `--lab-scenes`,
-  `--lab-crfs`, `--lab-points`, `--lab-workers`, `--lab-source` and `--lab-series` are described
+  `--lab-crfs`, `--lab-points`, `--lab-workers`, `--lab-deband-crfs`, `--lab-source` and
+  `--lab-series` are described
   in [CARAMEL.md](CARAMEL.md#the-lab-pnmpeg---caramel-lab). Exit 0 done, 3 cancelled, 1 failed.
 - **`--caramel-train`** trains a model on the dataset directory given as `-i`, prints a JSON report
   of what it scored on series it was not trained on, and writes the candidate to `-o` (`-` for
