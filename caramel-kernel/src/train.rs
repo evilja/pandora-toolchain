@@ -471,7 +471,11 @@ pub fn choose_gain(samples: &[Sample], curves: &[Vec<Curves>], typical: &Curves,
 
 // Whether a retrained model may replace the one in use, judged on scenes the one in use has never
 // seen: the ones measured since it was trained. The candidate answers for each with the networks
-// that did not train on its series, the installed model with all of its networks.
+// that did not train on its series, the installed model with all of its networks. Better votes on
+// average are not enough: a model whose votes are closer on most scenes can still be further out on
+// the few it raises furthest, and a raise that overshoots is what a viewer sees. So both models
+// decide the fresh scenes as they would in use, and the candidate's raises may not fall further
+// below a detailed scene, at the 95th percentile, than the current model's do.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Verdict {
     // Scenes both were judged on.
@@ -479,13 +483,19 @@ pub struct Verdict {
     // Mean vote error over the deciding metrics, in CRF.
     pub current: f64,
     pub candidate: f64,
+    // How far each model's raises on those scenes fell below a detailed scene, in units, at the
+    // 95th percentile.
+    pub current_shortfall: f64,
+    pub candidate_shortfall: f64,
     pub accepted: bool,
 }
 
 // Fewer fresh scenes than this say too little to replace a model on.
 pub const GATE_SCENES: usize = 40;
 // A candidate that is this much worse is still within what a different draw of scenes would do.
-const GATE_TOLERANCE: f64 = 0.05;
+pub const GATE_TOLERANCE: f64 = 0.05;
+// The same for how far its raises fall short, in units.
+const SHORTFALL_TOLERANCE: f64 = 0.25;
 
 pub fn judge(current: &Model, candidate: &Trained, samples: &[Sample]) -> Verdict {
     let fresh: Vec<usize> = (0..samples.len()).filter(|index| samples[*index].collected > current.trained && !candidate.held_out[*index].is_empty() && samples[*index].observations.len() >= 2).collect();
@@ -497,7 +507,19 @@ pub fn judge(current: &Model, candidate: &Trained, samples: &[Sample]) -> Verdic
     let typical = &candidate.model.typical;
     let current_error = deciding_error(&vote_error(&subset, &theirs, typical).0);
     let candidate_error = deciding_error(&vote_error(&subset, &ours, typical).0);
-    Verdict { scenes: subset.len(), current: current_error, candidate: candidate_error, accepted: subset.len() >= GATE_SCENES && candidate_error <= current_error + GATE_TOLERANCE }
+    // Each decides with its own targets, detailed scene and gain, as it would in use; both are held
+    // to the candidate's detailed scene.
+    let detail = candidate.model.detail;
+    let current_shortfall = simulate(&subset, typical, detail, &decisions(&subset, &theirs, &current.typical, current.detail, current.gain)).shortfall_p95;
+    let candidate_shortfall = simulate(&subset, typical, detail, &decisions(&subset, &ours, typical, detail, candidate.model.gain)).shortfall_p95;
+    Verdict {
+        scenes: subset.len(),
+        current: current_error,
+        candidate: candidate_error,
+        current_shortfall,
+        candidate_shortfall,
+        accepted: subset.len() >= GATE_SCENES && candidate_error <= current_error + GATE_TOLERANCE && candidate_shortfall <= current_shortfall + SHORTFALL_TOLERANCE,
+    }
 }
 
 #[cfg(test)]
@@ -698,10 +720,17 @@ mod tests {
         // Six more series arrive, of the same kind.
         let mut samples = synthetic(7, 6);
         samples.extend(synthetic(8, 12).into_iter().skip(72).map(|mut sample| { sample.collected += 5000; sample }));
-        let candidate = train(&samples, &quick(), Some(old.model.typical)).unwrap();
+        let mut candidate = train(&samples, &quick(), Some(old.model.typical)).unwrap();
         let verdict = judge(&old.model, &candidate, &samples);
         assert_eq!(verdict.scenes, 72);
         assert!(verdict.accepted && verdict.candidate <= verdict.current + GATE_TOLERANCE, "{verdict:?}");
+        // The same networks deciding with a rule that raises four CRF further vote just as well, but
+        // their raises overshoot, and they are refused for it.
+        candidate.model.detail -= 4.0;
+        candidate.model.gain = 1.0;
+        let overshooting = judge(&old.model, &candidate, &samples);
+        assert_eq!(overshooting.candidate, verdict.candidate);
+        assert!(!overshooting.accepted && overshooting.candidate_shortfall > overshooting.current_shortfall + SHORTFALL_TOLERANCE, "{overshooting:?}");
         // A candidate that learned nothing is refused.
         let mut broken = train(&samples, &TrainConfig { epochs: 1, ..quick() }, Some(old.model.typical)).unwrap();
         for members in &mut broken.held_out {

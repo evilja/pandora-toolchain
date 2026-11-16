@@ -193,6 +193,9 @@ pub struct TrainReport {
     pub fresh_scenes: usize,
     pub current_error: Option<f64>,
     pub candidate_error: Option<f64>,
+    // How far each one's raises on those scenes fell below a detailed scene, 95th percentile.
+    pub current_shortfall: Option<f64>,
+    pub candidate_shortfall: Option<f64>,
     pub accepted: bool,
     pub reason: String,
     pub installed: bool,
@@ -281,6 +284,11 @@ fn verdict(current: Option<&Model>, trained: &Trained, samples: &[Sample], polic
                 format!("{} scenes measured since `{}` was trained; {} are needed to replace it", verdict.scenes, current.version, train::GATE_SCENES)
             } else if verdict.accepted {
                 format!("on {} scenes `{}` has not seen: {:.2} CRF against its {:.2}", verdict.scenes, current.version, verdict.candidate, verdict.current)
+            } else if verdict.candidate <= verdict.current + train::GATE_TOLERANCE {
+                format!(
+                    "better votes than `{}` on {} scenes it has not seen ({:.2} CRF against {:.2}), but its raises there fall further below a detailed scene: {:.2} units at the 95th percentile against {:.2}",
+                    current.version, verdict.scenes, verdict.candidate, verdict.current, verdict.candidate_shortfall, verdict.current_shortfall
+                )
             } else {
                 format!("no better on {} scenes `{}` has not seen: {:.2} CRF against its {:.2}", verdict.scenes, current.version, verdict.candidate, verdict.current)
             };
@@ -348,6 +356,8 @@ pub fn train_dataset(request: &TrainRequest) -> Result<TrainOutcome, String> {
         fresh_scenes: judged.map_or(0, |verdict| verdict.scenes),
         current_error: judged.map(|verdict| verdict.current),
         candidate_error: judged.map(|verdict| verdict.candidate),
+        current_shortfall: judged.map(|verdict| verdict.current_shortfall),
+        candidate_shortfall: judged.map(|verdict| verdict.candidate_shortfall),
         accepted,
         reason,
         installed: false,

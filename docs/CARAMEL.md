@@ -41,8 +41,18 @@ is there on purpose: a model trained on the anime alone predicted held-out anime
 of scenes (one in six by 4 CRF or more), lowers 2%, and spends 11.5% fewer bytes than the anchor.
 On *Ping Pong the Animation* E02 at anchor 17 (24 scenes, `--caramel-verify spread,17,19`), it
 came out 19% smaller than CRF 17 and 8% larger than CRF 19. Its mean XPSNR was a little above
-CRF 19's, the scenes it kept at 17 scored 0.4–1.1 dB above CRF 19, and its worst scene scored
-0.3 dB below that scene at CRF 19.
+CRF 19's and the scenes it kept at 17 scored 0.4–1.1 dB above CRF 19. A raised scene scores below
+its own CRF 19 encode by design (by up to 1.1 dB there), and every one still scored at least as
+well as the hardest scene it kept at 17.
+
+A retrain on 1296 scenes from 47 series (adding 15 current TV shows, *Mononoke*, *Paranoia
+Agent*, *Haibane Renmei* and *Serial Experiments Lain*) voted better on the 512 new scenes — 2.47
+CRF against 2.61 — but was refused: its raises there fell 3.03 units below a detailed scene at the
+95th percentile, against 2.45 for the model in use. Full episodes agreed. On *Ping Pong* it raised
+a still, grainy shot to CRF 22 (39.0 dB XPSNR, 3 dB under the hardest scene kept at 17), and on
+*Kendeshita* two raised scenes fell 0.4 and 1.1 dB under that mark, where the model in use's
+lowest raised scene was 0.2 dB under it. On five episodes both landed about 10–12% above CRF 19's size with mean
+XPSNR 0.25–0.35 dB above it.
 
 A chunked encode fixes its model when it is planned: the planner writes `model=<version>` into
 `parallel-aot/caramel.context`, and every chunk child loads exactly that version. A model installed
@@ -196,8 +206,13 @@ in use, 4 when it may not, 1 on an error. `--train-install` installs an accepted
   *since the current one was trained* — which it has never seen, and which the candidate answers
   with its held-out networks. The candidate is accepted when there are at least 40 such scenes and
   its mean vote error over the deciding metrics is no more than 0.05 CRF above the current one's,
-  and its held-out raises stay within the gain's limits. With no model in use, a first model needs
-  200 scenes from 5 series and held-out raises within those limits.
+  its held-out raises stay within the gain's limits, and its raises on those same scenes fall no
+  further below a detailed scene than the current model's: both decide them as they would in use,
+  each with its own detailed scene and gain, and the candidate's 95th-percentile shortfall may be at
+  most 0.25 units above the current one's. Better votes on average are not enough on their own: a
+  model can be closer on most scenes and further out on the few it raises furthest, which is what
+  a viewer sees. With no model in use, a first model needs 200 scenes from 5 series and held-out
+  raises within those limits.
 - **The report.** `version`, `encoder`, `scenes`, `series`, `other_encoders`, `members`, `epochs`,
   `detail`, `gain`, `error` and per-metric `metrics` (held-out vote error in CRF, and the typical
   curve), `policy` (what the candidate would have decided for held-out scenes: `raised_share`,
@@ -205,7 +220,8 @@ in use, 4 when it may not, 1 on an error. `--train-install` installs an accepted
   the fixed anchor, `shortfall_p90`/`shortfall_p95` in units below a detailed scene, `banding_p95`
   added by the raise, and `needed` — the share of lowerings whose scene really was harder than a
   detailed one), `predictors` (the same for the linear predictors, on the same scenes), `current`,
-  `fresh_scenes`, `current_error`, `candidate_error`, `accepted`, `reason`, `installed`.
+  `fresh_scenes`, `current_error`, `candidate_error`, `current_shortfall`, `candidate_shortfall`,
+  `accepted`, `reason`, `installed`.
 
 `--train-scenes <file>` writes what the report's figures are sums of: one JSON line per scene and
 anchor with the `votes` and `spreads` of the networks that never trained on the scene's series,
