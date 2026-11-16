@@ -32,13 +32,17 @@ In order: the model a process **installed** (`caramel_train::activate()`, from `
 model — the linear predictors of `caramel-scene-6`. `caramel_kernel::model_version()` names
 whichever it is, and reports and `GET /api/v1/caramel/model` carry that name.
 
-The built-in model is `caramel-neural-1.538-04e16c`: 538 scenes from 17 anime series, measured
-with the `standard` preset's x264 settings (`fast`, `aq-mode=3:aq-strength=0.8`) on an Apple M4,
-detail −2.36, gain 0.75. Held out by series it raises half of all scenes (one in ten by 4 CRF or
-more), lowers 1.7%, and spends 11% fewer bytes than the anchor. On a series it never saw (*Ping
-Pong the Animation*, 24 scenes at `--caramel-verify spread,17,19`, anchor 17), it came out 17%
-smaller than CRF 17 and 10% larger than CRF 19. The scenes it kept at 17 scored about 0.8 dB XPSNR
-above CRF 19, and its worst scene scored 41.4 dB against 41.1 at CRF 19.
+The built-in model is `caramel-neural-1.784-365446`: 784 scenes measured with the `standard`
+preset's x264 settings (`fast`, `aq-mode=3:aq-strength=0.8`) on an Apple M4 — 608 from 18 anime
+series and 176 from open films and test sequences (Morevna, Pepper & Carrot, Sita Sings the Blues,
+Sintel, Tears of Steel, the Derf collection) — with detail −2.49 and gain 0.75. The open material
+is there on purpose: a model trained on the anime alone predicted held-out anime scenes worse
+(2.64 CRF of vote error against 2.56) and was refused by the gate. Held out by series it raises 56%
+of scenes (one in six by 4 CRF or more), lowers 2%, and spends 11.5% fewer bytes than the anchor.
+On *Ping Pong the Animation* E02 at anchor 17 (24 scenes, `--caramel-verify spread,17,19`), it
+came out 19% smaller than CRF 17 and 8% larger than CRF 19. Its mean XPSNR was a little above
+CRF 19's, the scenes it kept at 17 scored 0.4–1.1 dB above CRF 19, and its worst scene scored
+0.3 dB below that scene at CRF 19.
 
 A chunked encode fixes its model when it is planned: the planner writes `model=<version>` into
 `parallel-aot/caramel.context`, and every chunk child loads exactly that version. A model installed
