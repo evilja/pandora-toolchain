@@ -25,9 +25,9 @@
 // clip: a source deeper than 8 bits is kept at 10 and compared at 10, as verification does, so the
 // encoder is not marked down for losing the dither of a conversion.
 //
-// Besides the plain encodes, a scene is encoded with a treatment (`DEBAND`) at a few CRFs, measured
-// the same way. Those points are kept apart from the scene's curves: they are what a decision to
-// deband a scene will be learnt from.
+// Asked for, a scene is also encoded with a treatment (`DEBAND`) at a few CRFs, measured the same
+// way. Those points are kept apart from the scene's curves, so an experiment never changes what the
+// CRF model learns.
 
 use super::caramel::{
     CaramelReport, SceneEntry, VerifyEncoder, ffmpeg_version, has_filter, run_quiet, seek_seconds, stats_column, with_zones,
@@ -93,9 +93,10 @@ pub struct Treatment {
 // none. `gradfun` rebuilds the gradient and dithers it, and a weaker deblock keeps more of the dither
 // through the encode. On clean sources that took banding down by about 5 CAMBI at CRF 17 for fewer
 // bytes. By CRF 22 the encoder smooths that dither away too, and on a source that bands itself the
-// filter repaints its banding, which fidelity metrics mark down by 1.5 to 5 dB: which scenes it is
-// worth it for is what the treated points are for. Both settings can change per scene: the filter
-// through `enable`, the deblock through zones and x264's reconfiguration.
+// filter repaints its banding, which fidelity metrics mark down by 1.5 to 5 dB. Measured on 480
+// ordinary scenes it barely moved banding at CRF 17 and not at all at 20, and the scenes it helped
+// came mostly from one show: a choice for a source, not a scene, so the lab no longer spends encodes
+// on it unless asked.
 pub const DEBAND: Treatment = Treatment { name: "deband", filter: "gradfun=strength=1.2:radius=16", x264: "deblock=-2,-2" };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

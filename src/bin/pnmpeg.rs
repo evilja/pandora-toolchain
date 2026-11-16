@@ -165,8 +165,8 @@ struct Args {
     lab_crfs: Option<String>,
 
     /// With --caramel-lab: CRFs every scene is also encoded at with the deband treatment
-    /// (`gradfun` and a weaker deblock), kept apart from its curves. Empty for none.
-    #[arg(long, default_value = "17,20")]
+    /// (`gradfun` and a weaker deblock), kept apart from its curves. None by default.
+    #[arg(long, default_value = "")]
     lab_deband_crfs: String,
 
     /// With --caramel-lab: the most encodes a searched scene gets.

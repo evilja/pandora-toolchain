@@ -56,7 +56,7 @@ find — the active one, the built-in one, or a file under `DB/caramel/models/`.
 ```
 pnmpeg --caramel-lab --preset standard -i <video> -o DB/caramel/dataset/<name>.jsonl
        [--lab-scenes 40] [--lab-crfs 11,15,19,23,27,31] [--lab-points 7] [--lab-workers 3]
-       [--lab-deband-crfs 17,20] [--lab-source <id>] [--lab-series <name>] [--cancelfile <path>]
+       [--lab-deband-crfs <crfs>] [--lab-source <id>] [--lab-series <name>] [--cancelfile <path>]
 ```
 
 The input is analysed as `--caramel-report` analyses it, then some of its scenes are encoded at
@@ -81,11 +81,11 @@ several CRFs and measured against the source. One scene is one line of the outpu
   encodes to start (14, 21, 28), then the gap where the measured curve bends or crosses the quality
   the model aims at is split, up to `--lab-points` encodes. A scene whose first three points land
   where the model said they would gets no more.
-- **Deband points.** Every scene is also encoded at each of `--lab-deband-crfs` (default 17 and
-  20; empty for none) with the `deband` treatment: `gradfun=strength=1.2:radius=16` before the
-  encoder, at 8 bits, and `deblock=-2,-2` after the preset's x264 params. Those points carry
+- **Deband points.** With `--lab-deband-crfs` (none by default), every scene is also encoded at
+  those CRFs with the `deband` treatment: `gradfun=strength=1.2:radius=16` before the encoder, at
+  8 bits, and `deblock=-2,-2` after the preset's x264 params. Those points carry
   `treatment: "deband"` and are not part of the scene's curves, so the CRF model is trained on the
-  plain encodes alone. They are there for a per-scene deband decision, which is not made yet (see
+  plain encodes alone. They are an experiment, not something the model decides (see
   [Why deband points](#why-deband-points)).
 - **Exit code.** 0 done, 3 stopped by the cancel file, 1 failed. The last line of standard output
   is a JSON summary (`eligible`, `already`, `measured`, `failed`, `points`, `cancelled`).
@@ -131,8 +131,24 @@ sources that band themselves (CAMBI above 15 before encoding) the filter repaint
 and XPSNR against the source drops by 1.5 to 5 dB: that may look better or worse, and the
 fidelity metrics cannot say which. `deblock` and `psy-rd` can change per scene through x264 zones
 and reconfiguration and the filter through `enable`; `aq-strength` and the deadzones cannot, as
-x264 ignores them in a zone. The deband points are what will teach a model which scenes are worth
-it.
+x264 ignores them in a zone.
+
+Those 12 scenes were picked for their banding. The lab then measured 480 ordinary scenes from 15
+series with deband points at CRF 17 and 20, against the plain curve between its neighbouring CRFs
+(medians, worst-tenth CAMBI):
+
+| Scenes | CRF 17: bytes, CAMBI, XPSNR | CRF 20: bytes, CAMBI, XPSNR |
+|---|---|---|
+| all 480 | −1.9%, 0.0, −0.48 dB | −2.1%, +0.1, −0.27 dB |
+| plain encode CAMBI 10 or more | −4.4%, −0.8, −0.83 dB | −4.7%, +0.5, −0.47 dB |
+| … and a clean source (below 1) | −15%, −4.8, −0.21 dB | −7%, +0.6, −0.25 dB |
+
+The last row is where it works, and 13 of its 17 scenes at CRF 17 come from one show (Paranoia
+Agent's Blu-ray and its flat gradients). Elsewhere it costs fidelity for nothing,
+and by CRF 20 — where Caramel sends the flat scenes that band — it no longer helps anywhere. So
+debanding is a choice for a source, made by whoever encodes it, and not a per-scene decision the
+model makes. The lab measures deband points only when `--lab-deband-crfs` asks for them, which
+spares two encodes a scene.
 
 ## Training: `pnmpeg --caramel-train`
 
