@@ -38,7 +38,8 @@ series and 176 from open films and test sequences (Morevna, Pepper & Carrot, Sit
 Sintel, Tears of Steel, the Derf collection) — with detail −2.49 and gain 0.75. The open material
 is there on purpose: a model trained on the anime alone predicted held-out anime scenes worse
 (2.64 CRF of vote error against 2.56) and was refused by the gate. Held out by series it raises 56%
-of scenes (one in six by 4 CRF or more), lowers 2%, and spends 11.5% fewer bytes than the anchor.
+of scenes (one in six by 4 CRF or more), lowered 2% under the earlier lowering threshold (far fewer
+now, see the rule below), and spends 11.5% fewer bytes than the anchor.
 On *Ping Pong the Animation* E02 at anchor 17 (24 scenes, `--caramel-verify spread,17,19`), it
 came out 19% smaller than CRF 17 and 8% larger than CRF 19. Its mean XPSNR was a little above
 CRF 19's and the scenes it kept at 17 scored 0.4–1.1 dB above CRF 19. A raised scene scores below
@@ -193,7 +194,12 @@ in use, 4 when it may not, 1 on an error. `--train-install` installs an accepted
   `detail` is the ease of a detailed scene: the quality ease that a quarter of the measured scenes
   fall below, by their own encodes (about 2.5 CRF harder than typical content). A scene easier than
   that is raised by `gain` times the difference, up to 6 CRF. A scene whose quality ease is more
-  than 3 CRF below `detail` is lowered half a CRF, more than 5 below a whole one, and never more.
+  than 4.5 CRF below `detail` is lowered half a CRF, and never more. The threshold was 3, with a
+  whole CRF past 5: grainy Blu-rays (*Paranoia Agent*, *Serial Experiments Lain*) read that hard in
+  most of their scenes, and the built-in model lowered 524 of the 822 scenes of a *Paranoia Agent*
+  episode (54 of them to 16 from an anchor of 17). At 4.5 it lowers 184 of them, and on held-out
+  scenes of the 1296-scene dataset one in five hundred is lowered, each one harder than a detailed
+  scene by its own encodes.
   Short windows have their raise scaled down and a window with a cut inside is not raised, as with
   the fitted predictors.
 - **Gain.** The trainer picks the largest of 1, 0.75, 0.5 and 0.25 at which, on held-out scenes at

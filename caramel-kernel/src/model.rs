@@ -665,18 +665,18 @@ mod tests {
         assert_eq!(estimate_scene_with(Some(&model), &window(PAINTED), &source(), &encode).crf, 23.0);
         let split = WindowFeatures { cuts: 1, ..window(PAINTED) };
         assert_eq!(estimate_scene_with(Some(&model), &split, &source(), &encode).crf, 17.0);
-        // A scene far harder than a detailed one is lowered, by one CRF at most.
+        // A scene far harder than a detailed one is lowered, by half a CRF at most.
         for member in &mut model.members {
             for metric in 0..curve::METRICS {
                 member.layers[1].bias[metric * curve::KNOT_COUNT + 3] = -3.0;
             }
         }
         let hard = estimate_scene_with(Some(&model), &window(PAINTED), &source(), &encode);
-        assert_eq!(hard.crf, 16.0, "{hard:?}");
+        assert_eq!(hard.crf, 16.5, "{hard:?}");
         // An anchor outside what the curves cover is read as the nearest inside, and stays bounded.
         for anchor in [6.0, 40.0] {
             let estimate = estimate_scene_with(Some(&model), &window(PAINTED), &source(), &EncodeContext::anchored(anchor));
-            assert!(estimate.crf - anchor as f32 <= 6.0 && anchor as f32 - estimate.crf <= 1.0 && estimate.votes.iter().all(|vote| vote.offset.is_finite()), "{estimate:?}");
+            assert!(estimate.crf - anchor as f32 <= 6.0 && anchor as f32 - estimate.crf <= 0.5 && estimate.votes.iter().all(|vote| vote.offset.is_finite()), "{estimate:?}");
         }
     }
 }

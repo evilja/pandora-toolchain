@@ -282,13 +282,13 @@ pub fn quality_ease(votes: &[CurveVote; METRICS]) -> f64 {
 
 // The furthest a scene is raised and lowered from the anchor. A raise is what the rule is for; a
 // lowering is kept for the scenes far harder than the detailed ones the anchor was chosen for, and
-// is half a CRF, or one for the hardest.
+// is half a CRF.
 pub const MAX_RAISE: f64 = 6.0;
-pub const MAX_LOWER: f64 = 1.0;
-// How far below a detailed scene, in CRF of ease, a scene has to read before it is lowered half a
-// CRF, and before it is lowered a whole one.
-pub const LOWER_BELOW: f64 = 3.0;
-pub const LOWER_FURTHER: f64 = 5.0;
+pub const MAX_LOWER: f64 = 0.5;
+// How far below a detailed scene, in CRF of ease, a scene has to read before it is lowered. At 3,
+// grainy Blu-rays read that hard in most of their scenes and were lowered nearly throughout; at 4.5
+// a lowering is rare again, and kept for scenes that really are that hard.
+pub const LOWER_BELOW: f64 = 4.5;
 
 // What a scene's votes decide.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -312,10 +312,8 @@ pub fn decide(votes: &[CurveVote; METRICS], detail: f64, gain: f64) -> Decision 
     let ease = if banded { votes[BANDING].offset } else { quality };
     let offset = if ease > detail {
         gain * (ease - detail)
-    } else if quality < detail - LOWER_FURTHER {
-        -MAX_LOWER
     } else if quality < detail - LOWER_BELOW {
-        -0.5
+        -MAX_LOWER
     } else {
         0.0
     };
@@ -618,12 +616,13 @@ pub(crate) mod tests {
         // A scene that would band is raised only as far as banding allows.
         let flat = decide(&votes([5.0, 4.0, 6.0, -9.0, 4.0, 1.0, -9.0]), -2.0, 0.5);
         assert_eq!((flat.offset, flat.ease, flat.banding), (1.5, 1.0, true));
-        // A detailed scene stays at the anchor, and so does one a little harder than that.
+        // A detailed scene stays at the anchor, and so does one up to 4.5 CRF harder than that.
         assert_eq!(decide(&votes([-2.0, -2.5, -1.5, 0.0, -2.0, 8.0, 0.0]), -2.0, 0.5).offset, 0.0);
         assert_eq!(decide(&votes([-4.0, -5.0, -4.0, 0.0, -4.5, 8.0, 0.0]), -2.0, 0.5).offset, 0.0);
-        // Far harder, it is lowered half a CRF; further still, one. Banding has no say in either.
-        assert_eq!(decide(&votes([-5.5, -5.0, -5.0, 0.0, -5.5, 8.0, 0.0]), -2.0, 0.5).offset, -0.5);
-        assert_eq!(decide(&votes([-8.0, -7.5, -7.0, 0.0, -8.0, -8.0, 0.0]), -2.0, 0.5).offset, -MAX_LOWER);
+        assert_eq!(decide(&votes([-6.5, -6.0, -6.0, 0.0, -6.5, 8.0, 0.0]), -2.0, 0.5).offset, 0.0);
+        // Far harder, it is lowered half a CRF, and never more. Banding has no say in it.
+        assert_eq!(decide(&votes([-7.0, -6.5, -6.5, 0.0, -7.0, 8.0, 0.0]), -2.0, 0.5).offset, -MAX_LOWER);
+        assert_eq!(decide(&votes([-8.0, -8.0, -8.0, 0.0, -8.0, -8.0, 0.0]), -2.0, 0.5).offset, -0.5);
         assert_eq!(measured_votes_all(&[Some(5.0), Some(4.0), Some(6.0), None, Some(4.0), Some(8.0), None]).map(|votes| quality_ease(&votes)), Some(4.75));
         assert!(measured_votes_all(&[Some(5.0), None, Some(6.0), Some(1.0), Some(4.5), Some(8.0), Some(1.0)]).is_none());
     }
