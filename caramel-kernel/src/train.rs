@@ -9,12 +9,12 @@
 // look, and a network that has seen one would be flattered by another. Each network trains on every
 // fold but one and stops when its error on that one stops falling. That fold is then the network's
 // test: every scene has networks that never trained on its series, and what those say about it is
-// what the model would say about a source it has never seen. The model's stated error, its margin,
+// what the model would say about a source it has never seen. The model's stated error, its gain,
 // and the comparison a retrained model has to win are all taken from those held-out answers.
 
 use crate::curve::{
-    BANDING, BITS, CEILINGS, Consensus, Curve, CurveVote, Curves, DECIDES, KNOT_COUNT, KNOTS, METRICS, Model, Observation, SCALES, consensus, curves_from, line_at, measured_line,
-    measured_votes, targets, value_and_slopes, votes_of,
+    BANDING, BITS, CEILINGS, Curve, CurveVote, Curves, DECIDES, Decision, KNOT_COUNT, KNOTS, MAX_LOWER, MAX_RAISE, METRICS, Model, Observation, SCALES, curves_from, decide,
+    line_at, measured_line, measured_votes, measured_votes_all, quality_ease, value_and_slopes, votes_of,
 };
 use crate::inputs::INPUTS;
 use crate::nn::{Adam, Gradients, Network, Rng, Trace};
@@ -24,17 +24,24 @@ pub const FOLDS: usize = 5;
 pub const ANCHORS: [f64; 4] = [17.0, 19.0, 21.0, 23.0];
 // Beyond this many units a reading is an outlier, and pulls a curve no harder for being further.
 const HUBER: f64 = 2.0;
-// The margins a trainer may choose between, and the one a model with no held-out answers gets.
-const MARGINS: (f64, f64, f64) = (1.0, 3.0, 0.25);
-pub const DEFAULT_MARGIN: f64 = 1.5;
-// What a margin has to hold on held-out sources: of the scenes it raises, at most this share raised
-// further than their encodes allowed, and the 95th percentile of what the raised ones lost against
-// the target no more than this many units (half a dB of XPSNR is one).
-const TOO_FAR_SHARE: f64 = 0.10;
-const SHORTFALL_UNITS: f64 = 1.0;
-// How much of the bound on a scene's movement a simulated decision uses, and its step: the same
-// figures `model` applies.
-pub const MAX_MOVE: f64 = 4.0;
+// A detailed scene, the one the anchor is the right CRF for: the scene this share of the measured
+// ones is harder than, by the quality its encodes held. A quarter of all scenes is the detail a
+// release is judged on — fine linework, texture, grain — and what is easier than that has quality
+// to spare at the anchor.
+pub const DETAILED_SHARE: f64 = 0.25;
+// The gains a trainer may choose between, the largest first, and the one a model with no held-out
+// answers gets.
+const GAINS: [f64; 4] = [1.0, 0.75, 0.5, 0.25];
+pub const DEFAULT_GAIN: f64 = 0.5;
+// What a gain has to hold on held-out sources: of the scenes it raises, the 90th and 95th
+// percentiles of how far their quality fell below a detailed scene's at the anchor (the mean over
+// the quality metrics, in units: half a dB of XPSNR is one), and the 95th percentile of the CAMBI
+// the raise added. A raised scene is allowed to look like a detailed one does, a little worse at
+// its tail, and not to band visibly.
+pub const SHORTFALL_P90: f64 = 2.5;
+pub const SHORTFALL_P95: f64 = 3.5;
+pub const BANDING_P95: f64 = 2.0;
+// The step of a decided CRF: the one `model` applies.
 pub const CRF_STEP: f64 = 0.5;
 
 #[derive(Clone, Debug)]
@@ -251,7 +258,8 @@ pub fn train(samples: &[Sample], config: &TrainConfig, typical: Option<Curves>) 
     let mut model = Model {
         version: config.version.clone(),
         encoder: config.encoder.clone(),
-        margin: DEFAULT_MARGIN,
+        detail: 0.0,
+        gain: DEFAULT_GAIN,
         scenes: usable.len(),
         sources: series_count(samples),
         trained: samples.iter().map(|sample| sample.collected).max().unwrap_or(0),
@@ -262,6 +270,7 @@ pub fn train(samples: &[Sample], config: &TrainConfig, typical: Option<Curves>) 
         error: [0.0; METRICS],
         members: Vec::new(),
     };
+    model.detail = detailed_ease(samples, &model.typical);
     let scenes: Vec<Prepared> = samples
         .iter()
         .map(|sample| {
@@ -307,7 +316,7 @@ pub fn train(samples: &[Sample], config: &TrainConfig, typical: Option<Curves>) 
         .collect();
     if split {
         model.error = vote_error(samples, &held_out, &model.typical).0;
-        model.margin = choose_margin(samples, &held_out, &model.typical);
+        model.gain = choose_gain(samples, &held_out, &model.typical, model.detail);
     }
     Ok(Trained { model, held_out, epochs, losses })
 }
@@ -340,9 +349,22 @@ pub fn deciding_error(error: &[f64; METRICS]) -> f64 {
     judged.iter().sum::<f64>() / judged.len().max(1) as f64
 }
 
-// A consensus as it is applied: within the bound, on the step.
-pub fn applied(agreed: &Consensus) -> f64 {
-    (agreed.offset.clamp(-MAX_MOVE, MAX_MOVE) / CRF_STEP).round() * CRF_STEP
+// How easy a detailed scene is: the quality ease, by the scenes' own encodes, that
+// `DETAILED_SHARE` of the measured scenes fall below, over every anchor.
+pub fn detailed_ease(samples: &[Sample], typical: &Curves) -> f64 {
+    let mut eases: Vec<f64> = samples
+        .iter()
+        .flat_map(|sample| ANCHORS.iter().filter_map(|anchor| measured_votes_all(&measured_votes(&sample.observations, typical, *anchor))).map(|votes| quality_ease(&votes)))
+        .collect();
+    if eases.is_empty() {
+        return 0.0;
+    }
+    percentile(&mut eases, DETAILED_SHARE)
+}
+
+// A decision as it is applied: within the bounds, on the step.
+pub fn applied(decision: &Decision) -> f64 {
+    (decision.offset.clamp(-MAX_LOWER, MAX_RAISE) / CRF_STEP).round() * CRF_STEP
 }
 
 // What a way of deciding scenes would have done to scenes whose encodes were measured.
@@ -351,27 +373,39 @@ pub struct Policy {
     pub decisions: usize,
     pub raised: usize,
     pub lowered: usize,
+    // How far the raised scenes were raised, on average, and how many by four CRF or more.
+    pub raise_mean: f64,
+    pub raised_far: usize,
     // Bytes of the encodes it chose over bytes at the anchor.
     pub bytes: f64,
-    // Of the raised scenes: the share raised further than their encodes allowed by more than a
-    // step, and what they lost against the target, in units, on the quality metric that lost most.
-    pub too_far: f64,
-    pub shortfall_mean: f64,
+    // Of the raised scenes: how far their quality fell below a detailed scene's at the anchor, as
+    // the mean over the quality metrics in units, at the 90th and 95th percentiles.
+    pub shortfall_p90: f64,
     pub shortfall_p95: f64,
-    // CAMBI the raised scenes added over what typical content adds at the anchor, 95th percentile.
+    // CAMBI the raise added to the raised scenes, 95th percentile.
     pub banding_p95: f64,
-    // Of the lowered scenes: the share that were short of the target at the anchor on every quality
-    // metric, as a lowering claims.
+    // Of the lowered scenes: the share that were harder than a detailed scene by their encodes, as
+    // a lowering claims.
     pub needed: f64,
 }
 
-// `decisions` are (sample, anchor, offset from the anchor).
-pub fn simulate(samples: &[Sample], typical: &Curves, decisions: &[(usize, f64, f64)]) -> Policy {
+impl Policy {
+    // Whether raises this good may be made on sources the model has never seen.
+    pub fn holds(&self) -> bool {
+        self.raised == 0 || (self.shortfall_p90 <= SHORTFALL_P90 && self.shortfall_p95 <= SHORTFALL_P95 && self.banding_p95 <= BANDING_P95)
+    }
+}
+
+// `decisions` are (sample, anchor, offset from the anchor). `detail` is the ease of the detailed
+// scene raised scenes are held to.
+pub fn simulate(samples: &[Sample], typical: &Curves, detail: f64, decisions: &[(usize, f64, f64)]) -> Policy {
     let mut policy = Policy { decisions: decisions.len(), ..Default::default() };
     let (mut chosen, mut anchored) = (0.0, 0.0);
-    let (mut too_far, mut needed) = (0usize, 0usize);
+    let mut needed = 0usize;
+    let mut raises = Vec::new();
     let mut shortfalls = Vec::new();
     let mut banding = Vec::new();
+    let quality = |metric: &usize| DECIDES[*metric] && *metric != BANDING;
     for (index, anchor, offset) in decisions {
         let sample = &samples[*index];
         let lines: [Vec<(f64, f64)>; METRICS] = std::array::from_fn(|metric| measured_line(&sample.observations, metric));
@@ -379,27 +413,30 @@ pub fn simulate(samples: &[Sample], typical: &Curves, decisions: &[(usize, f64, 
             chosen += sample.frames * line_at(&lines[BITS], anchor + offset).exp2();
             anchored += sample.frames * line_at(&lines[BITS], *anchor).exp2();
         }
-        let allowed = measured_votes(&sample.observations, typical, *anchor);
-        let quality = |metric: &usize| DECIDES[*metric] && *metric != BANDING;
         if *offset > 0.0 {
-            policy.raised += 1;
-            let permitted = (0..METRICS).filter(|metric| DECIDES[*metric]).filter_map(|metric| allowed[metric]).fold(f64::INFINITY, f64::min);
-            too_far += usize::from(*offset > permitted.max(0.0) + CRF_STEP);
-            let target = targets(typical, *anchor);
-            let lost = (0..METRICS).filter(quality).filter(|metric| lines[*metric].len() >= 2).map(|metric| (target[metric] - line_at(&lines[metric], anchor + offset)) / SCALES[metric]).fold(0.0, f64::max);
-            shortfalls.push(lost);
+            raises.push(*offset);
+            // A detailed scene at the anchor scores what typical content scores `detail` CRF the
+            // other way: a scene that holds typical quality `detail` CRF from the anchor.
+            let measured: Vec<f64> =
+                (0..METRICS).filter(quality).filter(|metric| lines[*metric].len() >= 2).map(|metric| (typical[metric].at(anchor - detail) - line_at(&lines[metric], anchor + offset)) / SCALES[metric]).collect();
+            if !measured.is_empty() {
+                shortfalls.push((measured.iter().sum::<f64>() / measured.len() as f64).max(0.0));
+            }
             if lines[BANDING].len() >= 2 {
-                banding.push((typical[BANDING].at(*anchor) - line_at(&lines[BANDING], anchor + offset)).max(0.0));
+                banding.push((line_at(&lines[BANDING], *anchor) - line_at(&lines[BANDING], anchor + offset)).max(0.0));
             }
         } else if *offset < 0.0 {
             policy.lowered += 1;
-            needed += usize::from((0..METRICS).filter(quality).filter_map(|metric| allowed[metric]).all(|vote| vote < 0.0));
+            let allowed = measured_votes(&sample.observations, typical, *anchor);
+            needed += usize::from(measured_votes_all(&allowed).is_some_and(|votes| quality_ease(&votes) < detail));
         }
     }
     policy.bytes = if anchored > 0.0 { chosen / anchored } else { 1.0 };
-    if policy.raised > 0 {
-        policy.too_far = too_far as f64 / policy.raised as f64;
-        policy.shortfall_mean = shortfalls.iter().sum::<f64>() / shortfalls.len() as f64;
+    policy.raised = raises.len();
+    if !raises.is_empty() {
+        policy.raise_mean = raises.iter().sum::<f64>() / raises.len() as f64;
+        policy.raised_far = raises.iter().filter(|raise| **raise >= 4.0).count();
+        policy.shortfall_p90 = percentile(&mut shortfalls, 0.90);
         policy.shortfall_p95 = percentile(&mut shortfalls, 0.95);
         policy.banding_p95 = percentile(&mut banding, 0.95);
     }
@@ -409,30 +446,27 @@ pub fn simulate(samples: &[Sample], typical: &Curves, decisions: &[(usize, f64, 
     policy
 }
 
-// What votes read from `curves` would decide for every sample at every anchor, with a margin.
-pub fn decisions(samples: &[Sample], curves: &[Vec<Curves>], typical: &Curves, margin: f64) -> Vec<(usize, f64, f64)> {
+// What votes read from `curves` would decide for every sample at every anchor.
+pub fn decisions(samples: &[Sample], curves: &[Vec<Curves>], typical: &Curves, detail: f64, gain: f64) -> Vec<(usize, f64, f64)> {
     let mut out = Vec::new();
     for (index, members) in curves.iter().enumerate().filter(|(index, members)| !members.is_empty() && samples[*index].observations.len() >= 2) {
         for anchor in ANCHORS {
             let votes: [CurveVote; METRICS] = votes_of(members, typical, anchor);
-            out.push((index, anchor, applied(&consensus(&votes, margin))));
+            out.push((index, anchor, applied(&decide(&votes, detail, gain))));
         }
     }
     out
 }
 
-// The smallest margin whose raises, on scenes the networks had not trained on, stay within what the
-// encodes allowed often enough and lose little enough when they do not. The widest when none does.
-pub fn choose_margin(samples: &[Sample], curves: &[Vec<Curves>], typical: &Curves) -> f64 {
-    let mut margin = MARGINS.0;
-    while margin < MARGINS.1 {
-        let policy = simulate(samples, typical, &decisions(samples, curves, typical, margin));
-        if policy.too_far <= TOO_FAR_SHARE && policy.shortfall_p95 <= SHORTFALL_UNITS {
-            return margin;
+// The largest gain whose raises, on scenes the networks had not trained on, stay within what a
+// raised scene may lose. The smallest when none does: the trainer's verdict then says so.
+pub fn choose_gain(samples: &[Sample], curves: &[Vec<Curves>], typical: &Curves, detail: f64) -> f64 {
+    for gain in GAINS {
+        if simulate(samples, typical, detail, &decisions(samples, curves, typical, detail, gain)).holds() {
+            return gain;
         }
-        margin += MARGINS.2;
     }
-    MARGINS.1
+    GAINS[GAINS.len() - 1]
 }
 
 // Whether a retrained model may replace the one in use, judged on scenes the one in use has never
@@ -570,41 +604,92 @@ mod tests {
         // One series: nothing can be held out, so nothing is claimed about unseen sources.
         let trained = train(&synthetic(1, 1), &quick(), None).unwrap();
         assert!(trained.held_out.iter().all(Vec::is_empty));
-        assert_eq!((trained.model.margin, trained.model.error), (DEFAULT_MARGIN, [0.0; METRICS]));
+        assert_eq!((trained.model.gain, trained.model.error), (DEFAULT_GAIN, [0.0; METRICS]));
         assert_eq!(trained.model.members.len(), FOLDS);
     }
 
     #[test]
-    fn a_policy_is_scored_against_what_the_encodes_allowed() {
-        let observation = |crf: f64, level: f64| Observation { crf, values: std::array::from_fn(|metric| if metric == BITS { -crf / 6.0 } else { (level - crf).min(CEILINGS[metric]) }) };
-        let scene = |level: f64| Sample { series: "s".to_string(), inputs: [0.0; INPUTS], observations: vec![observation(10.0, level), observation(34.0, level)], frames: 10.0, collected: 0 };
+    fn a_policy_is_scored_against_a_detailed_scene() {
+        // Banding is added at a CAMBI a CRF past CRF `bands`; the rest read `level - crf`.
+        let observation = |crf: f64, level: f64, bands: f64| Observation {
+            crf,
+            values: std::array::from_fn(|metric| match metric {
+                BITS => -crf / 6.0,
+                BANDING => (bands - crf).min(0.0),
+                _ => (level - crf).min(CEILINGS[metric]),
+            }),
+        };
+        let scene = |level: f64, bands: f64| Sample { series: "s".to_string(), inputs: [0.0; INPUTS], observations: vec![observation(10.0, level, bands), observation(21.0, level, bands), observation(34.0, level, bands)], frames: 10.0, collected: 0 };
         // Typical content reads -crf; the first scene reads three better at every CRF and the
-        // second three worse: three CRF easy, three CRF hard.
+        // second six worse. A detailed scene is two CRF harder than typical. Neither bands; the
+        // third is the first, banding from CRF 21 on.
         let typical: Curves = [Curve(std::array::from_fn(|knot| -KNOTS[knot])); METRICS];
-        let samples = vec![scene(3.0), scene(-3.0)];
-        let fair = simulate(&samples, &typical, &[(0, 20.0, 3.0), (1, 20.0, -3.0)]);
-        assert_eq!((fair.raised, fair.lowered, fair.too_far, fair.shortfall_p95, fair.needed), (1, 1, 0.0, 0.0, 1.0));
-        assert!((fair.bytes - (0.5f64.sqrt() + 2f64.sqrt()) / 2.0).abs() < 1e-9, "{fair:?}");
-        // Raising the hard one two CRF loses five units' worth on the half-dB metrics (2.5 each
-        // way of 0.5), and lowering the easy one was not needed.
-        let wrong = simulate(&samples, &typical, &[(1, 20.0, 2.0), (0, 20.0, -1.0)]);
-        assert_eq!((wrong.too_far, wrong.needed), (1.0, 0.0));
-        assert!((wrong.shortfall_p95 - 10.0).abs() < 1e-9, "{wrong:?}");
-        assert!((wrong.banding_p95 - 5.0).abs() < 1e-9, "{wrong:?}");
+        let samples = vec![scene(3.0, 40.0), scene(-6.0, 40.0), scene(3.0, 21.0)];
+        // Raising the easy one five CRF brings it to a detailed scene's quality, and the hard one
+        // was harder than a detailed scene, as its lowering claimed.
+        let fair = simulate(&samples, &typical, -2.0, &[(0, 20.0, 5.0), (1, 20.0, -0.5)]);
+        assert_eq!((fair.raised, fair.lowered, fair.raised_far, fair.raise_mean, fair.shortfall_p95, fair.needed), (1, 1, 1, 5.0, 0.0, 1.0));
+        assert!((fair.bytes - (2f64.powf(-25.0 / 6.0) + 2f64.powf(-19.5 / 6.0)) / (2.0 * 2f64.powf(-20.0 / 6.0))).abs() < 1e-9, "{fair:?}");
+        assert!(fair.holds());
+        // Raising it seven loses two of each metric's value: four units on the half-dB metrics and
+        // four thirds on VMAF's worst frames, 10/3 in the mean. Lowering the easy one was not needed.
+        let far = simulate(&samples, &typical, -2.0, &[(0, 20.0, 7.0), (0, 20.0, -0.5)]);
+        assert!((far.shortfall_p95 - 10.0 / 3.0).abs() < 1e-9 && far.banding_p95 == 0.0, "{far:?}");
+        assert_eq!(far.needed, 0.0);
+        assert!(!far.holds());
+        // The same raise of the banding one adds four CAMBI: too many, whatever its quality held.
+        let banded = simulate(&samples, &typical, -2.0, &[(2, 20.0, 5.0)]);
+        assert!(banded.shortfall_p95 == 0.0 && (banded.banding_p95 - 4.0).abs() < 1e-9, "{banded:?}");
+        assert!(!banded.holds());
     }
 
     #[test]
-    fn a_margin_is_as_wide_as_the_held_out_votes_need() {
+    fn a_detailed_scene_is_the_quarter_hardest() {
         let samples = synthetic(5, 8);
         let trained = train(&samples, &quick(), None).unwrap();
-        let typical = &trained.model.typical;
-        // Votes this accurate need no more than the narrowest margin.
-        assert_eq!(trained.model.margin, MARGINS.0);
-        // Curves that claim every scene is six units better than it is raise scenes too far at any
-        // margin on offer.
-        let flattering: Vec<Vec<Curves>> = trained.held_out.iter().map(|members| members.iter().map(|curves| curves.map(|curve| Curve(curve.0.map(|value| value + 6.0)))).collect()).collect();
-        let flattering: Vec<Vec<Curves>> = flattering.into_iter().map(|members| members.into_iter().map(|mut curves| { curves[BANDING] = Curve([0.0; KNOT_COUNT]); curves }).collect()).collect();
-        assert_eq!(choose_margin(&samples, &flattering, typical), MARGINS.1);
+        let detail = trained.model.detail;
+        // The synthetic scenes' ease is two CRF a deviation of input 0, so the quarter hardest are
+        // about 1.35 CRF below the middle one.
+        assert!(detail < -0.5 && detail > -2.5, "{detail}");
+        let eases: Vec<f64> = samples
+            .iter()
+            .flat_map(|sample| ANCHORS.iter().filter_map(|anchor| measured_votes_all(&measured_votes(&sample.observations, &trained.model.typical, *anchor))).map(|votes| quality_ease(&votes)))
+            .collect();
+        let below = eases.iter().filter(|ease| **ease < detail).count() as f64 / eases.len() as f64;
+        assert!((below - DETAILED_SHARE).abs() < 0.02, "{below}");
+    }
+
+    #[test]
+    fn a_gain_is_as_large_as_the_held_out_votes_allow() {
+        // Scenes that band at no CRF, so the gain is held by quality alone.
+        let mut samples = synthetic(5, 8);
+        for sample in &mut samples {
+            for point in &mut sample.observations {
+                point.values[BANDING] = 0.0;
+            }
+        }
+        let trained = train(&samples, &quick(), None).unwrap();
+        let (typical, detail) = (&trained.model.typical, trained.model.detail);
+        // Votes this accurate may be followed in full.
+        assert_eq!(trained.model.gain, GAINS[0]);
+        // Curves that claim every scene is twelve units better than it is raise scenes too far to be
+        // followed in full, and are given less of what they claim.
+        let flattering: Vec<Vec<Curves>> = trained
+            .held_out
+            .iter()
+            .map(|members| {
+                members
+                    .iter()
+                    .map(|curves| {
+                        let mut curves = curves.map(|curve| Curve(curve.0.map(|value| value + 12.0)));
+                        curves[BANDING] = Curve([0.0; KNOT_COUNT]);
+                        curves
+                    })
+                    .collect()
+            })
+            .collect();
+        assert!(choose_gain(&samples, &flattering, typical, detail) < GAINS[0]);
+        assert!(!simulate(&samples, typical, detail, &decisions(&samples, &flattering, typical, detail, GAINS[0])).holds());
     }
 
     #[test]

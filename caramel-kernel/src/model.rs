@@ -52,7 +52,8 @@ pub fn model_version() -> String {
     curve::active().map_or_else(|| MODEL_VERSION.to_string(), |model| model.version.clone())
 }
 
-// The furthest a scene's CRF may move from the anchor in either direction.
+// The furthest the fitted predictors move a scene's CRF from the anchor in either direction. A
+// network has bounds of its own (`curve::MAX_RAISE`, `curve::MAX_LOWER`).
 const MAX_RAISE: f64 = 4.0;
 const MAX_LOWER: f64 = 4.0;
 // How far past zero every metric's offset must be before the scene moves, and what is taken off the
@@ -199,8 +200,10 @@ pub struct SceneEstimate {
     pub frames_analyzed: usize,
     // The metrics' offsets for the scene: the ones it was decided on.
     pub votes: Vec<MetricVote>,
-    // What moved the scene: `consensus`, what the votes agree on (its value is the vote that held
-    // the others back), then the factors that depend on the source and the encode.
+    // What moved the scene, then the factors that depend on the source and the encode. With the
+    // fitted predictors that is `consensus`, what the votes agree on (its value is the vote that
+    // held the others back). With a network it is `detail` — how many CRF of ease the scene has
+    // over a detailed one — or `banding` when banding's vote held the raise back to that.
     pub contributions: Vec<Contribution>,
 }
 
@@ -313,16 +316,17 @@ pub fn estimate_scene(window: &WindowFeatures, source: &SourceContext, encode: &
 }
 
 // What a network's curves say about a window: the votes of the metrics a scene is decided on, and
-// what they agree on.
-fn curve_votes(model: &curve::Model, window: &WindowFeatures, source: &SourceContext, anchor: f64) -> (Vec<MetricVote>, f64, f64) {
+// what they decide (`curve::decide`): the anchor for a detailed scene, a raise for one with quality
+// to spare.
+fn curve_votes(model: &curve::Model, window: &WindowFeatures, source: &SourceContext, anchor: f64) -> (Vec<MetricVote>, Contribution) {
     let inputs = crate::inputs::inputs(window, source.bit_depth > 8);
     let all = model.votes(&inputs, anchor.clamp(CURVE_ANCHORS.0, CURVE_ANCHORS.1));
-    let agreed = curve::consensus(&all, model.margin);
+    let decision = curve::decide(&all, model.detail, model.gain);
     let votes = (0..curve::METRICS)
         .filter(|metric| curve::DECIDES[*metric])
         .map(|metric| MetricVote { metric: curve::METRIC_NAMES[metric], offset: all[metric].offset, spread: all[metric].spread })
         .collect();
-    (votes, agreed.offset, agreed.binding)
+    (votes, Contribution { factor: if decision.banding { "banding" } else { "detail" }, value: decision.ease - model.detail, delta: decision.offset })
 }
 
 // The same with the model named: a network, or None for the fitted predictors.
@@ -340,22 +344,24 @@ pub fn estimate_scene_with(model: Option<&curve::Model>, window: &WindowFeatures
             contributions: Vec::new(),
         };
     }
-    let (votes, agreed, binding) = match model {
-        Some(model) => curve_votes(model, window, source, anchor),
+    let (votes, decided, (max_lower, max_raise)) = match model {
+        Some(model) => {
+            let (votes, decided) = curve_votes(model, window, source, anchor);
+            (votes, decided, (curve::MAX_LOWER, curve::MAX_RAISE))
+        }
         None => {
             let votes = votes(window, anchor);
             let (agreed, binding) = consensus(&votes);
-            (votes, agreed, binding)
+            (votes, Contribution { factor: "consensus", value: binding, delta: agreed }, (MAX_LOWER, MAX_RAISE))
         }
     };
-    let contributions =
-        vec![Contribution { factor: "consensus", value: binding, delta: agreed }, resolution_contribution(source, encode)];
+    let contributions = vec![decided, resolution_contribution(source, encode)];
     let raw_adjustment: f64 = contributions.iter().map(|factor| factor.delta).sum();
     let confidence = (window.frames as f64 / FULL_CONFIDENCE_FRAMES).min(1.0)
         * if window.temporal.is_some() { 1.0 } else { NO_MOTION_CONFIDENCE }
         * if window.cuts == 0 { 1.0 } else { CUT_INSIDE_CONFIDENCE };
     let scaled = if raw_adjustment > 0.0 { raw_adjustment * confidence } else { raw_adjustment };
-    let adjustment = scaled.clamp(-MAX_LOWER, MAX_RAISE);
+    let adjustment = scaled.clamp(-max_lower, max_raise);
     SceneEstimate {
         crf: round_crf(anchor + adjustment, encode),
         anchor_crf: encode.anchor_crf,
@@ -632,40 +638,45 @@ mod tests {
         assert_eq!(linear_scene(&window(PAINTED), &scope, &scaled).contributions[1].value, 721.0);
     }
 
-    // A network decides in place of the predictors when one is given: its votes carry its
-    // disagreement, its own margin is applied, and the bounds, the short-scene confidence and the
-    // refusal of a window with a cut inside hold as they do without it.
+    // A network decides in place of the predictors when one is given: the anchor for a detailed
+    // scene, a raise for an easier one, and the bounds, the short-scene confidence and the refusal
+    // of a window with a cut inside hold as they do without it.
     #[test]
     fn a_network_decides_when_there_is_one() {
         let mut model = curve::tests::flat_model(1.0);
-        let encode = EncodeContext::anchored(19.0);
-        // Every scene reads as typical content: nothing moves, and banding's slack is not a raise.
+        let encode = EncodeContext::anchored(17.0);
+        // Every scene reads as typical content, two CRF easier than a detailed scene: half of it.
         let typical = estimate_scene_with(Some(&model), &window(PAINTED), &source(), &encode);
-        assert_eq!((typical.crf, typical.votes.len()), (19.0, 5));
+        assert_eq!((typical.crf, typical.votes.len()), (18.0, 5));
         assert_eq!(typical.votes.iter().map(|vote| vote.metric).collect::<Vec<_>>(), ["xpsnr", "xpsnr-low", "ssim", "vmaf-low", "banding"]);
-        // Every level a unit and a half up: six CRF easy by every metric, less the margin, held to
-        // the bound.
+        assert_eq!((typical.contributions[0].factor, typical.contributions[0].value), ("detail", 2.0));
+        // Every level a unit and a half up: six CRF easier still, and banding's slack ahead of
+        // that, so the raise is half of eight — held to the bound by nothing yet.
         for member in &mut model.members {
             for metric in 0..curve::METRICS {
                 member.layers[1].bias[metric * curve::KNOT_COUNT + 3] = 1.5;
             }
         }
         let easy = estimate_scene_with(Some(&model), &window(PAINTED), &source(), &encode);
-        assert!((easy.raw_adjustment - 4.5).abs() < 1e-6, "{easy:?}");
-        assert_eq!(easy.crf, 23.0);
+        assert!((easy.raw_adjustment - 4.0).abs() < 1e-6, "{easy:?}");
+        assert_eq!(easy.crf, 21.0);
+        // Followed in full it would be eight: the bound is six.
+        model.gain = 1.0;
+        assert_eq!(estimate_scene_with(Some(&model), &window(PAINTED), &source(), &encode).crf, 23.0);
         let split = WindowFeatures { cuts: 1, ..window(PAINTED) };
-        assert_eq!(estimate_scene_with(Some(&model), &split, &source(), &encode).crf, 19.0);
-        // Networks that disagree by more than the scene is easy leave it where it is.
-        for metric in 0..curve::METRICS {
-            model.members[1].layers[1].bias[metric * curve::KNOT_COUNT + 3] = -1.5;
+        assert_eq!(estimate_scene_with(Some(&model), &split, &source(), &encode).crf, 17.0);
+        // A scene far harder than a detailed one is lowered, by one CRF at most.
+        for member in &mut model.members {
+            for metric in 0..curve::METRICS {
+                member.layers[1].bias[metric * curve::KNOT_COUNT + 3] = -3.0;
+            }
         }
-        let disputed = estimate_scene_with(Some(&model), &window(PAINTED), &source(), &encode);
-        assert_eq!(disputed.crf, 19.0);
-        assert!(disputed.votes.iter().all(|vote| vote.spread > 5.0), "{disputed:?}");
+        let hard = estimate_scene_with(Some(&model), &window(PAINTED), &source(), &encode);
+        assert_eq!(hard.crf, 16.0, "{hard:?}");
         // An anchor outside what the curves cover is read as the nearest inside, and stays bounded.
         for anchor in [6.0, 40.0] {
             let estimate = estimate_scene_with(Some(&model), &window(PAINTED), &source(), &EncodeContext::anchored(anchor));
-            assert!((estimate.crf - anchor as f32).abs() <= 4.0 && estimate.votes.iter().all(|vote| vote.offset.is_finite()), "{estimate:?}");
+            assert!(estimate.crf - anchor as f32 <= 6.0 && anchor as f32 - estimate.crf <= 1.0 && estimate.votes.iter().all(|vote| vote.offset.is_finite()), "{estimate:?}");
         }
     }
 }

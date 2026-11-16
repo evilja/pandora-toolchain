@@ -131,9 +131,11 @@ pub struct PolicyReport {
     pub decisions: usize,
     pub raised_share: f64,
     pub lowered_share: f64,
+    // Of all scenes, the share raised by four CRF or more.
+    pub raised_far_share: f64,
+    pub raise_mean: f64,
     pub bytes: f64,
-    pub too_far: f64,
-    pub shortfall_mean: f64,
+    pub shortfall_p90: f64,
     pub shortfall_p95: f64,
     pub banding_p95: f64,
     pub needed: f64,
@@ -146,9 +148,10 @@ impl From<Policy> for PolicyReport {
             decisions: policy.decisions,
             raised_share: share(policy.raised),
             lowered_share: share(policy.lowered),
+            raised_far_share: share(policy.raised_far),
+            raise_mean: policy.raise_mean,
             bytes: policy.bytes,
-            too_far: policy.too_far,
-            shortfall_mean: policy.shortfall_mean,
+            shortfall_p90: policy.shortfall_p90,
             shortfall_p95: policy.shortfall_p95,
             banding_p95: policy.banding_p95,
             needed: policy.needed,
@@ -176,11 +179,13 @@ pub struct TrainReport {
     pub other_encoders: usize,
     pub members: usize,
     pub epochs: Vec<usize>,
-    pub margin: f64,
+    // The ease of a detailed scene and the share of a scene's ease over it it is raised by.
+    pub detail: f64,
+    pub gain: f64,
     pub error: f64,
     pub metrics: Vec<MetricError>,
     // What the candidate would have decided for scenes it had not trained on, and what the fitted
-    // predictors decide for the same scenes: both scored against the same targets.
+    // predictors decide for the same scenes: both scored against the same detailed scene.
     pub policy: PolicyReport,
     pub predictors: PolicyReport,
     // The model in use, and how the two compare on the scenes measured since it was trained.
@@ -218,6 +223,8 @@ pub struct HeldOutScene {
     pub votes: Vec<f64>,
     pub spreads: Vec<f64>,
     pub allowed: Vec<Option<f64>>,
+    // What those networks' curves read at the anchor, per metric.
+    pub levels: Vec<f64>,
     pub offset: f64,
 }
 
@@ -254,21 +261,30 @@ fn verdict(current: Option<&Model>, trained: &Trained, samples: &[Sample], polic
             if scenes < FIRST_MODEL_SCENES || series < FIRST_MODEL_SERIES {
                 return (false, format!("{scenes} scenes from {series} series; a first model needs {FIRST_MODEL_SCENES} from {FIRST_MODEL_SERIES}"), None);
             }
-            if policy.raised > 0 && (policy.too_far > 0.10 || policy.shortfall_p95 > 1.0) {
-                return (false, format!("held-out raises go too far: {:.0}% past what the encodes allowed, {:.2} units lost at the 95th percentile", policy.too_far * 100.0, policy.shortfall_p95), None);
+            if !policy.holds() {
+                return (
+                    false,
+                    format!(
+                        "held-out raises go too far even at a gain of {}: {:.2} and {:.2} units below a detailed scene at the 90th and 95th percentiles, {:.2} CAMBI added",
+                        trained.model.gain, policy.shortfall_p90, policy.shortfall_p95, policy.banding_p95
+                    ),
+                    None,
+                );
             }
-            (true, "first model: held-out raises stay within what the encodes allowed".to_string(), None)
+            (true, format!("first model: held-out raises hold a detailed scene's quality at a gain of {}", trained.model.gain), None)
         }
         Some(current) => {
             let verdict = train::judge(current, trained, samples);
-            let reason = if verdict.scenes < train::GATE_SCENES {
+            let reason = if verdict.accepted && !policy.holds() {
+                format!("better votes than `{}`, but held-out raises go too far: {:.2} units below a detailed scene at the 90th percentile, {:.2} CAMBI added", current.version, policy.shortfall_p90, policy.banding_p95)
+            } else if verdict.scenes < train::GATE_SCENES {
                 format!("{} scenes measured since `{}` was trained; {} are needed to replace it", verdict.scenes, current.version, train::GATE_SCENES)
             } else if verdict.accepted {
                 format!("on {} scenes `{}` has not seen: {:.2} CRF against its {:.2}", verdict.scenes, current.version, verdict.candidate, verdict.current)
             } else {
                 format!("no better on {} scenes `{}` has not seen: {:.2} CRF against its {:.2}", verdict.scenes, current.version, verdict.candidate, verdict.current)
             };
-            (verdict.accepted, reason, Some(verdict))
+            (verdict.accepted && policy.holds(), reason, Some(verdict))
         }
     }
 }
@@ -293,13 +309,14 @@ pub fn train_dataset(request: &TrainRequest) -> Result<TrainOutcome, String> {
     // weights themselves, so two trainings never share a file.
     trained.model.version = format!("{MODEL_FAMILY}.{}-{:06x}", trained.model.scenes, hash(&trained.model.to_text()) & 0xff_ffff);
     let model = &trained.model;
-    let policy = train::simulate(&samples, &model.typical, &train::decisions(&samples, &trained.held_out, &model.typical, model.margin));
-    let predictors = train::simulate(&samples, &model.typical, &predictor_decisions(&kept));
+    let policy = train::simulate(&samples, &model.typical, model.detail, &train::decisions(&samples, &trained.held_out, &model.typical, model.detail, model.gain));
+    let predictors = train::simulate(&samples, &model.typical, model.detail, &predictor_decisions(&kept));
     let (accepted, reason, judged) = verdict(request.current.as_deref(), &trained, &samples, &policy);
     let mut scenes = Vec::new();
     for (index, members) in trained.held_out.iter().enumerate().filter(|(index, members)| !members.is_empty() && samples[*index].observations.len() >= 2) {
         for anchor in train::ANCHORS {
             let votes = curve::votes_of(members, &model.typical, anchor);
+            let drawn = curve::mean_curves(members);
             scenes.push(HeldOutScene {
                 source_id: kept[index].source_id.clone(),
                 series: kept[index].series.clone(),
@@ -308,7 +325,8 @@ pub fn train_dataset(request: &TrainRequest) -> Result<TrainOutcome, String> {
                 votes: votes.iter().map(|vote| vote.offset).collect(),
                 spreads: votes.iter().map(|vote| vote.spread).collect(),
                 allowed: curve::measured_votes(&samples[index].observations, &model.typical, anchor).to_vec(),
-                offset: train::applied(&curve::consensus(&votes, model.margin)),
+                levels: drawn.iter().map(|curve| curve.at(anchor)).collect(),
+                offset: train::applied(&curve::decide(&votes, model.detail, model.gain)),
             });
         }
     }
@@ -320,7 +338,8 @@ pub fn train_dataset(request: &TrainRequest) -> Result<TrainOutcome, String> {
         other_encoders: request.samples.len() - kept.len(),
         members: model.members.len(),
         epochs: trained.epochs.clone(),
-        margin: model.margin,
+        detail: model.detail,
+        gain: model.gain,
         error: train::deciding_error(&model.error),
         metrics: (0..METRICS).map(|metric| MetricError { metric: METRIC_NAMES[metric], decides: DECIDES[metric], held_out: model.error[metric], typical: model.typical[metric].0.to_vec() }).collect(),
         policy: policy.into(),

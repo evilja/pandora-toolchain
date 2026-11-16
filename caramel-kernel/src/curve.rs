@@ -15,8 +15,10 @@
 //
 // A model is several networks, each trained on a different part of the data. Their mean is the
 // prediction, and how far they disagree about a vote is how much the scene is unlike what they were
-// trained on. `model` takes that disagreement off a vote before it trusts it, and the lab measures
-// the scenes where it is largest.
+// trained on: the lab measures the scenes where it is largest.
+//
+// What a scene's CRF is made of its votes is `decide`: the anchor is the CRF for detailed scenes,
+// and a scene is raised by how much less detailed than that it is.
 
 use crate::inputs::INPUTS;
 use crate::nn::{Layer, Network};
@@ -64,8 +66,8 @@ pub const SCALES: [f64; METRICS] = [0.5, 0.5, 0.5, 1.0, 1.5, 1.0, 0.2];
 // The metrics a scene's CRF is decided on. Bits are what is saved, not what is judged, and mean
 // VMAF says nothing its worst frames do not.
 pub const DECIDES: [bool; METRICS] = [true, true, true, false, true, true, false];
-// Banding only ever holds a raise back. A scene with none to add is not thereby hard, so it has no
-// say in a lowering.
+// Banding only ever holds a raise back. A scene with none to add is not thereby easy, so it has no
+// say in how far a scene is raised past what the others allow, and none in a lowering.
 pub const BANDING: usize = 5;
 pub const BITS: usize = 6;
 // How far below what typical content scores a scene may fall before a metric says it has, in the
@@ -268,43 +270,66 @@ pub fn measured_votes(observations: &[Observation], typical: &Curves, anchor: f6
     })
 }
 
-// What the votes agree on.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Consensus {
-    // How far the scene moves: zero unless every vote is past the margin on one side.
-    pub offset: f64,
-    // The vote that held the others back, with its disagreement counted against it, and its metric.
-    pub binding: f64,
-    pub metric: usize,
+// How easy a scene is by the quality metrics, in CRF: the mean of what XPSNR, its worst frames,
+// SSIM and VMAF's worst frames say its CRF could move by. No one metric is the scene — flat
+// animation is easy by SSIM and ordinary by VMAF — and on sources the networks had not seen, the
+// mean of the four followed what the encodes allowed more closely than the least of them did.
+pub fn quality_ease(votes: &[CurveVote; METRICS]) -> f64 {
+    let quality = |metric: &usize| DECIDES[*metric] && *metric != BANDING;
+    let count = (0..METRICS).filter(quality).count().max(1) as f64;
+    (0..METRICS).filter(quality).map(|metric| votes[metric].offset).sum::<f64>() / count
 }
 
-// A scene is raised only when every metric it is decided on holds the target past the margin even
-// if its networks' disagreement is counted against it, and then by what the most cautious allows.
-// It is lowered only when every quality metric is short of the target by the margin even with the
-// disagreement counted for it. Banding has no say in a lowering: a scene that would band no more
-// than typical content is not thereby easy.
-pub fn consensus(votes: &[CurveVote; METRICS], margin: f64) -> Consensus {
-    let mut least = (f64::INFINITY, 0);
-    let mut most = (f64::NEG_INFINITY, 0);
-    for metric in (0..METRICS).filter(|metric| DECIDES[*metric]) {
-        let low = votes[metric].offset - votes[metric].spread;
-        if low < least.0 {
-            least = (low, metric);
-        }
-        let high = votes[metric].offset + votes[metric].spread;
-        if metric != BANDING && high > most.0 {
-            most = (high, metric);
-        }
-    }
-    if least.0 > margin {
-        Consensus { offset: least.0 - margin, binding: least.0, metric: least.1 }
-    } else if most.0 < -margin {
-        Consensus { offset: most.0 + margin, binding: most.0, metric: most.1 }
-    } else if least.0.abs() < most.0.abs() {
-        Consensus { offset: 0.0, binding: least.0, metric: least.1 }
+// The furthest a scene is raised and lowered from the anchor. A raise is what the rule is for; a
+// lowering is kept for the scenes far harder than the detailed ones the anchor was chosen for, and
+// is half a CRF, or one for the hardest.
+pub const MAX_RAISE: f64 = 6.0;
+pub const MAX_LOWER: f64 = 1.0;
+// How far below a detailed scene, in CRF of ease, a scene has to read before it is lowered half a
+// CRF, and before it is lowered a whole one.
+pub const LOWER_BELOW: f64 = 3.0;
+pub const LOWER_FURTHER: f64 = 5.0;
+
+// What a scene's votes decide.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Decision {
+    // How far the scene moves from the anchor, before bounds and rounding.
+    pub offset: f64,
+    // What the raise was read from: the quality metrics' ease, or banding's vote where that is
+    // lower — and which of the two it was.
+    pub ease: f64,
+    pub banding: bool,
+}
+
+// The anchor is the CRF a detailed scene is encoded at, and `detail` is how easy such a scene is: a
+// scene easier than that has quality to spare at the anchor, and is raised by `gain` of the CRF it
+// has to spare. Banding holds a raise back — a flat scene is the easiest to raise and the first to
+// band — so the raise is read from the lower of the quality metrics' ease and banding's vote. Only
+// a scene far harder than a detailed one is lowered, and by little.
+pub fn decide(votes: &[CurveVote; METRICS], detail: f64, gain: f64) -> Decision {
+    let quality = quality_ease(votes);
+    let banded = votes[BANDING].offset < quality;
+    let ease = if banded { votes[BANDING].offset } else { quality };
+    let offset = if ease > detail {
+        gain * (ease - detail)
+    } else if quality < detail - LOWER_FURTHER {
+        -MAX_LOWER
+    } else if quality < detail - LOWER_BELOW {
+        -0.5
     } else {
-        Consensus { offset: 0.0, binding: most.0, metric: most.1 }
+        0.0
+    };
+    Decision { offset, ease, banding: banded }
+}
+
+// The same from a scene's own encodes: the quality ease and banding's vote. None when a deciding
+// metric was not measured.
+pub fn measured_votes_all(allowed: &[Option<f64>; METRICS]) -> Option<[CurveVote; METRICS]> {
+    let mut votes = [CurveVote::default(); METRICS];
+    for metric in (0..METRICS).filter(|metric| DECIDES[*metric]) {
+        votes[metric].offset = allowed[metric]?;
     }
+    Some(votes)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -312,9 +337,12 @@ pub struct Model {
     pub version: String,
     // The encoder settings the training encodes were made with (`caramel_lab::encoder_key`).
     pub encoder: String,
-    // How far past zero every vote must be before a scene moves: set by the trainer from how wrong
-    // the votes were on sources it had never seen.
-    pub margin: f64,
+    // How easy a detailed scene is, in CRF of ease against typical content: the scene the anchor is
+    // the right CRF for. Set by the trainer from the measured scenes (`train::DETAILED_SHARE`).
+    pub detail: f64,
+    // How much of the CRF a scene has to spare over a detailed one it is raised by: set by the
+    // trainer from how far raises fell short on sources it had never seen.
+    pub gain: f64,
     // What the model was trained on, for whoever reads the file.
     pub scenes: usize,
     pub sources: usize,
@@ -352,6 +380,12 @@ impl Model {
         votes_of(&self.member_curves(inputs), &self.typical, anchor)
     }
 
+    // The votes, and the curves they were read from.
+    pub fn read(&self, inputs: &[f64; INPUTS], anchor: f64) -> ([CurveVote; METRICS], Curves) {
+        let members = self.member_curves(inputs);
+        (votes_of(&members, &self.typical, anchor), mean_curves(&members))
+    }
+
     // How unsure the model is about a scene: the mean disagreement over the metrics it decides on,
     // at the middle anchor.
     pub fn uncertainty(&self, inputs: &[f64; INPUTS]) -> f64 {
@@ -372,7 +406,7 @@ impl Model {
         fn numbers(values: &[f64]) -> String {
             values.iter().map(|value| format!("{}", *value as f32)).collect::<Vec<_>>().join(" ")
         }
-        let mut text = format!("{FORMAT}\nversion {}\nencoder {}\nmargin {}\nscenes {}\nsources {}\ntrained {}\n", self.version, self.encoder, self.margin as f32, self.scenes, self.sources, self.trained);
+        let mut text = format!("{FORMAT}\nversion {}\nencoder {}\ndetail {}\ngain {}\nscenes {}\nsources {}\ntrained {}\n", self.version, self.encoder, self.detail as f32, self.gain as f32, self.scenes, self.sources, self.trained);
         text += &format!("input-mean {}\ninput-scale {}\n", numbers(&self.input_mean), numbers(&self.input_scale));
         text += &format!("offsets {}\nerror {}\n", numbers(&self.offsets), numbers(&self.error));
         for (metric, curve) in self.typical.iter().enumerate() {
@@ -404,7 +438,8 @@ impl Model {
         let mut model = Model {
             version: String::new(),
             encoder: String::new(),
-            margin: 0.0,
+            detail: 0.0,
+            gain: f64::NAN,
             scenes: 0,
             sources: 0,
             trained: 0,
@@ -425,7 +460,8 @@ impl Model {
             match key {
                 "version" => model.version = rest.trim().to_string(),
                 "encoder" => model.encoder = rest.trim().to_string(),
-                "margin" => model.margin = numbers::<1>(rest, key)?[0],
+                "detail" => model.detail = numbers::<1>(rest, key)?[0],
+                "gain" => model.gain = numbers::<1>(rest, key)?[0],
                 "scenes" => model.scenes = rest.trim().parse().map_err(|_| "`scenes` is not a count")?,
                 "sources" => model.sources = rest.trim().parse().map_err(|_| "`sources` is not a count")?,
                 "trained" => model.trained = rest.trim().parse().map_err(|_| "`trained` is not a time")?,
@@ -473,8 +509,9 @@ impl Model {
         if seen_typical != METRICS || model.version.is_empty() {
             return Err("the model is missing its version or its typical curves".to_string());
         }
-        if !(0.25..=6.0).contains(&model.margin) {
-            return Err(format!("a margin of {} is not one a scene can be decided with", model.margin));
+        // A model from before scenes were raised by their ease has a margin and no gain.
+        if !(0.0..=1.0).contains(&model.gain) || !(-VOTE_LIMIT..=VOTE_LIMIT).contains(&model.detail) {
+            return Err("the model has no gain between 0 and 1, or no detailed scene, to decide scenes with".to_string());
         }
         Ok(model)
     }
@@ -507,7 +544,8 @@ pub(crate) mod tests {
         Model {
             version: "test-1".to_string(),
             encoder: "x264|fast|-|".to_string(),
-            margin: 1.5,
+            detail: -2.0,
+            gain: 0.5,
             scenes: 10,
             sources: 2,
             trained: 1_700_000_000,
@@ -560,22 +598,23 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_scene_moves_only_when_every_vote_agrees_past_its_doubt() {
-        let votes = |offsets: [f64; METRICS], spread: f64| -> [CurveVote; METRICS] { std::array::from_fn(|metric| CurveVote { offset: offsets[metric], spread }) };
-        // Mean VMAF and bits (-9 here) are not asked. The least of the rest, less the margin.
-        let easy = consensus(&votes([5.0, 4.0, 6.0, -9.0, 4.5, 7.0, -9.0], 0.0), 1.5);
-        assert_eq!((easy.offset, easy.binding, easy.metric), (2.5, 4.0, 1));
-        // The networks' disagreement comes off first.
-        assert_eq!(consensus(&votes([5.0, 4.0, 6.0, -9.0, 4.5, 7.0, -9.0], 1.0), 1.5).offset, 1.5);
-        assert_eq!(consensus(&votes([5.0, 4.0, 6.0, -9.0, 4.5, 7.0, -9.0], 3.0), 1.5).offset, 0.0);
-        // A scene that would band holds a raise back.
-        let banded = consensus(&votes([5.0, 4.0, 6.0, 9.0, 4.5, 0.5, 9.0], 0.0), 1.5);
-        assert_eq!((banded.offset, banded.metric), (0.0, BANDING));
-        // A lowering is the quality metrics' alone: one that bands no worse than usual is lowered.
-        let hard = consensus(&votes([-3.0, -4.0, -2.5, 9.0, -5.0, 6.0, 9.0], 0.0), 1.5);
-        assert_eq!((hard.offset, hard.binding, hard.metric), (-1.0, -2.5, 2));
-        assert_eq!(consensus(&votes([-3.0, -4.0, -2.5, 9.0, -5.0, 6.0, 9.0], 1.5), 1.5).offset, 0.0);
-        assert_eq!(consensus(&votes([-3.0, 4.0, -2.5, 0.0, -5.0, 6.0, 0.0], 0.0), 1.5).offset, 0.0);
+    fn a_scene_is_raised_by_how_much_less_detailed_it_is() {
+        let votes = |offsets: [f64; METRICS]| -> [CurveVote; METRICS] { std::array::from_fn(|metric| CurveVote { offset: offsets[metric], spread: 9.0 }) };
+        // Mean VMAF and bits (-9 here) are not asked, nor is the networks' disagreement. The quality
+        // metrics' mean is 4.75, which is 6.75 CRF easier than a detailed scene: half of it.
+        let easy = decide(&votes([5.0, 4.0, 6.0, -9.0, 4.0, 8.0, -9.0]), -2.0, 0.5);
+        assert_eq!((easy.offset, easy.ease, easy.banding), (3.375, 4.75, false));
+        // A scene that would band is raised only as far as banding allows.
+        let flat = decide(&votes([5.0, 4.0, 6.0, -9.0, 4.0, 1.0, -9.0]), -2.0, 0.5);
+        assert_eq!((flat.offset, flat.ease, flat.banding), (1.5, 1.0, true));
+        // A detailed scene stays at the anchor, and so does one a little harder than that.
+        assert_eq!(decide(&votes([-2.0, -2.5, -1.5, 0.0, -2.0, 8.0, 0.0]), -2.0, 0.5).offset, 0.0);
+        assert_eq!(decide(&votes([-4.0, -5.0, -4.0, 0.0, -4.5, 8.0, 0.0]), -2.0, 0.5).offset, 0.0);
+        // Far harder, it is lowered half a CRF; further still, one. Banding has no say in either.
+        assert_eq!(decide(&votes([-5.5, -5.0, -5.0, 0.0, -5.5, 8.0, 0.0]), -2.0, 0.5).offset, -0.5);
+        assert_eq!(decide(&votes([-8.0, -7.5, -7.0, 0.0, -8.0, -8.0, 0.0]), -2.0, 0.5).offset, -MAX_LOWER);
+        assert_eq!(measured_votes_all(&[Some(5.0), Some(4.0), Some(6.0), None, Some(4.0), Some(8.0), None]).map(|votes| quality_ease(&votes)), Some(4.75));
+        assert!(measured_votes_all(&[Some(5.0), None, Some(6.0), Some(1.0), Some(4.5), Some(8.0), Some(1.0)]).is_none());
     }
 
     #[test]
@@ -655,12 +694,14 @@ pub(crate) mod tests {
             assert!((a.offset - b.offset).abs() < 1e-3);
         }
         // A field this build does not know is skipped; a file that is not a model is refused, as is
-        // one cut short, one built for other inputs, and one with a margin nothing could use.
-        assert!(Model::from_text(&text.replace("margin", "later-field 3\nmargin")).is_ok());
+        // one cut short, one built for other inputs, and one with no gain to raise a scene by —
+        // which is what a model from before scenes were raised by their ease is.
+        assert!(Model::from_text(&text.replace("gain", "later-field 3\ngain")).is_ok());
         assert!(Model::from_text("").is_err());
         assert!(Model::from_text(&text[..text.len() / 2]).is_err());
         assert!(Model::from_text(&text.replace(&format!("layer {INPUTS} 6"), "layer 3 6")).is_err());
-        assert!(Model::from_text(&text.replace("margin 1.5", "margin 0")).is_err());
+        assert!(Model::from_text(&text.replace("gain 0.5", "gain 1.5")).is_err());
+        assert!(Model::from_text(&text.replace("gain 0.5", "margin 1.5")).is_err());
         assert!(Model::from_text(&text.replace("typical bits", "typical bytes")).is_err());
     }
 }
