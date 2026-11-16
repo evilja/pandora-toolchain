@@ -241,7 +241,7 @@ fn hash(text: &str) -> u64 {
 // What the fitted predictors decide for every sample at every anchor.
 fn predictor_decisions(samples: &[LabSample]) -> Vec<(usize, f64, f64)> {
     let mut out = Vec::new();
-    for (index, sample) in samples.iter().enumerate().filter(|(_, sample)| sample.points.len() >= 2) {
+    for (index, sample) in samples.iter().enumerate().filter(|(_, sample)| sample.observations().len() >= 2) {
         for anchor in train::ANCHORS {
             let estimate = estimate_scene_with(None, &sample.features, &sample.source, &EncodeContext::anchored(anchor as f32));
             out.push((index, anchor, estimate.crf as f64 - anchor));
@@ -380,6 +380,7 @@ mod tests {
                     vmaf_low: (quality + 51.0).min(100.0),
                     cambi: 0.1,
                     cambi_high: 0.2 + 0.05 * crf as f64,
+                    treatment: String::new(),
                 }
             })
             .collect();

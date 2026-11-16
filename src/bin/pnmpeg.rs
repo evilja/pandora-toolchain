@@ -164,6 +164,11 @@ struct Args {
     #[arg(long)]
     lab_crfs: Option<String>,
 
+    /// With --caramel-lab: CRFs every scene is also encoded at with the deband treatment
+    /// (`gradfun` and a weaker deblock), kept apart from its curves. Empty for none.
+    #[arg(long, default_value = "17,20")]
+    lab_deband_crfs: String,
+
     /// With --caramel-lab: the most encodes a searched scene gets.
     #[arg(long, default_value_t = 7)]
     lab_points: usize,
@@ -730,6 +735,12 @@ fn caramel_lab(args: &Args, preset: Option<&ResolvedPreset>, anchor: f32, log: &
             .lab_crfs
             .as_deref()
             .unwrap_or_default()
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter_map(|value| value.trim().parse::<f64>().ok())
+            .filter(|crf| (0.0..=51.0).contains(crf))
+            .collect(),
+        treated: args
+            .lab_deband_crfs
             .split(|c: char| c == ',' || c.is_whitespace())
             .filter_map(|value| value.trim().parse::<f64>().ok())
             .filter(|crf| (0.0..=51.0).contains(crf))

@@ -24,6 +24,10 @@
 // A scene is cut out of the source once, losslessly, and every encode and measurement reads that
 // clip: a source deeper than 8 bits is kept at 10 and compared at 10, as verification does, so the
 // encoder is not marked down for losing the dither of a conversion.
+//
+// Besides the plain encodes, a scene is encoded with a treatment (`DEBAND`) at a few CRFs, measured
+// the same way. Those points are kept apart from the scene's curves: they are what a decision to
+// deband a scene will be learnt from.
 
 use super::caramel::{
     CaramelReport, SceneEntry, VerifyEncoder, ffmpeg_version, has_filter, run_quiet, seek_seconds, stats_column, with_zones,
@@ -72,7 +76,27 @@ pub struct LabPoint {
     // CAMBI of the encode: its mean, and the mean of the worst tenth of the frames.
     pub cambi: f64,
     pub cambi_high: f64,
+    // Empty for a plain encode, else the treatment it was made with (`Treatment::name`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub treatment: String,
 }
+
+// A change to how a scene is encoded that the lab measures beside the plain encodes: a filter put
+// before the encoder, at 8 bits, and x264 settings put after the preset's.
+pub struct Treatment {
+    pub name: &'static str,
+    pub filter: &'static str,
+    pub x264: &'static str,
+}
+
+// x264 smooths a gradient's dither away and leaves steps, even at CRF 17 and even from a source with
+// none. `gradfun` rebuilds the gradient and dithers it, and a weaker deblock keeps more of the dither
+// through the encode. On clean sources that took banding down by about 5 CAMBI at CRF 17 for fewer
+// bytes. By CRF 22 the encoder smooths that dither away too, and on a source that bands itself the
+// filter repaints its banding, which fidelity metrics mark down by 1.5 to 5 dB: which scenes it is
+// worth it for is what the treated points are for. Both settings can change per scene: the filter
+// through `enable`, the deblock through zones and x264's reconfiguration.
+pub const DEBAND: Treatment = Treatment { name: "deband", filter: "gradfun=strength=1.2:radius=16", x264: "deblock=-2,-2" };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LabSample {
@@ -110,6 +134,7 @@ impl LabSample {
         let pixels = (self.source.width as f64 * self.source.height as f64 * self.frames as f64).max(1.0);
         self.points
             .iter()
+            .filter(|point| point.treatment.is_empty())
             .map(|point| Observation {
                 crf: point.crf as f64,
                 values: [
@@ -157,6 +182,8 @@ pub struct LabRequest<'a> {
     pub scenes: usize,
     // CRFs every scene is encoded at. Empty for a search.
     pub ladder: Vec<f64>,
+    // CRFs every scene is also encoded at with `DEBAND`. Empty for none.
+    pub treated: Vec<f64>,
     pub max_points: usize,
     pub workers: usize,
     pub scratch: PathBuf,
@@ -470,12 +497,17 @@ impl Lab<'_> {
         Ok(reference)
     }
 
-    // One encode of the clip and its measurement. The third value is the source's own CAMBI per
-    // frame, which every measurement of a clip reads again and the first one is kept from.
-    fn point(&self, directory: &Path, reference: &Path, crf: f64) -> Result<(LabPoint, Vec<f64>), String> {
+    // One encode of the clip, plain or treated, and its measurement. The second value is the
+    // source's own CAMBI per frame, which every measurement of a clip reads again and the first one
+    // is kept from.
+    fn point(&self, directory: &Path, reference: &Path, crf: f64, treatment: Option<&Treatment>) -> Result<(LabPoint, Vec<f64>), String> {
         let clip = directory.join("enc.mkv");
         let mut encode = Command::new(&self.ffmpeg);
-        encode.args(["-v", "error", "-nostdin", "-y", "-i"]).arg(reference).args(["-an", "-pix_fmt", "yuv420p", "-c:v", "libx264"]);
+        encode.args(["-v", "error", "-nostdin", "-y", "-i"]).arg(reference).arg("-an");
+        if let Some(treatment) = treatment {
+            encode.args(["-vf", &format!("format=yuv420p,{}", treatment.filter)]);
+        }
+        encode.args(["-pix_fmt", "yuv420p", "-c:v", "libx264"]);
         let encoder = &self.request.encoder;
         if let Some(preset) = &encoder.preset {
             encode.args(["-preset", preset]);
@@ -483,7 +515,13 @@ impl Lab<'_> {
         if let Some(tune) = &encoder.tune {
             encode.args(["-tune", tune]);
         }
-        if let Some(params) = with_zones(encoder.x264_params.as_deref(), "") {
+        // The treatment's settings come last, so they win over the preset's.
+        let params = match (with_zones(encoder.x264_params.as_deref(), ""), treatment) {
+            (Some(params), Some(treatment)) => Some(format!("{params}:{}", treatment.x264)),
+            (None, Some(treatment)) => Some(treatment.x264.to_string()),
+            (params, None) => params,
+        };
+        if let Some(params) = params {
             encode.args(["-x264-params", &params]);
         }
         encode.args(["-crf", &format!("{crf}")]).arg(&clip);
@@ -525,6 +563,7 @@ impl Lab<'_> {
             vmaf_low: tail_mean(settled(&vmaf), true),
             cambi: mean(settled(&cambi)),
             cambi_high: tail_mean(settled(&cambi), false),
+            treatment: treatment.map(|treatment| treatment.name.to_string()).unwrap_or_default(),
         };
         Ok((point, cambi_source))
     }
@@ -568,12 +607,12 @@ impl Lab<'_> {
                 let next = if request.ladder.is_empty() {
                     next_crf(&measured, &bands, max_points)
                 } else {
-                    request.ladder.iter().copied().find(|crf| !sample.points.iter().any(|point| (point.crf as f64 - crf).abs() < 0.01))
+                    request.ladder.iter().copied().find(|crf| !sample.points.iter().any(|point| point.treatment.is_empty() && (point.crf as f64 - crf).abs() < 0.01))
                 };
                 let Some(crf) = next else {
                     break;
                 };
-                let (point, cambi_source) = self.point(&directory, &reference, crf)?;
+                let (point, cambi_source) = self.point(&directory, &reference, crf, None)?;
                 if sample.points.is_empty() {
                     sample.cambi_source = mean(settled(&cambi_source));
                     sample.cambi_source_high = tail_mean(settled(&cambi_source), false);
@@ -589,6 +628,12 @@ impl Lab<'_> {
                         break;
                     }
                 }
+            }
+            for crf in &request.treated {
+                if self.cancelled() {
+                    return Err("cancelled".to_string());
+                }
+                sample.points.push(self.point(&directory, &reference, *crf, Some(&DEBAND))?.0);
             }
             Ok(())
         })();
@@ -820,6 +865,7 @@ mod tests {
             points: vec![
                 LabPoint { crf: 14.0, bytes: 400_000, cambi_high: 0.4, ..Default::default() },
                 LabPoint { crf: 28.0, bytes: 100_000, cambi_high: 6.5, ..Default::default() },
+                LabPoint { crf: 17.0, bytes: 200_000, cambi_high: 0.1, treatment: DEBAND.name.into(), ..Default::default() },
             ],
             picked: "spread".into(),
             model: String::new(),
@@ -831,6 +877,9 @@ mod tests {
         let back: LabSample = serde_json::from_str(&line).unwrap();
         assert_eq!(back.points, sample.points);
         let observed = back.observations();
+        // A treated encode is not a point on the scene's curves, and a plain one names no treatment.
+        assert_eq!(observed.len(), 2);
+        assert_eq!(line.matches("treatment").count(), 1);
         // Less banding than the source is no banding added; six more than it is minus six.
         assert_eq!((observed[0].values[5], observed[1].values[5]), (0.0, -6.0));
         // A quarter of the bytes is two fewer bits per pixel, in log2.
