@@ -122,17 +122,26 @@ chunk encoder, and `src/lib/mpeg/caramel.rs` runs it over a whole file and verif
   CRF comes out the same and no switch happens. The first `analysis_frames` (12) of each scene
   decide its CRF, four of them measured in full, so an encoder holds back at most that many frames
   plus two.
-- **Estimate.** Four linear predictors, one per quality metric (XPSNR, its worst frames, SSIM,
-  VMAF's worst frames), each estimate from the scene's features (noise σ, fine-detail and residual
-  energy, zero-motion residual, P.910 SI and TI, motion, smooth-block share) how far its CRF could
-  move from the anchor and still score what typical content scores at the anchor. They were fitted
-  to brute-force x264 encodes of 359 scenes (see `caramel-kernel/README.md` for the corpus, the
-  error and what it does not cover). The scene moves only when all four agree on the direction by
-  more than 1.5 CRF, and then by the smallest of them less 1.5, so most scenes stay at the anchor.
-  The output-resolution prior is added on top; a letterboxed picture is named by its 16:9 frame. A
-  raise is scaled by confidence (frames measured, temporal coverage) and refused when a second cut
-  fell inside the measured frames (`cut_pairs_within`); a lowering never is. The offset is
-  bounded to −4…+4 and rounded to 0.5. Reports are stamped with `caramel_kernel::MODEL_VERSION`.
+- **Estimate.** A model says, per metric, how far the scene's CRF could move from the anchor and
+  still score what typical content scores at the anchor. The model is an ensemble of small neural
+  networks that draw each metric's curve over CRF — XPSNR, its worst frames, SSIM, VMAF, its worst
+  frames, the banding an encode adds (CAMBI) and the bits it costs — from 27 inputs measured on
+  the scene's opening (noise σ, fine-detail and residual energy at five noise floors, zero-motion
+  and compensated residual, P.910 SI and TI, motion, block-class shares, whether the source is
+  deeper than 8 bits). It was trained on encodes of real scenes, and a machine can go on training
+  it: [CARAMEL.md](CARAMEL.md) has the lab, the trainer, the rule and the gate,
+  `caramel-kernel/README.md` the method and what it measured. The anchor is the CRF for a detailed
+  scene: a scene stays there unless it is less detailed than that, and is then raised by the
+  model's `gain` times how many CRF of quality it has to spare — the mean of its quality votes, or
+  banding's vote where that is lower — up to +6. Only a scene far harder than a detailed one is
+  lowered, by 0.5 or 1. The output-resolution prior is added on top; a letterboxed picture is named
+  by its 16:9 frame. A raise is scaled by confidence (frames measured, temporal coverage) and
+  refused when a second cut fell inside the measured frames (`cut_pairs_within`); a lowering never
+  is. The offset is rounded to 0.5. Reports are stamped with `caramel_kernel::model_version()`: the
+  installed model's name, else the built-in one's. A build with no built-in model decides with the
+  four linear predictors of `caramel-scene-6` (`MODEL_VERSION`) and their unanimity rule (a scene
+  moves only when all four agree past a margin, within −4…+4), as does a chunk whose context names
+  no model.
 - **Presets.** `crf_mode = "caramel-analysis"` in a libx264 preset file makes every encode with it
   per-scene, anchored at its `crf`. Such a preset chunks by default and never runs linear AOT, which
   could not know the scene CRFs. When the job runs linearly anyway (idle-gated, or a fallback), the

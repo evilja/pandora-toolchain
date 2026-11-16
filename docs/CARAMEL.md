@@ -17,8 +17,8 @@ or a job asks for Caramel Analysis at all.
 |---|---|
 | `caramel-kernel/src/inputs.rs` | The 27 numbers a scene is described by, from the features the decider already measures. |
 | `caramel-kernel/src/nn.rs` | A small dense network (SiLU), its gradients and Adam. No dependencies. |
-| `caramel-kernel/src/curve.rs` | Quality and size as curves over CRF, the votes read from them, the consensus, and `Model`: an ensemble of networks with its text file format, the built-in model (`builtin.model`) and the installed one. |
-| `caramel-kernel/src/train.rs` | Training by series-wise folds, the held-out error, the margin, the simulated policy, and the gate a retrained model has to pass. |
+| `caramel-kernel/src/curve.rs` | Quality and size as curves over CRF, the votes read from them, the rule that decides a scene from them (`decide`), and `Model`: an ensemble of networks with its text file format, the built-in model (`builtin.model`) and the installed one. |
+| `caramel-kernel/src/train.rs` | Training by series-wise folds, the held-out error, the detailed scene and the gain, the simulated policy, and the gate a retrained model has to pass. |
 | `src/lib/mpeg/caramel_lab.rs` | The lab: picks scenes, encodes and measures them with ffmpeg, appends `LabSample`s to the dataset. |
 | `src/lib/mpeg/caramel_train.rs` | Models on disk (`install`, `activate`, `installed_version`) and `train_dataset`, which trains a candidate and writes the report. |
 | `src/pnworker/research.rs` | The idle-time worker: finds sources, runs the lab and the trainer as low-priority children, stops for the queue. |
@@ -117,29 +117,41 @@ in use, 4 when it may not, 1 on an error. `--train-install` installs an accepted
   each series' median scene. A first training takes it from the dataset; a retrain keeps the
   installed model's, so the quality being held does not drift with whatever was measured last.
   `--train-refit` takes it from the dataset again.
-- **Margin.** A scene is raised by the smallest vote among the deciding metrics, less each vote's
-  disagreement between networks, less a margin. The trainer picks the smallest margin between 1
-  and 3 CRF at which, on held-out scenes at anchors 17, 19, 21 and 23, at most 10% of raises go
-  more than half a CRF past what the encodes allowed and the raised scenes lose no more than one
-  unit (0.5 dB of XPSNR) against the target at the 95th percentile.
+- **The rule.** The anchor — the preset's `crf` — is the CRF for a *detailed* scene, and a scene
+  that is less detailed is raised; one is lowered only rarely and by little. A scene's ease is the
+  mean of its quality votes (XPSNR, its worst frames, SSIM, VMAF's worst frames), or banding's vote
+  where that is lower, since the flat scenes that are easiest to raise are also the first to band.
+  `detail` is the ease of a detailed scene: the quality ease that a quarter of the measured scenes
+  fall below, by their own encodes (about 2.5 CRF harder than typical content). A scene easier than
+  that is raised by `gain` times the difference, up to 6 CRF. A scene whose quality ease is more
+  than 3 CRF below `detail` is lowered half a CRF, more than 5 below a whole one, and never more.
+  Short windows have their raise scaled down and a window with a cut inside is not raised, as with
+  the fitted predictors.
+- **Gain.** The trainer picks the largest of 1, 0.75, 0.5 and 0.25 at which, on held-out scenes at
+  anchors 17, 19, 21 and 23, the raised scenes fall below a detailed scene's quality at the anchor
+  by no more than 2.5 units at the 90th percentile and 3.5 at the 95th (the mean over the quality
+  metrics; a unit is 0.5 dB of XPSNR), and the raises add no more than 2 CAMBI at the 95th
+  percentile. A raised scene is allowed to look like a detailed one does at the anchor, a little
+  worse at its tail, and not to band visibly.
 - **The gate.** With a model in use, candidate and current are both scored on the scenes measured
   *since the current one was trained* — which it has never seen, and which the candidate answers
   with its held-out networks. The candidate is accepted when there are at least 40 such scenes and
-  its mean vote error over the deciding metrics is no more than 0.05 CRF above the current one's.
-  With no model in use, a first model needs 200 scenes from 5 series and held-out raises that stay
-  within the margin's own limits.
+  its mean vote error over the deciding metrics is no more than 0.05 CRF above the current one's,
+  and its held-out raises stay within the gain's limits. With no model in use, a first model needs
+  200 scenes from 5 series and held-out raises within those limits.
 - **The report.** `version`, `encoder`, `scenes`, `series`, `other_encoders`, `members`, `epochs`,
-  `margin`, `error` and per-metric `metrics` (held-out vote error in CRF, and the typical curve),
-  `policy` (what the candidate would have decided for held-out scenes: shares raised and lowered,
-  bytes against the fixed anchor, raises `too_far`, `shortfall_mean`/`shortfall_p95` in units,
-  `banding_p95`, and `needed` — the share of lowerings whose scene really was short of the target),
-  `predictors` (the same for the linear predictors, on the same scenes and targets), `current`,
+  `detail`, `gain`, `error` and per-metric `metrics` (held-out vote error in CRF, and the typical
+  curve), `policy` (what the candidate would have decided for held-out scenes: `raised_share`,
+  `lowered_share`, `raised_far_share` — raised by 4 CRF or more — `raise_mean`, `bytes` against
+  the fixed anchor, `shortfall_p90`/`shortfall_p95` in units below a detailed scene, `banding_p95`
+  added by the raise, and `needed` — the share of lowerings whose scene really was harder than a
+  detailed one), `predictors` (the same for the linear predictors, on the same scenes), `current`,
   `fresh_scenes`, `current_error`, `candidate_error`, `accepted`, `reason`, `installed`.
 
 `--train-scenes <file>` writes what the report's figures are sums of: one JSON line per scene and
 anchor with the `votes` and `spreads` of the networks that never trained on the scene's series,
-what its encodes `allowed`, per metric in the report's order, and the `offset` the candidate would
-have applied. It is where to look when a series is judged badly. `--train-hidden` sets the width
+what its encodes `allowed`, the `levels` the networks' curves read at the anchor, per metric in the
+report's order, and the `offset` the candidate would have applied. It is where to look when a series is judged badly. `--train-hidden` sets the width
 of each hidden layer and `--train-networks` how many networks are trained per fold.
 
 A candidate is named `caramel-neural-1.<scenes>-<hash>`: the family (it changes when the inputs,
@@ -155,11 +167,12 @@ The newest eight other models are kept. To go back, put an older version's name 
 a running `pndc` reports the new version at once (`installed_version`), its next `pnmpeg` children
 decide with it, and so does its next Caramel Analysis job.
 
-A model file is text: a `caramel-model 1` header, then `version`, `encoder`, `margin`, `scenes`,
+A model file is text: a `caramel-model 1` header, then `version`, `encoder`, `detail`, `gain`, `scenes`,
 `sources`, `trained` (the newest `collected_unix` it saw), `input-mean`, `input-scale`, `offsets`,
 `error`, seven `typical <metric>` lines, and per network `member <layers>` followed by `layer
 <inputs> <outputs>` and its weights and biases. Unknown keys are skipped; a file whose shapes do not
-match this build's inputs and metrics is refused and the built-in model stays.
+match this build's inputs and metrics is refused and the built-in model stays, as is one with no
+`gain` — a model from before scenes were raised by their ease.
 
 ## The research worker
 
