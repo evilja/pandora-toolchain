@@ -49,7 +49,9 @@ well as the hardest scene it kept at 17.
 A retrain on 1296 scenes from 47 series (adding 15 current TV shows, *Mononoke*, *Paranoia
 Agent*, *Haibane Renmei* and *Serial Experiments Lain*) voted better on the 512 new scenes — 2.47
 CRF against 2.61 — but was refused: its raises there fell 3.03 units below a detailed scene at the
-95th percentile, against 2.45 for the model in use. Full episodes agreed. On *Ping Pong* it raised
+95th percentile, against 2.45 for the model in use. At gain 0.5 it overshoots no more (2.49), but
+spends 0.932 of the anchor's bytes on those scenes where the model in use spends 0.914. Full
+episodes agreed. On *Ping Pong* it raised
 a still, grainy shot to CRF 22 (39.0 dB XPSNR, 3 dB under the hardest scene kept at 17), and on
 *Kendeshita* two raised scenes fell 0.4 and 1.1 dB under that mark, where the model in use's
 lowest raised scene was 0.2 dB under it. On five episodes both landed about 10–12% above CRF 19's size with mean
@@ -217,7 +219,10 @@ in use, 4 when it may not, 1 on an error. `--train-install` installs an accepted
   each with its own detailed scene and gain, and the candidate's 95th-percentile shortfall may be at
   most 0.25 units above the current one's. Better votes on average are not enough on their own: a
   model can be closer on most scenes and further out on the few it raises furthest, which is what
-  a viewer sees. With no model in use, a first model needs 200 scenes from 5 series and held-out
+  a viewer sees. A candidate that fails only on that is judged again at each smaller gain, and
+  kept at the first that passes if its choices there still spend no more bytes on the fresh scenes
+  than the current model's — otherwise it is no better a trade than the installed model at a
+  smaller gain. With no model in use, a first model needs 200 scenes from 5 series and held-out
   raises within those limits.
 - **The report.** `version`, `encoder`, `scenes`, `series`, `other_encoders`, `members`, `epochs`,
   `detail`, `gain`, `error` and per-metric `metrics` (held-out vote error in CRF, and the typical
@@ -227,7 +232,8 @@ in use, 4 when it may not, 1 on an error. `--train-install` installs an accepted
   added by the raise, and `needed` — the share of lowerings whose scene really was harder than a
   detailed one), `predictors` (the same for the linear predictors, on the same scenes), `current`,
   `fresh_scenes`, `current_error`, `candidate_error`, `current_shortfall`, `candidate_shortfall`,
-  `accepted`, `reason`, `installed`.
+  `current_bytes`, `candidate_bytes` (on the fresh scenes, against the anchor), `accepted`,
+  `reason`, `installed`.
 
 `--train-scenes <file>` writes what the report's figures are sums of: one JSON line per scene and
 anchor with the `votes` and `spreads` of the networks that never trained on the scene's series,

@@ -487,6 +487,9 @@ pub struct Verdict {
     // 95th percentile.
     pub current_shortfall: f64,
     pub candidate_shortfall: f64,
+    // Bytes each one's choices would have spent on those scenes over bytes at the anchor.
+    pub current_bytes: f64,
+    pub candidate_bytes: f64,
     pub accepted: bool,
 }
 
@@ -510,16 +513,43 @@ pub fn judge(current: &Model, candidate: &Trained, samples: &[Sample]) -> Verdic
     // Each decides with its own targets, detailed scene and gain, as it would in use; both are held
     // to the candidate's detailed scene.
     let detail = candidate.model.detail;
-    let current_shortfall = simulate(&subset, typical, detail, &decisions(&subset, &theirs, &current.typical, current.detail, current.gain)).shortfall_p95;
-    let candidate_shortfall = simulate(&subset, typical, detail, &decisions(&subset, &ours, typical, detail, candidate.model.gain)).shortfall_p95;
+    let current_policy = simulate(&subset, typical, detail, &decisions(&subset, &theirs, &current.typical, current.detail, current.gain));
+    let candidate_policy = simulate(&subset, typical, detail, &decisions(&subset, &ours, typical, detail, candidate.model.gain));
     Verdict {
         scenes: subset.len(),
         current: current_error,
         candidate: candidate_error,
-        current_shortfall,
-        candidate_shortfall,
-        accepted: subset.len() >= GATE_SCENES && candidate_error <= current_error + GATE_TOLERANCE && candidate_shortfall <= current_shortfall + SHORTFALL_TOLERANCE,
+        current_shortfall: current_policy.shortfall_p95,
+        candidate_shortfall: candidate_policy.shortfall_p95,
+        current_bytes: current_policy.bytes,
+        candidate_bytes: candidate_policy.bytes,
+        accepted: subset.len() >= GATE_SCENES
+            && candidate_error <= current_error + GATE_TOLERANCE
+            && candidate_policy.shortfall_p95 <= current_policy.shortfall_p95 + SHORTFALL_TOLERANCE,
     }
+}
+
+// A candidate whose votes are better but whose raises overshoot more may still be the better model
+// at a smaller gain: its raises shrink, and so do its overshoots. It is judged at each smaller gain
+// in turn, and kept at the first one it passes at — but only if, there, it still saves at least as
+// many bytes on the fresh scenes as the model in use. A candidate that only passes by saving less
+// is no better a trade than turning the installed model's gain down. Its gain is left as it was when
+// no smaller one will do; either way the verdict at the gain it ends with is returned.
+pub fn settle_gain(current: &Model, candidate: &mut Trained, samples: &[Sample]) -> Verdict {
+    let verdict = judge(current, candidate, samples);
+    if verdict.accepted || verdict.candidate > verdict.current + GATE_TOLERANCE {
+        return verdict;
+    }
+    let chosen = candidate.model.gain;
+    for gain in GAINS.into_iter().filter(|gain| *gain < chosen) {
+        candidate.model.gain = gain;
+        let smaller = judge(current, candidate, samples);
+        if smaller.accepted && smaller.candidate_bytes <= smaller.current_bytes {
+            return smaller;
+        }
+    }
+    candidate.model.gain = chosen;
+    verdict
 }
 
 #[cfg(test)]
@@ -726,11 +756,23 @@ mod tests {
         assert!(verdict.accepted && verdict.candidate <= verdict.current + GATE_TOLERANCE, "{verdict:?}");
         // The same networks deciding with a rule that raises four CRF further vote just as well, but
         // their raises overshoot, and they are refused for it.
+        // An accepted candidate keeps the gain it was trained with.
+        let gain = candidate.model.gain;
+        let honest = settle_gain(&old.model, &mut candidate, &samples);
+        assert_eq!((honest, candidate.model.gain), (verdict, gain));
         candidate.model.detail -= 4.0;
         candidate.model.gain = 1.0;
         let overshooting = judge(&old.model, &candidate, &samples);
         assert_eq!(overshooting.candidate, verdict.candidate);
         assert!(!overshooting.accepted && overshooting.candidate_shortfall > overshooting.current_shortfall + SHORTFALL_TOLERANCE, "{overshooting:?}");
+        // Settling it on a smaller gain either passes while saving as much as the old model, or
+        // leaves its gain as it was and refuses it.
+        let settled = settle_gain(&old.model, &mut candidate, &samples);
+        if settled.accepted {
+            assert!(candidate.model.gain < 1.0 && settled.candidate_bytes <= settled.current_bytes, "{settled:?}");
+        } else {
+            assert_eq!((settled, candidate.model.gain), (overshooting, 1.0));
+        }
         // A candidate that learned nothing is refused.
         let mut broken = train(&samples, &TrainConfig { epochs: 1, ..quick() }, Some(old.model.typical)).unwrap();
         for members in &mut broken.held_out {

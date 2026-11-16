@@ -193,9 +193,12 @@ pub struct TrainReport {
     pub fresh_scenes: usize,
     pub current_error: Option<f64>,
     pub candidate_error: Option<f64>,
-    // How far each one's raises on those scenes fell below a detailed scene, 95th percentile.
+    // How far each one's raises on those scenes fell below a detailed scene, 95th percentile, and
+    // the bytes each one's choices spent there over bytes at the anchor.
     pub current_shortfall: Option<f64>,
     pub candidate_shortfall: Option<f64>,
+    pub current_bytes: Option<f64>,
+    pub candidate_bytes: Option<f64>,
     pub accepted: bool,
     pub reason: String,
     pub installed: bool,
@@ -286,7 +289,7 @@ fn verdict(current: Option<&Model>, trained: &Trained, samples: &[Sample], polic
                 format!("on {} scenes `{}` has not seen: {:.2} CRF against its {:.2}", verdict.scenes, current.version, verdict.candidate, verdict.current)
             } else if verdict.candidate <= verdict.current + train::GATE_TOLERANCE {
                 format!(
-                    "better votes than `{}` on {} scenes it has not seen ({:.2} CRF against {:.2}), but its raises there fall further below a detailed scene: {:.2} units at the 95th percentile against {:.2}",
+                    "better votes than `{}` on {} scenes it has not seen ({:.2} CRF against {:.2}), but its raises there fall further below a detailed scene: {:.2} units at the 95th percentile against {:.2}, and no smaller gain passes while saving as much",
                     current.version, verdict.scenes, verdict.candidate, verdict.current, verdict.candidate_shortfall, verdict.current_shortfall
                 )
             } else {
@@ -313,6 +316,10 @@ pub fn train_dataset(request: &TrainRequest) -> Result<TrainOutcome, String> {
     let typical = request.current.as_ref().filter(|_| !request.refit_targets).map(|model| model.typical);
     let config = TrainConfig { version: MODEL_FAMILY.to_string(), encoder: encoder.clone(), ..request.config.clone() };
     let mut trained = train::train(&samples, &config, typical)?;
+    // Against a model in use, a candidate whose raises overshoot more may be kept at a smaller gain.
+    if let Some(current) = request.current.as_deref() {
+        train::settle_gain(current, &mut trained, &samples);
+    }
     // The version says which training this is: the family, how many scenes, and a mark of the
     // weights themselves, so two trainings never share a file.
     trained.model.version = format!("{MODEL_FAMILY}.{}-{:06x}", trained.model.scenes, hash(&trained.model.to_text()) & 0xff_ffff);
@@ -358,6 +365,8 @@ pub fn train_dataset(request: &TrainRequest) -> Result<TrainOutcome, String> {
         candidate_error: judged.map(|verdict| verdict.candidate),
         current_shortfall: judged.map(|verdict| verdict.current_shortfall),
         candidate_shortfall: judged.map(|verdict| verdict.candidate_shortfall),
+        current_bytes: judged.map(|verdict| verdict.current_bytes),
+        candidate_bytes: judged.map(|verdict| verdict.candidate_bytes),
         accepted,
         reason,
         installed: false,
