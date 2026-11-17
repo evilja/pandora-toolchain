@@ -1044,9 +1044,9 @@ fn help_catalog() -> &'static [HelpCommand] {
         HelpCommand {
             section: "encode",
             name: "caramel-analysis-encode",
-            summary: "Caramel Analysis with every scene decided after a fast encode of it (witch).",
+            summary: "Caramel Analysis after a fast encode of every scene, then the episode encoded at those CRFs and hosted (witch).",
             usage: "/caramel-analysis-encode source:<link> [preset:<name>] [anchor:<crf>] [verify:true] [verify_crfs:<list>]",
-            details: "Runs /caramel-analysis with one difference: every scene is first encoded whole (up to 48 frames) at x264's veryfast preset and CRF 20 with the preset's settings, and its CRF is decided again from how that encode came out, by a model trained to read it. It asks the encoder how hard each scene is instead of guessing from the picture; since every frame is encoded as well as decoded, it takes several times as long as the plain analysis. Refused until this machine has such a model installed; scenes the encoder cannot measure at the source's size (a 10-bit or rescaled output) are decided as the built-in model decides them. Witch tier only while it is being tried.",
+            details: "Runs /caramel-analysis with one difference: every scene is first encoded whole (up to 48 frames) at x264's veryfast preset and CRF 20 with the preset's settings, and its CRF is decided again from how that encode came out, by a model trained to read it. It asks the encoder how hard each scene is instead of guessing from the picture; since every frame is encoded as well as decoded, it takes several times as long as the plain analysis. Refused until this machine has such a model installed; scenes the encoder cannot measure at the source's size (a 10-bit or rescaled output) are decided as the built-in model decides them. Afterwards the whole episode is encoded at the scene CRFs with the preset's x264 settings (MP4, first audio track as AAC) and published as Lumiere HLS (12 hours) and to the global Drive; the finished embed gives its size, video bitrate and both links. Witch tier only while it is being tried.",
         },
         HelpCommand {
             section: "encode",
@@ -3102,7 +3102,7 @@ impl EventHandler for Handler {
                 .add_option(CreateCommandOption::new(CommandOptionType::Boolean, "verify", "Also encode the most-moved scenes and measure SSIM/PSNR (slow)"))
                 .add_option(CreateCommandOption::new(CommandOptionType::String, "verify_crfs", "Fixed CRFs to compare the scene CRFs with, e.g. 16,18 (default: the anchor)")),
             CreateCommand::new("caramel-analysis-encode")
-                .description("Caramel Analysis with every scene decided after a fast test encode of all of it")
+                .description("Caramel Analysis after fast test encodes, then the episode encoded at its CRFs on Drive + HLS")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "source", "Torrent URL, magnet link, Google Drive link, or direct video link")
                         .required(true)
