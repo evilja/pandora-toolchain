@@ -105,6 +105,7 @@ fn main() {
         // a model that reads one leaves every scene to the built-in model.
         probe: None,
         fast: None,
+        model: None,
     };
     let report = run_scene_analysis(&request).unwrap_or_else(|error| {
         eprintln!("analysis failed: {error}");

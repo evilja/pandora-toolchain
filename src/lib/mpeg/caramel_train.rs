@@ -54,6 +54,26 @@ pub fn activate() -> String {
     caramel_kernel::model_version()
 }
 
+// A model that decides scenes after their fast encode (`caramel_kernel::fast`): the active one when
+// it does, else the newest such file in `DB/caramel/models/`. None when this machine has none.
+pub fn fast_model() -> Option<Arc<Model>> {
+    activate();
+    if let Some(active) = curve::active().filter(|model| model.reads_fast_encode()) {
+        return Some(active);
+    }
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(pnx264::scenes::MODEL_DIRECTORY)
+        .ok()?
+        .flatten()
+        .filter(|entry| entry.path().extension().is_some_and(|extension| extension == "model"))
+        .filter_map(|entry| Some((entry.metadata().ok()?.modified().ok()?, entry.path())))
+        .collect();
+    files.sort_by(|a, b| b.0.cmp(&a.0));
+    files.into_iter().find_map(|(_, path)| {
+        let model = Model::from_text(&std::fs::read_to_string(path).ok()?).ok()?;
+        model.reads_fast_encode().then(|| Arc::new(model))
+    })
+}
+
 // The version new encodes on this machine decide with, for a process that only reports it.
 pub fn installed_version() -> String {
     pointed_version().unwrap_or_else(caramel_kernel::model_version)

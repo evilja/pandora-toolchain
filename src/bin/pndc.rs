@@ -784,6 +784,7 @@ const DEFAULT_COMMAND_RANKS: &[(&str, u8)] = &[
     ("studio", 0),
     ("subs", 0),
     ("caramel-analysis", 0),
+    ("caramel-analysis-encode", 4),
     ("backup", 0),
     ("distribute", 0),
     ("backupall", 0),
@@ -1039,6 +1040,13 @@ fn help_catalog() -> &'static [HelpCommand] {
             summary: "Give every scene of a source its own CRF, without encoding it.",
             usage: "/caramel-analysis source:<link> [preset:<name>] [anchor:<crf>] [verify:true] [verify_crfs:<list>]",
             details: "Downloads the video and runs Caramel Analysis on it: the source is split into scenes at its cuts, the opening frames of every scene are measured for grain, banding risk, line art, texture, motion and chroma detail, and each scene gets its own CRF as an offset from the preset's (the server's /edit preset unless `preset` is given; `anchor` overrides the CRF). This is what a preset with `crf_mode = \"caramel-analysis\"` encodes with. The embed shows the scene count, the CRF range and distribution and the factors that moved it, and the full JSON report — every scene, its CRF, and the x264 zones — is attached. `verify:true` also encodes the scenes moved furthest from the anchor, each at its own CRF and at the anchor (or at `verify_crfs`, e.g. `16,18`), and reports SSIM, PSNR and bitrate for both, which takes minutes rather than seconds. When the torrent holds more than one video, its file list is shown first and you pick one by sending its index as a plain number in the channel, exactly as `/encode do` asks.",
+        },
+        HelpCommand {
+            section: "encode",
+            name: "caramel-analysis-encode",
+            summary: "Caramel Analysis with every scene decided after a fast encode of it (witch).",
+            usage: "/caramel-analysis-encode source:<link> [preset:<name>] [anchor:<crf>] [verify:true] [verify_crfs:<list>]",
+            details: "Runs /caramel-analysis with one difference: every scene is first encoded whole (up to 48 frames) at x264's veryfast preset and CRF 20 with the preset's settings, and its CRF is decided again from how that encode came out, by a model trained to read it. It asks the encoder how hard each scene is instead of guessing from the picture; since every frame is encoded as well as decoded, it takes several times as long as the plain analysis. Refused until this machine has such a model installed; scenes the encoder cannot measure at the source's size (a 10-bit or rescaled output) are decided as the built-in model decides them. Witch tier only while it is being tried.",
         },
         HelpCommand {
             section: "encode",
@@ -2473,8 +2481,9 @@ impl EventHandler for Handler {
                         self.tx.send(JobClass::Job(job)).await.unwrap();
                     }
                 }
-                "caramel-analysis" => {
-                    if let Some(mut job) = handle_caramel(&ctx, &command).await {
+                "caramel-analysis" | "caramel-analysis-encode" => {
+                    let fast = command.data.name == "caramel-analysis-encode";
+                    if let Some(mut job) = handle_caramel(&ctx, &command, fast).await {
                         job.pick_file_first();
                         self.tx.send(JobClass::Job(job)).await.unwrap();
                     }
@@ -3080,6 +3089,20 @@ impl EventHandler for Handler {
                 ),
             CreateCommand::new("caramel-analysis")
                 .description("Give every scene of a source its own CRF from its content, without encoding it")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::String, "source", "Torrent URL, magnet link, Google Drive link, or direct video link")
+                        .required(true)
+                )
+                .add_option(CreateCommandOption::new(CommandOptionType::String, "preset", "Preset to anchor at (default: this server's preset)"))
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::Number, "anchor", "CRF to anchor at instead of the preset's own")
+                        .min_number_value(0.0)
+                        .max_number_value(51.0)
+                )
+                .add_option(CreateCommandOption::new(CommandOptionType::Boolean, "verify", "Also encode the most-moved scenes and measure SSIM/PSNR (slow)"))
+                .add_option(CreateCommandOption::new(CommandOptionType::String, "verify_crfs", "Fixed CRFs to compare the scene CRFs with, e.g. 16,18 (default: the anchor)")),
+            CreateCommand::new("caramel-analysis-encode")
+                .description("Caramel Analysis with every scene decided after a fast test encode of all of it")
                 .add_option(
                     CreateCommandOption::new(CommandOptionType::String, "source", "Torrent URL, magnet link, Google Drive link, or direct video link")
                         .required(true)

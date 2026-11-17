@@ -730,6 +730,7 @@ fn caramel_lab(args: &Args, preset: Option<&ResolvedPreset>, anchor: f32, log: &
         // each sample's fast encode itself.
         probe: None,
         fast: None,
+        model: None,
     }) {
         Ok(report) => report,
         Err(error) => {
@@ -905,6 +906,7 @@ fn caramel_zones(args: &Args, preset: &ResolvedPreset, anchor: f32, workers: usi
         progress: None,
         probe: probe_encoder(preset),
         fast: probe_encoder(preset),
+        model: None,
     };
     let started = std::time::Instant::now();
     match run_scene_analysis(&request) {
@@ -1668,6 +1670,7 @@ async fn main() {
             progress: None,
             probe: if args.caramel_no_probe { None } else { active_preset.as_ref().and_then(probe_encoder) },
             fast: active_preset.as_ref().and_then(probe_encoder),
+            model: None,
         };
         match run_scene_analysis(&request) {
             Ok(mut report) => {

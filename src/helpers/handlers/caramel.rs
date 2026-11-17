@@ -8,11 +8,19 @@ use pandora_toolchain::pnworker::server_effects::{load_server_settings, preset_f
 // and the requester picks a file in chat, armed by the caller with `Job::pick_file_first` — and
 // runs Caramel Analysis on it instead of encoding it. Every scene's CRF is anchored at the
 // `preset` option, or at the server's own `/edit` preset when that is not given.
+//
+// `/caramel-analysis-encode` (`fast`) is the same, with every scene decided after a fast encode of
+// all of it, by a model that reads one; it is refused while this machine has no such model.
 pub async fn handle_caramel(
     ctx: &Context,
     command: &serenity::all::CommandInteraction,
+    fast: bool,
 ) -> Option<Job> {
     let source = required_trimmed_option(ctx, command, "source", "Source link").await?;
+    if fast && pandora_toolchain::lib::mpeg::caramel_train::fast_model().is_none() {
+        command_error(ctx, command, command_format(command, CARAMEL_NO_FAST_MODEL, &[])).await;
+        return None;
+    }
     let server_id = command.guild_id.map(|guild| guild.get());
     let preset = match option_trimmed(command, "preset") {
         Some(name) => match preset_from_name(&name, Concat::NONE).and_then(|preset| preset.name()) {
@@ -64,6 +72,7 @@ pub async fn handle_caramel(
         anchor,
         verify,
         scenes: Default::default(),
+        fast,
     });
     Some(job)
 }

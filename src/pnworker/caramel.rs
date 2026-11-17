@@ -79,6 +79,9 @@ pub struct CaramelJobRequest {
     pub anchor: Option<f32>,
     pub verify: Option<VerifySettings>,
     pub scenes: SceneOverrides,
+    // `/caramel-analysis-encode`: every scene decided after its fast encode, with a model that reads
+    // one (`caramel_train::fast_model`) rather than the one encodes use.
+    pub fast: bool,
 }
 
 pub type CaramelData = (PathBuf, u64, CaramelJobRequest);
@@ -286,11 +289,16 @@ pub async fn run_caramel_job(
         .unwrap_or(0);
     let decoded = Arc::new(AtomicU64::new(0));
     let analysis = {
-        let (input, decoded, cancel) = (input.clone(), decoded.clone(), directory.join("CANCEL"));
+        let (input, decoded, cancel, fast) = (input.clone(), decoded.clone(), directory.join("CANCEL"), request.fast);
         tokio::task::spawn_blocking(move || {
             // The report is of what an encode started now would decide: with the model installed
             // on this machine, which a research worker may have replaced since `pndc` started.
             crate::lib::mpeg::caramel_train::activate();
+            let model = if fast {
+                Some(crate::lib::mpeg::caramel_train::fast_model().ok_or_else(|| "no model on this machine decides scenes after a fast encode".to_string())?)
+            } else {
+                None
+            };
             run_scene_analysis(&SceneRequest {
                 input: &input,
                 range: None,
@@ -303,6 +311,7 @@ pub async fn run_caramel_job(
                 progress: Some(&decoded),
                 fast: probe.clone(),
                 probe,
+                model,
             })
         })
     };

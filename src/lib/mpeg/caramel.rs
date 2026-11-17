@@ -112,6 +112,9 @@ pub struct SceneRequest<'a> {
     // (`caramel_kernel::fast`); None decides scenes without, as the built-in model does. Used under
     // the same condition as `probe`.
     pub fast: Option<pnx264::Config>,
+    // The model to decide with instead of the one this process has active, which stays as it is
+    // for every other encode: `/caramel-analysis-encode` decides with one that reads fast encodes.
+    pub model: Option<std::sync::Arc<caramel_kernel::curve::Model>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -359,7 +362,10 @@ fn analyse_segment(
             Err(_) => return Ok(SegmentResult { start, decoded: 0, decisions: Vec::new() }),
         };
         let (width, height) = (reader.width, reader.height);
-        let decider = SceneDecider::new(request.scenes, source.clone(), request.encode);
+        let mut decider = SceneDecider::new(request.scenes, source.clone(), request.encode);
+        if let Some(model) = &request.model {
+            decider = decider.with_model(Some(model.clone()));
+        }
         let encode = &request.encode;
         let measurable = encode.output_bit_depth == 8 && encode.output_height.is_none_or(|output| output as usize == height);
         let probe = request.probe.as_ref().filter(|_| measurable);
@@ -519,7 +525,7 @@ pub fn run_scene_analysis(request: &SceneRequest) -> Result<CaramelReport, Strin
     let frames = scenes.iter().map(|scene| scene.frames).sum();
     let anchor = request.encode.anchor_crf;
     Ok(CaramelReport {
-        model: caramel_kernel::model_version(),
+        model: request.model.as_ref().map(|model| model.version.clone()).unwrap_or_else(caramel_kernel::model_version),
         input: request.input.display().to_string(),
         source,
         encode: request.encode,

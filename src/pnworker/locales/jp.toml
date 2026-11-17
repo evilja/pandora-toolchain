@@ -686,6 +686,10 @@ args = 1
 text = "`{}` はプリセットではありません。`standard` や `veryslow` など、`/edit preset` が受け付ける名前を使ってください。"
 args = 1
 
+[CARAMEL_NO_FAST_MODEL]
+text = "このマシンには、高速エンコードの後でシーンを決める Caramel モデルがまだありません。先に `DB/caramel/models/` にインストールしてください。"
+args = 0
+
 [LINK_NODE_FAILED]
 text = "このジョブを実行したノードが失敗を報告しました: {}"
 args = 1

@@ -160,6 +160,7 @@ pub(super) async fn submit(
         anchor: req.anchor,
         verify,
         scenes: req.scenes.unwrap_or_default(),
+        fast: false,
     });
     let progress = json!({ "type": "caramel", "phase": "queued", "torrent": link, "preset": preset });
     submit_with_progress(&st, &auth, job, Some(progress)).await

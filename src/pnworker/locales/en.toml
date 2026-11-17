@@ -686,6 +686,10 @@ args = 1
 text = "`{}` is not a preset. Use a name `/edit preset` accepts, such as `standard` or `veryslow`."
 args = 1
 
+[CARAMEL_NO_FAST_MODEL]
+text = "No Caramel model on this machine decides scenes after a fast encode yet. Install one in `DB/caramel/models/` first."
+args = 0
+
 [LINK_NODE_FAILED]
 text = "The node running this job reported a failure: {}"
 args = 1
