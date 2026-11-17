@@ -4,16 +4,20 @@
 // It exists so the analysis can be tried on real releases from Discord or the API without an
 // encode: the result is the scene list with each scene's CRF and what drove it, and — when asked —
 // a small verification that encodes the scenes moved furthest from the anchor at their own CRF and
-// at fixed CRFs and measures both against the source.
+// at fixed CRFs and measures both against the source. `/caramel-analysis-encode` also encodes the
+// whole video at the scene CRFs it decided and publishes it to Drive and as Lumiere HLS, so the
+// decisions can be watched.
 
 use crate::lib::mpeg::caramel::{
-    CaramelReport, SceneEntry, SceneRequest, VerifyEncoder, VerifyRequest, VerifySample, probe_source, run_scene_analysis,
-    run_verification,
+    CaramelReport, HostedEncode, SceneEncodeRequest, SceneEntry, SceneRequest, VerifyEncoder, VerifyRequest, VerifySample, encode_scene_crfs,
+    probe_source, run_scene_analysis, run_verification,
 };
+use crate::lib::mpeg::hls::DEFAULT_NAME_TEMPLATE;
+use crate::lumiere_broker::{DriveCandidate, DriveUploadSpec, GLOBAL_DRIVE_PROFILE, LumiereClient, publish_hls};
 use crate::lib::mpeg::preset::resolve as resolve_preset;
 use crate::pnworker::core::{CommData, Stage};
 use crate::pnworker::messages::{
-    CARAMEL_DONE, CARAMEL_FAIL, CARAMEL_PROG, CARAMEL_VERIFY_PROG, JOB_CANCELLED, MessagePayload,
+    CARAMEL_DONE, CARAMEL_ENCODE_PROG, CARAMEL_FAIL, CARAMEL_PROG, CARAMEL_UPLOAD_PROG, CARAMEL_VERIFY_PROG, JOB_CANCELLED, MessagePayload,
 };
 use crate::pnworker::util::job_cancelled;
 use caramel_kernel::SceneConfig;
@@ -82,6 +86,8 @@ pub struct CaramelJobRequest {
     // `/caramel-analysis-encode`: every scene decided after its fast encode, with a model that reads
     // one (`caramel_train::fast_model`) rather than the one encodes use.
     pub fast: bool,
+    // Also encode the whole video at the scene CRFs and publish it to Drive and as HLS.
+    pub host: bool,
 }
 
 pub type CaramelData = (PathBuf, u64, CaramelJobRequest);
@@ -374,6 +380,16 @@ pub async fn run_caramel_job(
         }
     }
 
+    if request.host {
+        match host_encode(&directory, job_id, &report, &settings, tx).await {
+            Ok(hosted) => report.hosted = Some(hosted),
+            Err(error) => report.hosted_error = Some(error),
+        }
+        if job_cancelled(&directory) {
+            return cancelled().await;
+        }
+    }
+
     let path = report_path(job_id);
     let stored = async {
         tokio::fs::create_dir_all(CARAMEL_REPORT_ROOT).await?;
@@ -402,12 +418,143 @@ pub async fn run_caramel_job(
         histogram(&report),
         drivers(&report),
         verify_text,
+        hosted_line(&report),
         // Never printed: the frontend attaches it and the progress row embeds it.
         path_text(&path),
     ];
     tx.send((job_id, MessagePayload::Progress(CARAMEL_DONE, args), Some(Stage::Uploaded)))
         .await
         .ok();
+}
+
+// The encode at the scene CRFs, with its size and bitrate and where it can be watched, as one line
+// of the finished embed: empty when none was asked for.
+fn hosted_line(report: &CaramelReport) -> String {
+    match (&report.hosted, &report.hosted_error) {
+        (Some(hosted), _) => {
+            let mut parts = vec![format!("🎞 {:.1} MB · {:.0} kbps", hosted.bytes as f64 / 1_000_000.0, hosted.kbps)];
+            parts.extend(hosted.drive.as_ref().map(|url| format!("[Drive]({url})")));
+            parts.extend(hosted.hls.as_ref().map(|url| format!("[HLS]({url})")));
+            parts.extend(hosted.errors.iter().map(|error| format!("⚠ {error}")));
+            parts.join(" · ")
+        }
+        (None, Some(error)) => format!("⚠ {error}"),
+        (None, None) => String::new(),
+    }
+}
+
+// Encodes the job's video at the report's scene CRFs with the preset's x264 settings, then
+// publishes it to the global Drive and as Lumiere HLS, saying how far each has got on the job
+// message. Either publication may fail alone; the encode failing, or both, fails the whole.
+async fn host_encode(
+    directory: &Path,
+    job_id: u64,
+    report: &CaramelReport,
+    settings: &crate::lib::mpeg::preset::X264Settings,
+    tx: &Sender<CommData>,
+) -> Result<HostedEncode, String> {
+    let output = directory.join("work").join(format!("caramel-{job_id}.mp4"));
+    if let Some(parent) = output.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    let cancel = directory.join("CANCEL");
+    let written = Arc::new(AtomicU64::new(0));
+    let started = std::time::Instant::now();
+    let encode = {
+        let (report, output, written, cancel) = (report.clone(), output.clone(), written.clone(), cancel.clone());
+        let settings = settings.clone();
+        let input = PathBuf::from(&report.input);
+        tokio::task::spawn_blocking(move || {
+            encode_scene_crfs(
+                &report,
+                &SceneEncodeRequest {
+                    input: &input,
+                    output: &output,
+                    preset: settings.preset,
+                    tune: settings.tune,
+                    profile: settings.profile,
+                    level: settings.level,
+                    x264_params: settings.x264_params,
+                    cancel_file: Some(cancel),
+                    progress: Some(&written),
+                },
+            )
+        })
+    };
+    tokio::pin!(encode);
+    tx.send((job_id, MessagePayload::Progress(CARAMEL_ENCODE_PROG, vec!["0".to_string()]), None)).await.ok();
+    let encoded = loop {
+        tokio::select! {
+            result = &mut encode => break result,
+            _ = tokio::time::sleep(PROGRESS_INTERVAL) => {
+                let percent = if report.frames == 0 { 0 } else { (written.load(Ordering::Relaxed) * 100 / report.frames).min(99) };
+                tx.send((job_id, MessagePayload::Progress(CARAMEL_ENCODE_PROG, vec![percent.to_string()]), None)).await.ok();
+            }
+        }
+    };
+    match encoded {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => return Err(format!("the encode failed: {error}")),
+        Err(error) => return Err(format!("the encode stopped: {error}")),
+    }
+    let encode_seconds = started.elapsed().as_secs_f64();
+    let bytes = tokio::fs::metadata(&output).await.map_err(|e| format!("{}: {e}", output.display()))?.len();
+    let seconds = report.frames as f64 / report.source.fps.max(1.0);
+    let kbps = video_kbps(&output, seconds).await.unwrap_or(if seconds > 0.0 { bytes as f64 * 8.0 / seconds / 1000.0 } else { 0.0 });
+
+    tx.send((job_id, MessagePayload::Static(CARAMEL_UPLOAD_PROG), None)).await.ok();
+    let client = LumiereClient::from_env().map_err(|error| format!("Lumiere is not configured: {error}"))?;
+    let mut errors = Vec::new();
+    // HLS first: it remuxes the file, and Drive's upload is the one that may take long.
+    let hls = match publish_hls(&output, None, client.config(), Some(cancel.as_path()), DEFAULT_NAME_TEMPLATE).await {
+        Ok(publication) => Some(publication.url().to_string()),
+        Err(error) => {
+            errors.push(format!("HLS: {error}"));
+            None
+        }
+    };
+    let drive = match client
+        .upload_drive(
+            DriveUploadSpec {
+                path: output.clone(),
+                request_id: format!("pandora:caramel:{job_id}"),
+                candidates: vec![DriveCandidate {
+                    profile: GLOBAL_DRIVE_PROFILE.to_string(),
+                    root: "default".to_string(),
+                    folder_path: String::new(),
+                    filename: format!("caramel-{job_id} [{}].mp4", report.model),
+                }],
+                content_type: "video/mp4".to_string(),
+                cancel_file: Some(cancel.clone()),
+            },
+            None,
+        )
+        .await
+    {
+        Ok(uploaded) => Some(uploaded.url),
+        Err(error) => {
+            errors.push(format!("Drive: {error}"));
+            None
+        }
+    };
+    let _ = tokio::fs::remove_file(&output).await;
+    if drive.is_none() && hls.is_none() {
+        return Err(errors.join("; "));
+    }
+    Ok(HostedEncode { drive, hls, errors, bytes, kbps, encode_seconds })
+}
+
+// The bitrate of `path`'s video stream alone, in kbps, so the line reads like the verification's
+// figures rather than including the audio.
+async fn video_kbps(path: &Path, seconds: f64) -> Option<f64> {
+    let output = tokio::process::Command::new(crate::lib::bin::resolve_runtime_binary("ffprobe"))
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "packet=size", "-of", "csv=p=0"])
+        .arg(path)
+        .output()
+        .await
+        .ok()?;
+    let bytes: u64 = String::from_utf8_lossy(&output.stdout).lines().filter_map(|line| line.trim().trim_end_matches(',').parse::<u64>().ok()).sum();
+    (bytes > 0 && seconds > 0.0).then(|| bytes as f64 * 8.0 / seconds / 1000.0)
 }
 
 fn path_text(path: &Path) -> String {

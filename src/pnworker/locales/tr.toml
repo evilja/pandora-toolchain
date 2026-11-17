@@ -675,8 +675,8 @@ text = "Sahne CRF'leri doğrulanıyor: çapadan en uzak sahneler kendi CRF'leriy
 args = 1
 
 [CARAMEL_DONE]
-text = "Caramel Analizi: **{} sahne**, `{}` ön ayarı için CRF {}–{} (ortalama {}, çapa {}; kareler {}).\n{} kare {} sn içinde analiz edildi.\nCRF'ler: {}\nEtkenler: {}\n{}"
-args = 12
+text = "Caramel Analizi: **{} sahne**, `{}` ön ayarı için CRF {}–{} (ortalama {}, çapa {}; kareler {}).\n{} kare {} sn içinde analiz edildi.\nCRF'ler: {}\nEtkenler: {}\n{}\n{}"
+args = 13
 
 [CARAMEL_FAIL]
 text = "Caramel Analizi başarısız oldu: {}"
@@ -688,6 +688,14 @@ args = 1
 
 [CARAMEL_NO_FAST_MODEL]
 text = "Bu makinede sahneleri hızlı bir kodlamadan sonra belirleyen bir Caramel modeli henüz yok. Önce `DB/caramel/models/` içine bir tane yükleyin."
+args = 0
+
+[CARAMEL_ENCODE_PROG]
+text = "Video bu sahne CRF değerleriyle kodlanıyor: %{}"
+args = 1
+
+[CARAMEL_UPLOAD_PROG]
+text = "Kodlama Drive'a ve HLS olarak yayımlanıyor…"
 args = 0
 
 [LINK_NODE_FAILED]

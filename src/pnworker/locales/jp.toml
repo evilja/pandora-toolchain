@@ -675,8 +675,8 @@ text = "シーン CRF を検証中: 基準から最も離れたシーンを各�
 args = 1
 
 [CARAMEL_DONE]
-text = "Caramel 解析: **{} シーン**（プリセット `{}`）、CRF {}–{}（平均 {}、基準 {}；フレーム {}）。\n{} フレームを {} 秒で解析しました。\nCRF 分布: {}\n要因: {}\n{}"
-args = 12
+text = "Caramel 解析: **{} シーン**（プリセット `{}`）、CRF {}–{}（平均 {}、基準 {}；フレーム {}）。\n{} フレームを {} 秒で解析しました。\nCRF 分布: {}\n要因: {}\n{}\n{}"
+args = 13
 
 [CARAMEL_FAIL]
 text = "Caramel 解析に失敗しました: {}"
@@ -688,6 +688,14 @@ args = 1
 
 [CARAMEL_NO_FAST_MODEL]
 text = "このマシンには、高速エンコードの後でシーンを決める Caramel モデルがまだありません。先に `DB/caramel/models/` にインストールしてください。"
+args = 0
+
+[CARAMEL_ENCODE_PROG]
+text = "このシーン CRF で動画をエンコード中: {}%"
+args = 1
+
+[CARAMEL_UPLOAD_PROG]
+text = "エンコードを Drive と HLS に公開中…"
 args = 0
 
 [LINK_NODE_FAILED]

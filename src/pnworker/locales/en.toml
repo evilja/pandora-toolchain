@@ -675,8 +675,8 @@ text = "Verifying the scene CRFs: encoding the scenes furthest from the anchor a
 args = 1
 
 [CARAMEL_DONE]
-text = "Caramel Analysis: **{} scenes** for `{}`, CRF {}–{} (mean {}, anchor {}; frames {}).\nAnalysed {} frames in {} s.\nCRFs: {}\nDrivers: {}\n{}"
-args = 12
+text = "Caramel Analysis: **{} scenes** for `{}`, CRF {}–{} (mean {}, anchor {}; frames {}).\nAnalysed {} frames in {} s.\nCRFs: {}\nDrivers: {}\n{}\n{}"
+args = 13
 
 [CARAMEL_FAIL]
 text = "Caramel Analysis failed: {}"
@@ -688,6 +688,14 @@ args = 1
 
 [CARAMEL_NO_FAST_MODEL]
 text = "No Caramel model on this machine decides scenes after a fast encode yet. Install one in `DB/caramel/models/` first."
+args = 0
+
+[CARAMEL_ENCODE_PROG]
+text = "Encoding the video at these scene CRFs: {}%"
+args = 1
+
+[CARAMEL_UPLOAD_PROG]
+text = "Publishing the encode to Drive and as HLS…"
 args = 0
 
 [LINK_NODE_FAILED]

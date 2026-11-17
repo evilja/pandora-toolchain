@@ -2,7 +2,7 @@ use crate::lib::db::core::JobDb;
 use crate::pnworker::core::Stage;
 use crate::pnworker::estimate::remaining_secs_active;
 use crate::pnworker::messages::{
-    BACKUPALL_PROG, CARAMEL_DONE, CARAMEL_FAIL, CARAMEL_PROG, CARAMEL_VERIFY_PROG, ENCODE_CONCAT_PROG, SUBSMEDIA_DONE, SUBSMEDIA_FAIL, SUBSMEDIA_PROG, ENCODE_PROG, MessagePayload, PROBE_ROW, TORRENT_PROG,
+    BACKUPALL_PROG, CARAMEL_DONE, CARAMEL_ENCODE_PROG, CARAMEL_FAIL, CARAMEL_PROG, CARAMEL_UPLOAD_PROG, CARAMEL_VERIFY_PROG, ENCODE_CONCAT_PROG, SUBSMEDIA_DONE, SUBSMEDIA_FAIL, SUBSMEDIA_PROG, ENCODE_PROG, MessagePayload, PROBE_ROW, TORRENT_PROG,
     TORRENT_PROG_SELECT, UPLOAD_BACKUP_PROG, UPLOAD_DONE, UPLOAD_PROG,
 };
 
@@ -114,6 +114,15 @@ pub(crate) async fn persist_side_effects(
             "type": "caramel", "phase": "analysis",
             "percent": args.get(0).and_then(|percent| percent.parse::<u64>().ok()),
         });
+        db.update_progress(job_id, &v.to_string()).await.ok();
+    } else if *id == CARAMEL_ENCODE_PROG {
+        let v = serde_json::json!({
+            "type": "caramel", "phase": "encode",
+            "percent": args.first().and_then(|percent| percent.parse::<u64>().ok()),
+        });
+        db.update_progress(job_id, &v.to_string()).await.ok();
+    } else if *id == CARAMEL_UPLOAD_PROG {
+        let v = serde_json::json!({ "type": "caramel", "phase": "upload" });
         db.update_progress(job_id, &v.to_string()).await.ok();
     } else if *id == CARAMEL_VERIFY_PROG {
         let v = serde_json::json!({ "type": "caramel", "phase": "verify", "crfs": args.get(0) });

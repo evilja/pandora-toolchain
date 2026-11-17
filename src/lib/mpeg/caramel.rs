@@ -218,6 +218,25 @@ pub struct CaramelReport {
     // Filled in from `run_verification` when one was asked for, or why it could not be.
     pub verify: Option<VerifyReport>,
     pub verify_error: Option<String>,
+    // The whole input encoded at these scene CRFs and uploaded, when that was asked for
+    // (`/caramel-analysis-encode`), or why it could not be.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hosted: Option<HostedEncode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hosted_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct HostedEncode {
+    // The file on Drive, and the same encode as Lumiere HLS (kept 12 hours); each None when its
+    // publication failed, with the reason in `errors`.
+    pub drive: Option<String>,
+    pub hls: Option<String>,
+    pub errors: Vec<String>,
+    pub bytes: u64,
+    // Of the video alone, as the scene CRFs made it.
+    pub kbps: f64,
+    pub encode_seconds: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -485,6 +504,82 @@ pub fn with_zones(x264_params: Option<&str>, zones: &str) -> Option<String> {
     (!pairs.is_empty()).then(|| pairs.join(":"))
 }
 
+// What `encode_scene_crfs` encodes with: the preset's x264 settings, and the output it scales to.
+pub struct SceneEncodeRequest<'a> {
+    pub input: &'a Path,
+    pub output: &'a Path,
+    pub preset: Option<String>,
+    pub tune: Option<String>,
+    pub profile: Option<String>,
+    pub level: Option<String>,
+    pub x264_params: Option<String>,
+    pub cancel_file: Option<PathBuf>,
+    // Frames written so far, for a caller that shows progress.
+    pub progress: Option<&'a AtomicU64>,
+}
+
+// The video of `request.input` encoded with x264 at the report's scene CRFs (its `zones`, around
+// its anchor), as an MP4 with the first audio track in AAC: what an encode deciding exactly as the
+// report did gives, whichever model decided it, in a file Drive previews and HLS can segment as it
+// is. The output's size and bit depth are the report's encode's.
+pub fn encode_scene_crfs(report: &CaramelReport, request: &SceneEncodeRequest) -> Result<(), String> {
+    let ffmpeg = resolve_runtime_binary("ffmpeg");
+    let mut command = Command::new(&ffmpeg);
+    command.args(["-v", "error", "-nostdin", "-y", "-i"]).arg(request.input);
+    command.args(["-map", "0:v:0", "-map", "0:a:0?", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"]);
+    if let Some(height) = report.encode.output_height.filter(|height| *height != report.source.height) {
+        command.args(["-vf", &format!("scale=-2:{height}")]);
+    }
+    command.args(["-c:v", "libx264", "-crf", &report.encode.anchor_crf.to_string()]);
+    for (flag, value) in [("-preset", &request.preset), ("-tune", &request.tune), ("-profile:v", &request.profile), ("-level", &request.level)] {
+        if let Some(value) = value {
+            command.args([flag, value.as_str()]);
+        }
+    }
+    if let Some(params) = with_zones(request.x264_params.as_deref(), &report.zones) {
+        command.args(["-x264-params", &params]);
+    }
+    let pixel_format = if report.encode.output_bit_depth > 8 { "yuv420p10le" } else { "yuv420p" };
+    command.args(["-pix_fmt", pixel_format, "-progress", "pipe:1", "-nostats"]).arg(request.output);
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("ffmpeg could not start: {e}"))?;
+    let stderr = child.stderr.take();
+    // Read aside, so a chatty ffmpeg never blocks on a full pipe; its last line says why it failed.
+    let errors = std::thread::spawn(move || {
+        let mut text = String::new();
+        if let Some(mut stderr) = stderr {
+            let _ = std::io::Read::read_to_string(&mut stderr, &mut text);
+        }
+        text
+    });
+    let stdout = child.stdout.take().ok_or("ffmpeg has no stdout")?;
+    let mut cancelled = false;
+    for line in std::io::BufRead::lines(BufReader::new(stdout)).map_while(Result::ok) {
+        if let (Some(frames), Some(progress)) = (line.strip_prefix("frame=").and_then(|frame| frame.trim().parse::<u64>().ok()), request.progress) {
+            progress.store(frames, Ordering::Relaxed);
+        }
+        if request.cancel_file.as_ref().is_some_and(|file| file.exists()) {
+            cancelled = true;
+            let _ = child.kill();
+            break;
+        }
+    }
+    let status = child.wait().map_err(|e| format!("ffmpeg: {e}"))?;
+    let errors = errors.join().unwrap_or_default();
+    if cancelled {
+        return Err("cancelled".to_string());
+    }
+    if !status.success() {
+        let reason = errors.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or("no message").trim().to_string();
+        return Err(format!("ffmpeg failed ({status}): {reason}"));
+    }
+    Ok(())
+}
+
 pub fn run_scene_analysis(request: &SceneRequest) -> Result<CaramelReport, String> {
     let started = std::time::Instant::now();
     let probe = probe_source(request.input)?;
@@ -540,6 +635,8 @@ pub fn run_scene_analysis(request: &SceneRequest) -> Result<CaramelReport, Strin
         scenes,
         verify: None,
         verify_error: None,
+        hosted: None,
+        hosted_error: None,
     })
 }
 
@@ -1079,6 +1176,66 @@ pub fn summary_line(report: &CaramelReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A short generated clip, analysed and then encoded at its scene CRFs: the output is an MP4
+    // with the video and the AAC audio, at the source's size. Skipped where there is no ffmpeg.
+    #[test]
+    fn a_report_encodes_at_its_scene_crfs() {
+        let ffmpeg = resolve_runtime_binary("ffmpeg");
+        if Command::new(&ffmpeg).arg("-version").output().map(|output| !output.status.success()).unwrap_or(true) {
+            return;
+        }
+        let directory = std::env::temp_dir().join(format!("caramel-encode-test-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let (input, output) = (directory.join("in.mkv"), directory.join("out.mp4"));
+        let made = Command::new(&ffmpeg)
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=24:duration=2", "-f", "lavfi", "-i", "sine=duration=2"])
+            .args(["-c:v", "libx264", "-preset", "ultrafast", "-c:a", "flac", "-shortest"])
+            .arg(&input)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let report = run_scene_analysis(&SceneRequest {
+            input: &input,
+            range: None,
+            fps: None,
+            encode: EncodeContext::anchored(20.0),
+            scenes: SceneConfig::default(),
+            workers: 1,
+            decoder_threads: 1,
+            cancel_file: None,
+            progress: None,
+            probe: None,
+            fast: None,
+            model: None,
+        })
+        .unwrap();
+        let written = AtomicU64::new(0);
+        encode_scene_crfs(
+            &report,
+            &SceneEncodeRequest {
+                input: &input,
+                output: &output,
+                preset: Some("ultrafast".to_string()),
+                tune: None,
+                profile: None,
+                level: None,
+                x264_params: Some("aq-mode=3".to_string()),
+                cancel_file: None,
+                progress: Some(&written),
+            },
+        )
+        .unwrap();
+        let streams = Command::new(resolve_runtime_binary("ffprobe"))
+            .args(["-v", "error", "-show_entries", "stream=codec_name,width,height", "-of", "csv=p=0"])
+            .arg(&output)
+            .output()
+            .unwrap();
+        let streams = String::from_utf8_lossy(&streams.stdout).to_string();
+        assert!(streams.contains("h264,320,240") && streams.contains("aac"), "{streams}");
+        assert!(written.load(Ordering::Relaxed) >= 40, "{}", written.load(Ordering::Relaxed));
+        std::fs::remove_dir_all(&directory).ok();
+    }
 
     #[test]
     fn stats_lines_are_read_by_key() {

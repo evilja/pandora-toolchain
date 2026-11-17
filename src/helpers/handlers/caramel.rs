@@ -73,6 +73,7 @@ pub async fn handle_caramel(
         verify,
         scenes: Default::default(),
         fast,
+        host: fast,
     });
     Some(job)
 }
