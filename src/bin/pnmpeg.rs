@@ -190,6 +190,12 @@ struct Args {
     #[arg(long)]
     lab_series: Option<String>,
 
+    /// Give the samples of --input in the dataset file --output the whole-scene features they were
+    /// measured without. --lab-source names the source as the lab did (default: the input's file
+    /// name); --input must be the file they were measured from.
+    #[arg(long)]
+    caramel_backfill: bool,
+
     /// Train a Caramel model on the dataset directory given as --input and print what it scored
     /// on sources it was not trained on. --output, when it is not `-`, gets the candidate as a
     /// model file. The exit code is 0 for a candidate that may replace the model in use and 4 for
@@ -231,6 +237,13 @@ struct Args {
     /// networks that never trained on a scene's series voted for it and what its encodes allowed.
     #[arg(long)]
     train_scenes: Option<String>,
+
+    /// With --caramel-train: what the networks are fed. `opening` (the default) is the features of
+    /// a scene's first frames, as encoders decide today; `scene` is the features of all of it, for
+    /// the samples that have them; `paired` is the opening features of only those samples, so the
+    /// two are compared on the same scenes.
+    #[arg(long, default_value = "opening")]
+    train_features: String,
 
     #[arg(long, hide = true)]
     aot_preset: Option<String>,
@@ -781,6 +794,15 @@ fn caramel_lab(args: &Args, preset: Option<&ResolvedPreset>, anchor: f32, log: &
 // when asked to and allowed to.
 fn caramel_train(args: &Args, preset: Option<&ResolvedPreset>, log: &mut ToolLog) -> i32 {
     let samples = read_dataset(Path::new(&args.input));
+    let samples: Vec<LabSample> = match args.train_features.as_str() {
+        "opening" => samples,
+        "scene" => samples.iter().filter_map(LabSample::with_scene_features).collect(),
+        "paired" => samples.into_iter().filter(|sample| sample.scene_features.is_some()).collect(),
+        other => {
+            eprintln!("pnmpeg caramel train: --train-features takes opening, scene or paired, not `{other}`");
+            return 1;
+        }
+    };
     // With a preset named, train for its encoder settings; otherwise for the ones most of the
     // dataset was made with.
     let encoder = args.preset.as_deref().and(preset).map(|preset| {
@@ -1601,6 +1623,22 @@ async fn main() {
     }
     if args.caramel_lab {
         std::process::exit(caramel_lab(&args, active_preset.as_ref(), x264_config.crf, &mut log));
+    }
+    if args.caramel_backfill {
+        let input = Path::new(&args.input);
+        let source_id = args.lab_source.clone().unwrap_or_else(|| input.file_name().and_then(|name| name.to_str()).unwrap_or(&args.input).to_string());
+        let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(8);
+        match pandora_toolchain::lib::mpeg::caramel_lab::backfill_scene_features(Path::new(&args.output), input, &source_id, workers) {
+            Ok(summary) => {
+                log.line(&format!("caramel backfill: {}", serde_json::to_string(&summary).unwrap()));
+                println!("{}", serde_json::to_string_pretty(&summary).unwrap());
+                std::process::exit(if summary.failed > 0 { 1 } else { 0 });
+            }
+            Err(error) => {
+                eprintln!("pnmpeg caramel backfill failed: {error}");
+                std::process::exit(1);
+            }
+        }
     }
     if args.caramel_report {
         let anchor = match args.aot_crf {

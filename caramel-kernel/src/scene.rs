@@ -343,6 +343,32 @@ mod tests {
         decisions
     }
 
+    // Over a scene's opening, a whole-scene window measures the frames the decider measures and
+    // compares the same pairs, so the two are the same features where they overlap; past it, the
+    // whole-scene window keeps going.
+    #[test]
+    fn a_whole_scene_window_reads_the_opening_as_the_decider_does() {
+        let frames: Vec<Vec<u8>> = (0..40).map(|i| clean(i as f64 * 0.7)).collect();
+        let config = SceneConfig { analysis_frames: 12, min_scene_frames: 12, max_scene_frames: 48 };
+        let mut decider = decider(config);
+        let mut decisions = run(&mut decider, &frames);
+        decisions.extend(decider.finish());
+        let opening = &decisions[0].features;
+        let stride = (config.analysis_frames / MEASURED_FRAMES).max(1);
+        let window_of = |count: usize| {
+            let mut window = crate::window::SceneWindow::new(0.0, stride);
+            for data in &frames[..count] {
+                window.push(&Frame::luma(Plane::new(data, W, H, W).unwrap()));
+            }
+            window.finish()
+        };
+        let same = window_of(12);
+        assert_eq!((same.frames, same.measured), (opening.frames, opening.measured));
+        assert_eq!(format!("{same:?}"), format!("{opening:?}"));
+        let whole = window_of(40);
+        assert_eq!((whole.frames, whole.measured, whole.cuts), (40, 14, 0));
+    }
+
     #[test]
     fn a_cut_starts_a_scene_with_its_own_crf() {
         let mut noise = Noise::new(3);

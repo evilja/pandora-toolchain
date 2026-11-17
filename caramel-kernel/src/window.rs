@@ -4,7 +4,7 @@
 
 use crate::frame::Frame;
 use crate::spatial::{self, SpatialFeatures};
-use crate::temporal::TemporalFeatures;
+use crate::temporal::{self, LowRes, TemporalFeatures};
 use serde::{Deserialize, Serialize};
 
 // Means of `TemporalFeatures` over a window's pairs.
@@ -158,5 +158,36 @@ mod tests {
         let temporal = features.temporal.unwrap();
         assert_eq!(temporal.mc_residual, 0.0);
         assert_eq!(features.position_seconds, 12.5);
+    }
+}
+
+// A whole scene measured the way its opening window is — every pair of frames compared, every
+// `stride`-th frame measured by itself — rather than only its first `analysis_frames`. The lab
+// keeps both, to learn whether a CRF decided from all of a scene is better than one decided from
+// its start: half a second of a shot does not show the motion that begins a second into it. The
+// caller hands frames of one scene, so no cut is looked for.
+pub struct SceneWindow {
+    analyzer: WindowAnalyzer,
+    previous: Option<LowRes>,
+    index: usize,
+    stride: usize,
+}
+
+impl SceneWindow {
+    pub fn new(position_seconds: f64, stride: usize) -> Self {
+        Self { analyzer: WindowAnalyzer::new(position_seconds), previous: None, index: 0, stride: stride.max(1) }
+    }
+
+    pub fn push(&mut self, frame: &Frame) {
+        let lowres = temporal::downsample(&frame.y);
+        let pair = self.previous.as_ref().map(|previous| temporal::compare(previous, &lowres));
+        let measured = self.index.is_multiple_of(self.stride).then(|| measure(frame));
+        self.analyzer.push(measured, pair.as_ref(), false);
+        self.previous = Some(lowres);
+        self.index += 1;
+    }
+
+    pub fn finish(self) -> WindowFeatures {
+        self.analyzer.finish()
     }
 }

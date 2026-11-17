@@ -30,4 +30,4 @@ pub use model::{Contribution, EncodeContext, MODEL_VERSION, MetricVote, SceneEst
 pub use scene::{SceneConfig, SceneDecider, SceneDecision, SceneStart};
 pub use spatial::SpatialFeatures;
 pub use temporal::TemporalFeatures;
-pub use window::{TemporalSummary, WindowAnalyzer, WindowFeatures};
+pub use window::{SceneWindow, TemporalSummary, WindowAnalyzer, WindowFeatures};

@@ -419,6 +419,7 @@ mod tests {
                 temporal: Some(TemporalSummary { motion_px: motion, ti: 5.0, ..Default::default() }),
                 ..Default::default()
             },
+            scene_features: None,
             cut_pairs_within: 0,
             reference_bit_depth: 8,
             cambi_source: 0.05,

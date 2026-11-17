@@ -114,6 +114,10 @@ pub struct LabSample {
     // Frames encoded and measured: the scene, up to `LAB_MAX_FRAMES`.
     pub frames: u64,
     pub features: WindowFeatures,
+    // The same features over every frame the lab encoded rather than the scene's opening: what a
+    // decision made from the whole scene would see. Absent from samples measured before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_features: Option<WindowFeatures>,
     pub cut_pairs_within: usize,
     pub reference_bit_depth: u8,
     // CAMBI of the source's own frames, as the encodes' is pooled.
@@ -159,6 +163,60 @@ impl LabSample {
     pub fn inputs(&self) -> [f64; inputs::INPUTS] {
         inputs::inputs(&self.features, self.deep())
     }
+
+    // The sample as a model deciding from the whole scene would see it, when it was measured so.
+    pub fn with_scene_features(&self) -> Option<LabSample> {
+        let features = self.scene_features.clone()?;
+        Some(LabSample { features, ..self.clone() })
+    }
+}
+
+// Frames apart that whole-scene features measure by themselves: as densely as a scene's opening is
+// measured, four frames of every twelve.
+pub fn scene_feature_stride() -> usize {
+    (caramel_kernel::SceneConfig::default().analysis_frames / caramel_kernel::scene::MEASURED_FRAMES).max(1)
+}
+
+// Whole-scene features of `frames` frames of `input` from `start`, decoded at 8 bits as the scene
+// analysis decodes them and cut out as the lab's clip is.
+pub fn measure_scene_features(ffmpeg: &Path, input: &Path, fps: f64, start: u64, frames: u64) -> Result<WindowFeatures, String> {
+    let mut command = Command::new(ffmpeg);
+    command.args(["-v", "error", "-nostdin"]);
+    if let Some(seek) = seek_seconds(start, fps) {
+        command.args(["-ss", &seek]);
+    }
+    let mut child = command
+        .arg("-i")
+        .arg(input)
+        .args(["-map", "0:v:0", "-frames:v", &frames.to_string(), "-an", "-sn", "-dn"])
+        .args(["-vf", "setpts=N/FRAME_RATE/TB", "-pix_fmt", "yuv420p", "-strict", "-1", "-f", "yuv4mpegpipe", "-"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("ffmpeg could not start: {e}"))?;
+    let stdout = child.stdout.take().ok_or("ffmpeg has no stdout")?;
+    let result = (|| {
+        let mut reader = pnx264::y4m::Y4mReader::new(std::io::BufReader::with_capacity(1 << 20, stdout))?;
+        let (width, height) = (reader.width, reader.height);
+        let (chroma_width, chroma_height) = (width.div_ceil(2), height.div_ceil(2));
+        let mut window = caramel_kernel::SceneWindow::new(start as f64 / fps.max(1.0), scene_feature_stride());
+        let mut read = 0u64;
+        while let Some(frame) = reader.next_frame()? {
+            let y = caramel_kernel::frame::Plane::new(frame.y, width, height, frame.stride_y).ok_or("short luma plane")?;
+            let u = caramel_kernel::frame::Plane::new(frame.u, chroma_width, chroma_height, frame.stride_c);
+            let v = caramel_kernel::frame::Plane::new(frame.v, chroma_width, chroma_height, frame.stride_c);
+            window.push(&caramel_kernel::frame::Frame { y, u, v });
+            read += 1;
+        }
+        if read < 2 {
+            return Err("the scene decoded to fewer than two frames".to_string());
+        }
+        Ok(window.finish())
+    })();
+    let _ = child.kill();
+    let _ = child.wait();
+    result
 }
 
 // What the current model says about a scene, for a lab that has one. Without it the search splits
@@ -585,6 +643,7 @@ impl Lab<'_> {
             scene_frames: scene.frames,
             frames,
             features: scene.features.clone(),
+            scene_features: None,
             cut_pairs_within: scene.cut_pairs_within,
             reference_bit_depth: if self.deep { 10 } else { 8 },
             cambi_source: 0.0,
@@ -598,6 +657,7 @@ impl Lab<'_> {
         };
         let result = (|| {
             let reference = self.extract(&directory, scene.start_frame, frames)?;
+            sample.scene_features = Some(measure_scene_features(&self.ffmpeg, &self.input, self.fps, scene.start_frame, frames)?);
             let bands: [Option<(f64, f64)>; METRICS] = std::array::from_fn(|metric| request.guide.and_then(|guide| guide.band(metric)));
             let max_points = request.max_points.max(START_CRFS.len());
             loop {
@@ -644,6 +704,72 @@ impl Lab<'_> {
         sample.elapsed_ms = started.elapsed().as_millis() as u64;
         Ok(sample)
     }
+}
+
+// What a backfill did to one source's samples in a dataset file.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct BackfillSummary {
+    pub source_id: String,
+    pub samples: usize,
+    pub filled: usize,
+    pub already: usize,
+    pub failed: usize,
+}
+
+// Gives the samples of `source_id` in `dataset` the whole-scene features they were measured
+// without, read from `input`, which must be the source they were measured from. Other lines are
+// left as they are, and the file is replaced only once every sample was tried.
+pub fn backfill_scene_features(dataset: &Path, input: &Path, source_id: &str, workers: usize) -> Result<BackfillSummary, String> {
+    let ffmpeg: PathBuf = resolve_runtime_binary("ffmpeg").into();
+    let text = std::fs::read_to_string(dataset).map_err(|e| format!("{}: {e}", dataset.display()))?;
+    let lines: Vec<&str> = text.lines().collect();
+    let mut summary = BackfillSummary { source_id: source_id.to_string(), ..Default::default() };
+    let mut samples: Vec<Option<LabSample>> =
+        lines.iter().map(|line| serde_json::from_str::<LabSample>(line).ok().filter(|sample| sample.source_id == source_id)).collect();
+    let todo: Vec<usize> = samples
+        .iter()
+        .enumerate()
+        .filter_map(|(index, sample)| sample.as_ref().filter(|sample| sample.scene_features.is_none()).map(|_| index))
+        .collect();
+    summary.samples = samples.iter().flatten().count();
+    summary.already = summary.samples - todo.len();
+    let next = AtomicUsize::new(0);
+    let results: Mutex<Vec<(usize, Result<WindowFeatures, String>)>> = Mutex::new(Vec::new());
+    std::thread::scope(|scope| {
+        for _ in 0..workers.clamp(1, todo.len().max(1)) {
+            scope.spawn(|| {
+                while let Some(&index) = todo.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    let sample = samples[index].as_ref().unwrap();
+                    let measured = measure_scene_features(&ffmpeg, input, sample.source.fps, sample.start_frame, sample.frames);
+                    crate::lib::sync::lock(&results).push((index, measured));
+                }
+            });
+        }
+    });
+    for (index, measured) in results.into_inner().unwrap_or_else(|poisoned| poisoned.into_inner()) {
+        match measured {
+            Ok(features) => {
+                samples[index].as_mut().unwrap().scene_features = Some(features);
+                summary.filled += 1;
+            }
+            Err(_) => summary.failed += 1,
+        }
+    }
+    if summary.filled == 0 {
+        return Ok(summary);
+    }
+    let rewritten: String = lines
+        .iter()
+        .zip(&samples)
+        .map(|(line, sample)| match sample {
+            Some(sample) => serde_json::to_string(sample).unwrap() + "\n",
+            None => format!("{line}\n"),
+        })
+        .collect();
+    let temporary = dataset.with_extension("jsonl.backfill");
+    std::fs::write(&temporary, rewritten).map_err(|e| format!("{}: {e}", temporary.display()))?;
+    std::fs::rename(&temporary, dataset).map_err(|e| format!("{}: {e}", dataset.display()))?;
+    Ok(summary)
 }
 
 // Measures scenes of the report's source into the dataset file, and says what it did. Scenes are
@@ -859,6 +985,7 @@ mod tests {
             scene_frames: 48,
             frames: 48,
             features: WindowFeatures::default(),
+            scene_features: None,
             cut_pairs_within: 0,
             reference_bit_depth: 10,
             cambi_source: 0.2,

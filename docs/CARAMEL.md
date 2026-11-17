@@ -171,7 +171,8 @@ episodes filed under different names would let a network be tested on a show it 
 `DB/caramel/dataset/*.jsonl`, one `LabSample` per line (`record: 1`): `source_id`, `series`, the
 probed `source` (size, fps, bitrate, codec, bit depth), `encoder` (`x264|<preset>|<tune>|<sorted
 x264 params>`), `start_frame`, `scene_frames`, `frames`, the decider's `features` for the scene's
-opening, `cut_pairs_within`, `reference_bit_depth`, `cambi_source`, `cambi_source_high`, `points`
+opening, `scene_features` (the same features over every frame the lab encoded; see below),
+`cut_pairs_within`, `reference_bit_depth`, `cambi_source`, `cambi_source_high`, `points`
 (`crf`, `bytes`, `xpsnr`, `xpsnr_low`, `ssim_db`, `vmaf`, `vmaf_low`, `cambi`, `cambi_high`, and
 `treatment` on a treated encode only),
 `picked` (`spread` or `novel`), the guiding `model` and its `surprise`, `collected_unix`,
@@ -180,6 +181,27 @@ numbers, never video.
 
 Samples made with different encoder settings are different datasets: a model is trained for one
 `encoder` key and the others are left out and counted.
+
+### Whole-scene features
+
+Encoders decide a scene from its first twelve frames, four of them measured by themselves, and the
+lab encodes up to 48. Half a second of a shot misses what starts after it: a fade-in reads as an
+empty frame (one Akira scene has a spatial detail of 0.9 over its opening and 12.4 over all of it),
+and a pan that begins a second in reads as a still. So each sample also keeps `scene_features`,
+measured by `caramel_kernel::SceneWindow` over the clip the lab encoded — every pair of frames
+compared, every third frame measured, as densely as the opening is. Over the first twelve frames it
+is exactly what the decider measures (a kernel test holds them equal). Samples measured before it
+was kept have none.
+
+```
+pnmpeg --caramel-backfill -i <source> -o <dataset.jsonl> [--lab-source <id>]
+```
+
+adds it to the samples of one source that lack it, reading the frames from the source they were
+measured from, and rewrites the file once every one was tried; it takes seconds a source. Training
+with `--train-features scene` feeds the networks `scene_features` instead, on the samples that have
+them, and `--train-features paired` feeds the opening features of the same samples, so the two can
+be compared on the same scenes.
 
 ### Why deband points
 
@@ -227,6 +249,7 @@ spares two encodes a scene.
 pnmpeg --caramel-train -i DB/caramel/dataset -o <candidate.model | ->
        [--preset <name>] [--train-install] [--train-refit] [--train-seed 1]
        [--train-hidden 32,32] [--train-networks 2] [--train-scenes <file>]
+       [--train-features opening|scene|paired]
 ```
 
 Trains a candidate on every sample of one encoder key — the named preset's, or the one most
