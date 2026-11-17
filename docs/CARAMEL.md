@@ -160,7 +160,8 @@ several CRFs and measured against the source. One scene is one line of the outpu
   plain encodes alone. They are an experiment, not something the model decides (see
   [Why deband points](#why-deband-points)).
 - **Exit code.** 0 done, 3 stopped by the cancel file, 1 failed. The last line of standard output
-  is a JSON summary (`eligible`, `already`, `measured`, `failed`, `points`, `cancelled`).
+  is a JSON summary (`eligible`, `already`, `measured`, `failed`, `points`, `cancelled`), or
+  `{ "error" }` when it failed.
 
 `--lab-series` names what the source's episodes share. It defaults to the file name with the
 group, episode number, resolution and checksum taken off (`[Group] Some Show S2 - 07 (1080p)
@@ -423,7 +424,9 @@ privileged token). `torrent` is a `.torrent` link over https, a nyaa view page, 
 matters because a series read from a file name can be wrong, and a wrong one lets a fold test a
 network on a show it trained on. Being asked for by name, a release is not held to the two-sources
 limit. It moves through `queued`, `downloading`, `downloaded`, `measuring`, and ends `measured` or
-`failed`; its directory is deleted once it ends. A download stopped for a job keeps what it has and
+`failed`, with the lab's own reason in `error` when it gave one (the lab prints `{ "error" }` as
+its last line on standard output when it fails); its directory is deleted once it ends. A source
+measured before is not measured again; one that failed is, when it is queued again. A download stopped for a job keeps what it has and
 resumes next time; one that fails or runs past three hours is tried again, three times in all. The
 same file of the same torrent is not queued twice unless the first one failed. `DELETE
 /api/v1/caramel/research/sources/:id` takes one off the queue, except while it is downloading or

@@ -500,9 +500,9 @@ fn summary_json(output: &str) -> Option<Value> {
     output.lines().rev().find_map(|line| serde_json::from_str::<Value>(line.trim()).ok().filter(Value::is_object))
 }
 
-// Measures one source. Returns how it went — `measured` or `failed` — or None when it was stopped
-// for the queue and is to be carried on with.
-async fn measure(candidate: &Candidate, config: &ResearchConfig, pnmpeg: &str, state: &mut ResearchState) -> Option<&'static str> {
+// Measures one source. Returns how it went — `measured` or `failed`, with pnmpeg's reason when it
+// gave one — or None when it was stopped for the queue and is to be carried on with.
+async fn measure(candidate: &Candidate, config: &ResearchConfig, pnmpeg: &str, state: &mut ResearchState) -> Option<(&'static str, Option<String>)> {
     save_state(state, &format!("measuring {}", candidate.source_id));
     let _ = std::fs::create_dir_all(LOG_DIRECTORY);
     let name = slug(&candidate.source_id);
@@ -516,6 +516,7 @@ async fn measure(candidate: &Candidate, config: &ResearchConfig, pnmpeg: &str, s
     command.arg("-o").arg(Path::new(DATASET_DIRECTORY).join(format!("{name}.jsonl")));
     command.arg("--cancelfile").arg(&cancel_file);
     command.arg("--logfile").arg(Path::new(LOG_DIRECTORY).join(format!("{name}.log")));
+    let mut reason = None;
     let outcome = match run_while_idle(command, &cancel_file, None).await {
         Run::Stopped => {
             println!("[Caramel research] stopped measuring {} for the queue", candidate.source_id);
@@ -531,8 +532,9 @@ async fn measure(candidate: &Candidate, config: &ResearchConfig, pnmpeg: &str, s
             println!("[Caramel research] measured {measured} scenes of {}", candidate.source_id);
             "measured"
         }
-        Run::Ended(code, _) => {
+        Run::Ended(code, output) => {
             println!("[Caramel research] {} could not be measured (pnmpeg exit {code})", candidate.source_id);
+            reason = summary_json(&output).and_then(|summary| summary.get("error").and_then(Value::as_str).map(str::to_string));
             "failed"
         }
     };
@@ -544,7 +546,7 @@ async fn measure(candidate: &Candidate, config: &ResearchConfig, pnmpeg: &str, s
             let _ = std::fs::remove_dir_all(directory);
         }
     }
-    Some(outcome)
+    Some((outcome, reason))
 }
 
 // The video a finished download is: the largest one under its directory.
@@ -582,19 +584,23 @@ async fn measure_request(request: &SourceRequest, config: &ResearchConfig, pnmpe
         request.status = "measuring".to_string();
         request.source_id = Some(source_id.clone());
     });
-    // Asked for by name, so the series' two-source limit does not apply. A source the worker is
-    // already done with is not measured again.
-    let outcome = if state.sources.contains_key(&source_id) {
+    // Asked for by name, so the series' two-source limit does not apply. A source the worker has
+    // already measured is not measured again; one that failed is tried again, since asking for it
+    // again is how a failure is retried.
+    let outcome = if state.sources.get(&source_id).is_some_and(|record| record.outcome == "measured") {
         let _ = std::fs::remove_dir_all(&directory);
-        Some("measured")
+        Some(("measured", None))
     } else {
         let candidate = Candidate { path, source_id: source_id.clone(), series: request.series.clone(), fetched: true };
         measure(&candidate, config, pnmpeg, state).await
     };
-    update_request(&request.id, |request| match outcome {
-        Some(outcome) => {
+    update_request(&request.id, |request| match &outcome {
+        Some((outcome, reason)) => {
             request.status = outcome.to_string();
-            request.error = (outcome == "failed").then(|| "pnmpeg could not measure it; see DB/caramel/log/".to_string());
+            request.error = (*outcome == "failed").then(|| match reason {
+                Some(reason) => format!("pnmpeg could not measure it: {reason}"),
+                None => "pnmpeg could not measure it; see DB/caramel/log/".to_string(),
+            });
             request.finished_unix = unix_now();
         }
         None => request.status = "downloaded".to_string(),

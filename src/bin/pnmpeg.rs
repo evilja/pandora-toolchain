@@ -735,6 +735,8 @@ fn caramel_lab(args: &Args, preset: Option<&ResolvedPreset>, anchor: f32, log: &
         Err(error) => {
             log.line(&format!("caramel lab: analysis failed: {error}"));
             eprintln!("pnmpeg caramel lab: analysis failed: {error}");
+            // On stdout too, where the research worker reads why a source gave nothing.
+            println!("{}", serde_json::json!({ "error": format!("analysis failed: {error}") }));
             return 1;
         }
     };
@@ -788,6 +790,7 @@ fn caramel_lab(args: &Args, preset: Option<&ResolvedPreset>, anchor: f32, log: &
         Err(error) => {
             log.line(&format!("caramel lab failed: {error}"));
             eprintln!("pnmpeg caramel lab failed: {error}");
+            println!("{}", serde_json::json!({ "error": error }));
             1
         }
     }
