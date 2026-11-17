@@ -947,7 +947,7 @@ pub fn backfill_scene_features(dataset: &Path, input: &Path, source_id: &str, wo
     let todo: Vec<usize> = samples
         .iter()
         .enumerate()
-        .filter_map(|(index, sample)| sample.as_ref().filter(|sample| sample.scene_features.is_none() || sample.features.fast_encode.is_none_or(|fast| fast.banding.is_none())).map(|_| index))
+        .filter_map(|(index, sample)| sample.as_ref().filter(|sample| sample.scene_features.is_none() || sample.features.fast_encode.is_none_or(|fast| fast.banding.is_none() || fast.exposed_banding.is_none())).map(|_| index))
         .collect();
     summary.samples = samples.iter().flatten().count();
     summary.already = summary.samples - todo.len();
@@ -1317,7 +1317,7 @@ mod tests {
         // Without a fast encode there is no banding input; one from before banding was read is
         // given the lab's, and one that read its own keeps it.
         assert_eq!(back.inputs()[30], 0.0);
-        let fast = caramel_kernel::FastEncode { xpsnr: 42.0, xpsnr_low: 40.0, log_bpp: -3.0, frames: 48, banding: None };
+        let fast = caramel_kernel::FastEncode { xpsnr: 42.0, xpsnr_low: 40.0, log_bpp: -3.0, frames: 48, banding: None, exposed_banding: None };
         let old = LabSample { features: WindowFeatures { fast_encode: Some(fast), ..Default::default() }, ..back.clone() };
         let expected = old.lab_banding(caramel_kernel::FAST_CRF as f64).unwrap();
         assert!((old.inputs()[30] - ((expected + 0.05) * STAND_IN_BANDING).ln()).abs() < 1e-12);

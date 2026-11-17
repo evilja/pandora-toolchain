@@ -744,12 +744,14 @@ pub fn fast_config(encoder: &Config, width: usize, height: usize) -> Config {
 pub fn fast_encode(config: &Config, frames: &[&OwnedFrame], width: usize, height: usize) -> Result<FastEncode, String> {
     let (values, bytes, banding) = test_encode(config, frames, width, height, true)?;
     let fast = FastEncode::from_frames(&values, bytes, width * height).ok_or_else(|| "the fast encode measured nothing".to_string())?;
-    Ok(FastEncode { banding, ..fast })
+    let (banding, exposed_banding) = banding.unzip();
+    Ok(FastEncode { banding: banding.flatten(), exposed_banding: exposed_banding.flatten(), ..fast })
 }
 
 // `frames` encoded with `config`, each frame's XPSNR against its source in display order, the coded
-// bytes of all of them, and with `banding` the banding the encode added (`fast::added_banding`).
-fn test_encode(config: &Config, frames: &[&OwnedFrame], width: usize, height: usize, banding: bool) -> Result<(Vec<f64>, u64, Option<f64>), String> {
+// bytes of all of them, and with `banding` the banding the encode added and the banding the source
+// is ready to show (`fast::added_banding` of the encode's frames and of `cambi::smoothed` ones).
+fn test_encode(config: &Config, frames: &[&OwnedFrame], width: usize, height: usize, banding: bool) -> Result<(Vec<f64>, u64, Option<(Option<f64>, Option<f64>)>), String> {
     if frames.len() < 2 {
         return Err("too few frames to measure".to_string());
     }
@@ -792,15 +794,18 @@ fn test_encode(config: &Config, frames: &[&OwnedFrame], width: usize, height: us
         };
         values.push(meter.frame(&encoded, &original).ok_or("frames of another size")?);
     }
-    let banding = banding
-        .then(|| {
-            let picked = caramel_kernel::fast::banding_frames(frames.len());
-            let read = |plane: &[u8], stride: usize| Plane::new(plane, width, height, stride).and_then(|plane| caramel_kernel::cambi::cambi(&plane));
-            let encoded: Vec<f64> = picked.iter().filter_map(|index| read(&pictures[*index].y, width)).collect();
-            let source: Vec<f64> = picked.iter().filter_map(|index| read(&frames[*index].y, frames[*index].stride_y)).collect();
-            caramel_kernel::fast::added_banding(&encoded, &source)
-        })
-        .flatten();
+    let banding = banding.then(|| {
+        let picked = caramel_kernel::fast::banding_frames(frames.len());
+        let read = |plane: &[u8], stride: usize| Plane::new(plane, width, height, stride).and_then(|plane| caramel_kernel::cambi::cambi(&plane));
+        let encoded: Vec<f64> = picked.iter().filter_map(|index| read(&pictures[*index].y, width)).collect();
+        let source: Vec<f64> = picked.iter().filter_map(|index| read(&frames[*index].y, frames[*index].stride_y)).collect();
+        let smoothed: Vec<f64> = picked
+            .iter()
+            .filter_map(|index| Plane::new(&frames[*index].y, width, height, frames[*index].stride_y))
+            .filter_map(|plane| read(&caramel_kernel::cambi::smoothed(&plane), width))
+            .collect();
+        (caramel_kernel::fast::added_banding(&encoded, &source), caramel_kernel::fast::added_banding(&smoothed, &source))
+    });
     Ok((values, bytes, banding))
 }
 
@@ -1134,9 +1139,12 @@ mod tests {
             .collect();
         let refs: Vec<&OwnedFrame> = frames.iter().collect();
         let config = |crf: f32| Config { crf, ..fast_config(&Config::default(), w, h) };
-        let hard = fast_encode(&config(40.0), &refs, w, h).unwrap().banding.unwrap();
-        let fine = fast_encode(&config(4.0), &refs, w, h).unwrap().banding.unwrap();
-        assert!(hard > 1.0 && hard > 4.0 * fine, "{hard} {fine}");
+        let (hard, fine) = (fast_encode(&config(40.0), &refs, w, h).unwrap(), fast_encode(&config(4.0), &refs, w, h).unwrap());
+        let (hard_banding, fine_banding) = (hard.banding.unwrap(), fine.banding.unwrap());
+        assert!(hard_banding > 1.0 && hard_banding > 4.0 * fine_banding, "{hard_banding} {fine_banding}");
+        // Without encoding, the source reads as ready to band, whatever the CRF.
+        let exposed = hard.exposed_banding.unwrap();
+        assert!(exposed > 1.0 && exposed == fine.exposed_banding.unwrap(), "{exposed}");
         // A probe reads XPSNR alone and pays for no banding.
         assert!(test_encode(&config(20.0), &refs, w, h, false).unwrap().2.is_none());
     }

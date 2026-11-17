@@ -466,7 +466,7 @@ mod tests {
         let without = estimate_scene_with(Some(&fast), &bare, &source, &encode);
         let by_builtin = estimate_scene_with(Some(&builtin), &bare, &source, &encode);
         assert_eq!((without.crf, without.adjustment), (by_builtin.crf, by_builtin.adjustment));
-        let measured = WindowFeatures { fast_encode: Some(crate::fast::FastEncode { xpsnr: 42.0, xpsnr_low: 40.0, log_bpp: -5.0, frames: 48, banding: None }), ..bare.clone() };
+        let measured = WindowFeatures { fast_encode: Some(crate::fast::FastEncode { xpsnr: 42.0, xpsnr_low: 40.0, log_bpp: -5.0, frames: 48, banding: None, exposed_banding: None }), ..bare.clone() };
         let with = estimate_scene_with(Some(&fast), &measured, &source, &encode);
         // The flat model raises every scene alike; it is its own answer, not the built-in one's.
         assert_eq!(with.crf, estimate_scene_with(Some(&crate::curve::tests::flat_model(0.7)), &bare, &source, &encode).crf);

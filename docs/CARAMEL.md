@@ -16,8 +16,8 @@ or a job asks for Caramel Analysis at all.
 | Where | What |
 |---|---|
 | `caramel-kernel/src/inputs.rs` | The 27 numbers a scene is described by, from the features the decider already measures, and four more from its fast encode. |
-| `caramel-kernel/src/fast.rs` | `FastEncode`: what a scene's fast encode read — its XPSNR, its worst frames, its bits and the banding it added. |
-| `caramel-kernel/src/cambi.rs` | CAMBI, Netflix's banding detector, ported from libvmaf: the score libvmaf's `cambi` feature gives an 8-bit frame at its defaults, so the fast encode's banding reads on the lab's scale without linking libvmaf. |
+| `caramel-kernel/src/fast.rs` | `FastEncode`: what a scene's fast encode read — its XPSNR, its worst frames, its bits, the banding it added, and the banding the source is ready to show. |
+| `caramel-kernel/src/cambi.rs` | CAMBI, Netflix's banding detector, ported from libvmaf: the score libvmaf's `cambi` feature gives an 8-bit frame at its defaults, so the fast encode's banding reads on the lab's scale without linking libvmaf; and `smoothed`, the frame with its dither wiped out. |
 | `caramel-kernel/src/nn.rs` | A small dense network (SiLU), its gradients and Adam. No dependencies. |
 | `caramel-kernel/src/curve.rs` | Quality and size as curves over CRF, the votes read from them, the rule that decides a scene from them (`decide`), and `Model`: an ensemble of networks with its text file format, the built-in model (`builtin.model`) and the installed one. |
 | `caramel-kernel/src/train.rs` | Training by series-wise folds, the held-out error, the detailed scene and the gain, the simulated policy, and the gate a retrained model has to pass. |
@@ -353,6 +353,18 @@ without it took the banding vote's error from 3.29 to 1.05 CRF and the overall e
 1.32; the decisions' shortfall p95 fell from 1.92 to 1.32 and the banding they added (p95) from
 1.45 to 1.07, for 2% more bytes (0.944 against 0.926), the raises it no longer makes being the
 ones that banded. Most of those scenes carry the stand-in below rather than their own reading.
+
+**Exposed banding.** Banding comes from an encoder spending nothing on the dither or grain that
+holds a gradient smooth, and that can be seen without encoding: a 5×5 box mean of the frame,
+rounded back to 8 bits (`cambi::smoothed`), loses the dither the same way. Its CAMBI less the
+source's, over the same three frames, is the fast encode's `exposed_banding`. On 88 clips of three
+series it moved with the banding a veryfast encode at CRF 20 added at a log-scale correlation of
+0.97 (radii 1, 3 and 5 did worse), and on the 64 lab scenes of two series measured both ways at
+0.99 with the fast encode's own reading and 0.985 with the lab's banding at CRF 21, against 0.994
+for the fast encode's — on the same scale (fast ≈ 1.02 × exposed in logs). It costs three more
+CAMBI reads, about 0.3 s a scene, and needs only the source, so it can stand in for the encode's
+banding where no encode is made. It is recorded with every fast encode and refilled by
+`--caramel-backfill`, but no model reads it yet.
 
 **Only the scenes its base raises.** A model that reads the fast encode carries a *base*: a
 27-input model trained beside it on the same scenes, seed and targets (`curve::Model::base`). The

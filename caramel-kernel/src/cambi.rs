@@ -56,6 +56,52 @@ pub fn cambi(luma: &Plane) -> Option<f64> {
     Some(score.min(MAX_SCORE))
 }
 
+// The plane with its dither and grain wiped out: each pixel the mean of the 5x5 box around it
+// (fewer at the edges), rounded back to 8 bits. A gradient a source holds smooth only by its dither
+// comes out of this in steps, as it does out of an encoder that spends nothing on the dither, so
+// `cambi` of it less `cambi` of the source says what banding the source is ready to show before
+// anything is encoded (`fast::exposed_banding`).
+pub fn smoothed(luma: &Plane) -> Vec<u8> {
+    const RADIUS: usize = 2;
+    let (w, h) = (luma.width, luma.height);
+    let mut rows = vec![0u32; w * h];
+    for y in 0..h {
+        let row = luma.row(y);
+        let mut sum: u32 = row[..(RADIUS + 1).min(w)].iter().map(|value| *value as u32).sum();
+        for x in 0..w {
+            let (left, right) = (x.saturating_sub(RADIUS), (x + RADIUS).min(w - 1));
+            if x > 0 {
+                if x + RADIUS < w {
+                    sum += row[x + RADIUS] as u32;
+                }
+                if x > RADIUS {
+                    sum -= row[x - RADIUS - 1] as u32;
+                }
+            }
+            // Fixed point: the row's mean times 256.
+            rows[y * w + x] = (sum << 8) / (right - left + 1) as u32;
+        }
+    }
+    let mut out = vec![0u8; w * h];
+    for x in 0..w {
+        let mut sum: u32 = (0..(RADIUS + 1).min(h)).map(|y| rows[y * w + x]).sum();
+        for y in 0..h {
+            let (top, bottom) = (y.saturating_sub(RADIUS), (y + RADIUS).min(h - 1));
+            if y > 0 {
+                if y + RADIUS < h {
+                    sum += rows[(y + RADIUS) * w + x];
+                }
+                if y > RADIUS {
+                    sum -= rows[(y - RADIUS - 1) * w + x];
+                }
+            }
+            let count = (bottom - top + 1) as u32;
+            out[y * w + x] = ((sum + count * 128) / (count * 256)).min(255) as u8;
+        }
+    }
+    out
+}
+
 // libvmaf's window, 65 pixels at 4K, scaled by the frame's width plus height and made odd.
 fn window_size(width: usize, height: usize) -> usize {
     ((WINDOW_AT_4K * (width + height) / 375) >> 4) | 1
@@ -294,5 +340,38 @@ mod tests {
         let hidden = cambi(&Plane::new(&noisy, w, h, w).unwrap()).unwrap();
         assert!(hidden < banded / 4.0, "{hidden} against {banded}");
         assert!(cambi(&Plane::new(&flat[..100 * 100], 100, 100, 100).unwrap()).is_none());
+    }
+
+    #[test]
+    fn smoothing_is_a_rounded_box_mean_that_strips_dither_into_steps() {
+        let (w, h) = (9, 7);
+        let picture = plane(w, h, |x, y| (x * 10 + y) as u8);
+        let smooth = smoothed(&Plane::new(&picture, w, h, w).unwrap());
+        let box_mean = |x: usize, y: usize| {
+            let (xs, ys) = (x.saturating_sub(2)..=(x + 2).min(w - 1), y.saturating_sub(2)..=(y + 2).min(h - 1));
+            let (mut sum, mut count) = (0.0, 0.0);
+            for yy in ys.clone() {
+                for xx in xs.clone() {
+                    sum += picture[yy * w + xx] as f64;
+                    count += 1.0;
+                }
+            }
+            (sum / count).round() as u8
+        };
+        for y in 0..h {
+            for x in 0..w {
+                assert!((smooth[y * w + x] as i32 - box_mean(x, y) as i32).abs() <= 1, "{x},{y}");
+            }
+        }
+        // A dark gradient held smooth by dither reads clean, and in steps once smoothed.
+        let (w, h) = (480, 360);
+        let dithered = plane(w, h, |x, y| {
+            let level = 30.0 + 6.0 * x as f64 / w as f64;
+            (level.floor() + if ((x * 7 + y * 13) % 10) as f64 / 10.0 < level.fract() { 1.0 } else { 0.0 }) as u8
+        });
+        let source = cambi(&Plane::new(&dithered, w, h, w).unwrap()).unwrap();
+        let smooth = smoothed(&Plane::new(&dithered, w, h, w).unwrap());
+        let exposed = cambi(&Plane::new(&smooth, w, h, w).unwrap()).unwrap();
+        assert!(exposed > source + 1.0, "{source} {exposed}");
     }
 }

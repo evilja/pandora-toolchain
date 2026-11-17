@@ -34,6 +34,12 @@ pub struct FastEncode {
     // before it was read, which the trainer fills from the lab's own encodes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub banding: Option<f64>,
+    // The banding the source is ready to show in the same frames, read without encoding: the most
+    // `cambi::smoothed` of them showed, less the most the source showed. On 64 scenes of two series
+    // it moved with `banding` at a log-scale correlation of 0.99, on the same scale. None for a fast
+    // encode measured before it was read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposed_banding: Option<f64>,
 }
 
 // Which frames of a fast encode of `frames` frames have their banding measured: three spread over
@@ -67,6 +73,7 @@ impl FastEncode {
             log_bpp: (bytes as f64 * 8.0 / (xpsnr.len() * pixels) as f64).log2(),
             frames: xpsnr.len(),
             banding: None,
+            exposed_banding: None,
         })
     }
 }
