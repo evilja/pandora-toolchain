@@ -308,7 +308,9 @@ pub struct MessageEntry {
 }
 
 // Existing language files keep custom entries. Missing keys are merged in, while values that
-// exactly match Pandora's old generated table are upgraded to the new per-language defaults.
+// exactly match Pandora's old generated table are upgraded to the new per-language defaults, and so
+// are values whose argument count is not the built-in one: the code now sends a different number
+// of values than that text was written for (`stale_entry`).
 pub fn init_language_files() {
     let legacy = parse_entries(LEGACY_LOCALE).unwrap_or_default();
     for lang in DEFAULT_LANGS {
@@ -343,7 +345,7 @@ pub fn init_language_files() {
                     entries.insert(id, default);
                     changed = true;
                 }
-                Some(existing) if legacy.get(&id) == Some(existing) && existing != &default => {
+                Some(existing) if (legacy.get(&id) == Some(existing) || stale_entry(existing, &default)) && existing != &default => {
                     entries.insert(id, default);
                     changed = true;
                 }
@@ -455,15 +457,23 @@ fn lookup(id: &str, lang: &str) -> Option<(String, usize)> {
             .unwrap_or_default();
         cache.insert(lang.clone(), LangTable { mtime, entries });
     }
+    let builtin = builtin_cache().get(&lang).and_then(|entries| entries.get(id));
     if let Some(entry) = cache.get(&lang).and_then(|table| table.entries.get(id)) {
-        return Some((entry.text.clone(), entry.args));
+        if !builtin.is_some_and(|builtin| stale_entry(entry, builtin)) {
+            return Some((entry.text.clone(), entry.args));
+        }
     }
     drop(cache);
 
-    builtin_cache()
-        .get(&lang)
-        .and_then(|entries| entries.get(id))
-        .map(|entry| (entry.text.clone(), entry.args))
+    builtin.map(|entry| (entry.text.clone(), entry.args))
+}
+
+// A file's entry written for another argument count than the code sends now: a translation from
+// before the message gained or lost values, which would print without them (a progress message
+// left with no `{}` slots shows none of its numbers). The built-in text is used instead until the
+// translation is redone with the new count.
+fn stale_entry(entry: &MessageEntry, builtin: &MessageEntry) -> bool {
+    entry.args != builtin.args
 }
 
 #[derive(Clone, Debug)]
@@ -1184,6 +1194,17 @@ mod tests {
             .unwrap();
         assert!(shown_warnings.contains("deliberately longer"));
         assert!(shown_warnings.contains("leftover # character"));
+    }
+
+    // A translation saved before CARAMEL_PROG gained its numbers has no slots for them: it is stale
+    // and the built-in text stands in, while one redone for the same count is kept.
+    #[test]
+    fn a_translation_for_another_argument_count_is_stale() {
+        let builtin = builtin_cache().get("tr").and_then(|entries| entries.get(CARAMEL_PROG)).expect("a built-in CARAMEL_PROG");
+        let old = MessageEntry { text: "Caramel Analizi kaynağı örnekliyor…".to_string(), args: 0 };
+        assert!(stale_entry(&old, builtin));
+        let custom = MessageEntry { text: "özel {} {} {} {} {} {} {}".to_string(), args: builtin.args };
+        assert!(!stale_entry(&custom, builtin));
     }
 
     #[test]
