@@ -30,8 +30,10 @@ const HUBER: f64 = 2.0;
 // to spare at the anchor.
 pub const DETAILED_SHARE: f64 = 0.25;
 // The gains a trainer may choose between, the largest first, and the one a model with no held-out
-// answers gets.
-const GAINS: [f64; 4] = [1.0, 0.75, 0.5, 0.25];
+// answers gets. Steps of a twentieth: once a model read its fast encode's banding, the banding limit
+// bound its gain between quarters — three seeds that met it at 0.9-0.95 were held to 0.75 by
+// quarter steps, spending 0.943-0.945 of the anchor's bytes where they needed 0.935-0.936.
+const GAINS: [f64; 16] = [1.0, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5, 0.45, 0.4, 0.35, 0.3, 0.25];
 pub const DEFAULT_GAIN: f64 = 0.5;
 // What a gain has to hold on held-out sources: of the scenes it raises, the 90th and 95th
 // percentiles of how far their quality fell below a detailed scene's at the anchor (the mean over

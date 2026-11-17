@@ -476,12 +476,16 @@ in use, 4 when it may not, 1 on an error. `--train-install` installs an accepted
   scene by its own encodes.
   Short windows have their raise scaled down and a window with a cut inside is not raised, as with
   the fitted predictors.
-- **Gain.** The trainer picks the largest of 1, 0.75, 0.5 and 0.25 at which, on held-out scenes at
+- **Gain.** The trainer picks the largest gain from 1 down to 0.25 in steps of 0.05 at which, on held-out scenes at
   anchors 17, 19, 21 and 23, the raised scenes fall below a detailed scene's quality at the anchor
   by no more than 2.5 units at the 90th percentile and 3.5 at the 95th (the mean over the quality
   metrics; a unit is 0.5 dB of XPSNR), and the raises add no more than 2 CAMBI at the 95th
   percentile. A raised scene is allowed to look like a detailed one does at the anchor, a little
-  worse at its tail, and not to band visibly.
+  worse at its tail, and not to band visibly. The steps were quarters until models read their fast
+  encode's banding: the banding limit then bound between them, and three seeds that met it at
+  0.9–0.95 were held to 0.75 — on 992 scenes of 31 series, 0.935 of the anchor's bytes where 0.944
+  was spent, with the shortfall p95 at 1.55–1.80 against the 30-input model's 2.01 and the banding p95 at
+  1.21–1.34 against its 1.57.
 - **Verified scenes.** Scenes from [verification](#verifying-an-encodes-decisions) train like any
   other — every one is a full curve — and one whose decision was found `overshot` counts three
   times as much in the loss (`OVERSHOT_WEIGHT`): those are the mistakes that cost quality. But they
