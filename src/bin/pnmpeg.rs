@@ -163,9 +163,15 @@ struct Args {
 
     /// Print every scene Caramel Analysis decides to stderr as the encode goes: when it runs, the
     /// CRF the model chose, and what its test encode made of it. An x264 preset encodes with
-    /// Caramel Analysis under it even when it is a fixed-CRF preset.
+    /// Caramel Analysis under it even when it is a fixed-CRF preset. Implies --linear, so the
+    /// scenes are printed in the order they play.
     #[arg(long)]
     debug: bool,
+
+    /// Encode in one ffmpeg pass even when the preset encodes in parallel chunks. Under Caramel
+    /// Analysis the whole file's scenes are decided first and applied as x264 zones.
+    #[arg(long)]
+    linear: bool,
 
     /// Measure scenes of --input for Caramel's dataset: each is encoded at several CRFs with the
     /// selected preset's x264 settings and measured against the source. Samples are appended to
@@ -547,6 +553,18 @@ fn scale_height(preset: Option<&ResolvedPreset>) -> Option<u32> {
 // this regression was four readings of the flags drifting apart from the preset actually in use.
 fn adopts_linear_prefix(preset: Option<&ResolvedPreset>) -> bool {
     preset.is_some_and(|preset| preset.wants_linear_aot() && !preset.wants_chunked_encode())
+}
+
+// A preset's `-vf` chain with its subtitle step taken out: what an encode given no `--ass` runs, so
+// a video can be encoded on its own — to try Caramel on it, say, or with an ffmpeg built without
+// libass. A chain left with nothing to do passes frames through.
+fn without_subtitles(chain: &str) -> String {
+    let step = r"ass=INPUTFILEASS(?::[^,]*)?";
+    let mut out = chain.to_string();
+    for pattern in [format!("{step},"), format!(",{step}"), step.to_string()] {
+        out = regex::Regex::new(&pattern).unwrap().replace_all(&out, "").into_owned();
+    }
+    if out.trim().is_empty() { "null".to_string() } else { out }
 }
 
 fn encodes_in_chunks(preset: Option<&ResolvedPreset>) -> bool {
@@ -2136,8 +2154,9 @@ async fn main() {
         return;
     }
 
+    // A bare file name's parent is the empty path, which is the current directory.
     let concfilepath = PathBuf::from_str(&args.input).unwrap()
-        .parent().unwrap()
+        .parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."))
         .canonicalize().unwrap()
         .join("PNmpeg_Concat.txt");
 
@@ -2218,10 +2237,11 @@ async fn main() {
                     *i = FfmpegParams::Input(Cow::Owned(c));
                 }
                 FfmpegParams::BasicFilter(a) => {
-                    if let Some(ref b) = args.ass {
-                        let ass = quote_filter_value(b);
-                        *i = FfmpegParams::BasicFilter(Cow::Owned(a.replace("INPUTFILEASS", &ass)));
-                    }
+                    let chain = match args.ass {
+                        Some(ref b) => a.replace("INPUTFILEASS", &quote_filter_value(b)),
+                        None => without_subtitles(a),
+                    };
+                    *i = FfmpegParams::BasicFilter(Cow::Owned(chain));
                 }
                 FfmpegParams::Map(a) => {
                     *i = FfmpegParams::Map(Cow::Owned(a.replace("JPN_INDEX", "a:0")));
@@ -2355,12 +2375,18 @@ async fn main() {
         }
     }
 
+    // ffmpeg does not make the directory it writes into; the chunked encode does, so both do.
+    if let Some(parent) = Path::new(&args.output).parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
     // The corrected episode-scale benchmark showed a latency win only for VerySlow. Every other
     // CPU preset stays on the established linear ffmpeg path below.
-    if encodes_in_chunks(active_preset.as_ref()) && !args.concat && !args.legacyconcat {
-        let Some(ass) = args.ass.as_deref() else {
-            eprintln!("pnmpeg: --ass is required for parallel VerySlow encoding");
-            std::process::exit(2);
+    if encodes_in_chunks(active_preset.as_ref()) && !args.concat && !args.legacyconcat && !args.linear && !args.debug {
+        // Without `--ass` nothing is burned in: the chain loses its subtitle step.
+        let base_filter = match args.ass {
+            Some(_) => chunk_base_filter(active_preset.as_ref()),
+            None => without_subtitles(&chunk_base_filter(active_preset.as_ref())),
         };
         let output = PathBuf::from(&args.output);
         let plan = output.parent().map(|parent| parent.join("parallel.plan"));
@@ -2389,8 +2415,8 @@ async fn main() {
                 ffprobe: resolve_runtime_binary("ffprobe"),
                 input: PathBuf::from(&args.input),
                 output,
-                subtitle: PathBuf::from(ass),
-                filter: logo.apply(chunk_base_filter(active_preset.as_ref())),
+                subtitle: PathBuf::from(args.ass.as_deref().unwrap_or_default()),
+                filter: logo.apply(base_filter),
                 cancel_file: args.cancelfile.as_deref().map(PathBuf::from),
                 plan: plan.filter(|path| path.exists()),
                 workers,
@@ -2539,10 +2565,10 @@ async fn main() {
                 *i = FfmpegParams::Input(Cow::Owned(c));
             },
             FfmpegParams::BasicFilter(a) => {
-                let mut chain = a.to_string();
-                if let Some(ref b) = args.ass {
-                    chain = chain.replace("INPUTFILEASS", &quote_filter_value(b));
-                }
+                let chain = match args.ass {
+                    Some(ref b) => a.replace("INPUTFILEASS", &quote_filter_value(b)),
+                    None => without_subtitles(a),
+                };
                 // Appended last, so the logo lands on the frame the encoder is about to write —
                 // after any scaling the preset does, not before it.
                 *i = FfmpegParams::BasicFilter(Cow::Owned(logo.apply(chain)));
@@ -3036,10 +3062,22 @@ mod tests {
     use super::{
         Args, active_preset, adopts_linear_prefix, encodes_in_chunks, media_bitrate_kbps,
         planner_encoder_config, quote_filter_value, scale_height, source_audio_args, source_audio_encoder,
-        apply_source_audio_encoder, FfmpegParams,
+        apply_source_audio_encoder, FfmpegParams, without_subtitles,
     };
     use clap::Parser;
     use std::borrow::Cow;
+
+    // An encode without `--ass` runs the preset's chain minus its subtitle step, wherever it sits.
+    #[test]
+    fn an_encode_without_subtitles_drops_only_the_subtitle_step() {
+        assert_eq!(without_subtitles("ass=INPUTFILEASS,format=yuv420p"), "format=yuv420p");
+        assert_eq!(
+            without_subtitles("scale=-2:'min(720,ih)':flags=lanczos,ass=INPUTFILEASS,format=yuv420p"),
+            "scale=-2:'min(720,ih)':flags=lanczos,format=yuv420p"
+        );
+        assert_eq!(without_subtitles("hqdn3d,ass=INPUTFILEASS:fontsdir=/f"), "hqdn3d");
+        assert_eq!(without_subtitles("ass=INPUTFILEASS"), "null");
+    }
 
     #[test]
     fn only_aac_source_audio_is_copied() {

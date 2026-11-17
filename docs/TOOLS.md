@@ -181,16 +181,21 @@ or every scene's when it has no base ([CARAMEL.md](CARAMEL.md#fast-encodes)).
   encodes an x264 preset with Caramel Analysis even when it is a fixed-CRF one, so any video can be
   tried with the model:
   ```
-  pnmpeg --x264 --debug [--caramel-model-file <path>] -i episode.mkv -o out.mp4 --ass subs.ass
+  pnmpeg --x264 --debug [--caramel-model-file <path>] -i episode.mkv -o out.mp4 [--ass subs.ass]
   ```
+  `--debug` encodes in one pass (`--linear`): the whole file's scenes are decided first, printed in
+  the order they play, and applied as x264 zones, instead of chunks encoded side by side. The
+  decisions are the same; only chunk boundaries can split a scene differently. `--linear` alone
+  does the same for any preset that would otherwise encode in parallel chunks.
+  Without `--ass` (on any encode) nothing is burned in: the preset's filter chain runs without its
+  `ass=` step, so this also works with an ffmpeg built without libass.
   It starts with `Caramel: model <version>, anchor CRF <crf>`, then one line per scene, e.g.
   `Clip 16:32.0 - 16:34.0 - CRF decision 18.5 (anchor 17, detail +1.62)`, or for a raise that was
   test-encoded `… - CRF decision 21 (…) - verifying 21... 40.12 dB against 40.80 dB - new CRF
   decision 20.5` (`kept` when it held). A raise shrunk because the source's raises have been
   falling short says `source distrusted, lowered to <crf>` ([CARAMEL.md](CARAMEL.md#sources-whose-raises-fall-short)).
   `detail` is how many CRF of ease the scene has over a detailed one, `banding` when banding's vote
-  held the raise back. A chunked encode settles its chunks side by side, so the lines come in the
-  order chunks settle them rather than in time order; a summary line ends the encode. With
+  held the raise back. A summary line ends the scene pass. With
   `--caramel-report`, the same lines are printed while the report is made. `--caramel-model-file`
   also works on an encode: that process decides with the file's model, nothing is installed.
 - **`--caramel-verify <auto|crf,crf,…>`** (with `--caramel-report`) also encodes up to six 4 s clips
