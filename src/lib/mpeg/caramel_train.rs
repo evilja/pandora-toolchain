@@ -208,6 +208,15 @@ pub struct TrainReport {
     // predictors decide for the same scenes: both scored against the same detailed scene.
     pub policy: PolicyReport,
     pub predictors: PolicyReport,
+    // For a model that reads the fast encode and carries a base: `policy` is what the two decide
+    // together, each scene by its base unless the base raised it. These are the base alone, the fast
+    // model alone, and the share of decisions that got a fast encode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_policy: Option<PolicyReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ungated_policy: Option<PolicyReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fast_encoded_share: Option<f64>,
     // The model in use, and how the two compare on the scenes measured since it was trained.
     pub current: Option<String>,
     pub fresh_scenes: usize,
@@ -252,6 +261,10 @@ pub struct HeldOutScene {
     // What those networks' curves read at the anchor, per metric.
     pub levels: Vec<f64>,
     pub offset: f64,
+    // What the base decided, for a model that carries one: `offset` is the fast model's when this
+    // raised the scene and this otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_offset: Option<f64>,
 }
 
 pub struct TrainOutcome {
@@ -340,11 +353,51 @@ pub fn train_dataset(request: &TrainRequest) -> Result<TrainOutcome, String> {
     if let Some(current) = request.current.as_deref() {
         train::settle_gain(current, &mut trained, &samples);
     }
+    // A model that reads the fast encode is trained with its base beside it: the same scenes, seed
+    // and targets, reading the source alone. The base decides first and picks the scenes that get
+    // a fast encode (`curve::Model::base`).
+    let base = if config.inputs > caramel_kernel::inputs::BASE_INPUTS {
+        let mut base = train::train(&samples, &TrainConfig { inputs: caramel_kernel::inputs::BASE_INPUTS, ..config.clone() }, typical)?;
+        if let Some(current) = request.current.as_deref() {
+            train::settle_gain(current, &mut base, &samples);
+        }
+        base.model.version = format!("{MODEL_FAMILY}.{}-{:06x}", base.model.scenes, hash(&base.model.to_text()) & 0xff_ffff);
+        trained.model.base = Some(Box::new(base.model.clone()));
+        Some(base)
+    } else {
+        None
+    };
     // The version says which training this is: the family, how many scenes, and a mark of the
     // weights themselves, so two trainings never share a file.
     trained.model.version = format!("{MODEL_FAMILY}.{}-{:06x}", trained.model.scenes, hash(&trained.model.to_text()) & 0xff_ffff);
     let model = &trained.model;
-    let policy = train::simulate(&samples, &model.typical, model.detail, &train::decisions(&samples, &trained.held_out, &model.typical, model.detail, model.gain));
+    let alone = train::decisions(&samples, &trained.held_out, &model.typical, model.detail, model.gain);
+    // What the base decided for each scene at each anchor, when there is one.
+    let base_offsets: Option<std::collections::HashMap<(usize, u64), f64>> = base.as_ref().map(|base| {
+        train::decisions(&samples, &base.held_out, &base.model.typical, base.model.detail, base.model.gain)
+            .into_iter()
+            .map(|(index, anchor, offset)| ((index, anchor.to_bits()), offset))
+            .collect()
+    });
+    let gated = |index: usize, anchor: f64, fast: f64| match base_offsets.as_ref().and_then(|offsets| offsets.get(&(index, anchor.to_bits()))) {
+        Some(base) if *base > 0.0 => fast,
+        Some(base) => *base,
+        None => fast,
+    };
+    let decided: Vec<(usize, f64, f64)> = alone.iter().map(|(index, anchor, offset)| (*index, *anchor, gated(*index, *anchor, *offset))).collect();
+    let policy = train::simulate(&samples, &model.typical, model.detail, &decided);
+    let (base_policy, ungated_policy, fast_encoded_share) = match &base_offsets {
+        Some(offsets) => {
+            let base_alone: Vec<(usize, f64, f64)> = alone.iter().filter_map(|(index, anchor, _)| offsets.get(&(*index, anchor.to_bits())).map(|offset| (*index, *anchor, *offset))).collect();
+            let encoded = base_alone.iter().filter(|(_, _, offset)| *offset > 0.0).count();
+            (
+                Some(train::simulate(&samples, &model.typical, model.detail, &base_alone).into()),
+                Some(train::simulate(&samples, &model.typical, model.detail, &alone).into()),
+                Some(encoded as f64 / base_alone.len().max(1) as f64),
+            )
+        }
+        None => (None, None, None),
+    };
     let predictors = train::simulate(&samples, &model.typical, model.detail, &predictor_decisions(&kept));
     let (accepted, reason, judged) = verdict(request.current.as_deref(), &trained, &samples, &policy);
     let mut scenes = Vec::new();
@@ -361,7 +414,8 @@ pub fn train_dataset(request: &TrainRequest) -> Result<TrainOutcome, String> {
                 spreads: votes.iter().map(|vote| vote.spread).collect(),
                 allowed: curve::measured_votes(&samples[index].observations, &model.typical, anchor).to_vec(),
                 levels: drawn.iter().map(|curve| curve.at(anchor)).collect(),
-                offset: train::applied(&curve::decide(&votes, model.detail, model.gain)),
+                offset: gated(index, anchor, train::applied(&curve::decide(&votes, model.detail, model.gain))),
+                base_offset: base_offsets.as_ref().and_then(|offsets| offsets.get(&(index, anchor.to_bits())).copied()),
             });
         }
     }
@@ -379,6 +433,9 @@ pub fn train_dataset(request: &TrainRequest) -> Result<TrainOutcome, String> {
         metrics: (0..METRICS).map(|metric| MetricError { metric: METRIC_NAMES[metric], decides: DECIDES[metric], held_out: model.error[metric], typical: model.typical[metric].0.to_vec() }).collect(),
         policy: policy.into(),
         predictors: predictors.into(),
+        base_policy,
+        ungated_policy,
+        fast_encoded_share,
         current: request.current.as_ref().map(|model| model.version.clone()),
         fresh_scenes: judged.map_or(0, |verdict| verdict.scenes),
         current_error: judged.map(|verdict| verdict.current),

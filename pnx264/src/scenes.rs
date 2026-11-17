@@ -319,11 +319,17 @@ impl SceneSchedule {
     }
 
     // Releases queued scenes in order. A scene is first encoded fast and decided again, when the
-    // model reads that, once all of it is here; then test-encoded, when it was raised far, once its
-    // first `PROBE_FRAMES` are.
+    // model reads that and wants it for this scene, once all of it is here; then test-encoded, when
+    // it was raised far, once its first `PROBE_FRAMES` are.
     fn release(&mut self, settled: Option<u64>) {
         while let Some(front) = self.queued.front() {
             let start = front.decision.start_frame;
+            // A scene its base model keeps at the anchor keeps its decision without one.
+            if !front.fast_done && self.fast.as_ref().is_some_and(|(_, judge)| !judge.wants_fast_encode(&front.decision)) {
+                self.queued.front_mut().expect("checked above").fast_done = true;
+                continue;
+            }
+            let front = self.queued.front().expect("checked above");
             if self.fast.is_some() && !front.fast_done {
                 let Some(end) = self.span_end(FAST_FRAMES, settled) else {
                     break;
@@ -662,6 +668,43 @@ mod tests {
         }
         // The checkerboard costs more bits than the gradient at the same CRF.
         assert!(decisions[1].features.fast_encode.unwrap().log_bpp > decisions[0].features.fast_encode.unwrap().log_bpp);
+    }
+
+    // With a base, a scene gets a fast encode only when the base raised it; one the base kept keeps
+    // the base's CRF. The same frames decided by the base alone say which scenes those are.
+    #[test]
+    fn only_scenes_the_base_raises_are_encoded_fast() {
+        let config = SceneConfig { analysis_frames: 4, min_scene_frames: 4, max_scene_frames: 250 };
+        let source = SourceContext { width: W as u32, height: H as u32, fps: 24.0, video_bitrate: None, codec: None, bit_depth: 8 };
+        let encoder = Config { width: W as u32, height: H as u32, threads: 1, ..Default::default() };
+        let builtin = curve::builtin().expect("a built-in model");
+        let mut gated = (*reading_fast_encode()).clone();
+        gated.base = Some(Box::new((*builtin).clone()));
+        let smooth = yuv(|x, y| (60 + x + y) as u8);
+        let checker = yuv(|x, y| if (x / 8 + y / 8) % 2 == 0 { 16 } else { 235 });
+        let run = |model: Arc<Model>, fast: Option<&Config>| {
+            let decider = SceneDecider::new(config, source.clone(), EncodeContext::anchored(17.0)).with_model(Some(model));
+            let mut schedule = SceneSchedule::from_decider(decider, W, H, 24, 1, 17.0, None, fast);
+            for index in 0..20 {
+                push(&mut schedule, if index < 10 { &smooth } else { &checker });
+                while schedule.ready().is_some() {}
+            }
+            schedule.finish();
+            while schedule.ready().is_some() {}
+            schedule.decisions().to_vec()
+        };
+        let by_base = run(builtin.clone(), None);
+        let decided = run(Arc::new(gated), Some(&encoder));
+        assert_eq!(by_base.len(), decided.len());
+        for (base, decision) in by_base.iter().zip(&decided) {
+            assert_eq!(base.start_frame, decision.start_frame);
+            if base.crf > 17.0 {
+                assert!(decision.features.fast_encode.is_some(), "{decision:?}");
+            } else {
+                assert!(decision.features.fast_encode.is_none(), "{decision:?}");
+                assert_eq!(decision.crf, base.crf);
+            }
+        }
     }
 
     // A test encode measures what the encode did: lower at a higher CRF, and on the scale ffmpeg's

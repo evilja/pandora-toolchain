@@ -273,6 +273,7 @@ pub fn train(samples: &[Sample], config: &TrainConfig, typical: Option<Curves>) 
         typical: typical.unwrap_or_else(|| typical_curves(samples)),
         error: [0.0; METRICS],
         members: Vec::new(),
+        base: None,
     };
     model.detail = detailed_ease(samples, &model.typical);
     let scenes: Vec<Prepared> = samples

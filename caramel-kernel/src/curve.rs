@@ -358,6 +358,11 @@ pub struct Model {
     // How far each metric's vote was from what the encodes allowed, in CRF, on held-out sources.
     pub error: [f64; METRICS],
     pub members: Vec<Network>,
+    // For a model that reads the fast encode: the model that decides a scene before it has one,
+    // reading the source alone, and so decides which scenes get one — those it raises
+    // (`SceneJudge::wants_fast_encode`). Trained beside it on the same scenes. None decides every
+    // scene from its fast encode, and a scene that has none by the built-in model.
+    pub base: Option<Box<Model>>,
 }
 
 impl Model {
@@ -430,6 +435,13 @@ impl Model {
                 text += &format!("layer {} {}\n{}\n{}\n", layer.inputs, layer.outputs, numbers(&layer.weights), numbers(&layer.bias));
             }
         }
+        // Last, and whole: everything after the `base` line is that model's own file. A build from
+        // before it would read its members into this model's, whose inputs then disagree, and refuse
+        // the file rather than misread it.
+        if let Some(base) = &self.base {
+            text += "base\n";
+            text += &base.to_text();
+        }
         text
     }
 
@@ -461,6 +473,7 @@ impl Model {
             typical: [Curve([0.0; KNOT_COUNT]); METRICS],
             error: [0.0; METRICS],
             members: Vec::new(),
+            base: None,
         };
         let mut seen_typical = 0usize;
         while let Some(line) = lines.next() {
@@ -510,6 +523,13 @@ impl Model {
                         return Err(format!("a member reads {} inputs and gives {} outputs; this build reads at most {INPUTS} and needs {}", network.inputs(), network.outputs(), METRICS * KNOT_COUNT));
                     }
                     model.members.push(network);
+                }
+                "base" => {
+                    let base = Model::from_text(&lines.by_ref().collect::<Vec<_>>().join("\n")).map_err(|error| format!("its base model: {error}"))?;
+                    if base.reads_fast_encode() || base.base.is_some() {
+                        return Err("its base model reads a fast encode too: it could not decide a scene without one".to_string());
+                    }
+                    model.base = Some(Box::new(base));
                 }
                 // A field a later build added: this one does not need it.
                 _ => {}
@@ -585,6 +605,7 @@ pub(crate) mod tests {
             typical,
             error: [2.0; METRICS],
             members: vec![network.clone(), network],
+            base: None,
         }
     }
 
@@ -752,5 +773,24 @@ pub(crate) mod tests {
         assert!(Model::from_text(&text.replace("gain 0.5", "gain 1.5")).is_err());
         assert!(Model::from_text(&text.replace("gain 0.5", "margin 1.5")).is_err());
         assert!(Model::from_text(&text.replace("typical bits", "typical bytes")).is_err());
+    }
+
+    // A fast model reads back with its base. A build that does not know the `base` line reads the
+    // base's lines as the model's own and must refuse the file, not misread it: dropping the line
+    // here does what that build would. A base that reads the fast encode is refused.
+    #[test]
+    fn a_fast_model_reads_back_with_its_base() {
+        let mut fast = fast_model(0.7);
+        fast.base = Some(Box::new(flat_model(0.5)));
+        let text = fast.to_text();
+        let back = Model::from_text(&text).unwrap();
+        assert_eq!(back.to_text(), text);
+        let base = back.base.as_deref().expect("its base");
+        assert!(back.reads_fast_encode() && !base.reads_fast_encode());
+        assert_eq!(base.version, "test-1");
+        assert!(Model::from_text(&text.replace("\nbase\n", "\n")).is_err());
+        let mut nested = fast_model(0.7);
+        nested.base = Some(Box::new(fast_model(0.5)));
+        assert!(Model::from_text(&nested.to_text()).is_err());
     }
 }

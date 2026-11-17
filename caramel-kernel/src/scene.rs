@@ -120,6 +120,17 @@ impl SceneJudge {
         self.model.as_ref().is_some_and(|model| model.reads_fast_encode())
     }
 
+    // Whether a scene decided without its fast encode should get one. With a base model, only a scene
+    // the base raised: the lab found the fast encode pays off there — it holds back the raises that
+    // would fall short and lets the safe ones go further — while a scene the base keeps at the anchor
+    // keeps it either way, for a fraction of the encodes. Without a base, every scene gets one.
+    pub fn wants_fast_encode(&self, decision: &SceneDecision) -> bool {
+        match self.model.as_deref().and_then(|model| model.base.as_deref()) {
+            Some(_) => decision.crf > self.encode.anchor_crf,
+            None => true,
+        }
+    }
+
     // The scene decided again with its fast encode. Its CRF, its votes and whether a far raise is
     // test-encoded all follow from the new estimate.
     pub fn redecide(&self, decision: &mut SceneDecision, fast: crate::fast::FastEncode) {

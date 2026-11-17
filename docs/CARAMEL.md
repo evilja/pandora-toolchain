@@ -223,19 +223,43 @@ preset was barely better (1.02) for twice the time.
 So a scene's fast encode covers all of it, up to `FAST_FRAMES` (48): an encoder deciding with a
 model that reads it holds every scene until the scene has ended and encodes it before releasing
 any frame, about 3.4 s of one core per 48 frames at 1080p — some 44% on top of the encode itself
-at the Standard preset. A model reads it as inputs 28–30 (`fast-xpsnr`, `fast-xpsnr-low`,
+at the Standard preset when every scene gets one, under half that with a base (below). A model reads it as inputs 28–30 (`fast-xpsnr`, `fast-xpsnr-low`,
 `fast-bits`); a model's text says how many inputs its networks read, so models of 27 and 30 inputs
-both load. A model that reads it, given a scene without one — a 10-bit or rescaled output, which
-the encoder cannot measure at the source's size — leaves the scene to the built-in model, which
-does not. Models that do not read it are never slowed by it.
+both load. Models that do not read it are never slowed by it.
+
+**Only the scenes its base raises.** A model that reads the fast encode carries a *base*: a
+27-input model trained beside it on the same scenes, seed and targets (`curve::Model::base`). The
+base decides every scene first, from the source alone. A scene it keeps at or below the anchor keeps
+that decision and is never encoded fast; a scene it raises is encoded fast and decided again by
+the full model (`SceneJudge::wants_fast_encode`). The fast encode earns its time on the raises —
+it holds back the ones that would fall short of a detailed scene and lets the safe ones go
+further — while a scene the base keeps at the anchor would mostly stay there anyway. On 928 scenes
+of 29 series, held out a series at a time, against a fixed anchor:
+
+| Decided by | Encoded fast | Bytes | Mean raise | Shortfall p90 / p95 | CAMBI added p95 |
+|---|---|---|---|---|---|
+| The built-in 27-input model alone | 0% | 0.944 | 2.51 | 1.93 / 2.75 | 1.40 |
+| The base alone | 0% | 0.938 | 1.85 | 1.92 / 2.77 | 1.11 |
+| The fast model on every scene | 100% | 0.914 | 3.25 | 1.42 / 1.97 | 1.56 |
+| The base, then the fast model on its raises | 43% | 0.928 | 3.46 | 1.43 / 2.01 | 1.57 |
+
+The gate has to be the model's own base: gating on the built-in model instead picked fewer scenes
+(33%) and kept their raises safe, but spent as many bytes as the built-in model alone (0.947),
+because the scenes it keeps at the anchor are ones the fast model would have raised. Ranking scenes
+by how far the networks disagreed picked no better than chance.
+
+A scene without a fast encode — one its base did not raise, or a 10-bit or rescaled output that
+the encoder cannot measure at the source's size — is decided by the model's base, or, for a model
+without one, by the built-in model; both read the source alone. A model without a base encodes
+every scene fast.
 
 The lab makes each sample's fast encode itself over the clip it measured, through pnx264, so
 lab and encoder read the same numbers; `--caramel-backfill` adds it, with the whole-scene
 features, to samples measured before. The 8-bit frames are what both encode, so a 10-bit source
 reads lower than an ffmpeg encode scored against the 10-bit picture; on 8-bit sources the two
 agree to the hundredth of a dB. `--train-features fast` trains networks reading all 30 inputs on
-the samples that have one, and `--train-features fast-paired` the 27-input networks on the same
-samples.
+the samples that have one, with their 27-input base beside them, and judges the two together;
+`--train-features fast-paired` trains the 27-input networks alone on the same samples.
 
 ### Why deband points
 
@@ -348,12 +372,15 @@ in use, 4 when it may not, 1 on an error. `--train-install` installs an accepted
   detailed one), `predictors` (the same for the linear predictors, on the same scenes), `current`,
   `fresh_scenes`, `current_error`, `candidate_error`, `current_shortfall`, `candidate_shortfall`,
   `current_bytes`, `candidate_bytes` (on the fresh scenes, against the anchor), `accepted`,
-  `reason`, `installed`.
+  `reason`, `installed`. For a model with a base, `policy` is the base and the fast model together,
+  and `base_policy`, `ungated_policy` (the fast model on every scene) and `fast_encoded_share` (the
+  share of decisions the base raised) are added.
 
 `--train-scenes <file>` writes what the report's figures are sums of: one JSON line per scene and
 anchor with the `votes` and `spreads` of the networks that never trained on the scene's series,
 what its encodes `allowed`, the `levels` the networks' curves read at the anchor, per metric in the
-report's order, and the `offset` the candidate would have applied. It is where to look when a series is judged badly. `--train-hidden` sets the width
+report's order, and the `offset` the candidate would have applied — for a model with a base, the
+base's unless it raised the scene, with the base's own in `base_offset`. It is where to look when a series is judged badly. `--train-hidden` sets the width
 of each hidden layer and `--train-networks` how many networks are trained per fold.
 
 A candidate is named `caramel-neural-1.<scenes>-<hash>`: the family (it changes when the inputs,
@@ -372,7 +399,10 @@ decide with it, and so does its next Caramel Analysis job.
 A model file is text: a `caramel-model 1` header, then `version`, `encoder`, `detail`, `gain`, `scenes`,
 `sources`, `trained` (the newest `collected_unix` it saw), `input-mean`, `input-scale`, `offsets`,
 `error`, seven `typical <metric>` lines, and per network `member <layers>` followed by `layer
-<inputs> <outputs>` and its weights and biases. Unknown keys are skipped; a file whose shapes do not
+<inputs> <outputs>` and its weights and biases. A model with a base ends with a `base` line followed
+by the base's own file, whole; a base that reads the fast encode is refused. A build from before
+bases reads the base's members into the model's own, whose inputs then disagree, and refuses the
+file rather than misread it. Unknown keys are skipped; a file whose shapes do not
 match this build's inputs and metrics is refused and the built-in model stays, as is one with no
 `gain` — a model from before scenes were raised by their ease.
 

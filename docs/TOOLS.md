@@ -175,7 +175,8 @@ chunk encoder, and `src/lib/mpeg/caramel.rs` runs it over a whole file and verif
   preset encodes 8-bit with libx264 at the source's size; `--caramel-no-probe` decides without
   them, to compare. `--caramel-model-file <path>` decides with the model in that file instead of
   the installed one, without installing it, so a candidate can be set beside the model in use on
-  whole episodes; one that reads fast encodes makes each scene's first.
+  whole episodes; one that reads fast encodes makes a scene's first when its base raised the scene,
+or every scene's when it has no base ([CARAMEL.md](CARAMEL.md#fast-encodes)).
 - **`--caramel-verify <auto|crf,crf,…>`** (with `--caramel-report`) also encodes up to six 4 s clips
   from the scenes moved furthest from the anchor, taken in turn from below and above it so both
   directions get measured (one side fills the remaining slots when the other runs out). With

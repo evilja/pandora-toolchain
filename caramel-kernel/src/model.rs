@@ -339,15 +339,20 @@ fn curve_votes(model: &curve::Model, window: &WindowFeatures, source: &SourceCon
 
 // The same with the model named: a network, or None for the fitted predictors.
 //
-// A model that reads the fast encode cannot decide a scene that has none — an encode it could not be
-// made for, such as a 10-bit one — and that scene is decided by the built-in model instead, which
-// reads the source alone.
+// A model that reads the fast encode cannot decide a scene that has none — one it was not made for,
+// because its base did not raise it, or could not be made for, such as a 10-bit encode — and that
+// scene is decided by its base, or by the built-in model when it has none: both read the source alone.
 pub fn estimate_scene_with(model: Option<&curve::Model>, window: &WindowFeatures, source: &SourceContext, encode: &EncodeContext) -> SceneEstimate {
     let fallback;
     let model = match model {
         Some(model) if model.reads_fast_encode() && window.fast_encode.is_none() => {
-            fallback = curve::builtin().filter(|builtin| !builtin.reads_fast_encode());
-            fallback.as_deref()
+            match model.base.as_deref() {
+                Some(base) => Some(base),
+                None => {
+                    fallback = curve::builtin().filter(|builtin| !builtin.reads_fast_encode());
+                    fallback.as_deref()
+                }
+            }
         }
         model => model,
     };
