@@ -64,7 +64,9 @@ XPSNR 0.25–0.35 dB above it.
 A chunked encode fixes its model when it is planned: the planner writes `model=<version>` into
 `parallel-aot/caramel.context`, and every chunk child loads exactly that version. A model installed
 while an encode is running therefore changes nothing in it — its remaining chunks, and chunks
-re-encoded after a restart, decide as the first ones did. A context without the key (written by an
+re-encoded after a restart, decide as the first ones did. With the model goes `gain=<gain>` when
+the [gain controller](#the-gain-controller) has the model's raises turned down, so a step it takes
+mid-encode changes nothing in that encode either. A context without the key (written by an
 older build) means the linear predictors, and so does a version that names no model the chunk can
 find — the active one, the built-in one, or a file under `DB/caramel/models/`.
 
@@ -207,6 +209,27 @@ the model, not the episode it verifies — the probe and the source's trust stil
 - **The sample** is an ordinary lab sample with `picked` = `verify-raise`, `verify-split`,
   `verify-ease`, `verify-fast`, `verify-spread` or `verify-control`, and `verified`: `{ model,
   anchor, decided, verdict }`. The lab's summary line counts the verdicts by `picked`.
+
+### The gain controller
+
+A model's raises are only as good as its last dataset, and a training waits for hundreds of new
+scenes. Between trainings, the verdicts on raises turn the model's `gain` (how far a scene's ease
+raises it) up or down so the share of overshot raises stays near 10% (`GAIN_TARGET`) on what this
+machine actually encodes.
+
+- After each verified encode the research worker adds its `verify-raise` verdicts to
+  `DB/caramel/feedback/gain.json` — only those of the model this machine now decides with; a
+  verdict on an older model steers nothing.
+- Every 100 verified raises (`GAIN_WINDOW`) the scale on the trained gain is multiplied by
+  `exp(0.5 × (0.10 − overshoot rate))`: a third of raises overshooting takes about 11% off, none
+  overshooting gives 5% back. It stays between 0.5 (`GAIN_FLOOR`) and 1: never past the trained
+  gain, which only a training moves.
+- A newly installed model starts at its own trained gain.
+- `caramel_train::activate` installs the model at the controlled gain, so everything that
+  activates the model — an encode, an analysis, the bot — decides with it. A chunked encode
+  carries it to its chunks in the context (`gain=`). `pnmpeg --debug` names it in its first line
+  (`model … at gain 0.500`) when it is not the trained one. A model given with
+  `--caramel-model-file` is used at its trained gain.
 
 ## The lab: `pnmpeg --caramel-lab`
 
@@ -623,3 +646,4 @@ only writes it.
 | `DB/caramel/sources/` | the operator | Videos to measure. `fetched/` and `requested/` below it belong to the worker. |
 | `DB/caramel/log/` | the research worker | Logs and cancel files of its children. |
 | `DB/caramel/verify/<job id>/` | the worker, at *Encoded* | A Caramel encode's decisions and its input, kept for verification. |
+| `DB/caramel/feedback/gain.json` | the research worker | The [gain controller](#the-gain-controller)'s state: `model`, its `trained` gain, the `scale` on it, the `held` / `overshot` / `missed` raises counted towards the next step, `steps` and `last_rate`. Deleting it puts the model back at its trained gain. |

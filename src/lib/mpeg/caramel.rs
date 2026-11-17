@@ -749,6 +749,7 @@ pub fn scene_crf(source: &SourceContext, encode: &EncodeContext, scenes: SceneCo
         source_codec: source.codec.clone(),
         source_bit_depth: source.bit_depth,
         model: caramel_kernel::curve::active().map(|model| model.version.clone()),
+        gain: pnx264::scenes::active_gain(),
         probe: true,
     }
 }

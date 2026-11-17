@@ -22,7 +22,7 @@
 use crate::lib::env::core::get_pandora_env;
 use crate::lib::env::standard::{CARAMEL_RESEARCH, CARAMEL_RESEARCH_CRFS, CARAMEL_RESEARCH_FEED, CARAMEL_RESEARCH_PRESET, CARAMEL_RESEARCH_RETRAIN, CARAMEL_RESEARCH_SCENES, PNMPEG, PNP2P};
 use crate::lib::mpeg::caramel_lab::{read_dataset, series_key};
-use crate::lib::mpeg::caramel_train::{DATASET_DIRECTORY, installed_version};
+use crate::lib::mpeg::caramel_train::{DATASET_DIRECTORY, GAIN_FILE, installed_version, load_gain, record_raise_verdicts};
 use crate::lib::p2p::nyaaise::{TorrentType, nyaaise};
 use crate::lib::watch::FeedItem;
 use serde::{Deserialize, Serialize};
@@ -176,6 +176,9 @@ pub fn status() -> Value {
         "verification": {
             "waiting": verify_entries(Path::new(VERIFY_DIRECTORY)).len(),
             "verdicts": state.verdicts,
+            // The gain controller's state: the model, its trained gain, the scale on it, and the
+            // verified raises counted towards the next step.
+            "gain": load_gain(Path::new(GAIN_FILE)),
         },
     })
 }
@@ -1000,6 +1003,12 @@ async fn verify_next(config: &ResearchConfig, pnmpeg: &str, state: &mut Research
                 }
             }
             println!("[Caramel research] verified job {}'s decisions: {found}", entry.job_id);
+            // Only the raises steer the gain: it scales nothing else.
+            let raises = |verdict: &str| found.pointer(&format!("/verify-raise/{verdict}")).and_then(Value::as_u64).unwrap_or(0) as usize;
+            let gain_file = Path::new(GAIN_FILE);
+            if let Some(gain) = record_raise_verdicts(gain_file, &entry.model, raises("held"), raises("overshot"), raises("missed")) {
+                println!("[Caramel research] gain {:.3} ({:.2} of {:.3} trained) for {}", gain.gain(), gain.scale, gain.trained, gain.model);
+            }
             true
         }
         Run::Ended(code, _) => {

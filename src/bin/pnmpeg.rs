@@ -1716,7 +1716,11 @@ async fn main() {
     let caramel_model = caramel_train::activate();
     if args.debug {
         match active_preset.as_ref() {
-            Some(preset) if preset.caramel_analysis() => eprintln!("Caramel: model {caramel_model}, anchor CRF {}", x264_config.crf),
+            Some(preset) if preset.caramel_analysis() => match pnx264::scenes::active_gain() {
+                // The gain controller has turned this model's raises down from the trained gain.
+                Some(gain) => eprintln!("Caramel: model {caramel_model} at gain {gain:.3}, anchor CRF {}", x264_config.crf),
+                None => eprintln!("Caramel: model {caramel_model}, anchor CRF {}", x264_config.crf),
+            },
             _ => eprintln!("Caramel: this preset does not encode with x264, so --debug has no scenes to show"),
         }
     }

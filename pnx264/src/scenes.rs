@@ -42,13 +42,19 @@ pub fn load_model(version: &str) -> Option<Arc<Model>> {
     if !valid_version(version) {
         return None;
     }
-    curve::active()
-        .filter(|model| model.version == version)
-        .or_else(|| curve::builtin().filter(|model| model.version == version))
-        .or_else(|| {
-            let model = Model::from_text(&std::fs::read_to_string(model_file(version)).ok()?).ok()?;
-            (model.version == version).then(|| Arc::new(model))
-        })
+    curve::active().filter(|model| model.version == version).or_else(|| trained_model(version))
+}
+
+// The model of that name as it was trained — the built-in one or the installed file — whatever
+// this process has done to its gain.
+pub fn trained_model(version: &str) -> Option<Arc<Model>> {
+    if !valid_version(version) {
+        return None;
+    }
+    curve::builtin().filter(|model| model.version == version).or_else(|| {
+        let model = Model::from_text(&std::fs::read_to_string(model_file(version)).ok()?).ok()?;
+        (model.version == version).then(|| Arc::new(model))
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -64,6 +70,9 @@ pub struct SceneCrf {
     pub source_bit_depth: u8,
     // The version of the network scenes are decided with; None for the fitted predictors.
     pub model: Option<String>,
+    // The gain it decides with, when the machine's gain controller has turned it down from the
+    // trained one: fixed for the whole encode, so every chunk raises alike. None is the model's own.
+    pub gain: Option<f64>,
     // Whether a far raise is test-encoded before it is used (`caramel_kernel::probe`). Settings
     // written before probes existed decide without them, as the chunks they decided did.
     pub probe: bool,
@@ -79,8 +88,26 @@ impl Default for SceneCrf {
             source_codec: None,
             source_bit_depth: 8,
             model: curve::active().map(|model| model.version.clone()),
+            gain: active_gain(),
             probe: true,
         }
+    }
+}
+
+// The gain of the active model when the gain controller changed it from the trained one, which
+// only the process that activated it knows.
+pub fn active_gain() -> Option<f64> {
+    let model = curve::active()?;
+    let trained = trained_model(&model.version)?;
+    ((model.gain - trained.gain).abs() > 1e-9).then_some(model.gain)
+}
+
+// The model `settings` name, deciding with the gain they fix.
+pub fn settings_model(settings: &SceneCrf) -> Option<Arc<Model>> {
+    let model = load_model(settings.model.as_deref()?)?;
+    match settings.gain {
+        Some(gain) if (gain - model.gain).abs() > 1e-9 => Some(Arc::new(Model { gain, ..(*model).clone() })),
+        _ => Some(model),
     }
 }
 
@@ -111,6 +138,9 @@ impl SceneCrf {
         }
         if let Some(model) = self.model.as_deref().filter(|model| valid_version(model)) {
             pairs.push(format!("model={model}"));
+            if let Some(gain) = self.gain {
+                pairs.push(format!("gain={gain}"));
+            }
         }
         if self.probe {
             pairs.push("probe=1".to_string());
@@ -122,7 +152,7 @@ impl SceneCrf {
     // half-understood its instructions would decide scenes unlike its siblings.
     pub fn from_arg(text: &str) -> Result<Self, String> {
         // Settings that name no model were written for the fitted predictors.
-        let mut value = Self { model: None, probe: false, ..Self::default() };
+        let mut value = Self { model: None, gain: None, probe: false, ..Self::default() };
         for pair in text.trim().split(':').filter(|pair| !pair.is_empty()) {
             let (key, raw) = pair.split_once('=').ok_or_else(|| format!("`{pair}` is not key=value"))?;
             let number = || raw.parse::<u64>().map_err(|_| format!("`{pair}` is not a number"));
@@ -137,6 +167,7 @@ impl SceneCrf {
                 "codec" => value.source_codec = Some(raw.to_string()),
                 "model" if valid_version(raw) => value.model = Some(raw.to_string()),
                 "probe" => value.probe = number()? != 0,
+                "gain" => value.gain = Some(raw.parse::<f64>().ok().filter(|gain| (0.0..=1.0).contains(gain)).ok_or_else(|| format!("`{pair}` is not a gain"))?),
                 _ => return Err(format!("unknown caramel setting `{key}`")),
             }
         }
@@ -447,7 +478,7 @@ impl SceneSchedule {
     pub fn new(caramel: &SceneCrf, width: usize, height: usize, fps_num: u32, fps_den: u32, anchor: f32, encoder: Option<&Config>) -> Self {
         let fps = if fps_den == 0 { 0.0 } else { fps_num as f64 / fps_den as f64 };
         let (source, encode) = caramel.contexts(width, height, fps, anchor);
-        let decider = SceneDecider::new(caramel.scenes, source, encode).with_model(caramel.model.as_deref().and_then(load_model));
+        let decider = SceneDecider::new(caramel.scenes, source, encode).with_model(settings_model(caramel));
         let measurable = caramel.output_bit_depth == 8;
         // The lab reads a scene's fast encode at the source's size; a scaled encode decides without.
         let fast = encoder.filter(|_| measurable && caramel.output_height.is_none_or(|output| output as usize == height));
@@ -1090,6 +1121,7 @@ mod tests {
             source_codec: Some("hevc".into()),
             source_bit_depth: 10,
             model: Some("caramel-neural-1.900-a1b2c3".into()),
+            gain: Some(0.375),
             probe: true,
         };
         let parsed = SceneCrf::from_arg(&settings.to_arg()).unwrap();
@@ -1100,7 +1132,14 @@ mod tests {
         // The model is named, and a name that could not be a file's is refused. Settings that name
         // none are the fitted predictors', whatever this process has active.
         assert_eq!(parsed.model.as_deref(), Some("caramel-neural-1.900-a1b2c3"));
-        assert!(settings.to_arg().ends_with(":model=caramel-neural-1.900-a1b2c3:probe=1"));
+        assert!(settings.to_arg().ends_with(":model=caramel-neural-1.900-a1b2c3:gain=0.375:probe=1"));
+        // A gain the controller set travels with the model, and nothing else is a gain.
+        assert_eq!(parsed.gain, Some(0.375));
+        assert!(SceneCrf::from_arg("depth=8:gain=1.5").is_err() && SceneCrf::from_arg("depth=8:gain=x").is_err());
+        let builtin = curve::builtin().unwrap();
+        let halved = SceneCrf { model: Some(builtin.version.clone()), gain: Some(builtin.gain / 2.0), ..SceneCrf::default() };
+        assert_eq!(settings_model(&halved).unwrap().gain, builtin.gain / 2.0);
+        assert_eq!(settings_model(&SceneCrf { gain: None, ..halved.clone() }).unwrap().gain, builtin.gain);
         // Settings from before probes decide without them, as the chunks they decided did.
         assert!(parsed.probe && !SceneCrf::from_arg("depth=8").unwrap().probe);
         assert!(SceneCrf::from_arg("depth=8:model=../../etc/passwd").is_err());

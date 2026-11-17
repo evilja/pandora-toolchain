@@ -12,7 +12,7 @@ use super::caramel_lab::{LabGuide, LabSample};
 use caramel_kernel::curve::{self, DECIDES, METRIC_NAMES, METRICS, Model};
 use caramel_kernel::train::{self, Policy, Sample, TrainConfig, Trained, Verdict};
 use caramel_kernel::{EncodeContext, WindowFeatures, estimate_scene_with, inputs};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -54,17 +54,115 @@ pub fn activate() -> String {
     if let Some(pinned) = PINNED.get() {
         return pinned.clone();
     }
-    match pointed_version() {
+    let version = pointed_version();
+    // The gain the controller holds this model at, when it holds one.
+    let named = version.clone().or_else(|| curve::builtin().map(|model| model.version.clone())).unwrap_or_default();
+    let wanted = controlled_gain(Path::new(GAIN_FILE), &named);
+    let fits = |model: &Model| model.version == named && wanted.is_none_or(|gain| (model.gain - gain).abs() < 1e-9);
+    match version {
         Some(version) => {
-            if curve::active().is_none_or(|model| model.version != version) {
-                if let Some(model) = pnx264::scenes::load_model(&version) {
-                    curve::install(model);
+            if curve::active().is_none_or(|model| !fits(&model)) {
+                if let Some(model) = pnx264::scenes::trained_model(&version) {
+                    curve::install(with_gain(model, wanted));
                 }
             }
         }
-        None => curve::uninstall(),
+        None => match (curve::builtin(), wanted) {
+            (Some(builtin), Some(gain)) => {
+                if curve::active().is_none_or(|model| !fits(&model)) {
+                    curve::install(with_gain(builtin, Some(gain)));
+                }
+            }
+            _ => curve::uninstall(),
+        },
     }
     caramel_kernel::model_version()
+}
+
+fn with_gain(model: Arc<Model>, gain: Option<f64>) -> Arc<Model> {
+    match gain {
+        Some(gain) if (gain - model.gain).abs() > 1e-9 => Arc::new(Model { gain, ..(*model).clone() }),
+        _ => model,
+    }
+}
+
+// The gain controller. Between two trainings the model's raises are only as good as its last
+// dataset; verification (`pnworker::research`) finds out how often they overshoot on what this
+// machine actually encodes. Every `GAIN_WINDOW` verified raises the gain is multiplied by
+// `exp(0.5 · (GAIN_TARGET − overshoot rate))`: more overshoots than the target shrink every raise,
+// fewer let them grow back — never past the trained gain, which is the next training's to move, and
+// never below `GAIN_FLOOR` of it. A new model starts again at its trained gain. Encodes pick the gain
+// up when they activate the model and carry it to their chunks (`SceneCrf::gain`).
+pub const GAIN_FILE: &str = "DB/caramel/feedback/gain.json";
+pub const GAIN_TARGET: f64 = 0.10;
+pub const GAIN_WINDOW: usize = 100;
+pub const GAIN_FLOOR: f64 = 0.5;
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct GainState {
+    // The model the scale is for, and its trained gain.
+    pub model: String,
+    pub trained: f64,
+    // What the trained gain is multiplied by: `GAIN_FLOOR` to 1.
+    pub scale: f64,
+    // Verified raises since the last step, by verdict.
+    pub held: usize,
+    pub overshot: usize,
+    pub missed: usize,
+    // Steps taken, and the overshoot rate the last one saw.
+    pub steps: usize,
+    pub last_rate: Option<f64>,
+}
+
+impl GainState {
+    fn new(model: &Model) -> Self {
+        Self { model: model.version.clone(), trained: model.gain, scale: 1.0, ..Self::default() }
+    }
+
+    pub fn gain(&self) -> f64 {
+        self.trained * self.scale
+    }
+
+    // Adds verified raises, and steps once a window is full. Returns whether it stepped.
+    pub fn record(&mut self, held: usize, overshot: usize, missed: usize) -> bool {
+        self.held += held;
+        self.overshot += overshot;
+        self.missed += missed;
+        let total = self.held + self.overshot + self.missed;
+        if total < GAIN_WINDOW {
+            return false;
+        }
+        let rate = self.overshot as f64 / total as f64;
+        self.scale = (self.scale * (0.5 * (GAIN_TARGET - rate)).exp()).clamp(GAIN_FLOOR, 1.0);
+        (self.held, self.overshot, self.missed) = (0, 0, 0);
+        self.steps += 1;
+        self.last_rate = Some(rate);
+        true
+    }
+}
+
+pub fn load_gain(path: &Path) -> Option<GainState> {
+    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+}
+
+// The gain the controller holds `version` at; None when it holds none for that model.
+fn controlled_gain(path: &Path, version: &str) -> Option<f64> {
+    load_gain(path)
+        .filter(|state| state.model == version && state.trained.is_finite() && (GAIN_FLOOR..=1.0).contains(&state.scale))
+        .map(|state| state.gain())
+}
+
+// Adds the verdicts on raises that verification found for `model`'s decisions. Verdicts on a model
+// this machine no longer decides with steer nothing. Returns the state after.
+pub fn record_raise_verdicts(path: &Path, model: &str, held: usize, overshot: usize, missed: usize) -> Option<GainState> {
+    if installed_version() != model {
+        return None;
+    }
+    let trained = pnx264::scenes::trained_model(model)?;
+    let mut state = load_gain(path).filter(|state| state.model == model).unwrap_or_else(|| GainState::new(&trained));
+    state.record(held, overshot, missed);
+    write_atomically(path, &serde_json::to_string_pretty(&state).ok()?).ok()?;
+    Some(state)
 }
 
 // A model that decides scenes after their fast encode (`caramel_kernel::fast`): the active one when
@@ -489,6 +587,26 @@ mod tests {
         let samples = training_samples(&[sample(0, 1, 0), verified("verify-raise", "overshot"), verified("verify-raise", "held"), verified("verify-control", "missed")]);
         let weights: Vec<(f64, bool)> = samples.iter().map(|sample| (sample.weight, sample.fair)).collect();
         assert_eq!(weights, vec![(1.0, true), (OVERSHOT_WEIGHT, false), (1.0, false), (1.0, true)]);
+    }
+
+    // Raises that overshoot more than one in ten turn the gain down, a window at a time, never below
+    // half the trained gain; raises that hold let it grow back to the trained gain and no further.
+    #[test]
+    fn the_gain_follows_the_overshoot_rate_within_its_bounds() {
+        let mut state = GainState { model: "m".into(), trained: 0.8, scale: 1.0, ..GainState::default() };
+        assert!(!state.record(60, 30, 0));
+        assert!(state.record(5, 5, 0));
+        // 35 of 100 overshot: exp(0.5 · (0.10 − 0.35)).
+        assert!((state.scale - (-0.125f64).exp()).abs() < 1e-12 && state.overshot == 0, "{state:?}");
+        for _ in 0..40 {
+            state.record(0, 100, 0);
+        }
+        assert_eq!(state.scale, GAIN_FLOOR);
+        for _ in 0..200 {
+            state.record(90, 0, 10);
+        }
+        assert_eq!((state.scale, state.gain()), (1.0, 0.8));
+        assert_eq!(state.last_rate, Some(0.0));
     }
 
     // A sample whose encodes follow its noise: a noisier scene scores lower at every CRF.
