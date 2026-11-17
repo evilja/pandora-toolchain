@@ -194,6 +194,12 @@ struct Args {
     #[arg(long, default_value_t = 3)]
     lab_workers: usize,
 
+    /// With --caramel-lab: verify the decisions in this file (`<output>.caramel-decisions`, written
+    /// by an encode of --input) instead of choosing scenes: its raised scenes and the kept ones that
+    /// look like missed savings, at most --lab-scenes of them, each with a verdict.
+    #[arg(long)]
+    lab_verify: Option<String>,
+
     /// With --caramel-lab: the source's id in the dataset (default: the input's file name) and the
     /// series it belongs to (default: read from the file name).
     #[arg(long)]
@@ -765,6 +771,27 @@ fn caramel_lab(args: &Args, preset: Option<&ResolvedPreset>, anchor: f32, log: &
     // What the rest of the dataset already holds: a scene like one of those is not new.
     let known: Vec<[f64; caramel_kernel::inputs::INPUTS]> =
         read_dataset(&directory).iter().filter(|sample| sample.source_id != source_id).map(LabSample::inputs).collect();
+    // The encode's decisions, held to what the model that made them holds a raise to.
+    let plan = match args.lab_verify.as_deref().map(|path| {
+        let decisions = pnx264::scenes::EncodeDecisions::read(Path::new(path)).ok_or_else(|| format!("{path}: not an encode's decisions"))?;
+        let model = pnx264::scenes::load_model(&decisions.model)
+            .or_else(caramel_kernel::curve::active)
+            .ok_or_else(|| format!("no model to hold {}'s decisions to", decisions.model))?;
+        let picks = pandora_toolchain::lib::mpeg::caramel_lab::verify_picks(&decisions.records, caramel_kernel::SceneConfig::default().max_scene_frames as u64, args.lab_scenes);
+        Ok::<_, String>(pandora_toolchain::lib::mpeg::caramel_lab::VerifyPlan { model: decisions.model, picks, typical: model.typical, detail: model.detail })
+    }) {
+        Some(Ok(plan)) => Some(plan),
+        Some(Err(error)) => {
+            log.line(&format!("caramel lab: {error}"));
+            eprintln!("pnmpeg caramel lab: {error}");
+            println!("{}", serde_json::json!({ "error": error }));
+            return 1;
+        }
+        None => None,
+    };
+    if let Some(plan) = &plan {
+        log.line(&format!("caramel lab: verifying {} decisions of {}", plan.picks.len(), plan.model));
+    }
     let request = LabRequest {
         report: &report,
         source_id,
@@ -794,6 +821,7 @@ fn caramel_lab(args: &Args, preset: Option<&ResolvedPreset>, anchor: f32, log: &
         known,
         guide: guide.as_ref().map(|guide| guide as &dyn LabGuide),
         cancel_file,
+        verify: plan.as_ref(),
     };
     match run_lab(&request) {
         Ok(summary) => {

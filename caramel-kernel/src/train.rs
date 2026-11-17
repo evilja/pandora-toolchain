@@ -44,6 +44,72 @@ pub const BANDING_P95: f64 = 2.0;
 // The step of a decided CRF: the one `model` applies.
 pub const CRF_STEP: f64 = 0.5;
 
+// What a verification makes of one decision, from the scene measured at the anchor, at the CRF it
+// was encoded at and two CRF past that, judged as the gate judges a raise (`simulate`): its quality
+// against a detailed scene's at the anchor, as the mean over the quality metrics in units, and the
+// CAMBI it added over the anchor's.
+//
+// `overshot`: the decided CRF falls more than `OVERSHOOT` units short, or bands by more than
+// `BANDING_P95`. `missed`: two CRF more would still have been short of nothing and banded no more
+// than that — a saving the decision left. `held` otherwise. None when the scene was not measured
+// at the CRFs needed.
+pub const OVERSHOOT: f64 = 1.0;
+pub const VERIFY_STEP: f64 = 2.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SceneVerdict {
+    Held,
+    Overshot,
+    Missed,
+}
+
+impl SceneVerdict {
+    pub fn name(self) -> &'static str {
+        match self {
+            SceneVerdict::Held => "held",
+            SceneVerdict::Overshot => "overshot",
+            SceneVerdict::Missed => "missed",
+        }
+    }
+}
+
+// How far `observations` fall short of a detailed scene at `anchor` when encoded at `crf`, and the
+// CAMBI that adds over the anchor: what `simulate` measures of a raise.
+pub fn shortfall_at(observations: &[Observation], typical: &Curves, detail: f64, anchor: f64, crf: f64) -> Option<(f64, f64)> {
+    let lines: [Vec<(f64, f64)>; METRICS] = std::array::from_fn(|metric| measured_line(observations, metric));
+    let measured: Vec<f64> = (0..METRICS)
+        .filter(|metric| DECIDES[*metric] && *metric != BANDING && lines[*metric].len() >= 2)
+        .map(|metric| (typical[metric].at(anchor - detail) - line_at(&lines[metric], crf)) / SCALES[metric])
+        .collect();
+    if measured.is_empty() || lines[BANDING].len() < 2 {
+        return None;
+    }
+    let banding = (line_at(&lines[BANDING], anchor) - line_at(&lines[BANDING], crf)).max(0.0);
+    Some(((measured.iter().sum::<f64>() / measured.len() as f64).max(0.0), banding))
+}
+
+pub fn scene_verdict(observations: &[Observation], typical: &Curves, detail: f64, anchor: f64, decided: f64) -> Option<SceneVerdict> {
+    // Only CRFs the scene was measured at and between: a line is not extended past its points.
+    let crfs: Vec<f64> = observations.iter().map(|observation| observation.crf).collect();
+    let within = |crf: f64| crfs.iter().any(|measured| *measured <= crf + 1e-6) && crfs.iter().any(|measured| *measured >= crf - 1e-6);
+    if !within(anchor) || !within(decided) {
+        return None;
+    }
+    let (short, banding) = shortfall_at(observations, typical, detail, anchor, decided)?;
+    if short > OVERSHOOT || banding > BANDING_P95 {
+        return Some(SceneVerdict::Overshot);
+    }
+    let further = decided + VERIFY_STEP;
+    if within(further) {
+        if let Some((short, banding)) = shortfall_at(observations, typical, detail, anchor, further) {
+            if short <= 0.0 && banding <= BANDING_P95 {
+                return Some(SceneVerdict::Missed);
+            }
+        }
+    }
+    Some(SceneVerdict::Held)
+}
+
 #[derive(Clone, Debug)]
 pub struct Sample {
     // The series the scene's source belongs to: what folds are made of.
@@ -560,6 +626,29 @@ pub fn settle_gain(current: &Model, candidate: &mut Trained, samples: &[Sample])
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A scene that scores a detailed scene's quality 4 CRF past the anchor: a raise of 2 leaves 2
+    // CRF on the table, a raise of 4 holds, a raise of 6 overshoots; one that bands from CRF 21 on
+    // overshoots there whatever its quality.
+    #[test]
+    fn a_verified_decision_is_held_overshot_or_missed() {
+        let typical: Curves = std::array::from_fn(|_| Curve(std::array::from_fn(|knot| 40.0 - 0.5 * KNOTS[knot])));
+        let observations = |level: f64, bands_from: f64| -> Vec<Observation> {
+            [10.0, 17.0, 19.0, 21.0, 23.0, 25.0, 34.0]
+                .iter()
+                .map(|crf| Observation { crf: *crf, values: std::array::from_fn(|metric| if metric == BANDING { (bands_from - crf).min(0.0) } else { level - 0.5 * crf }) })
+                .collect()
+        };
+        // Typical at 17 − 2 = 15 scores 32.5; this scene scores that at CRF 21.
+        let easy = observations(43.0, 40.0);
+        assert_eq!(scene_verdict(&easy, &typical, 2.0, 17.0, 19.0), Some(SceneVerdict::Missed));
+        assert_eq!(scene_verdict(&easy, &typical, 2.0, 17.0, 21.0), Some(SceneVerdict::Held));
+        assert_eq!(scene_verdict(&easy, &typical, 2.0, 17.0, 23.0), Some(SceneVerdict::Overshot));
+        let banded = observations(43.0, 18.0);
+        assert_eq!(scene_verdict(&banded, &typical, 2.0, 17.0, 21.0), Some(SceneVerdict::Overshot));
+        // Not measured as far as the decision: no verdict.
+        assert_eq!(scene_verdict(&easy[..2], &typical, 2.0, 17.0, 19.0), None);
+    }
 
     // Scenes whose curves depend on two of their inputs: input 0 lifts every curve, input 3 makes
     // it fall faster. Eight series of twelve scenes, measured at five CRFs with a little noise.

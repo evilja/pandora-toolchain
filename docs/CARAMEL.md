@@ -173,6 +173,41 @@ so every episode of one release is one series and training holds them out togeth
 are capped at 40 GiB together, oldest dropped first. A job encoded on a linked node keeps nothing
 here: its decisions stay on the node.
 
+## Verifying an encode's decisions
+
+A probe checks the opening frames of a far raise while the encode runs; nothing checks the rest,
+and nothing tells the model. Verification does, after the episode is out and while the machine is
+idle: `pnmpeg --caramel-lab --lab-verify <decisions>` on the encode's input re-measures its raised
+scenes, and the kept scenes that look like savings the model missed, as full lab samples. It fixes
+the model, not the episode it verifies — the probe and the source's trust still guard the encode.
+
+- **Which scenes** (`caramel_lab::verify_picks`, at most `--lab-scenes`). The decider caps a scene
+  at 48 frames, so one long shot is several scenes; a scene that ran to the cap and the one split
+  off after it are one shot, verified once, at the larger raise. Every raised shot, largest raise
+  first. Then kept shots (at the anchor) that look doubtful, in this order: *split* — two deciding
+  metrics voted a raise of 1 CRF or more and another voted none (a flat gradient held by banding's
+  vote is the banding guard working, which only the CAMBI measurement can tell apart from
+  caution); *ease* — an ease over a detailed scene of 1 CRF or more that still was not raised;
+  *fast* — among the top 10% of the encode's kept shots by fast-encode XPSNR; *spread* — members
+  that disagree by 2 CRF or more. Shots lowered below the anchor are not taken. One plain kept shot
+  in 20, chosen by its start frame, is a *control*, with a tenth of the count kept for them: every
+  other pick was chosen for looking doubtful, so the controls are the fair estimate of savings
+  missed. The lab analyses the input itself and its scenes need not start where the encode's chunks
+  started them, so a decision is matched to the analysed scene that starts where it does, else to
+  the one it starts inside; the usual lab rules then apply (24 frames or more, no cut inside).
+- **Which CRFs.** The lab's own (`caramel_research_crfs`, or the search's three starting CRFs), so
+  the sample is a whole curve like any other, plus the anchor, the CRF the encode used, and 2 past
+  that.
+- **The verdict** (`caramel_kernel::train::scene_verdict`), judged as the gate judges a raise, with
+  the typical curves and detail of the model that decided the encode: the shortfall at the decided
+  CRF against a detailed scene at the anchor (the mean over the quality metrics, in units — half a
+  dB of XPSNR is one), and the CAMBI added over the anchor. **`overshot`** when that shortfall is
+  over 1 unit (`OVERSHOOT`) or the banding over 2 (`BANDING_P95`); **`missed`** when 2 CRF further
+  would still have been short of nothing and banded no more than that; **`held`** otherwise.
+- **The sample** is an ordinary lab sample with `picked` = `verify-raise`, `verify-split`,
+  `verify-ease`, `verify-fast`, `verify-spread` or `verify-control`, and `verified`: `{ model,
+  anchor, decided, verdict }`. The lab's summary line counts the verdicts by `picked`.
+
 ## The lab: `pnmpeg --caramel-lab`
 
 ```
@@ -480,13 +515,18 @@ What it does, once the queue has been empty for five minutes and no encode holds
    decides whether anything changes. Naming the preset trains on the scenes encoded with its
    settings and no others, so a dataset copied in from a machine whose preset differs cannot
    outvote this machine's own measurements.
-2. Otherwise take the next source and run `pnmpeg --caramel-lab` on it into
+2. Otherwise [verify](#verifying-an-encodes-decisions) the oldest encode kept in
+   `DB/caramel/verify/`: `pnmpeg --caramel-lab --lab-verify <entry>/decisions --lab-scenes 60` on
+   its input, into `DB/caramel/dataset/verify-<job id>.jsonl`, then drop the entry (also when it
+   fails). One stopped for the queue is carried on with next time, skipping the scenes already
+   measured. The verdicts are added up in `research.json` by model and by why each scene was picked.
+3. Otherwise take the next source and run `pnmpeg --caramel-lab` on it into
    `DB/caramel/dataset/<slug>.jsonl`. Sources, in order: files under `DB/caramel/sources/` (any
    depth to four; `.mkv`, `.mp4`, `.m2ts`, `.webm` of 37 MB or more), then
    `DB/caramel/sources/fetched/`, then the inputs of past jobs still in `DB/cache/inputs`.
-3. Otherwise move the [request queue](#queued-releases) along: measure a release that has been
+4. Otherwise move the [request queue](#queued-releases) along: measure a release that has been
    downloaded, else download the next one.
-4. Otherwise, with a feed, read it (at most every 30 minutes), pick one item, download it with
+5. Otherwise, with a feed, read it (at most every 30 minutes), pick one item, download it with
    `pnp2p` into `DB/caramel/sources/fetched/<key>/`, and measure it next round. An item is taken
    only if it is a single 1080p release of 150 MB to 4 GB with five or more seeders, its link is an
    `https://….torrent` that passes the same fetch-URL checks as a job's, and it was not tried

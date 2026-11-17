@@ -122,6 +122,10 @@ pub struct ResearchState {
     pub trained_scenes: usize,
     #[serde(default)]
     pub last_training: Option<Value>,
+    // What verification found, by the model whose decisions were verified, then by why a scene was
+    // picked (`verify-raise`, `verify-control`, …), then by verdict.
+    #[serde(default)]
+    pub verdicts: BTreeMap<String, BTreeMap<String, BTreeMap<String, usize>>>,
     // What the worker is doing, for whoever asks.
     #[serde(default)]
     pub activity: String,
@@ -168,6 +172,11 @@ pub fn status() -> Value {
         "last_training": state.last_training,
         // How many queued releases are in each state; the releases themselves are the operator's.
         "requests": request_counts(&load_requests()),
+        // Encodes waiting to have their decisions verified, and what verification has found.
+        "verification": {
+            "waiting": verify_entries(Path::new(VERIFY_DIRECTORY)).len(),
+            "verdicts": state.verdicts,
+        },
     })
 }
 
@@ -819,6 +828,11 @@ async fn work(config: &ResearchConfig, env: &HashMap<String, String>) -> bool {
         save_state(&mut state, "idle");
         return true;
     }
+    // An encode's own mistakes teach more than a new source does, and its input is held for them.
+    if let Some(done) = verify_next(config, &pnmpeg, &mut state).await {
+        save_state(&mut state, "idle");
+        return done;
+    }
     let candidates = local_candidates(Path::new(SOURCES_DIRECTORY), &PathBuf::from("DB").join("cache").join("inputs"));
     if let Some(candidate) = pick(&candidates, &state, &dataset_series) {
         let done = measure(&candidate, config, &pnmpeg, &mut state).await.is_some();
@@ -945,6 +959,57 @@ pub fn verify_entries(root: &Path) -> Vec<(PathBuf, VerifyEntry)> {
         .collect();
     entries.sort_by_key(|(_, entry)| (entry.kept_unix, entry.job_id));
     entries
+}
+
+// The most decisions of one encode verified.
+const VERIFY_SCENES: usize = 60;
+
+// Verifies the oldest kept encode: its raised and doubtful scenes measured by the lab, each with a
+// verdict, into `DB/caramel/dataset/verify-<job id>.jsonl`. None when nothing is kept; otherwise
+// whether it finished. An encode is dropped once verified or once it cannot be; one stopped for the
+// queue is carried on with next time, skipping the scenes already measured.
+async fn verify_next(config: &ResearchConfig, pnmpeg: &str, state: &mut ResearchState) -> Option<bool> {
+    let (directory, entry) = verify_entries(Path::new(VERIFY_DIRECTORY)).into_iter().next()?;
+    let source_id = format!("verify-{}", entry.job_id);
+    save_state(state, &format!("verifying job {}'s decisions", entry.job_id));
+    let _ = std::fs::create_dir_all(LOG_DIRECTORY);
+    let cancel_file = Path::new(LOG_DIRECTORY).join(format!("{source_id}.cancel"));
+    let mut command = background_command(pnmpeg);
+    command.args(["--caramel-lab", "--preset", &config.preset, "--lab-scenes", &VERIFY_SCENES.to_string(), "--lab-source", &source_id, "--lab-series", &entry.series]);
+    command.arg("--lab-verify").arg(directory.join("decisions"));
+    if !config.crfs.is_empty() {
+        command.arg("--lab-crfs").arg(config.crfs.iter().map(|crf| crf.to_string()).collect::<Vec<_>>().join(","));
+    }
+    command.arg("-i").arg(directory.join("input.mkv"));
+    command.arg("-o").arg(Path::new(DATASET_DIRECTORY).join(format!("{source_id}.jsonl")));
+    command.arg("--cancelfile").arg(&cancel_file);
+    command.arg("--logfile").arg(Path::new(LOG_DIRECTORY).join(format!("{source_id}.log")));
+    let finished = match run_while_idle(command, &cancel_file, None).await {
+        Run::Stopped | Run::Ended(3, _) => {
+            let _ = std::fs::remove_dir_all(Path::new(DATASET_DIRECTORY).join(format!(".caramel-lab-{source_id}")));
+            return Some(false);
+        }
+        Run::Ended(0, output) => {
+            let found = summary_json(&output).and_then(|summary| summary.get("verdicts").cloned()).unwrap_or(Value::Null);
+            let tally = state.verdicts.entry(entry.model.clone()).or_default();
+            if let Some(picked) = found.as_object() {
+                for (why, verdicts) in picked {
+                    for (verdict, count) in verdicts.as_object().into_iter().flatten() {
+                        *tally.entry(why.clone()).or_default().entry(verdict.clone()).or_default() += count.as_u64().unwrap_or(0) as usize;
+                    }
+                }
+            }
+            println!("[Caramel research] verified job {}'s decisions: {found}", entry.job_id);
+            true
+        }
+        Run::Ended(code, _) => {
+            println!("[Caramel research] job {}'s decisions could not be verified (pnmpeg exit {code})", entry.job_id);
+            false
+        }
+    };
+    state.sources.insert(source_id, SourceRecord { series: entry.series.clone(), finished_unix: unix_now(), outcome: if finished { "verified" } else { "failed" }.to_string() });
+    let _ = std::fs::remove_dir_all(&directory);
+    Some(true)
 }
 
 // Drops the oldest entries, never `keep`, until their inputs fit in `limit` bytes.

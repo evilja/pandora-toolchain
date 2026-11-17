@@ -516,6 +516,7 @@ mod tests {
             cambi_source_high: 0.1,
             points,
             picked: "spread".to_string(),
+            verified: None,
             model: String::new(),
             surprise: None,
             collected_unix: collected,

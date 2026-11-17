@@ -28,6 +28,11 @@
 // Asked for, a scene is also encoded with a treatment (`DEBAND`) at a few CRFs, measured the same
 // way. Those points are kept apart from the scene's curves, so an experiment never changes what the
 // CRF model learns.
+//
+// Given an encode's decisions (`VerifyPlan`), the lab verifies them instead of choosing scenes: it
+// takes the encode's raised shots and the kept ones that look as if they should have been raised
+// (`verify_picks`), measures each at its usual CRFs and at the anchor, the CRF it was encoded at
+// and two past that, and says what the decision did (`caramel_kernel::train::scene_verdict`).
 
 use super::caramel::{
     CaramelReport, SceneEntry, VerifyEncoder, ffmpeg_version, has_filter, run_quiet, seek_seconds, stats_column, with_zones,
@@ -126,6 +131,9 @@ pub struct LabSample {
     pub points: Vec<LabPoint>,
     // Why the scene was taken: `spread` or `novel`.
     pub picked: String,
+    // For a scene verified after an encode: what that encode decided and what came of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified: Option<Verified>,
     // The model that guided the search, and how far its curve was from the first points.
     pub model: String,
     pub surprise: Option<f64>,
@@ -133,7 +141,22 @@ pub struct LabSample {
     pub elapsed_ms: u64,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Verified {
+    // The model the encode decided with, its anchor, and the CRF it gave the scene.
+    pub model: String,
+    pub anchor: f32,
+    pub decided: f32,
+    // `held`, `overshot` or `missed`; None when the scene's points could not say.
+    pub verdict: Option<String>,
+}
+
 impl LabSample {
+    // Picked for being doubtful, so not a fair sample of what the model decides: a verified scene
+    // other than a random control.
+    pub fn chosen_for_doubt(&self) -> bool {
+        self.picked.starts_with("verify-") && self.picked != "verify-control"
+    }
     // The sample as the kernel fits it: every point as an observation of each metric at its CRF.
     pub fn observations(&self) -> Vec<Observation> {
         let pixels = (self.source.width as f64 * self.source.height as f64 * self.frames as f64).max(1.0);
@@ -267,6 +290,98 @@ pub trait LabGuide: Sync {
     fn uncertainty(&self, features: &WindowFeatures, deep: bool) -> f64;
 }
 
+// One decision to verify: the scene of the encode it was made for and why it was taken.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VerifyPick {
+    pub start: u64,
+    pub frames: u64,
+    pub anchor: f32,
+    pub decided: f32,
+    pub picked: &'static str,
+}
+
+// An encode's decisions to verify, and what its decisions were held to: the model's typical curves
+// and its detail.
+pub struct VerifyPlan {
+    pub model: String,
+    pub picks: Vec<VerifyPick>,
+    pub typical: curve::Curves,
+    pub detail: f64,
+}
+
+// The share of plain kept scenes verified at random: the honest estimate of the savings the model
+// misses, since every other pick was chosen for looking doubtful.
+pub const VERIFY_CONTROL_EVERY: u64 = 20;
+// A kept scene is doubtful when two deciding metrics wanted a raise of at least this and another
+// did not; when its ease over a detailed scene is at least `VERIFY_EASE`; or when its members
+// disagree by at least `VERIFY_SPREAD`.
+const VERIFY_SPLIT_VOTE: f64 = 1.0;
+const VERIFY_EASE: f64 = 1.0;
+const VERIFY_SPREAD: f64 = 2.0;
+// The share of kept scenes with the easiest fast encodes that are doubtful for it.
+const VERIFY_FAST_SHARE: f64 = 0.1;
+
+// Which of an encode's decisions to verify, at most `count`, most worth it first.
+//
+// Consecutive scenes of one shot — a scene that ran to `max_scene_frames` and the one split off
+// after it — are verified once, by the one raised most. Every raised shot is taken, largest raise
+// first, then kept shots that look like missed savings: split votes, ease with no raise, an easy
+// fast encode, members that disagree. Shots lowered below the anchor are not taken. One plain kept
+// shot in `VERIFY_CONTROL_EVERY`, chosen by its start frame, is a control and has a share of the
+// count kept for it.
+pub fn verify_picks(records: &[pnx264::scenes::DecisionRecord], max_scene_frames: u64, count: usize) -> Vec<VerifyPick> {
+    use pnx264::scenes::DecisionRecord;
+    let mut shots: Vec<&DecisionRecord> = Vec::new();
+    let mut previous: Option<&DecisionRecord> = None;
+    for record in records {
+        let continues = previous.is_some_and(|previous| previous.frames >= max_scene_frames && previous.start + previous.frames == record.start);
+        match (continues, shots.last_mut()) {
+            (true, Some(last)) if record.crf > last.crf => *last = record,
+            (true, Some(_)) => {}
+            _ => shots.push(record),
+        }
+        previous = Some(record);
+    }
+    let pick = |record: &DecisionRecord, picked: &'static str| VerifyPick { start: record.start, frames: record.frames, anchor: record.anchor, decided: record.crf, picked };
+    let kept: Vec<&DecisionRecord> = shots.iter().copied().filter(|record| record.crf == record.anchor).collect();
+    let mut fast: Vec<f64> = kept.iter().filter_map(|record| record.fast.map(|(xpsnr, _)| xpsnr)).collect();
+    fast.sort_by(|a, b| b.total_cmp(a));
+    let fast_floor = (fast.len() >= 10).then(|| fast[((fast.len() as f64 * VERIFY_FAST_SHARE) as usize).min(fast.len() - 1)]);
+    let mut raised: Vec<(f64, VerifyPick)> = Vec::new();
+    let mut doubtful: Vec<(usize, f64, VerifyPick)> = Vec::new();
+    let mut controls: Vec<VerifyPick> = Vec::new();
+    for record in shots {
+        if record.crf > record.anchor {
+            raised.push(((record.crf - record.anchor) as f64, pick(record, "verify-raise")));
+            continue;
+        }
+        if record.crf < record.anchor {
+            continue;
+        }
+        let wanting = record.votes.iter().filter(|(_, offset, _)| *offset >= VERIFY_SPLIT_VOTE).count();
+        let holding = record.votes.iter().any(|(_, offset, _)| *offset <= 0.0);
+        let spread = record.votes.iter().map(|(_, _, spread)| *spread).fold(0.0, f64::max);
+        let easy_fast = record.fast.zip(fast_floor).is_some_and(|((xpsnr, _), floor)| xpsnr >= floor);
+        if wanting >= 2 && holding {
+            doubtful.push((0, wanting as f64, pick(record, "verify-split")));
+        } else if record.ease >= VERIFY_EASE {
+            doubtful.push((1, record.ease, pick(record, "verify-ease")));
+        } else if easy_fast {
+            doubtful.push((2, record.fast.map_or(0.0, |(xpsnr, _)| xpsnr), pick(record, "verify-fast")));
+        } else if spread >= VERIFY_SPREAD {
+            doubtful.push((3, spread, pick(record, "verify-spread")));
+        } else if (record.start.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) % VERIFY_CONTROL_EVERY == 0 {
+            controls.push(pick(record, "verify-control"));
+        }
+    }
+    raised.sort_by(|a, b| b.0.total_cmp(&a.0));
+    doubtful.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.total_cmp(&a.1)));
+    controls.truncate(count.div_ceil(10));
+    let mut picks: Vec<VerifyPick> = raised.into_iter().map(|(_, pick)| pick).chain(doubtful.into_iter().map(|(_, _, pick)| pick)).take(count.saturating_sub(controls.len())).collect();
+    picks.extend(controls);
+    picks
+}
+
 pub struct LabRequest<'a> {
     pub report: &'a CaramelReport,
     pub source_id: String,
@@ -288,6 +403,8 @@ pub struct LabRequest<'a> {
     pub known: Vec<[f64; inputs::INPUTS]>,
     pub guide: Option<&'a dyn LabGuide>,
     pub cancel_file: Option<PathBuf>,
+    // Verify these decisions instead of choosing scenes.
+    pub verify: Option<&'a VerifyPlan>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -300,6 +417,10 @@ pub struct LabSummary {
     pub points: usize,
     pub cancelled: bool,
     pub elapsed_ms: u128,
+    // For a verification: how many decisions came out `held`, `overshot` and `missed`, by why they
+    // were picked (`verify-raise`, `verify-control`, …).
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub verdicts: std::collections::BTreeMap<String, std::collections::BTreeMap<String, usize>>,
 }
 
 // The encoder settings as one stable string: samples made with different settings are different
@@ -662,7 +783,18 @@ impl Lab<'_> {
         Ok((point, cambi_source))
     }
 
-    fn scene(&self, slot: usize, scene: &SceneEntry, picked: &str) -> Result<LabSample, String> {
+    // The CRFs a verified decision is measured at: the lab's own, so the sample is a whole curve
+    // like any other, and the anchor, the decided CRF and `VERIFY_STEP` past it, for the verdict.
+    fn verify_ladder(&self, pick: &VerifyPick) -> Vec<f64> {
+        let base: Vec<f64> = if self.request.ladder.is_empty() { START_CRFS.to_vec() } else { self.request.ladder.clone() };
+        let step = caramel_kernel::train::VERIFY_STEP;
+        let mut ladder: Vec<f64> = base.into_iter().chain([pick.anchor as f64, pick.decided as f64, pick.decided as f64 + step]).collect();
+        ladder.sort_by(f64::total_cmp);
+        ladder.dedup_by(|a, b| (*a - *b).abs() < 0.01);
+        ladder
+    }
+
+    fn scene(&self, slot: usize, scene: &SceneEntry, picked: &str, verify: Option<&VerifyPick>) -> Result<LabSample, String> {
         let started = std::time::Instant::now();
         let request = self.request;
         let directory = self.scratch.join(format!("scene-{slot}"));
@@ -685,6 +817,7 @@ impl Lab<'_> {
             cambi_source_high: 0.0,
             points: Vec::new(),
             picked: picked.to_string(),
+            verified: None,
             model: request.guide.map(|guide| guide.version()).unwrap_or_default(),
             surprise: None,
             collected_unix: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
@@ -698,15 +831,16 @@ impl Lab<'_> {
             sample.features.fast_encode = Some(fast);
             let bands: [Option<(f64, f64)>; METRICS] = std::array::from_fn(|metric| request.guide.and_then(|guide| guide.band(metric)));
             let max_points = request.max_points.max(START_CRFS.len());
+            let ladder = verify.map_or_else(|| request.ladder.clone(), |pick| self.verify_ladder(pick));
             loop {
                 if self.cancelled() {
                     return Err("cancelled".to_string());
                 }
                 let measured = sample.observations();
-                let next = if request.ladder.is_empty() {
+                let next = if ladder.is_empty() {
                     next_crf(&measured, &bands, max_points)
                 } else {
-                    request.ladder.iter().copied().find(|crf| !sample.points.iter().any(|point| point.treatment.is_empty() && (point.crf as f64 - crf).abs() < 0.01))
+                    ladder.iter().copied().find(|crf| !sample.points.iter().any(|point| point.treatment.is_empty() && (point.crf as f64 - crf).abs() < 0.01))
                 };
                 let Some(crf) = next else {
                     break;
@@ -718,7 +852,7 @@ impl Lab<'_> {
                 }
                 sample.points.push(point);
                 // The model's curve against the first points: a scene it already knows gets no more.
-                if let (Some(guide), true) = (request.guide, request.ladder.is_empty() && sample.points.len() == START_CRFS.len()) {
+                if let (Some(guide), true) = (request.guide, ladder.is_empty() && sample.points.len() == START_CRFS.len()) {
                     let deep = self.deep;
                     let measured = sample.observations();
                     let off = surprise(&measured, &|crf| guide.predict(&scene.features, deep, crf));
@@ -739,6 +873,10 @@ impl Lab<'_> {
         std::fs::remove_dir_all(&directory).ok();
         result?;
         sample.points.sort_by(|a, b| a.crf.total_cmp(&b.crf));
+        if let (Some(pick), Some(plan)) = (verify, request.verify) {
+            let verdict = caramel_kernel::train::scene_verdict(&sample.observations(), &plan.typical, plan.detail, pick.anchor as f64, pick.decided as f64);
+            sample.verified = Some(Verified { model: plan.model.clone(), anchor: pick.anchor, decided: pick.decided, verdict: verdict.map(|verdict| verdict.name().to_string()) });
+        }
         sample.elapsed_ms = started.elapsed().as_millis() as u64;
         Ok(sample)
     }
@@ -858,22 +996,41 @@ pub fn run_lab(request: &LabRequest) -> Result<LabSummary, String> {
     let uncertainty: Vec<f64> =
         eligible.iter().map(|scene| request.guide.map_or(0.0, |guide| guide.uncertainty(&scene.features, lab.deep))).collect();
     let known: Vec<[f64; inputs::INPUTS]> = request.known.iter().copied().chain(existing.iter().map(LabSample::inputs)).collect();
-    let chosen = select_scenes(&candidates, &uncertainty, &known, request.scenes.saturating_sub(existing.len()));
+    // Each scene to measure, why, and the decision it verifies.
+    let chosen: Vec<(usize, &'static str, Option<&VerifyPick>)> = match request.verify {
+        None => select_scenes(&candidates, &uncertainty, &known, request.scenes.saturating_sub(existing.len())).into_iter().map(|(index, picked)| (index, picked, None)).collect(),
+        // The analysis splits scenes as the encode's chunks did not, so a decision is matched to the
+        // scene that starts where it does, else to the one it starts inside.
+        Some(plan) => {
+            let mut taken: Vec<(usize, &'static str, Option<&VerifyPick>)> = Vec::new();
+            for pick in &plan.picks {
+                let index = eligible
+                    .iter()
+                    .position(|scene| scene.start_frame == pick.start)
+                    .or_else(|| eligible.iter().position(|scene| scene.start_frame <= pick.start && pick.start < scene.start_frame + scene.frames));
+                if let Some(index) = index.filter(|index| !taken.iter().any(|(other, _, _)| other == index)) {
+                    taken.push((index, pick.picked, Some(pick)));
+                }
+            }
+            taken
+        }
+    };
 
     let next = AtomicUsize::new(0);
     let output = Mutex::new((std::fs::OpenOptions::new().create(true).append(true).open(&request.dataset).map_err(|e| format!("lab dataset: {e}"))?, 0usize, 0usize, 0usize));
+    let verdicts: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, usize>>> = Mutex::default();
     std::thread::scope(|scope| {
         for _ in 0..request.workers.clamp(1, chosen.len().max(1)) {
             scope.spawn(|| {
                 loop {
                     let slot = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(&(index, picked)) = chosen.get(slot) else {
+                    let Some(&(index, picked, verify)) = chosen.get(slot) else {
                         break;
                     };
                     if lab.cancelled() {
                         break;
                     }
-                    let result = lab.scene(slot, eligible[index], picked);
+                    let result = lab.scene(slot, eligible[index], picked, verify);
                     let mut output = crate::lib::sync::lock(&output);
                     match result {
                         Ok(sample) => {
@@ -881,6 +1038,9 @@ pub fn run_lab(request: &LabRequest) -> Result<LabSummary, String> {
                             if writeln!(output.0, "{line}").and_then(|_| output.0.flush()).is_ok() {
                                 output.1 += 1;
                                 output.2 += sample.points.len();
+                                if let Some(verdict) = sample.verified.as_ref().and_then(|verified| verified.verdict.clone()) {
+                                    *crate::lib::sync::lock(&verdicts).entry(sample.picked.clone()).or_default().entry(verdict).or_default() += 1;
+                                }
                             }
                         }
                         Err(error) if error == "cancelled" => {}
@@ -897,6 +1057,7 @@ pub fn run_lab(request: &LabRequest) -> Result<LabSummary, String> {
     summary.failed = output.3;
     summary.cancelled = lab.cancelled();
     summary.elapsed_ms = started.elapsed().as_millis();
+    summary.verdicts = verdicts.into_inner().unwrap_or_else(|poisoned| poisoned.into_inner());
     Ok(summary)
 }
 
@@ -990,6 +1151,57 @@ mod tests {
         assert_eq!(select_scenes(&pair, &[0.0; 3], &[], 9).len(), 3);
     }
 
+    fn record(start: u64, frames: u64, crf: f32) -> pnx264::scenes::DecisionRecord {
+        pnx264::scenes::DecisionRecord {
+            start,
+            frames,
+            anchor: 17.0,
+            crf,
+            model_crf: crf,
+            tempered: None,
+            probe: None,
+            fast: None,
+            factor: "detail".to_string(),
+            ease: 0.0,
+            votes: Vec::new(),
+            cut_pairs_within: 0,
+        }
+    }
+
+    // Raised shots first, largest raise first, one per shot; then kept shots that look like missed
+    // savings; lowered and plain ones are not taken, but for controls; the count is kept to.
+    #[test]
+    fn verification_takes_raises_then_doubtful_kept_shots() {
+        let mut records = vec![
+            // One shot split at 48 frames: verified once, at its larger raise.
+            record(0, 48, 19.0),
+            record(48, 30, 21.0),
+            record(78, 40, 18.0),
+            record(118, 40, 16.0),
+            record(158, 40, 17.0),
+            record(198, 40, 17.0),
+            record(238, 40, 17.0),
+        ];
+        records[4].votes = vec![("xpsnr".into(), 2.0, 0.1), ("ssim".into(), 1.5, 0.1), ("cambi".into(), 0.0, 0.0)];
+        records[5].ease = 2.5;
+        records[6].votes = vec![("xpsnr".into(), 0.2, 3.0)];
+        let picks = verify_picks(&records, 48, 10);
+        let named: Vec<(u64, &str)> = picks.iter().map(|pick| (pick.start, pick.picked)).collect();
+        assert_eq!(named, vec![(48, "verify-raise"), (78, "verify-raise"), (158, "verify-split"), (198, "verify-ease"), (238, "verify-spread")]);
+        assert_eq!((picks[0].anchor, picks[0].decided), (17.0, 21.0));
+        assert_eq!(verify_picks(&records, 48, 2).len(), 2);
+        // Plain kept shots give controls, about one in `VERIFY_CONTROL_EVERY`, and keep a slot.
+        let plain: Vec<_> = (0..400).map(|index| record(index * 40, 40, 17.0)).collect();
+        let controls = verify_picks(&plain, 48, 1000);
+        assert!(controls.iter().all(|pick| pick.picked == "verify-control"));
+        assert!((8..=40).contains(&controls.len()), "{}", controls.len());
+        let mut mixed = plain.clone();
+        mixed.extend((0..30).map(|index| record(20_000 + index * 40, 40, 20.0)));
+        let picks = verify_picks(&mixed, 48, 20);
+        assert_eq!(picks.len(), 20);
+        assert_eq!(picks.iter().filter(|pick| pick.picked == "verify-control").count(), 2);
+    }
+
     #[test]
     fn episodes_of_one_series_share_a_key() {
         let a = series_key("[SubsPlease] Ao Ashi S2 - 07 (1080p) [D6C86AC6].mkv");
@@ -1038,6 +1250,7 @@ mod tests {
                 LabPoint { crf: 17.0, bytes: 200_000, cambi_high: 0.1, treatment: DEBAND.name.into(), ..Default::default() },
             ],
             picked: "spread".into(),
+            verified: None,
             model: String::new(),
             surprise: None,
             collected_unix: 0,
