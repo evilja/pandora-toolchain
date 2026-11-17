@@ -165,6 +165,14 @@ chunk, beside the chunk (`<chunk>.decisions`, starts from the chunk's first fram
 gathers them, and a chunk reused from an older build without one is left out. The zones path writes
 them from the whole-file analysis. A file that cannot be written is logged and the encode goes on.
 
+When the research worker is on (`caramel_research`), a job that reaches *Encoded* with such a file
+is kept for verification in `DB/caramel/verify/<job id>/`: the file as `decisions`, a hard link to
+the job's `input.mkv` (a copy where linking fails), and `entry.json` (`job_id`, `series`,
+`kept_unix`, `model`, `scenes`). The series is `verify-` and a hash of the job's first source key,
+so every episode of one release is one series and training holds them out together. The inputs
+are capped at 40 GiB together, oldest dropped first. A job encoded on a linked node keeps nothing
+here: its decisions stay on the node.
+
 ## The lab: `pnmpeg --caramel-lab`
 
 ```
@@ -566,3 +574,4 @@ only writes it.
 | `DB/caramel/requests.json` | the API and the research worker | Queued releases and how far each has got. |
 | `DB/caramel/sources/` | the operator | Videos to measure. `fetched/` and `requested/` below it belong to the worker. |
 | `DB/caramel/log/` | the research worker | Logs and cancel files of its children. |
+| `DB/caramel/verify/<job id>/` | the worker, at *Encoded* | A Caramel encode's decisions and its input, kept for verification. |

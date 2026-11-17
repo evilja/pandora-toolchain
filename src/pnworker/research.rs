@@ -864,6 +864,106 @@ async fn run() {
     }
 }
 
+// Encodes kept for verification: `<job id>/` with the encode's `decisions`
+// (`pnx264::scenes::EncodeDecisions`), a hard link to its `input.mkv`, and `entry.json`. The
+// research worker re-measures their raised and doubtful scenes when idle (`verify_next`), then
+// removes the entry. The inputs are capped together; the oldest go first.
+pub const VERIFY_DIRECTORY: &str = "DB/caramel/verify";
+const VERIFY_BYTES: u64 = 40 << 30;
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct VerifyEntry {
+    pub job_id: u64,
+    // One series per release: every episode of a pack shares it, so training holds them out
+    // together like the episodes of any other series.
+    pub series: String,
+    pub kept_unix: u64,
+    pub model: String,
+    pub scenes: usize,
+}
+
+// A Caramel encode's decisions and its input, kept for verification when the research worker is
+// on. A job whose encode wrote no decisions — not under Caramel, or encoded on a linked node — is
+// left alone. Nothing here can fail the job: a step that does not work leaves no entry.
+pub async fn keep_for_verification(job_id: u64, directory: PathBuf, source_key: String) {
+    if !research_config(&get_pandora_env()).enabled {
+        return;
+    }
+    let decisions = pnx264::scenes::encode_decisions_path(&directory.join("work").join("output.mp4"));
+    let input = directory.join("contents").join("torrent").join("input.mkv");
+    let _ = tokio::task::spawn_blocking(move || {
+        let kept = keep_entry(Path::new(VERIFY_DIRECTORY), job_id, &decisions, &input, &source_key, unix_now());
+        if let Some(entry) = kept {
+            println!("[Caramel research] kept job {job_id}'s {} scenes for verification", entry.scenes);
+            trim_verify_entries(Path::new(VERIFY_DIRECTORY), VERIFY_BYTES, job_id);
+        }
+    })
+    .await;
+}
+
+fn keep_entry(root: &Path, job_id: u64, decisions: &Path, input: &Path, source_key: &str, now: u64) -> Option<VerifyEntry> {
+    let parsed = pnx264::scenes::EncodeDecisions::read(decisions)?;
+    if !input.exists() {
+        return None;
+    }
+    let directory = root.join(job_id.to_string());
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).ok()?;
+    let kept = (|| {
+        std::fs::copy(decisions, directory.join("decisions")).ok()?;
+        let target = directory.join("input.mkv");
+        if std::fs::hard_link(input, &target).is_err() {
+            std::fs::copy(input, &target).ok()?;
+        }
+        let entry = VerifyEntry {
+            job_id,
+            series: format!("verify-{}", &format!("{:x}", md5::compute(source_key))[..10]),
+            kept_unix: now,
+            model: parsed.model.clone(),
+            scenes: parsed.records.len(),
+        };
+        std::fs::write(directory.join("entry.json"), serde_json::to_string_pretty(&entry).ok()?).ok()?;
+        Some(entry)
+    })();
+    if kept.is_none() {
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+    kept
+}
+
+pub fn verify_entries(root: &Path) -> Vec<(PathBuf, VerifyEntry)> {
+    let Ok(read) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut entries: Vec<(PathBuf, VerifyEntry)> = read
+        .flatten()
+        .map(|entry| entry.path())
+        .filter_map(|path| {
+            let entry: VerifyEntry = serde_json::from_str(&std::fs::read_to_string(path.join("entry.json")).ok()?).ok()?;
+            Some((path, entry))
+        })
+        .collect();
+    entries.sort_by_key(|(_, entry)| (entry.kept_unix, entry.job_id));
+    entries
+}
+
+// Drops the oldest entries, never `keep`, until their inputs fit in `limit` bytes.
+fn trim_verify_entries(root: &Path, limit: u64, keep: u64) {
+    let entries = verify_entries(root);
+    let size = |path: &Path| path.join("input.mkv").metadata().map(|meta| meta.len()).unwrap_or(0);
+    let mut total: u64 = entries.iter().map(|(path, _)| size(path)).sum();
+    for (path, entry) in &entries {
+        if total <= limit {
+            break;
+        }
+        if entry.job_id == keep {
+            continue;
+        }
+        total = total.saturating_sub(size(path));
+        let _ = std::fs::remove_dir_all(path);
+    }
+}
+
 // Starts the worker. It does nothing until `caramel_research` is on and the queue is empty.
 pub fn spawn() {
     tokio::spawn(run());
@@ -872,6 +972,36 @@ pub fn spawn() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // An encode's decisions and input become an entry; the oldest entries go once the inputs are
+    // over the cap, never the one just kept; an encode with no decisions keeps nothing.
+    #[test]
+    fn caramel_encodes_are_kept_for_verification_under_a_cap() {
+        let root = std::env::temp_dir().join(format!("pandora-verify-{}-{}", std::process::id(), unix_now()));
+        let job = root.join("job");
+        std::fs::create_dir_all(&job).unwrap();
+        let input = job.join("input.mkv");
+        std::fs::write(&input, vec![0u8; 100]).unwrap();
+        let decisions = job.join("output.mp4.caramel-decisions");
+        std::fs::write(&decisions, "#caramel-decisions model=m anchor=17 fps=23.976\n0|48|17|21|21||21/41.5/41|44/-3|detail|4.000||0\n48|20|17|17|17|||||0.100||0\n").unwrap();
+        let verify = root.join("verify");
+        for (id, now) in [(1u64, 10u64), (2, 20), (3, 30)] {
+            let entry = keep_entry(&verify, id, &decisions, &input, "torrent:abc", now).expect("kept");
+            assert_eq!((entry.scenes, entry.model.as_str()), (2, "m"));
+            assert!(entry.series.starts_with("verify-"));
+        }
+        assert!(verify.join("3").join("input.mkv").exists());
+        assert!(pnx264::scenes::EncodeDecisions::read(&verify.join("3").join("decisions")).is_some());
+        // Every release of one source is one series.
+        let series: Vec<String> = verify_entries(&verify).into_iter().map(|(_, entry)| entry.series).collect();
+        assert!(series.windows(2).all(|pair| pair[0] == pair[1]));
+        trim_verify_entries(&verify, 150, 1);
+        let left: Vec<u64> = verify_entries(&verify).into_iter().map(|(_, entry)| entry.job_id).collect();
+        assert_eq!(left, vec![1]);
+        assert!(keep_entry(&verify, 4, &job.join("missing"), &input, "x", 40).is_none());
+        assert!(!verify.join("4").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     fn env(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs.iter().map(|(key, value)| (key.to_string(), value.to_string())).collect()

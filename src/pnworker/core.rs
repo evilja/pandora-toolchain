@@ -3300,6 +3300,10 @@ async fn do_worker_message_things(
                 if a == Stage::Uploaded && previous_ready != Stage::Uploaded {
                     i.frontend.ghost_ping(i.author).await;
                 }
+                if a == Stage::Encoded {
+                    let source_key = crate::pnworker::cache::input_source_keys(i).into_iter().next().unwrap_or_default();
+                    crate::pnworker::research::keep_for_verification(i.job_id, i.directory.clone(), source_key).await;
+                }
                 if a == Stage::Encoded
                     || (a == Stage::Downloaded && i.job_type == JobType::Preview)
                     || (a == Stage::Cancelled && past_downloaded(previous_ready))
