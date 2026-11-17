@@ -90,9 +90,36 @@ pub struct SceneDecision {
     pub estimate: SceneEstimate,
     // What was measured, as the model was given it.
     pub features: WindowFeatures,
+    // The CRF the model chose, when the source's trust made the raise smaller (`temper`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tempered_from: Option<f32>,
 }
 
 impl SceneDecision {
+    // The decision as a source with this record of test encodes takes it: its raise shrunk to the
+    // share the source keeps, on the CRF step and never below the anchor, and its probe kept only if
+    // the raise is still one the source checks. Called once, before the probe runs.
+    pub fn temper(&mut self, trust: &crate::probe::SourceTrust) {
+        let anchor = self.estimate.anchor_crf;
+        let raise = (self.crf - anchor) as f64;
+        if raise > 0.0 {
+            let step = crate::model::CRF_STEP;
+            let scaled = anchor as f64 + raise * trust.raise_scale();
+            let crf = ((scaled / step).floor() * step).max(anchor as f64) as f32;
+            if crf < self.crf {
+                self.tempered_from = Some(self.crf);
+                self.crf = crf;
+                self.estimate.crf = crf;
+                if let Some(probe) = self.estimate.probe.as_mut() {
+                    probe.crf = crf;
+                }
+            }
+        }
+        if ((self.crf - anchor) as f64) < trust.probe_from() {
+            self.estimate.probe = None;
+        }
+    }
+
     // What a test encode of the scene measured, for a decision with a probe: the scene moves to the
     // CRF the probe settled on. A decision without one keeps its CRF.
     pub fn settle_probe(&mut self, measured: f64) -> f32 {
@@ -332,6 +359,7 @@ impl SceneDecider {
             cut_pairs_within: features.cuts,
             estimate,
             features,
+            tempered_from: None,
         }
     }
 }
@@ -344,6 +372,54 @@ mod tests {
 
     const W: usize = 320;
     const H: usize = 192;
+
+    fn raised(crf: f32) -> SceneDecision {
+        let probe = crate::probe::Probe { anchor: 17.0, crf, target: 41.0, curve: [40.0; crate::curve::KNOT_COUNT], measured: None, settled: None };
+        SceneDecision {
+            start_frame: 0,
+            crf,
+            start: SceneStart::Start,
+            cut: None,
+            cut_pairs_within: 0,
+            estimate: SceneEstimate {
+                crf,
+                anchor_crf: 17.0,
+                adjustment: (crf - 17.0) as f64,
+                raw_adjustment: (crf - 17.0) as f64,
+                confidence: 1.0,
+                frames_analyzed: 24,
+                votes: Vec::new(),
+                contributions: Vec::new(),
+                probe: Some(probe),
+            },
+            features: WindowFeatures::default(),
+            tempered_from: None,
+        }
+    }
+
+    // A trusted source keeps the model's raise and checks it from 3 CRF; a distrusted one shrinks
+    // it on the CRF step, checks it from 2, and moves the probe to the CRF it will actually encode.
+    #[test]
+    fn a_distrusted_source_tempers_raises_before_they_are_probed() {
+        let trusted = crate::probe::SourceTrust::default();
+        let mut far = raised(21.0);
+        far.temper(&trusted);
+        assert_eq!((far.crf, far.tempered_from, far.estimate.probe.as_ref().map(|probe| probe.crf)), (21.0, None, Some(21.0)));
+        let mut near = raised(19.5);
+        near.temper(&trusted);
+        assert!(near.estimate.probe.is_none());
+        assert_eq!(near.crf, 19.5);
+
+        let distrusted = crate::probe::SourceTrust::from_margins([-0.4, -0.2, -0.3, 0.1]);
+        let mut far = raised(21.0);
+        far.temper(&distrusted);
+        // 17 + 4 × 0.6 = 19.4, down to the step.
+        assert_eq!((far.crf, far.estimate.crf, far.tempered_from), (19.0, 19.0, Some(21.0)));
+        assert_eq!(far.estimate.probe.as_ref().map(|probe| probe.crf), Some(19.0));
+        let mut small = raised(18.5);
+        small.temper(&distrusted);
+        assert_eq!((small.crf, small.estimate.probe.is_none()), (17.5, true));
+    }
 
     fn source() -> SourceContext {
         SourceContext { width: W as u32, height: H as u32, fps: 24.0, video_bitrate: None, codec: None, bit_depth: 8 }

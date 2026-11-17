@@ -1,4 +1,4 @@
-use crate::scenes::{self, SceneCrfSummary, SceneMark, SceneSchedule};
+use crate::scenes::{self, DecisionRecord, SceneCrfSummary, SceneMark, SceneSchedule, TrustShare};
 use crate::y4m::Y4mReader;
 use crate::{Config, Encoder};
 use std::collections::HashMap;
@@ -77,6 +77,9 @@ pub struct ParallelSummary {
     pub elapsed: Duration,
     // The CRFs Caramel Analysis gave the encode's scenes, when it ran with `encoder.caramel`.
     pub scenes: Option<SceneCrfSummary>,
+    // Every scene's decision, starts counted from the source's first frame. Chunks reused from an
+    // encode that kept no record of them are missing.
+    pub decisions: Vec<DecisionRecord>,
 }
 
 #[derive(Clone, Debug)]
@@ -337,13 +340,9 @@ fn ranges(source: &Source, plan: Option<&Path>, workers: usize) -> (Vec<(u64, u6
 // A chunk encoded ahead of time, linked into this encode's scratch directory. Under Caramel Analysis
 // a chunk is only taken with its scenes beside it, and without Caramel only without: the two encode
 // the same frames at different CRFs, and the path alone does not say which one a chunk was.
-fn reuse_aot_chunk(
-    directory: &Path,
-    output: &Path,
-    start: u64,
-    frames: u64,
-    caramel: bool,
-) -> Option<(u64, Option<Vec<SceneMark>>)> {
+type Reused = (u64, Option<Vec<SceneMark>>, Option<Vec<DecisionRecord>>);
+
+fn reuse_aot_chunk(directory: &Path, output: &Path, start: u64, frames: u64, caramel: bool) -> Option<Reused> {
     let candidate = aot_chunk_path(directory, start, frames);
     let metadata = std::fs::metadata(&candidate).ok()?;
     if metadata.len() == 0 {
@@ -356,7 +355,15 @@ fn reuse_aot_chunk(
     if std::fs::hard_link(&candidate, output).is_err() {
         std::fs::copy(&candidate, output).ok()?;
     }
-    Some((metadata.len(), marks))
+    Some((metadata.len(), marks, scenes::read_decisions(&candidate)))
+}
+
+// Where an encode's chunks share what their test encodes found: the AOT directory when the encode
+// has one, so chunks encoded ahead and chunks encoded now read the same record, else the scratch
+// directory its chunks are written to.
+fn trust_share(output: &Path, aot: Option<&Path>) -> TrustShare {
+    let directory = aot.or(output.parent()).unwrap_or_else(|| Path::new("."));
+    TrustShare::file(directory.join(scenes::TRUST_FILE))
 }
 
 // The encoder end of a chunk: frames in, bitstream out, progress counted.
@@ -418,7 +425,8 @@ fn encode_chunk(
     stop: &AtomicBool,
     events: &mpsc::Sender<WorkerEvent>,
     extra_cancel_files: &[&Path],
-) -> Result<Vec<SceneMark>, String> {
+    trust: TrustShare,
+) -> Result<(Vec<SceneMark>, Vec<DecisionRecord>), String> {
     let seek = format!("{:.9}", start as f64 * source.fps_den as f64 / source.fps_num as f64);
     let frame_count = frames.to_string();
     let subtitle = std::fs::canonicalize(&config.subtitle).unwrap_or_else(|_| config.subtitle.clone());
@@ -459,6 +467,7 @@ fn encode_chunk(
             encoder_config.crf,
             Some(encoder_config),
         )
+        .with_trust(trust)
     });
     let mut decoded = 0u64;
     while decoded < frames {
@@ -491,7 +500,7 @@ fn encode_chunk(
     if !status.success() || out.count != frames {
         return Err(format!("chunk at frame {start} decoded {}/{frames} frames", out.count));
     }
-    Ok(schedule.map(|schedule| schedule.marks().to_vec()).unwrap_or_default())
+    Ok(schedule.map(|schedule| (schedule.marks().to_vec(), DecisionRecord::from_decisions(schedule.decisions(), frames))).unwrap_or_default())
 }
 
 pub fn encode_aot_chunk(config: AotChunkConfig) -> Result<(), String> {
@@ -561,9 +570,10 @@ pub fn encode_aot_chunk(config: AotChunkConfig) -> Result<(), String> {
         &stop,
         &events,
         &extra_cancel_files,
+        trust_share(&config.output, None),
     );
-    let marks = match result {
-        Ok(marks) => marks,
+    let (marks, records) = match result {
+        Ok(result) => result,
         Err(error) => {
             std::fs::remove_file(&temporary).ok();
             return Err(error);
@@ -576,7 +586,7 @@ pub fn encode_aot_chunk(config: AotChunkConfig) -> Result<(), String> {
     // The scenes land before the chunk does, so no reader ever sees a Caramel chunk without them.
     let caramel = encoder.caramel.is_some();
     if caramel {
-        if let Err(error) = scenes::write_sidecar(&config.output, &marks) {
+        if let Err(error) = scenes::write_sidecar(&config.output, &marks).and_then(|_| scenes::write_decisions(&config.output, &records)) {
             std::fs::remove_file(&temporary).ok();
             return Err(error.to_string());
         }
@@ -585,6 +595,7 @@ pub fn encode_aot_chunk(config: AotChunkConfig) -> Result<(), String> {
         std::fs::remove_file(&temporary).ok();
         if caramel {
             std::fs::remove_file(scenes::sidecar_path(&config.output)).ok();
+            std::fs::remove_file(scenes::decisions_path(&config.output)).ok();
         }
         e.to_string()
     })
@@ -631,8 +642,9 @@ where
     }
     let reused_chunks = Arc::new(AtomicUsize::new(0));
     let caramel = config.encoder.caramel.is_some();
-    // Each chunk's scenes, by chunk index, for the summary.
+    // Each chunk's scenes, by chunk index, for the summary, and its decisions.
     let chunk_scenes: Arc<std::sync::Mutex<HashMap<usize, Vec<SceneMark>>>> = Default::default();
+    let chunk_decisions: Arc<std::sync::Mutex<HashMap<usize, Vec<DecisionRecord>>>> = Default::default();
     let audio = scratch.join("audio.mp4");
     let mut audio_child = Command::new(&config.ffmpeg)
         .args(["-v", "error", "-i"])
@@ -669,6 +681,7 @@ where
             let aot = aot.clone();
             let reused_chunks = reused_chunks.clone();
             let chunk_scenes = chunk_scenes.clone();
+            let chunk_decisions = chunk_decisions.clone();
             let config = &config;
             let mut encoder_config = config.encoder.clone();
             encoder_config.width = source.width;
@@ -690,12 +703,15 @@ where
                     let output = scratch.join(format!("chunk-{index:06}.264"));
                     let reused = aot.as_ref().and_then(|directory| {
                         reuse_aot_chunk(directory, &output, frame, count, caramel)
-                    }).is_some_and(|(size, marks)| {
+                    }).is_some_and(|(size, marks, records)| {
                         completed.fetch_add(count, Ordering::Relaxed);
                         bytes.fetch_add(size, Ordering::Relaxed);
                         reused_chunks.fetch_add(1, Ordering::Relaxed);
                         if let Some(marks) = marks {
                             chunk_scenes.lock().unwrap().insert(index, marks);
+                        }
+                        if let Some(records) = records {
+                            chunk_decisions.lock().unwrap().insert(index, records);
                         }
                         events.send(WorkerEvent::Progress).ok();
                         true
@@ -715,10 +731,12 @@ where
                         &stop,
                         &events,
                         &[],
+                        trust_share(&output, aot.as_deref()),
                     ) {
-                        Ok(marks) => {
+                        Ok((marks, records)) => {
                             if caramel {
                                 chunk_scenes.lock().unwrap().insert(index, marks);
+                                chunk_decisions.lock().unwrap().insert(index, records);
                             }
                         }
                         Err(e) => {
@@ -848,6 +866,15 @@ where
                 ranges.iter().enumerate().map(|(index, &(_, count))| (count, chunk_scenes.get(&index).map(Vec::as_slice))),
             )
         }),
+        decisions: {
+            let chunk_decisions = chunk_decisions.lock().unwrap();
+            ranges
+                .iter()
+                .enumerate()
+                .filter_map(|(index, &(start, _))| chunk_decisions.get(&index).map(|records| (start, records)))
+                .flat_map(|(start, records)| records.iter().map(move |record| DecisionRecord { start: record.start + start, ..record.clone() }))
+                .collect()
+        },
     })
 }
 
@@ -921,7 +948,7 @@ mod tests {
         std::fs::create_dir_all(&aot).unwrap();
         std::fs::write(aot_chunk_path(&aot, 250, 250), b"encoded chunk").unwrap();
         let output = root.join("fixed.264");
-        assert_eq!(reuse_aot_chunk(&aot, &output, 250, 250, false), Some((13, None)));
+        assert_eq!(reuse_aot_chunk(&aot, &output, 250, 250, false), Some((13, None, None)));
         assert_eq!(std::fs::read(&output).unwrap(), b"encoded chunk");
         // A chunk without scenes was not encoded under Caramel Analysis, and one with them was.
         std::fs::remove_file(&output).ok();
@@ -929,7 +956,7 @@ mod tests {
         let marks = vec![SceneMark { start: 0, crf: 18.5 }];
         scenes::write_sidecar(&aot_chunk_path(&aot, 250, 250), &marks).unwrap();
         assert_eq!(reuse_aot_chunk(&aot, &output, 250, 250, false), None);
-        assert_eq!(reuse_aot_chunk(&aot, &output, 250, 250, true), Some((13, Some(marks))));
+        assert_eq!(reuse_aot_chunk(&aot, &output, 250, 250, true), Some((13, Some(marks), None)));
         std::fs::remove_dir_all(root).ok();
     }
 

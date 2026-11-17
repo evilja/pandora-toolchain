@@ -16,10 +16,11 @@
 use crate::{Config, Encoder, y4m};
 use caramel_kernel::curve::{self, Model};
 use caramel_kernel::xpsnr::{self, Xpsnr};
-use caramel_kernel::{EncodeContext, FAST_CRF, FAST_FRAMES, FAST_PRESET, FastEncode, Frame, PROBE_FRAMES, Plane, SceneConfig, SceneDecider, SceneDecision, SceneJudge, SourceContext};
+use caramel_kernel::{EncodeContext, FAST_CRF, FAST_FRAMES, FAST_PRESET, FastEncode, Frame, PROBE_FRAMES, Plane, SceneConfig, SceneDecider, SceneDecision, SceneJudge, SourceContext, SourceTrust};
 use std::collections::VecDeque;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 // Where every model a machine has installed is kept, one file per version, relative to the
 // process. An encode names the model it decides with, and chunks started before a retrained model
@@ -185,6 +186,170 @@ struct Queued {
     boundary: Option<u64>,
     // Its fast encode has been tried, whatever came of it.
     fast_done: bool,
+    // The source's trust has been applied to it (`SceneDecision::temper`).
+    tempered: bool,
+}
+
+// What the test encodes of one source found, shared by everything encoding it: the segments of a
+// whole-file analysis through memory, the chunks of an encode — threads and AOT child processes
+// alike — through one file in the encode's chunk directory, a margin in dB per line. A chunk reads
+// what the chunks before it found, so the source's trust carries over chunk boundaries. Chunks run
+// side by side, so a chunk encoded again after a restart may read more than it did the first time
+// and decide its raises differently; the output is valid either way.
+#[derive(Clone, Default)]
+pub struct TrustShare {
+    margins: Arc<Mutex<Vec<f64>>>,
+    file: Option<PathBuf>,
+}
+
+pub const TRUST_FILE: &str = "caramel.trust";
+
+impl TrustShare {
+    pub fn file(path: PathBuf) -> Self {
+        Self { file: Some(path), ..Self::default() }
+    }
+
+    pub fn trust(&self) -> SourceTrust {
+        match &self.file {
+            Some(path) => SourceTrust::from_margins(std::fs::read_to_string(path).unwrap_or_default().lines().filter_map(|line| line.trim().parse().ok())),
+            None => SourceTrust::from_margins(self.margins.lock().map(|margins| margins.clone()).unwrap_or_default()),
+        }
+    }
+
+    // One line is far below what an append writes atomically, so chunks never interleave.
+    pub fn record(&self, margin: f64) {
+        match &self.file {
+            Some(path) => {
+                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                    file.write_all(format!("{margin:.4}\n").as_bytes()).ok();
+                }
+            }
+            None => {
+                if let Ok(mut margins) = self.margins.lock() {
+                    margins.push(margin);
+                }
+            }
+        }
+    }
+}
+
+// What became of one scene, for the record an encode keeps of its decisions: Caramel's verification
+// later re-measures the scenes whose decisions were raises or looked doubtful, from these.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecisionRecord {
+    pub start: u64,
+    pub frames: u64,
+    pub anchor: f32,
+    // The CRF the scene was encoded at, and the one the model chose before the source's trust and
+    // its test encode had their say.
+    pub crf: f32,
+    pub model_crf: f32,
+    pub tempered: Option<f32>,
+    // The test encode: the CRF it was made at, what it measured and what it was held to.
+    pub probe: Option<(f32, f64, f64)>,
+    // The fast encode's XPSNR and log2 bits per pixel.
+    pub fast: Option<(f64, f64)>,
+    // What moved the scene (`detail` or `banding`) and the scene's ease over a detailed one.
+    pub factor: String,
+    pub ease: f64,
+    // Each deciding metric's vote: its name, offset and the networks' spread.
+    pub votes: Vec<(String, f64, f64)>,
+    pub cut_pairs_within: usize,
+}
+
+impl DecisionRecord {
+    // The records of decisions in order, the last one running to `length`.
+    pub fn from_decisions(decisions: &[SceneDecision], length: u64) -> Vec<Self> {
+        decisions
+            .iter()
+            .enumerate()
+            .map(|(index, decision)| {
+                let end = decisions.get(index + 1).map_or(length, |next| next.start_frame).max(decision.start_frame);
+                let probe = decision.estimate.probe.as_ref();
+                let contribution = decision.estimate.contributions.first();
+                Self {
+                    start: decision.start_frame,
+                    frames: end - decision.start_frame,
+                    anchor: decision.estimate.anchor_crf,
+                    crf: decision.crf,
+                    model_crf: decision.tempered_from.or(probe.map(|probe| probe.crf)).unwrap_or(decision.crf),
+                    tempered: decision.tempered_from.map(|_| probe.map_or(decision.crf, |probe| probe.crf)),
+                    probe: probe.and_then(|probe| probe.measured.map(|measured| (probe.crf, measured, probe.target))),
+                    fast: decision.features.fast_encode.map(|fast| (fast.xpsnr, fast.log_bpp)),
+                    factor: contribution.map_or(String::new(), |factor| factor.factor.to_string()),
+                    ease: contribution.map_or(0.0, |factor| factor.value),
+                    votes: decision.estimate.votes.iter().map(|vote| (vote.metric.to_string(), vote.offset, vote.spread)).collect(),
+                    cut_pairs_within: decision.cut_pairs_within,
+                }
+            })
+            .collect()
+    }
+
+    // One line, `|`-separated, empty for none: the chunk sidecar's format.
+    pub fn to_line(&self) -> String {
+        let option = |value: Option<String>| value.unwrap_or_default();
+        let votes: Vec<String> = self.votes.iter().map(|(metric, offset, spread)| format!("{metric}:{offset:.3}:{spread:.3}")).collect();
+        [
+            self.start.to_string(),
+            self.frames.to_string(),
+            self.anchor.to_string(),
+            self.crf.to_string(),
+            self.model_crf.to_string(),
+            option(self.tempered.map(|crf| crf.to_string())),
+            option(self.probe.map(|(crf, measured, target)| format!("{crf}/{measured:.4}/{target:.4}"))),
+            option(self.fast.map(|(xpsnr, bits)| format!("{xpsnr:.4}/{bits:.4}"))),
+            self.factor.clone(),
+            format!("{:.3}", self.ease),
+            votes.join(","),
+            self.cut_pairs_within.to_string(),
+        ]
+        .join("|")
+    }
+
+    pub fn from_line(line: &str) -> Option<Self> {
+        let fields: Vec<&str> = line.trim_end().split('|').collect();
+        if fields.len() != 12 {
+            return None;
+        }
+        let numbers = |text: &str| -> Option<Vec<f64>> { text.split('/').map(|part| part.parse().ok()).collect() };
+        fn optional(text: &str) -> Option<&str> {
+            if text.is_empty() { None } else { Some(text) }
+        }
+        Some(Self {
+            start: fields[0].parse().ok()?,
+            frames: fields[1].parse().ok()?,
+            anchor: fields[2].parse().ok()?,
+            crf: fields[3].parse().ok()?,
+            model_crf: fields[4].parse().ok()?,
+            tempered: match optional(fields[5]) {
+                Some(text) => Some(text.parse().ok()?),
+                None => None,
+            },
+            probe: match optional(fields[6]).map(numbers) {
+                Some(Some(values)) if values.len() == 3 => Some((values[0] as f32, values[1], values[2])),
+                Some(_) => return None,
+                None => None,
+            },
+            fast: match optional(fields[7]).map(numbers) {
+                Some(Some(values)) if values.len() == 2 => Some((values[0], values[1])),
+                Some(_) => return None,
+                None => None,
+            },
+            factor: fields[8].to_string(),
+            ease: fields[9].parse().ok()?,
+            votes: optional(fields[10])
+                .map(|text| {
+                    text.split(',')
+                        .map(|vote| {
+                            let mut parts = vote.split(':');
+                            Some((parts.next()?.to_string(), parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+                        })
+                        .collect::<Option<Vec<_>>>()
+                })
+                .unwrap_or(Some(Vec::new()))?,
+            cut_pairs_within: fields[11].parse().ok()?,
+        })
+    }
 }
 
 pub struct SceneSchedule {
@@ -199,6 +364,8 @@ pub struct SceneSchedule {
     // The settings every scene's fast encode is made with, and what decides it again with that,
     // when the model reads one.
     fast: Option<(Config, SceneJudge)>,
+    // What the source's test encodes found so far, and where this schedule's go.
+    trust: TrustShare,
     current: f32,
     width: usize,
     height: usize,
@@ -255,6 +422,7 @@ impl SceneSchedule {
             upcoming: VecDeque::new(),
             probe,
             fast,
+            trust: TrustShare::default(),
             current: anchor,
             width,
             height,
@@ -262,6 +430,12 @@ impl SceneSchedule {
             marks: Vec::new(),
             decisions: Vec::new(),
         }
+    }
+
+    // Shares the source's trust with whatever else encodes it (`TrustShare`).
+    pub fn with_trust(mut self, trust: TrustShare) -> Self {
+        self.trust = trust;
+        self
     }
 
     pub fn push(&mut self, frame: &y4m::Frame) -> Result<(), String> {
@@ -272,7 +446,7 @@ impl SceneSchedule {
         let mut progress = None;
         if let Some(decider) = self.decider.as_mut() {
             let decisions = decider.push(&Frame { y, u, v });
-            self.queued.extend(decisions.into_iter().map(|decision| Queued { decision, boundary: None, fast_done: false }));
+            self.queued.extend(decisions.into_iter().map(|decision| Queued { decision, boundary: None, fast_done: false, tempered: false }));
             progress = Some((decider.scene_start(), decider.settled()));
         }
         self.pending.push_back(OwnedFrame {
@@ -298,7 +472,7 @@ impl SceneSchedule {
     // The stream ended: whatever is still held back is decided now.
     pub fn finish(&mut self) {
         if let Some(last) = self.decider.take().and_then(SceneDecider::finish) {
-            self.queued.push_back(Queued { decision: last, boundary: None, fast_done: false });
+            self.queued.push_back(Queued { decision: last, boundary: None, fast_done: false, tempered: false });
         }
         self.release(None);
     }
@@ -319,8 +493,9 @@ impl SceneSchedule {
     }
 
     // Releases queued scenes in order. A scene is first encoded fast and decided again, when the
-    // model reads that and wants it for this scene, once all of it is here; then test-encoded, when
-    // it was raised far, once its first `PROBE_FRAMES` are.
+    // model reads that and wants it for this scene, once all of it is here; then its raise is
+    // tempered by what the source's test encodes found so far; then it is test-encoded, when it was
+    // raised far enough for this source, once its first `PROBE_FRAMES` are.
     fn release(&mut self, settled: Option<u64>) {
         while let Some(front) = self.queued.front() {
             let start = front.decision.start_frame;
@@ -344,6 +519,14 @@ impl SceneSchedule {
                     judge.redecide(&mut front.decision, fast);
                 }
             }
+            let front = self.queued.front_mut().expect("checked above");
+            if !front.tempered {
+                front.tempered = true;
+                // Without test encodes there is nothing to trust or distrust: the usual threshold,
+                // which only decides which unrun probes a report drops.
+                let trust = if self.probe.is_some() { self.trust.trust() } else { SourceTrust::default() };
+                front.decision.temper(&trust);
+            }
             let front = self.queued.front().expect("checked above");
             let wants_probe = self.probe.is_some() && front.decision.estimate.probe.as_ref().is_some_and(|probe| probe.measured.is_none());
             if wants_probe {
@@ -354,7 +537,11 @@ impl SceneSchedule {
                 let config = self.probe.as_ref().expect("checked above");
                 // A probe that cannot run leaves the scene as the model decided it.
                 if let Ok(measured) = probe_xpsnr(config, front.decision.crf, &frames, self.width, self.height) {
-                    self.queued.front_mut().expect("checked above").decision.settle_probe(measured);
+                    let decision = &mut self.queued.front_mut().expect("checked above").decision;
+                    if let Some(probe) = decision.estimate.probe.as_ref() {
+                        self.trust.record(measured - probe.target);
+                    }
+                    decision.settle_probe(measured);
                 }
             }
             let Queued { decision, .. } = self.queued.pop_front().expect("checked above");
@@ -490,6 +677,75 @@ pub fn sidecar_path(chunk: &Path) -> PathBuf {
 pub fn write_sidecar(chunk: &Path, marks: &[SceneMark]) -> std::io::Result<()> {
     let text: String = marks.iter().map(|mark| format!("{}|{}\n", mark.start, mark.crf)).collect();
     std::fs::write(sidecar_path(chunk), text)
+}
+
+// A chunk's decisions, beside it: `<chunk>.decisions`, one `DecisionRecord` line per scene, starts
+// counted from the chunk's first frame. Optional: a chunk from an older build has none.
+pub fn decisions_path(chunk: &Path) -> PathBuf {
+    let mut name = chunk.as_os_str().to_owned();
+    name.push(".decisions");
+    PathBuf::from(name)
+}
+
+pub fn write_decisions(chunk: &Path, records: &[DecisionRecord]) -> std::io::Result<()> {
+    let text: String = records.iter().map(|record| record.to_line() + "\n").collect();
+    std::fs::write(decisions_path(chunk), text)
+}
+
+pub fn read_decisions(chunk: &Path) -> Option<Vec<DecisionRecord>> {
+    let text = std::fs::read_to_string(decisions_path(chunk)).ok()?;
+    text.lines().filter(|line| !line.is_empty()).map(DecisionRecord::from_line).collect()
+}
+
+// A whole encode's decisions, beside its output: `<output>.caramel-decisions`. A header line
+// `#caramel-decisions model=<version> anchor=<crf> fps=<rate>`, then one `DecisionRecord` line per
+// scene with starts counted from the source's first frame. The worker keeps it, with the source,
+// for Caramel's verification to re-measure the encode's raises later.
+pub const DECISIONS_HEADER: &str = "#caramel-decisions";
+
+pub fn encode_decisions_path(output: &Path) -> PathBuf {
+    let mut name = output.as_os_str().to_owned();
+    name.push(".caramel-decisions");
+    PathBuf::from(name)
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct EncodeDecisions {
+    pub model: String,
+    pub anchor: f32,
+    pub fps: f64,
+    pub records: Vec<DecisionRecord>,
+}
+
+impl EncodeDecisions {
+    pub fn to_text(&self) -> String {
+        let mut text = format!("{DECISIONS_HEADER} model={} anchor={} fps={}\n", self.model, self.anchor, self.fps);
+        for record in &self.records {
+            text.push_str(&record.to_line());
+            text.push('\n');
+        }
+        text
+    }
+
+    pub fn from_text(text: &str) -> Option<Self> {
+        let mut lines = text.lines();
+        let header = lines.next()?.strip_prefix(DECISIONS_HEADER)?;
+        let field = |key: &str| header.split_whitespace().find_map(|pair| pair.strip_prefix(key)?.strip_prefix('='));
+        Some(Self {
+            model: field("model")?.to_string(),
+            anchor: field("anchor")?.parse().ok()?,
+            fps: field("fps")?.parse().ok()?,
+            records: lines.filter(|line| !line.is_empty()).map(DecisionRecord::from_line).collect::<Option<_>>()?,
+        })
+    }
+
+    pub fn write(&self, path: &Path) -> std::io::Result<()> {
+        std::fs::write(path, self.to_text())
+    }
+
+    pub fn read(path: &Path) -> Option<Self> {
+        Self::from_text(&std::fs::read_to_string(path).ok()?)
+    }
 }
 
 pub fn read_sidecar(chunk: &Path) -> Option<Vec<SceneMark>> {
@@ -768,5 +1024,31 @@ mod tests {
         assert_eq!((summary.scenes, summary.frames, summary.unknown_chunks), (2, 100, 1));
         assert_eq!((summary.min_crf, summary.max_crf), (16.0, 19.5));
         assert!((summary.mean_crf - (16.0 * 25.0 + 19.5 * 75.0) / 100.0).abs() < 1e-9);
+    }
+
+    // An encode's decisions read back as written, including scenes without a probe or a fast encode,
+    // and a malformed line refuses the whole file rather than dropping a scene silently.
+    #[test]
+    fn encode_decisions_read_back() {
+        let raised = DecisionRecord {
+            start: 120,
+            frames: 48,
+            anchor: 17.0,
+            crf: 19.5,
+            model_crf: 21.0,
+            tempered: Some(20.0),
+            probe: Some((20.0, 41.25, 41.5)),
+            fast: Some((44.1, -3.2)),
+            factor: "detail".to_string(),
+            ease: 1.25,
+            votes: vec![("xpsnr".to_string(), 3.5, 0.25), ("cambi".to_string(), 0.0, 0.0)],
+            cut_pairs_within: 1,
+        };
+        let kept = DecisionRecord { start: 168, frames: 30, crf: 17.0, model_crf: 17.0, tempered: None, probe: None, fast: None, votes: Vec::new(), ..raised.clone() };
+        let encode = EncodeDecisions { model: "caramel-neural-1.928-688149".to_string(), anchor: 17.0, fps: 23.976, records: vec![raised, kept] };
+        assert_eq!(EncodeDecisions::from_text(&encode.to_text()), Some(encode.clone()));
+        let broken = encode.to_text() + "1|2|3\n";
+        assert_eq!(EncodeDecisions::from_text(&broken), None);
+        assert_eq!(EncodeDecisions::from_text("120|48\n"), None);
     }
 }

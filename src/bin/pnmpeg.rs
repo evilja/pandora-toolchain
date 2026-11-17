@@ -920,12 +920,27 @@ fn caramel_zones(args: &Args, preset: &ResolvedPreset, anchor: f32, workers: usi
         Ok(report) => {
             log.line(&summary_line(&report));
             log.line(&format!("caramel zones: {} bytes after {:.1}s", report.zones.len(), started.elapsed().as_secs_f64()));
+            keep_caramel_decisions(args, report.model.clone(), anchor, report.source.fps, report.decisions.clone(), log);
             report.zones
         }
         Err(error) => {
             log.line(&format!("caramel analysis failed ({error}); encoding at the fixed CRF {anchor}"));
             String::new()
         }
+    }
+}
+
+// The encode's scene decisions, beside its output, for the worker to keep for verification. Losing
+// them costs only that encode's verification, so a failure is logged and the encode goes on.
+fn keep_caramel_decisions(args: &Args, model: String, anchor: f32, fps: f64, records: Vec<pnx264::scenes::DecisionRecord>, log: &mut ToolLog) {
+    if records.is_empty() {
+        return;
+    }
+    let path = pnx264::scenes::encode_decisions_path(Path::new(&args.output));
+    let scenes = records.len();
+    match (pnx264::scenes::EncodeDecisions { model, anchor, fps, records }).write(&path) {
+        Ok(()) => log.line(&format!("caramel decisions: {scenes} scenes kept at {}", path.display())),
+        Err(error) => log.line(&format!("caramel decisions not kept: {error}")),
     }
 }
 
@@ -2292,6 +2307,7 @@ async fn main() {
         if let Some(preset) = active_preset.as_ref().filter(|preset| preset.caramel_analysis()) {
             encoder.caramel = Some(caramel_scene_crf(Path::new(&args.input), preset, x264_config.crf, &mut log));
         }
+        let caramel_model = encoder.caramel.as_ref().and_then(|caramel| caramel.model.clone());
         let result = pnx264::parallel::encode_parallel(
             pnx264::parallel::ParallelConfig {
                 ffmpeg: resolve_runtime_binary("ffmpeg"),
@@ -2344,6 +2360,9 @@ async fn main() {
                         x264_config.crf,
                         scenes.unknown_chunks,
                     ));
+                    let model = caramel_model.clone().unwrap_or_else(caramel_kernel::model_version);
+                    let fps = probe_source(Path::new(&args.input)).map(|probe| probe.context.fps).unwrap_or(0.0);
+                    keep_caramel_decisions(&args, model, x264_config.crf, fps, summary.decisions.clone(), &mut log);
                 }
                 println!("{}", pn_emit!(
                     protocol = proto,

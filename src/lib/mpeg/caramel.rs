@@ -298,6 +298,10 @@ pub struct CaramelReport {
     pub hosted: Option<HostedEncode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hosted_error: Option<String>,
+    // Every scene's decision as an encode records it (`caramel.decisions`), for the encodes made
+    // from this report to keep for verification.
+    #[serde(skip)]
+    pub decisions: Vec<pnx264::scenes::DecisionRecord>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -430,6 +434,7 @@ fn analyse_segment(
     start: u64,
     frames: Option<u64>,
     fps: f64,
+    trust: &pnx264::scenes::TrustShare,
 ) -> Result<SegmentResult, String> {
     let mut command = Command::new(ffmpeg);
     command.args(["-v", "error", "-nostdin", "-threads", &request.decoder_threads.to_string()]);
@@ -464,7 +469,7 @@ fn analyse_segment(
         let probe = request.probe.as_ref().filter(|_| measurable);
         let fast = request.fast.as_ref().filter(|_| measurable);
         let (fps_num, fps_den) = fps_ratio(fps);
-        let mut schedule = SceneSchedule::from_decider(decider, width, height, fps_num, fps_den, encode.anchor_crf, probe, fast);
+        let mut schedule = SceneSchedule::from_decider(decider, width, height, fps_num, fps_den, encode.anchor_crf, probe, fast).with_trust(trust.clone());
         let mut decoded = 0u64;
         let mut reported = 0usize;
         while let Some(frame) = reader.next_frame()? {
@@ -679,12 +684,15 @@ pub fn run_scene_analysis(request: &SceneRequest) -> Result<CaramelReport, Strin
         }
     }
     let ffmpeg: PathBuf = resolve_runtime_binary("ffmpeg").into();
+    // Segments run side by side, so a source's trust is what the segments have probed so far,
+    // wherever in the video that was.
+    let trust = pnx264::scenes::TrustShare::default();
     let results: Vec<Result<SegmentResult, String>> = std::thread::scope(|scope| {
         let handles: Vec<_> = segments
             .iter()
             .map(|&(from, length)| {
-                let (ffmpeg, source) = (&ffmpeg, &source);
-                scope.spawn(move || analyse_segment(ffmpeg, request, source, from, length, fps))
+                let (ffmpeg, source, trust) = (&ffmpeg, &source, &trust);
+                scope.spawn(move || analyse_segment(ffmpeg, request, source, from, length, fps, trust))
             })
             .collect();
         handles
@@ -693,8 +701,11 @@ pub fn run_scene_analysis(request: &SceneRequest) -> Result<CaramelReport, Strin
             .collect()
     });
     let mut scenes = Vec::new();
+    let mut decisions = Vec::new();
     for result in results {
-        scenes.extend(segment_scenes(&result?, fps));
+        let result = result?;
+        scenes.extend(segment_scenes(&result, fps));
+        decisions.extend(pnx264::scenes::DecisionRecord::from_decisions(&result.decisions, result.start + result.decoded));
     }
     if scenes.is_empty() {
         return Err("no frames decoded".to_string());
@@ -719,6 +730,7 @@ pub fn run_scene_analysis(request: &SceneRequest) -> Result<CaramelReport, Strin
         verify_error: None,
         hosted: None,
         hosted_error: None,
+        decisions,
     })
 }
 

@@ -41,7 +41,7 @@
 // aq-mode 3, aq-strength 0.8). Other resolutions get a small prior (`output-resolution`), not a fit.
 
 use crate::curve;
-use crate::probe::{PROBE_FROM, Probe};
+use crate::probe::{PROBE_LOWEST, Probe};
 use crate::window::WindowFeatures;
 use serde::{Deserialize, Serialize};
 
@@ -206,8 +206,9 @@ pub struct SceneEstimate {
     // held the others back). With a network it is `detail` — how many CRF of ease the scene has
     // over a detailed one — or `banding` when banding's vote held the raise back to that.
     pub contributions: Vec<Contribution>,
-    // For a raise of at least `probe::PROBE_FROM` decided by a network: what a test encode of the
-    // scene is held to (`probe`). None for every other scene.
+    // For a raise of at least `probe::PROBE_LOWEST` decided by a network: what a test encode of the
+    // scene would be held to (`probe`). Whether it runs is the encoder's call (`SourceTrust`); one
+    // it does not run is dropped before the decision is reported. None for every other scene.
     pub probe: Option<crate::probe::Probe>,
 }
 
@@ -389,7 +390,7 @@ pub fn estimate_scene_with(model: Option<&curve::Model>, window: &WindowFeatures
     let scaled = if raw_adjustment > 0.0 { raw_adjustment * confidence } else { raw_adjustment };
     let adjustment = scaled.clamp(-max_lower, max_raise);
     let crf = round_crf(anchor + adjustment, encode);
-    let probe = probe.filter(|_| adjustment >= PROBE_FROM).map(|probe| Probe { crf, ..probe });
+    let probe = probe.filter(|_| adjustment >= PROBE_LOWEST).map(|probe| Probe { crf, ..probe });
     SceneEstimate {
         crf,
         anchor_crf: encode.anchor_crf,

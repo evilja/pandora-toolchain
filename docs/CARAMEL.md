@@ -23,7 +23,7 @@ or a job asks for Caramel Analysis at all.
 | `src/lib/mpeg/caramel_lab.rs` | The lab: picks scenes, encodes and measures them with ffmpeg, appends `LabSample`s to the dataset. |
 | `src/lib/mpeg/caramel_train.rs` | Models on disk (`install`, `activate`, `installed_version`) and `train_dataset`, which trains a candidate and writes the report. |
 | `src/pnworker/research.rs` | The idle-time worker: finds sources, runs the lab and the trainer as low-priority children, stops for the queue. |
-| `caramel-kernel/src/probe.rs` | `Probe`: what a test encode of a far raise is held to, and `settle`, which pulls the raise back from what the encode measured. |
+| `caramel-kernel/src/probe.rs` | `Probe`: what a test encode of a far raise is held to, and `settle`, which pulls the raise back from what the encode measured. `SourceTrust`: how a source's probes have gone, and what that makes of its next raises. |
 | `caramel-kernel/src/xpsnr.rs` | XPSNR computed exactly as ffmpeg's `xpsnr` filter computes it, for encoders that measure without ffmpeg. |
 | `pnx264/src/scenes.rs` | `load_model`: a chunk encoder decides with the model its planner named, read from `DB/caramel/models/`. `SceneSchedule` runs the test encodes (`probe_xpsnr`) and the fast encodes (`fast_encode`), in chunk encoders and in the whole-file analysis alike. |
 | `examples/caramel_explain.rs`, `scripts/caramel-viz.py` | Watching the model decide: see [Seeing a decision](#seeing-a-decision). |
@@ -121,7 +121,49 @@ the anchor. A test encode never raises a scene further.
   *Kendeshita*'s scenes at 19–19.5 — were raised by 1.5–2.5 CRF, under the threshold. Probing from
   2 CRF would check them: on *Ping Pong* it probed 367 scenes and pulled raises of 2–3 back 1.7 CRF
   on average (mean CRF 18.22); on *Kendeshita* it pulled them back 0.35. Both cost about 25% more
-  frames encoded, which is why the threshold stays at 3 for now.
+  frames encoded on every source, which is why the threshold is not 2 everywhere — only on sources
+  that have earned it (below).
+
+### Sources whose raises fall short
+
+Since shortness belongs to the source, an encode keeps a record of how its test encodes went and
+lets that decide its later raises (`caramel_kernel::SourceTrust`). Each probe records its margin —
+measured minus target, in dB. Over the latest **24** probes (`TRUST_WINDOW`), once there are at
+least **4** (`TRUST_MIN`), a source whose share of short probes is above **20%** (`TRUST_SHORT`)
+is *distrusted*:
+
+- **Its raises shrink before they are probed.** A raise keeps `1 − 0.8 × (share − 0.2)` of itself,
+  never less than **0.6** (`TRUST_FLOOR`): 84% at a 40% short share, 60% from Haibane's 69% and
+  Ping Pong's 75% on. The CRF is rounded down to the 0.5 step, never below the anchor
+  (`SceneDecision::temper`). The decision keeps the model's own CRF as `tempered_from`.
+- **Its smaller raises are checked.** Raises of **2 CRF** (`PROBE_LOWEST`) and more are probed
+  instead of 3. The kernel attaches a probe to every network raise from 2; the schedule drops the
+  ones the source's trust does not call for, so a report never shows a probe that did not run.
+
+A source whose latest probes hold is trusted again as the old ones leave the window. A source that
+is never distrusted encodes exactly as before. Without probes (`probe` off, 10-bit or resized
+output) there is no record and nothing changes.
+
+The record is shared by everything encoding one source (`pnx264::scenes::TrustShare`). The
+segments of a whole-file analysis share it in memory. The chunks of a parallel encode share one
+file, `caramel.trust` in the AOT directory when there is one and the scratch directory otherwise,
+one margin per line, appended — threads and AOT child processes alike. Chunks run side by side, so
+a chunk reads whatever its neighbours have probed by the time it gets to a scene, and a chunk
+encoded again after a restart may read more than it did the first time and decide its raises
+differently. Both outputs are valid encodes; they are just not bit-identical.
+
+## What an encode keeps of its decisions
+
+Every Caramel encode writes `<output>.caramel-decisions` beside its output
+(`pnx264::scenes::EncodeDecisions`): a header `#caramel-decisions model=<version> anchor=<crf>
+fps=<rate>`, then one `|`-separated line per scene — start frame (from the source's first frame),
+frames, anchor, the CRF encoded, the CRF the model chose, the CRF after the source's trust (empty
+if untouched), the probe as `crf/measured/target` (empty if none ran), the fast encode as
+`xpsnr/log_bpp`, the deciding factor and the scene's ease, the votes as `metric:offset:spread`
+joined by commas, and the cut pairs inside the scene. Chunk encoders write the same lines per
+chunk, beside the chunk (`<chunk>.decisions`, starts from the chunk's first frame); the encode
+gathers them, and a chunk reused from an older build without one is left out. The zones path writes
+them from the whole-file analysis. A file that cannot be written is logged and the encode goes on.
 
 ## The lab: `pnmpeg --caramel-lab`
 

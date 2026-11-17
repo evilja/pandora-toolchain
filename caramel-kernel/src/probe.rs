@@ -21,6 +21,10 @@ use serde::Serialize;
 // a probe costs an encode of the scene's opening frames.
 pub const PROBE_FROM: f64 = 3.0;
 
+// The smallest raise that is checked on a source whose raises have been falling short
+// (`SourceTrust`). Every raise from here up carries a probe; which of them run is the encoder's call.
+pub const PROBE_LOWEST: f64 = 2.0;
+
 // How many of a scene's first frames the test encode is made of, at most: fewer when the scene is
 // shorter. The first is an IDR in a test encode and is left out of the measurement, as the lab
 // leaves a clip's first frame out.
@@ -63,9 +67,104 @@ impl Probe {
     }
 }
 
+// How the test encodes of one source have gone so far, and what that makes of its next raises.
+//
+// Whether a raise falls short depends on the source far more than on the size of the raise: on six
+// verification episodes 75% of Ping Pong's probed raises fell short and 69% of Haibane Renmei's,
+// against 14–19% on two others, and raises of 3–4 CRF fell short as often as raises of 4–5. So once a
+// source's raises have been falling short, its smaller raises are checked too — the worst misses
+// those episodes had were raises of 1.5–2.5 — and every raise is made smaller, before any probe,
+// in proportion. A source whose raises hold keeps the model's raises and the usual threshold.
+//
+// Only the latest `TRUST_WINDOW` probes count, so a source that settles into scenes the model reads
+// well is trusted again. Nothing is concluded from fewer than `TRUST_MIN`.
+pub const TRUST_WINDOW: usize = 24;
+pub const TRUST_MIN: usize = 4;
+// The share of probes falling short that a source may have before it is distrusted, and the least
+// share of a raise that a distrusted source keeps.
+pub const TRUST_SHORT: f64 = 0.2;
+pub const TRUST_FLOOR: f64 = 0.6;
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SourceTrust {
+    // What each probe measured over its target, in dB, oldest first.
+    margins: Vec<f64>,
+}
+
+impl SourceTrust {
+    pub fn from_margins(margins: impl IntoIterator<Item = f64>) -> Self {
+        let mut trust = Self::default();
+        for margin in margins {
+            trust.record(margin);
+        }
+        trust
+    }
+
+    pub fn record(&mut self, margin: f64) {
+        if margin.is_finite() {
+            self.margins.push(margin);
+            if self.margins.len() > TRUST_WINDOW {
+                self.margins.remove(0);
+            }
+        }
+    }
+
+    pub fn probes(&self) -> usize {
+        self.margins.len()
+    }
+
+    // The share of the latest probes that fell short; None until there are enough to say.
+    pub fn short_share(&self) -> Option<f64> {
+        (self.margins.len() >= TRUST_MIN).then(|| self.margins.iter().filter(|margin| **margin < 0.0).count() as f64 / self.margins.len() as f64)
+    }
+
+    fn distrusted(&self) -> Option<f64> {
+        self.short_share().filter(|share| *share > TRUST_SHORT)
+    }
+
+    // The smallest raise to check on this source.
+    pub fn probe_from(&self) -> f64 {
+        if self.distrusted().is_some() { PROBE_LOWEST } else { PROBE_FROM }
+    }
+
+    // The share of the model's raise this source keeps: all of it while trusted, down to
+    // `TRUST_FLOOR` as its raises fall short more often — 0.84 at 40%, the floor from Haibane's 69%
+    // and Ping Pong's 75% on.
+    pub fn raise_scale(&self) -> f64 {
+        self.distrusted().map_or(1.0, |share| (1.0 - 0.8 * (share - TRUST_SHORT)).clamp(TRUST_FLOOR, 1.0))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A source is trusted until enough of its probes fell short, then checked from 2 CRF and its
+    // raises shrunk; once its latest probes hold again it is trusted again.
+    #[test]
+    fn a_source_whose_raises_fall_short_is_checked_more_and_raised_less() {
+        let mut trust = SourceTrust::default();
+        assert_eq!((trust.probe_from(), trust.raise_scale(), trust.short_share()), (PROBE_FROM, 1.0, None));
+        for margin in [-0.5, -0.3, 0.2] {
+            trust.record(margin);
+        }
+        // Three probes say nothing yet, however they went.
+        assert_eq!(trust.probe_from(), PROBE_FROM);
+        trust.record(-0.1);
+        assert_eq!(trust.short_share(), Some(0.75));
+        assert_eq!(trust.probe_from(), PROBE_LOWEST);
+        assert_eq!(trust.raise_scale(), TRUST_FLOOR);
+        // One short in five is within what a trusted source has.
+        let held = SourceTrust::from_margins([-0.2, 0.1, 0.3, 0.4, 0.5]);
+        assert_eq!((held.probe_from(), held.raise_scale()), (PROBE_FROM, 1.0));
+        // A run of probes that hold pushes the misses out of the window.
+        for _ in 0..TRUST_WINDOW {
+            trust.record(0.4);
+        }
+        assert_eq!((trust.probe_from(), trust.raise_scale(), trust.probes()), (PROBE_FROM, 1.0, TRUST_WINDOW));
+        trust.record(f64::NAN);
+        assert_eq!(trust.probes(), TRUST_WINDOW);
+    }
 
     // A curve falling 0.5 dB per CRF, 40 dB at CRF 22.
     fn probe(crf: f32) -> Probe {
