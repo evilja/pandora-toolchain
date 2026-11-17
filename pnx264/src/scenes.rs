@@ -233,6 +233,41 @@ impl TrustShare {
     }
 }
 
+// Called with each scene once it is settled and its end is known, starts counted from the first
+// frame its caller asked about: what `pnmpeg --debug` prints as an encode goes.
+#[derive(Clone)]
+pub struct SceneReport(pub Arc<dyn Fn(&DecisionRecord) + Send + Sync>);
+
+impl SceneReport {
+    pub fn new(report: impl Fn(&DecisionRecord) + Send + Sync + 'static) -> Self {
+        Self(Arc::new(report))
+    }
+
+    // The same report for a caller whose frames start `offset` frames into the source.
+    pub fn offset(&self, offset: u64) -> Self {
+        let inner = self.0.clone();
+        Self::new(move |record| inner(&DecisionRecord { start: record.start + offset, ..record.clone() }))
+    }
+
+    pub fn send(&self, record: &DecisionRecord) {
+        (self.0)(record)
+    }
+}
+
+impl std::fmt::Debug for SceneReport {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SceneReport")
+    }
+}
+
+// `16:32.4`, or `1:02:03.0` past an hour.
+fn clock(seconds: f64) -> String {
+    let tenths = (seconds.max(0.0) * 10.0).round() as u64;
+    let (hours, minutes, seconds) = (tenths / 36000, tenths / 600 % 60, tenths % 600);
+    let seconds = format!("{:02}.{}", seconds / 10, seconds % 10);
+    if hours > 0 { format!("{hours}:{minutes:02}:{seconds}") } else { format!("{minutes:02}:{seconds}") }
+}
+
 // What became of one scene, for the record an encode keeps of its decisions: Caramel's verification
 // later re-measures the scenes whose decisions were raises or looked doubtful, from these.
 #[derive(Clone, Debug, PartialEq)]
@@ -283,6 +318,34 @@ impl DecisionRecord {
                 }
             })
             .collect()
+    }
+
+    // One line for a person following the encode: when the scene runs, the CRF the model chose,
+    // and what the source's trust and the test encode made of it.
+    pub fn debug_line(&self, fps: f64) -> String {
+        let fps = if fps > 0.0 { fps } else { 24000.0 / 1001.0 };
+        let mut line = format!(
+            "Clip {} - {} - CRF decision {}",
+            clock(self.start as f64 / fps),
+            clock((self.start + self.frames) as f64 / fps),
+            self.model_crf,
+        );
+        if self.model_crf != self.anchor {
+            let reason = if self.factor.is_empty() { String::new() } else { format!(", {} {:+.2}", self.factor, self.ease) };
+            line.push_str(&format!(" (anchor {}{reason})", self.anchor));
+        }
+        if let Some(tempered) = self.tempered {
+            line.push_str(&format!(" - source distrusted, lowered to {tempered}"));
+        }
+        if let Some((crf, measured, target)) = self.probe {
+            line.push_str(&format!(" - verifying {crf}... {measured:.2} dB against {target:.2} dB"));
+            if self.crf != crf {
+                line.push_str(&format!(" - new CRF decision {}", self.crf));
+            } else {
+                line.push_str(" - kept");
+            }
+        }
+        line
     }
 
     // One line, `|`-separated, empty for none: the chunk sidecar's format.
@@ -366,6 +429,10 @@ pub struct SceneSchedule {
     fast: Option<(Config, SceneJudge)>,
     // What the source's test encodes found so far, and where this schedule's go.
     trust: TrustShare,
+    // Told of each scene once it is settled and its end known.
+    report: Option<SceneReport>,
+    // Scenes in `decisions` already sent to `report`.
+    reported: usize,
     current: f32,
     width: usize,
     height: usize,
@@ -423,6 +490,8 @@ impl SceneSchedule {
             probe,
             fast,
             trust: TrustShare::default(),
+            report: None,
+            reported: 0,
             current: anchor,
             width,
             height,
@@ -430,6 +499,33 @@ impl SceneSchedule {
             marks: Vec::new(),
             decisions: Vec::new(),
         }
+    }
+
+    // Tells `report` of every scene as it is settled.
+    pub fn with_report(mut self, report: Option<SceneReport>) -> Self {
+        self.report = report;
+        self
+    }
+
+    // Sends the scenes whose end is known: every one but the last released, and that one too once
+    // the stream has ended.
+    fn send_reports(&mut self, ended: bool) {
+        let Some(report) = self.report.as_ref() else {
+            return;
+        };
+        let known = if ended { self.decisions.len() } else { self.decisions.len().saturating_sub(1) };
+        if known <= self.reported {
+            return;
+        }
+        let from = self.reported;
+        let end = if ended { self.pushed } else { self.decisions[known].start_frame };
+        let records = DecisionRecord::from_decisions(&self.decisions[from..known], end);
+        // `from_decisions` ends each scene at the next one it was given; the last of these ends
+        // where the next released scene starts.
+        for record in &records {
+            report.send(record);
+        }
+        self.reported = known;
     }
 
     // Shares the source's trust with whatever else encodes it (`TrustShare`).
@@ -475,6 +571,7 @@ impl SceneSchedule {
             self.queued.push_back(Queued { decision: last, boundary: None, fast_done: false, tempered: false });
         }
         self.release(None);
+        self.send_reports(true);
     }
 
     // Where the front scene's first `count` frames end, or where the scene does when that is sooner;
@@ -547,6 +644,7 @@ impl SceneSchedule {
             let Queued { decision, .. } = self.queued.pop_front().expect("checked above");
             self.upcoming.push_back(SceneMark { start: decision.start_frame, crf: decision.crf });
             self.decisions.push(decision);
+            self.send_reports(false);
         }
     }
 
@@ -1050,5 +1148,33 @@ mod tests {
         let broken = encode.to_text() + "1|2|3\n";
         assert_eq!(EncodeDecisions::from_text(&broken), None);
         assert_eq!(EncodeDecisions::from_text("120|48\n"), None);
+    }
+
+    // A scene a person reads as it is settled: kept, raised and held by its test encode, raised and
+    // pulled back by it after the source's trust lowered it.
+    #[test]
+    fn a_debug_line_says_what_the_scene_was_decided_and_verified_at() {
+        let kept = DecisionRecord {
+            start: 23_808,
+            frames: 48,
+            anchor: 17.0,
+            crf: 17.0,
+            model_crf: 17.0,
+            tempered: None,
+            probe: None,
+            fast: None,
+            factor: "detail".to_string(),
+            ease: 0.4,
+            votes: Vec::new(),
+            cut_pairs_within: 0,
+        };
+        assert_eq!(kept.debug_line(24.0), "Clip 16:32.0 - 16:34.0 - CRF decision 17");
+        let held = DecisionRecord { crf: 18.5, model_crf: 18.5, ease: 1.62, ..kept.clone() };
+        assert_eq!(held.debug_line(24.0), "Clip 16:32.0 - 16:34.0 - CRF decision 18.5 (anchor 17, detail +1.62)");
+        let pulled = DecisionRecord { start: 90_000, crf: 20.5, model_crf: 23.0, tempered: Some(21.0), probe: Some((21.0, 40.12, 40.8)), ease: 6.1, ..kept };
+        assert_eq!(
+            pulled.debug_line(24.0),
+            "Clip 1:02:30.0 - 1:02:32.0 - CRF decision 23 (anchor 17, detail +6.10) - source distrusted, lowered to 21 - verifying 21... 40.12 dB against 40.80 dB - new CRF decision 20.5"
+        );
     }
 }

@@ -177,6 +177,22 @@ chunk encoder, and `src/lib/mpeg/caramel.rs` runs it over a whole file and verif
   the installed one, without installing it, so a candidate can be set beside the model in use on
   whole episodes; one that reads fast encodes makes a scene's first when its base raised the scene,
 or every scene's when it has no base ([CARAMEL.md](CARAMEL.md#fast-encodes)).
+- **`--debug`** prints every scene Caramel Analysis settles to stderr as an encode goes, and
+  encodes an x264 preset with Caramel Analysis even when it is a fixed-CRF one, so any video can be
+  tried with the model:
+  ```
+  pnmpeg --x264 --debug [--caramel-model-file <path>] -i episode.mkv -o out.mp4 --ass subs.ass
+  ```
+  It starts with `Caramel: model <version>, anchor CRF <crf>`, then one line per scene, e.g.
+  `Clip 16:32.0 - 16:34.0 - CRF decision 18.5 (anchor 17, detail +1.62)`, or for a raise that was
+  test-encoded `… - CRF decision 21 (…) - verifying 21... 40.12 dB against 40.80 dB - new CRF
+  decision 20.5` (`kept` when it held). A raise shrunk because the source's raises have been
+  falling short says `source distrusted, lowered to <crf>` ([CARAMEL.md](CARAMEL.md#sources-whose-raises-fall-short)).
+  `detail` is how many CRF of ease the scene has over a detailed one, `banding` when banding's vote
+  held the raise back. A chunked encode settles its chunks side by side, so the lines come in the
+  order chunks settle them rather than in time order; a summary line ends the encode. With
+  `--caramel-report`, the same lines are printed while the report is made. `--caramel-model-file`
+  also works on an encode: that process decides with the file's model, nothing is installed.
 - **`--caramel-verify <auto|crf,crf,…>`** (with `--caramel-report`) also encodes up to six 4 s clips
   from the scenes moved furthest from the anchor, taken in turn from below and above it so both
   directions get measured (one side fills the remaining slots when the other runs out). With

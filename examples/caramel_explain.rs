@@ -107,6 +107,7 @@ fn main() {
         fast: None,
         model: None,
         live: None,
+        scene_report: None,
     };
     let report = run_scene_analysis(&request).unwrap_or_else(|error| {
         eprintln!("analysis failed: {error}");

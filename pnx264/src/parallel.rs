@@ -1,4 +1,4 @@
-use crate::scenes::{self, DecisionRecord, SceneCrfSummary, SceneMark, SceneSchedule, TrustShare};
+use crate::scenes::{self, DecisionRecord, SceneCrfSummary, SceneMark, SceneReport, SceneSchedule, TrustShare};
 use crate::y4m::Y4mReader;
 use crate::{Config, Encoder};
 use std::collections::HashMap;
@@ -55,6 +55,9 @@ pub struct ParallelConfig {
     pub audio_args: Vec<String>,
     // Additional options for the final output container.
     pub output_args: Vec<String>,
+    // Told of every scene Caramel Analysis settles, starts counted from the source's first frame.
+    // Chunks run side by side, so scenes arrive in the order chunks settle them, not in time order.
+    pub scene_report: Option<SceneReport>,
 }
 
 #[derive(Clone, Debug)]
@@ -468,6 +471,7 @@ fn encode_chunk(
             Some(encoder_config),
         )
         .with_trust(trust)
+        .with_report(config.scene_report.as_ref().map(|report| report.offset(start)))
     });
     let mut decoded = 0u64;
     while decoded < frames {
@@ -535,6 +539,7 @@ pub fn encode_aot_chunk(config: AotChunkConfig) -> Result<(), String> {
         audio_map: String::new(),
         audio_args: Vec::new(),
         output_args: Vec::new(),
+        scene_report: None,
     };
     let source = Source {
         width: config.width,
@@ -711,6 +716,11 @@ where
                             chunk_scenes.lock().unwrap().insert(index, marks);
                         }
                         if let Some(records) = records {
+                            if let Some(report) = config.scene_report.as_ref() {
+                                for record in &records {
+                                    report.send(&DecisionRecord { start: record.start + frame, ..record.clone() });
+                                }
+                            }
                             chunk_decisions.lock().unwrap().insert(index, records);
                         }
                         events.send(WorkerEvent::Progress).ok();

@@ -324,6 +324,7 @@ pub async fn run_caramel_job(
                 probe,
                 model,
                 live: Some(live.as_ref()),
+                scene_report: None,
             })
         })
     };

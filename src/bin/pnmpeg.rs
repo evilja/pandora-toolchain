@@ -155,10 +155,17 @@ struct Args {
     #[arg(long)]
     caramel_no_probe: bool,
 
-    /// With --caramel-report: decide with the model in this file instead of the installed one,
-    /// without installing it. For setting a candidate beside the model in use on whole episodes.
+    /// With --caramel-report, or an encode: decide with the model in this file instead of the
+    /// installed one, without installing it. For setting a candidate beside the model in use on
+    /// whole episodes.
     #[arg(long)]
     caramel_model_file: Option<String>,
+
+    /// Print every scene Caramel Analysis decides to stderr as the encode goes: when it runs, the
+    /// CRF the model chose, and what its test encode made of it. An x264 preset encodes with
+    /// Caramel Analysis under it even when it is a fixed-CRF preset.
+    #[arg(long)]
+    debug: bool,
 
     /// Measure scenes of --input for Caramel's dataset: each is encoded at several CRFs with the
     /// selected preset's x264 settings and measured against the source. Samples are appended to
@@ -737,6 +744,7 @@ fn caramel_lab(args: &Args, preset: Option<&ResolvedPreset>, anchor: f32, log: &
         fast: None,
         model: None,
         live: None,
+        scene_report: None,
     }) {
         Ok(report) => report,
         Err(error) => {
@@ -914,11 +922,15 @@ fn caramel_zones(args: &Args, preset: &ResolvedPreset, anchor: f32, workers: usi
         fast: probe_encoder(preset),
         model: None,
         live: None,
+        scene_report: debug_report(args),
     };
     let started = std::time::Instant::now();
     match run_scene_analysis(&request) {
         Ok(report) => {
             log.line(&summary_line(&report));
+            if args.debug {
+                eprintln!("{}", summary_line(&report));
+            }
             log.line(&format!("caramel zones: {} bytes after {:.1}s", report.zones.len(), started.elapsed().as_secs_f64()));
             keep_caramel_decisions(args, report.model.clone(), anchor, report.source.fps, report.decisions.clone(), log);
             report.zones
@@ -942,6 +954,15 @@ fn keep_caramel_decisions(args: &Args, model: String, anchor: f32, fps: f64, rec
         Ok(()) => log.line(&format!("caramel decisions: {scenes} scenes kept at {}", path.display())),
         Err(error) => log.line(&format!("caramel decisions not kept: {error}")),
     }
+}
+
+// With --debug: each scene as a line on stderr, timed against the input's frame rate.
+fn debug_report(args: &Args) -> Option<pnx264::scenes::SceneReport> {
+    if !args.debug {
+        return None;
+    }
+    let fps = caramel_fps(args).or_else(|| probe_source(Path::new(&args.input)).ok().map(|probe| probe.context.fps)).unwrap_or(0.0);
+    Some(pnx264::scenes::SceneReport::new(move |record| eprintln!("{}", record.debug_line(fps))))
 }
 
 fn planner_encoder_config(preset: Option<&ResolvedPreset>) -> pnx264::Config {
@@ -1633,7 +1654,13 @@ async fn main() {
     if selected > 1 {
         panic!("You must use one preset at a time.");
     }
-    let active_preset = active_preset(&args);
+    let mut active_preset = active_preset(&args);
+    if args.debug {
+        if let Some(preset) = active_preset.as_mut().filter(|preset| preset.encodes_with_x264()) {
+            preset.crf_mode = pandora_toolchain::lib::mpeg::preset::CrfMode::CaramelAnalysis;
+        }
+    }
+    let active_preset = active_preset;
     // Resolved once, here, because every encode path burns it in and they all have to agree: the
     // speculative prefix, the chunk encoders, and the foreground encode each produce part of one
     // video. Nothing is probed unless a percentage width was asked for, and a run with no `--logo`
@@ -1649,7 +1676,22 @@ async fn main() {
     }
     let x264_config = planner_encoder_config(active_preset.as_ref());
     // Every encode on this machine decides scenes with the model that was installed last.
+    if let Some(path) = args.caramel_model_file.as_deref().filter(|_| !args.caramel_report) {
+        match std::fs::read_to_string(path).map_err(|e| e.to_string()).and_then(|text| caramel_kernel::curve::Model::from_text(&text).map_err(|e| e.to_string())) {
+            Ok(model) => caramel_train::pin(std::sync::Arc::new(model)),
+            Err(error) => {
+                eprintln!("pnmpeg: {path}: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
     let caramel_model = caramel_train::activate();
+    if args.debug {
+        match active_preset.as_ref() {
+            Some(preset) if preset.caramel_analysis() => eprintln!("Caramel: model {caramel_model}, anchor CRF {}", x264_config.crf),
+            _ => eprintln!("Caramel: this preset does not encode with x264, so --debug has no scenes to show"),
+        }
+    }
     if active_preset.as_ref().is_some_and(|preset| preset.caramel_analysis()) || args.caramel_lab || args.caramel_report || args.caramel_train {
         log.line(&format!("caramel model {caramel_model}"));
     }
@@ -1704,6 +1746,7 @@ async fn main() {
             fast: active_preset.as_ref().and_then(probe_encoder),
             model,
             live: None,
+            scene_report: debug_report(&args),
         };
         match run_scene_analysis(&request) {
             Ok(mut report) => {
@@ -2323,6 +2366,7 @@ async fn main() {
                 audio_map: audio_index.clone(),
                 audio_args: source_audio_args(audio_encoder),
                 output_args: video_metadata_args(),
+                scene_report: debug_report(&args),
             },
             |update| {
                 let fps = update.fps.round() as u64;
@@ -2360,6 +2404,12 @@ async fn main() {
                         x264_config.crf,
                         scenes.unknown_chunks,
                     ));
+                    if args.debug {
+                        eprintln!(
+                            "Caramel: {} scenes, CRF {}..{}, mean {:.2} at anchor {}",
+                            scenes.scenes, scenes.min_crf, scenes.max_crf, scenes.mean_crf, x264_config.crf,
+                        );
+                    }
                     let model = caramel_model.clone().unwrap_or_else(caramel_kernel::model_version);
                     let fps = probe_source(Path::new(&args.input)).map(|probe| probe.context.fps).unwrap_or(0.0);
                     keep_caramel_decisions(&args, model, x264_config.crf, fps, summary.decisions.clone(), &mut log);

@@ -118,6 +118,9 @@ pub struct SceneRequest<'a> {
     // Where segments report scenes as they decide them, for a caller that shows the analysis as it
     // goes (`LiveScenes::snapshot`).
     pub live: Option<&'a LiveScenes>,
+    // Told of every scene as it is settled, starts counted from the input's first frame: what
+    // `pnmpeg --debug` prints.
+    pub scene_report: Option<pnx264::scenes::SceneReport>,
 }
 
 // Scenes as the segments decide them, read while the analysis runs. Segments run side by side, so
@@ -469,7 +472,8 @@ fn analyse_segment(
         let probe = request.probe.as_ref().filter(|_| measurable);
         let fast = request.fast.as_ref().filter(|_| measurable);
         let (fps_num, fps_den) = fps_ratio(fps);
-        let mut schedule = SceneSchedule::from_decider(decider, width, height, fps_num, fps_den, encode.anchor_crf, probe, fast).with_trust(trust.clone());
+        let mut schedule = SceneSchedule::from_decider(decider, width, height, fps_num, fps_den, encode.anchor_crf, probe, fast).with_trust(trust.clone())
+            .with_report(request.scene_report.as_ref().map(|report| report.offset(start)));
         let mut decoded = 0u64;
         let mut reported = 0usize;
         while let Some(frame) = reader.next_frame()? {
@@ -1305,6 +1309,7 @@ mod tests {
             fast: None,
             model: None,
             live: Some(&live),
+            scene_report: None,
         })
         .unwrap();
         let snapshot = live.snapshot();

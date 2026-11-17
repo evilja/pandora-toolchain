@@ -31,6 +31,16 @@ pub const FIRST_MODEL_SERIES: usize = 5;
 pub const MODEL_FAMILY: &str = "caramel-neural-1";
 
 // The version the pointer file names, when it names a model that is there.
+// A model this process decides with whatever is installed: `pnmpeg --caramel-model-file` on an
+// encode, so a candidate can be tried on a whole video without installing it.
+static PINNED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+pub fn pin(model: Arc<Model>) {
+    let version = model.version.clone();
+    curve::install(model);
+    PINNED.set(version).ok();
+}
+
 fn pointed_version() -> Option<String> {
     let version = std::fs::read_to_string(ACTIVE_FILE).ok()?.trim().to_string();
     (pnx264::scenes::valid_version(&version) && pnx264::scenes::model_file(&version).is_file()).then_some(version)
@@ -41,6 +51,9 @@ fn pointed_version() -> Option<String> {
 // the machine does. Without an installed model the built-in one is used; with one that does not
 // read, whatever the process had stays. Returns the version now active.
 pub fn activate() -> String {
+    if let Some(pinned) = PINNED.get() {
+        return pinned.clone();
+    }
     match pointed_version() {
         Some(version) => {
             if curve::active().is_none_or(|model| model.version != version) {
