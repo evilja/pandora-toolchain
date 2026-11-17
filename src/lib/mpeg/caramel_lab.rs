@@ -916,11 +916,13 @@ impl Lab<'_> {
     }
 }
 
-// How much of the lab's banding at `FAST_CRF` a fast encode reads, offset as the banding input is:
-// the 64 scenes of two series measured both ways read it in step (log-scale correlation 0.995) but
-// about a quarter lower (0.737 and 0.726 a series): veryfast x264 against the lab's preset, and
-// 8-bit frames against the lab's reference.
-pub const STAND_IN_BANDING: f64 = 0.73;
+// How much of the lab's banding at `FAST_CRF` a fast encode reads, offset as the banding input is.
+// Fitted on 544 scenes of 17 series measured both ways (log-scale correlation 0.89): the fast
+// encode reads about half as much. The share differs by series (0.24 for Cyberpunk Edgerunners to
+// 1.33 for Patlabor 2, grainy films and CG lowest) and nothing in the source's features predicted
+// it on held-out series, so the stand-in is noisy; a real reading replaces it whenever the source
+// can be read again.
+pub const STAND_IN_BANDING: f64 = 0.53;
 
 // What a backfill did to one source's samples in a dataset file.
 #[derive(Clone, Debug, Default, Serialize)]

@@ -385,9 +385,12 @@ lab and encoder read the same numbers; `--caramel-backfill` adds it, with the wh
 features, to samples measured before, and refills a fast encode made before it read banding. A
 sample whose fast encode has no banding is trained on the banding the lab's own encodes added at
 `FAST_CRF` instead (`LabSample::banding_stand_in`: `lab_banding` drawn between the encodes either
-side, scaled by `STAND_IN_BANDING`). On 64 scenes of two series measured both ways the two moved in
-step — log-scale correlation 0.995 — with the fast encode's about a quarter lower, the same in each
-series (0.737, 0.726), hence the scale of 0.73. The 8-bit frames are what both encode, so a 10-bit source
+side, scaled by `STAND_IN_BANDING`). On 544 scenes of 17 series measured both ways the two moved
+together (log-scale correlation 0.89), with the fast encode's about half the lab's, hence the scale
+of 0.53. The share is not one number: by series it ran from 0.24 (Cyberpunk Edgerunners) to 1.33
+(Patlabor 2), lowest on grainy films and CG, and neither bit depth, grain, gradients nor detail
+predicted it on held-out series, so a stand-in is a noisy reading and a real one is worth
+re-reading a source for. The 8-bit frames are what both encode, so a 10-bit source
 reads lower than an ffmpeg encode scored against the 10-bit picture; on 8-bit sources the two
 agree to the hundredth of a dB. `--train-features fast` trains networks reading all 31 inputs (or the first N with
 `--train-inputs N`, to compare against a model from before a later input existed) on
