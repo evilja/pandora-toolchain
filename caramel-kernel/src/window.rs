@@ -33,6 +33,10 @@ pub struct WindowFeatures {
     // Means over the window's frame pairs, excluding the pairs that straddle a cut: a cut is a new
     // keyframe, not motion. None when no pair survived.
     pub temporal: Option<TemporalSummary>,
+    // A fast encode of the whole scene (`fast`), for a model that reads one. The window analysis
+    // cannot make it; whoever encodes adds it once the scene's frames are all there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast_encode: Option<crate::fast::FastEncode>,
 }
 
 // What is measured on one frame by itself.
@@ -108,6 +112,7 @@ impl WindowAnalyzer {
             chroma_si: (!self.chroma.is_empty())
                 .then(|| self.chroma.iter().sum::<f64>() / self.chroma.len() as f64),
             temporal,
+            fast_encode: None,
         }
     }
 }

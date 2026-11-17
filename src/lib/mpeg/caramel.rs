@@ -108,6 +108,10 @@ pub struct SceneRequest<'a> {
     // (`caramel_kernel::probe`); None decides without probes. Used only when the encode writes
     // 8-bit frames at the source's own size, the frames this analysis decodes.
     pub probe: Option<pnx264::Config>,
+    // The same settings, for every scene's fast encode when the model reads one
+    // (`caramel_kernel::fast`); None decides scenes without, as the built-in model does. Used under
+    // the same condition as `probe`.
+    pub fast: Option<pnx264::Config>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -357,9 +361,11 @@ fn analyse_segment(
         let (width, height) = (reader.width, reader.height);
         let decider = SceneDecider::new(request.scenes, source.clone(), request.encode);
         let encode = &request.encode;
-        let probe = request.probe.as_ref().filter(|_| encode.output_bit_depth == 8 && encode.output_height.is_none_or(|output| output as usize == height));
+        let measurable = encode.output_bit_depth == 8 && encode.output_height.is_none_or(|output| output as usize == height);
+        let probe = request.probe.as_ref().filter(|_| measurable);
+        let fast = request.fast.as_ref().filter(|_| measurable);
         let (fps_num, fps_den) = fps_ratio(fps);
-        let mut schedule = SceneSchedule::from_decider(decider, width, height, fps_num, fps_den, encode.anchor_crf, probe);
+        let mut schedule = SceneSchedule::from_decider(decider, width, height, fps_num, fps_den, encode.anchor_crf, probe, fast);
         let mut decoded = 0u64;
         while let Some(frame) = reader.next_frame()? {
             schedule.push(&frame)?;
@@ -401,7 +407,7 @@ pub fn probe_encoder(preset: &crate::lib::mpeg::preset::ResolvedPreset) -> Optio
 }
 
 // A frame rate as the ratio x264 and XPSNR take: NTSC rates as their thousand-and-one ratios.
-fn fps_ratio(fps: f64) -> (u32, u32) {
+pub(crate) fn fps_ratio(fps: f64) -> (u32, u32) {
     let ntsc = fps * 1001.0;
     if (ntsc - ntsc.round()).abs() < 0.05 && ntsc.round() % 1000.0 == 0.0 {
         (ntsc.round() as u32, 1001)

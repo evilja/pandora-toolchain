@@ -104,6 +104,31 @@ impl SceneDecision {
     }
 }
 
+// What a decider decides with — its model, the source and the encode — so a scene can be decided
+// again from more than the decider measured: its fast encode (`fast`), which only whoever holds the
+// scene's frames and an encoder can make.
+#[derive(Clone)]
+pub struct SceneJudge {
+    model: Option<std::sync::Arc<curve::Model>>,
+    source: SourceContext,
+    encode: EncodeContext,
+}
+
+impl SceneJudge {
+    // Whether a decision means anything before its scene's fast encode is in.
+    pub fn reads_fast_encode(&self) -> bool {
+        self.model.as_ref().is_some_and(|model| model.reads_fast_encode())
+    }
+
+    // The scene decided again with its fast encode. Its CRF, its votes and whether a far raise is
+    // test-encoded all follow from the new estimate.
+    pub fn redecide(&self, decision: &mut SceneDecision, fast: crate::fast::FastEncode) {
+        decision.features.fast_encode = Some(fast);
+        decision.estimate = estimate_scene_with(self.model.as_deref(), &decision.features, &self.source, &self.encode);
+        decision.crf = decision.estimate.crf;
+    }
+}
+
 // A frame that has arrived and whose scene is not settled yet.
 struct Arrived {
     pair: Option<TemporalFeatures>,
@@ -160,6 +185,10 @@ impl SceneDecider {
     pub fn with_model(mut self, model: Option<std::sync::Arc<curve::Model>>) -> Self {
         self.model = model;
         self
+    }
+
+    pub fn judge(&self) -> SceneJudge {
+        SceneJudge { model: self.model.clone(), source: self.source.clone(), encode: self.encode }
     }
 
     // Frames pushed so far whose CRF is known: everything before this index may be encoded.

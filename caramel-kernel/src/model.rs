@@ -338,7 +338,19 @@ fn curve_votes(model: &curve::Model, window: &WindowFeatures, source: &SourceCon
 }
 
 // The same with the model named: a network, or None for the fitted predictors.
+//
+// A model that reads the fast encode cannot decide a scene that has none — an encode it could not be
+// made for, such as a 10-bit one — and that scene is decided by the built-in model instead, which
+// reads the source alone.
 pub fn estimate_scene_with(model: Option<&curve::Model>, window: &WindowFeatures, source: &SourceContext, encode: &EncodeContext) -> SceneEstimate {
+    let fallback;
+    let model = match model {
+        Some(model) if model.reads_fast_encode() && window.fast_encode.is_none() => {
+            fallback = curve::builtin().filter(|builtin| !builtin.reads_fast_encode());
+            fallback.as_deref()
+        }
+        model => model,
+    };
     let anchor = encode.anchor_crf as f64;
     if window.frames == 0 || window.measured == 0 {
         return SceneEstimate {
@@ -433,7 +445,25 @@ mod tests {
                 residual_energy: [residual, 0.0, 0.0, 0.0, 0.0],
                 ..Default::default()
             }),
+            fast_encode: None,
         }
+    }
+
+    // A model that reads the fast encode decides a scene that has one itself, and leaves a scene
+    // without one to the built-in model, as if it had been handed that.
+    #[test]
+    fn a_scene_without_a_fast_encode_is_left_to_the_built_in_model() {
+        let fast = crate::curve::tests::fast_model(0.7);
+        let builtin = crate::curve::builtin().expect("this build has a built-in model");
+        let (source, encode) = (SourceContext { width: 1920, height: 1080, fps: 24.0, video_bitrate: None, codec: None, bit_depth: 8 }, EncodeContext::anchored(17.0));
+        let bare = window([1.0, 0.6, 20.0, 2.0, 1.0, 1.5, 0.3, 0.2]);
+        let without = estimate_scene_with(Some(&fast), &bare, &source, &encode);
+        let by_builtin = estimate_scene_with(Some(&builtin), &bare, &source, &encode);
+        assert_eq!((without.crf, without.adjustment), (by_builtin.crf, by_builtin.adjustment));
+        let measured = WindowFeatures { fast_encode: Some(crate::fast::FastEncode { xpsnr: 42.0, xpsnr_low: 40.0, log_bpp: -5.0, frames: 48 }), ..bare.clone() };
+        let with = estimate_scene_with(Some(&fast), &measured, &source, &encode);
+        // The flat model raises every scene alike; it is its own answer, not the built-in one's.
+        assert_eq!(with.crf, estimate_scene_with(Some(&crate::curve::tests::flat_model(0.7)), &bare, &source, &encode).crf);
     }
 
     fn offsets(window: &WindowFeatures, anchor: f64) -> Vec<f64> {

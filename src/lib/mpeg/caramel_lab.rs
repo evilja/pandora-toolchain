@@ -35,7 +35,7 @@ use super::caramel::{
 };
 use crate::lib::bin::resolve_runtime_binary;
 use caramel_kernel::curve::{self, METRICS, Observation};
-use caramel_kernel::{SourceContext, WindowFeatures, inputs};
+use caramel_kernel::{FastEncode, SourceContext, WindowFeatures, inputs};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::io::Write;
@@ -177,9 +177,28 @@ pub fn scene_feature_stride() -> usize {
     (caramel_kernel::SceneConfig::default().analysis_frames / caramel_kernel::scene::MEASURED_FRAMES).max(1)
 }
 
-// Whole-scene features of `frames` frames of `input` from `start`, decoded at 8 bits as the scene
-// analysis decodes them and cut out as the lab's clip is.
-pub fn measure_scene_features(ffmpeg: &Path, input: &Path, fps: f64, start: u64, frames: u64) -> Result<WindowFeatures, String> {
+// The x264 settings an encoder key names (`encoder_key`), as pnx264 takes them: what a sample's fast
+// encode is made with, so samples measured since and samples backfilled alike read the settings
+// their key says.
+pub fn key_encoder(key: &str) -> Option<pnx264::Config> {
+    let mut parts = key.splitn(4, '|');
+    if parts.next()? != "x264" {
+        return None;
+    }
+    let (preset, tune, params) = (parts.next()?, parts.next()?, parts.next().unwrap_or(""));
+    Some(pnx264::Config {
+        threads: 1,
+        preset: Some(preset.to_string()),
+        tune: (tune != "-").then(|| tune.to_string()),
+        x264_params: (!params.is_empty()).then(|| params.to_string()),
+        ..Default::default()
+    })
+}
+
+// What the lab reads off a scene's clip besides its encodes: its whole-scene features, and its fast
+// encode (`caramel_kernel::fast`) made with `encoder`'s settings. `frames` frames of `input` from
+// `start`, decoded at 8 bits as the scene analysis decodes them and cut out as the lab's clip is.
+pub fn measure_scene(ffmpeg: &Path, input: &Path, fps: f64, start: u64, frames: u64, encoder: &pnx264::Config) -> Result<(WindowFeatures, FastEncode), String> {
     let mut command = Command::new(ffmpeg);
     command.args(["-v", "error", "-nostdin"]);
     if let Some(seek) = seek_seconds(start, fps) {
@@ -201,18 +220,34 @@ pub fn measure_scene_features(ffmpeg: &Path, input: &Path, fps: f64, start: u64,
         let (width, height) = (reader.width, reader.height);
         let (chroma_width, chroma_height) = (width.div_ceil(2), height.div_ceil(2));
         let mut window = caramel_kernel::SceneWindow::new(start as f64 / fps.max(1.0), scene_feature_stride());
-        let mut read = 0u64;
+        // Kept for the fast encode, which reads at most its first `FAST_FRAMES`, as an encoder does.
+        let mut owned = Vec::new();
         while let Some(frame) = reader.next_frame()? {
             let y = caramel_kernel::frame::Plane::new(frame.y, width, height, frame.stride_y).ok_or("short luma plane")?;
             let u = caramel_kernel::frame::Plane::new(frame.u, chroma_width, chroma_height, frame.stride_c);
             let v = caramel_kernel::frame::Plane::new(frame.v, chroma_width, chroma_height, frame.stride_c);
             window.push(&caramel_kernel::frame::Frame { y, u, v });
-            read += 1;
+            if owned.len() < caramel_kernel::FAST_FRAMES {
+                owned.push(pnx264::scenes::OwnedFrame {
+                    index: owned.len() as u64,
+                    y: frame.y.to_vec(),
+                    u: frame.u.to_vec(),
+                    v: frame.v.to_vec(),
+                    stride_y: frame.stride_y,
+                    stride_c: frame.stride_c,
+                });
+            }
         }
-        if read < 2 {
+        if owned.len() < 2 {
             return Err("the scene decoded to fewer than two frames".to_string());
         }
-        Ok(window.finish())
+        let (fps_num, fps_den) = super::caramel::fps_ratio(fps);
+        let config = pnx264::scenes::fast_config(&pnx264::Config { fps_num, fps_den, ..encoder.clone() }, width, height);
+        let refs: Vec<&pnx264::scenes::OwnedFrame> = owned.iter().collect();
+        let fast = pnx264::scenes::fast_encode(&config, &refs, width, height)?;
+        let mut whole = window.finish();
+        whole.fast_encode = Some(fast);
+        Ok((whole, fast))
     })();
     let _ = child.kill();
     let _ = child.wait();
@@ -657,7 +692,10 @@ impl Lab<'_> {
         };
         let result = (|| {
             let reference = self.extract(&directory, scene.start_frame, frames)?;
-            sample.scene_features = Some(measure_scene_features(&self.ffmpeg, &self.input, self.fps, scene.start_frame, frames)?);
+            let encoder = key_encoder(&self.encoder).ok_or("the lab measures x264 encodes only")?;
+            let (whole, fast) = measure_scene(&self.ffmpeg, &self.input, self.fps, scene.start_frame, frames, &encoder)?;
+            sample.scene_features = Some(whole);
+            sample.features.fast_encode = Some(fast);
             let bands: [Option<(f64, f64)>; METRICS] = std::array::from_fn(|metric| request.guide.and_then(|guide| guide.band(metric)));
             let max_points = request.max_points.max(START_CRFS.len());
             loop {
@@ -716,7 +754,7 @@ pub struct BackfillSummary {
     pub failed: usize,
 }
 
-// Gives the samples of `source_id` in `dataset` the whole-scene features they were measured
+// Gives the samples of `source_id` in `dataset` the whole-scene features and the fast encode they were measured
 // without, read from `input`, which must be the source they were measured from. Other lines are
 // left as they are, and the file is replaced only once every sample was tried.
 pub fn backfill_scene_features(dataset: &Path, input: &Path, source_id: &str, workers: usize) -> Result<BackfillSummary, String> {
@@ -729,18 +767,20 @@ pub fn backfill_scene_features(dataset: &Path, input: &Path, source_id: &str, wo
     let todo: Vec<usize> = samples
         .iter()
         .enumerate()
-        .filter_map(|(index, sample)| sample.as_ref().filter(|sample| sample.scene_features.is_none()).map(|_| index))
+        .filter_map(|(index, sample)| sample.as_ref().filter(|sample| sample.scene_features.is_none() || sample.features.fast_encode.is_none()).map(|_| index))
         .collect();
     summary.samples = samples.iter().flatten().count();
     summary.already = summary.samples - todo.len();
     let next = AtomicUsize::new(0);
-    let results: Mutex<Vec<(usize, Result<WindowFeatures, String>)>> = Mutex::new(Vec::new());
+    let results: Mutex<Vec<(usize, Result<(WindowFeatures, FastEncode), String>)>> = Mutex::new(Vec::new());
     std::thread::scope(|scope| {
         for _ in 0..workers.clamp(1, todo.len().max(1)) {
             scope.spawn(|| {
                 while let Some(&index) = todo.get(next.fetch_add(1, Ordering::Relaxed)) {
                     let sample = samples[index].as_ref().unwrap();
-                    let measured = measure_scene_features(&ffmpeg, input, sample.source.fps, sample.start_frame, sample.frames);
+                    let measured = key_encoder(&sample.encoder)
+                        .ok_or_else(|| format!("`{}` is not an x264 encoder", sample.encoder))
+                        .and_then(|encoder| measure_scene(&ffmpeg, input, sample.source.fps, sample.start_frame, sample.frames, &encoder));
                     crate::lib::sync::lock(&results).push((index, measured));
                 }
             });
@@ -748,8 +788,10 @@ pub fn backfill_scene_features(dataset: &Path, input: &Path, source_id: &str, wo
     });
     for (index, measured) in results.into_inner().unwrap_or_else(|poisoned| poisoned.into_inner()) {
         match measured {
-            Ok(features) => {
-                samples[index].as_mut().unwrap().scene_features = Some(features);
+            Ok((whole, fast)) => {
+                let sample = samples[index].as_mut().unwrap();
+                sample.scene_features = Some(whole);
+                sample.features.fast_encode = Some(fast);
                 summary.filled += 1;
             }
             Err(_) => summary.failed += 1,

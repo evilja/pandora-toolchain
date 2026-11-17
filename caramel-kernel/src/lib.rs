@@ -12,6 +12,7 @@
 //      anchor CRF (`model`).
 
 pub mod curve;
+pub mod fast;
 pub mod frame;
 pub mod inputs;
 pub mod model;
@@ -24,10 +25,11 @@ pub mod train;
 pub mod window;
 pub mod xpsnr;
 
+pub use fast::{FAST_CRF, FAST_FRAMES, FAST_PRESET, FastEncode};
 pub use frame::{Frame, Plane};
 pub use probe::{PROBE_FRAMES, PROBE_FROM, Probe};
 pub use model::{Contribution, EncodeContext, MODEL_VERSION, MetricVote, SceneEstimate, SourceContext, estimate_scene, estimate_scene_with, model_version};
-pub use scene::{SceneConfig, SceneDecider, SceneDecision, SceneStart};
+pub use scene::{SceneConfig, SceneDecider, SceneDecision, SceneJudge, SceneStart};
 pub use spatial::SpatialFeatures;
 pub use temporal::TemporalFeatures;
 pub use window::{SceneWindow, TemporalSummary, WindowAnalyzer, WindowFeatures};

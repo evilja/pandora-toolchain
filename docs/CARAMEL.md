@@ -15,7 +15,8 @@ or a job asks for Caramel Analysis at all.
 
 | Where | What |
 |---|---|
-| `caramel-kernel/src/inputs.rs` | The 27 numbers a scene is described by, from the features the decider already measures. |
+| `caramel-kernel/src/inputs.rs` | The 27 numbers a scene is described by, from the features the decider already measures, and three more from its fast encode. |
+| `caramel-kernel/src/fast.rs` | `FastEncode`: what a scene's fast encode read — its XPSNR, its worst frames and its bits. |
 | `caramel-kernel/src/nn.rs` | A small dense network (SiLU), its gradients and Adam. No dependencies. |
 | `caramel-kernel/src/curve.rs` | Quality and size as curves over CRF, the votes read from them, the rule that decides a scene from them (`decide`), and `Model`: an ensemble of networks with its text file format, the built-in model (`builtin.model`) and the installed one. |
 | `caramel-kernel/src/train.rs` | Training by series-wise folds, the held-out error, the detailed scene and the gain, the simulated policy, and the gate a retrained model has to pass. |
@@ -24,7 +25,7 @@ or a job asks for Caramel Analysis at all.
 | `src/pnworker/research.rs` | The idle-time worker: finds sources, runs the lab and the trainer as low-priority children, stops for the queue. |
 | `caramel-kernel/src/probe.rs` | `Probe`: what a test encode of a far raise is held to, and `settle`, which pulls the raise back from what the encode measured. |
 | `caramel-kernel/src/xpsnr.rs` | XPSNR computed exactly as ffmpeg's `xpsnr` filter computes it, for encoders that measure without ffmpeg. |
-| `pnx264/src/scenes.rs` | `load_model`: a chunk encoder decides with the model its planner named, read from `DB/caramel/models/`. `SceneSchedule` runs the test encodes (`probe_xpsnr`), in chunk encoders and in the whole-file analysis alike. |
+| `pnx264/src/scenes.rs` | `load_model`: a chunk encoder decides with the model its planner named, read from `DB/caramel/models/`. `SceneSchedule` runs the test encodes (`probe_xpsnr`) and the fast encodes (`fast_encode`), in chunk encoders and in the whole-file analysis alike. |
 | `examples/caramel_explain.rs`, `scripts/caramel-viz.py` | Watching the model decide: see [Seeing a decision](#seeing-a-decision). |
 
 ## Which model decides
@@ -171,7 +172,8 @@ episodes filed under different names would let a network be tested on a show it 
 `DB/caramel/dataset/*.jsonl`, one `LabSample` per line (`record: 1`): `source_id`, `series`, the
 probed `source` (size, fps, bitrate, codec, bit depth), `encoder` (`x264|<preset>|<tune>|<sorted
 x264 params>`), `start_frame`, `scene_frames`, `frames`, the decider's `features` for the scene's
-opening, `scene_features` (the same features over every frame the lab encoded; see below),
+opening (with `fast_encode`, the scene's fast encode; see below), `scene_features` (the same
+features over every frame the lab encoded; see below),
 `cut_pairs_within`, `reference_bit_depth`, `cambi_source`, `cambi_source_high`, `points`
 (`crf`, `bytes`, `xpsnr`, `xpsnr_low`, `ssim_db`, `vmaf`, `vmaf_low`, `cambi`, `cambi_high`, and
 `treatment` on a treated encode only),
@@ -202,6 +204,37 @@ measured from, and rewrites the file once every one was tried; it takes seconds 
 with `--train-features scene` feeds the networks `scene_features` instead, on the samples that have
 them, and `--train-features paired` feeds the opening features of the same samples, so the two can
 be compared on the same scenes.
+
+### Fast encodes
+
+Features of the source say how complicated a picture is; they do not say how hard x264 finds it.
+Of the model's error at anchor 17 (1.94 CRF, measured on series it did not train on), about a fifth
+is shared by a whole source and four fifths differ scene to scene, so no per-source correction
+helps much. What does is asking the encoder: a scene encoded at `FAST_PRESET` (`veryfast`) and
+`FAST_CRF` (20) with the encode's own tune and x264 parameters, on one thread, and read as the lab
+reads a clip — XPSNR pooled over its frames with the first left out, the mean of its worst tenth,
+and log2 bits per pixel. On 278 scenes of 9 series, a fit that adds those three numbers to the
+model's prediction, holding a series out at a time, cut the error from 2.24 to 1.30 CRF at anchor
+17 and from 2.36 to 0.94 at 21. Coverage is what matters: the first 24 frames gave 1.50, the first
+12 gave 2.01, and half resolution 1.89. An encode at a faster preset was worse, and one at the real
+preset was barely better (1.02) for twice the time.
+
+So a scene's fast encode covers all of it, up to `FAST_FRAMES` (48): an encoder deciding with a
+model that reads it holds every scene until the scene has ended and encodes it before releasing
+any frame, about 3.4 s of one core per 48 frames at 1080p — some 44% on top of the encode itself
+at the Standard preset. A model reads it as inputs 28–30 (`fast-xpsnr`, `fast-xpsnr-low`,
+`fast-bits`); a model's text says how many inputs its networks read, so models of 27 and 30 inputs
+both load. A model that reads it, given a scene without one — a 10-bit or rescaled output, which
+the encoder cannot measure at the source's size — leaves the scene to the built-in model, which
+does not. Models that do not read it are never slowed by it.
+
+The lab makes each sample's fast encode itself over the clip it measured, through pnx264, so
+lab and encoder read the same numbers; `--caramel-backfill` adds it, with the whole-scene
+features, to samples measured before. The 8-bit frames are what both encode, so a 10-bit source
+reads lower than an ffmpeg encode scored against the 10-bit picture; on 8-bit sources the two
+agree to the hundredth of a dB. `--train-features fast` trains networks reading all 30 inputs on
+the samples that have one, and `--train-features fast-paired` the 27-input networks on the same
+samples.
 
 ### Why deband points
 
@@ -249,7 +282,7 @@ spares two encodes a scene.
 pnmpeg --caramel-train -i DB/caramel/dataset -o <candidate.model | ->
        [--preset <name>] [--train-install] [--train-refit] [--train-seed 1]
        [--train-hidden 32,32] [--train-networks 2] [--train-scenes <file>]
-       [--train-features opening|scene|paired]
+       [--train-features opening|scene|paired|fast|fast-paired]
 ```
 
 Trains a candidate on every sample of one encoder key — the named preset's, or the one most

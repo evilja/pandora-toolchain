@@ -241,7 +241,8 @@ struct Args {
     /// With --caramel-train: what the networks are fed. `opening` (the default) is the features of
     /// a scene's first frames, as encoders decide today; `scene` is the features of all of it, for
     /// the samples that have them; `paired` is the opening features of only those samples, so the
-    /// two are compared on the same scenes.
+    /// two are compared on the same scenes. `fast` reads each scene's fast encode as well, for the
+    /// samples that have one; `fast-paired` is the opening features alone of those samples.
     #[arg(long, default_value = "opening")]
     train_features: String,
 
@@ -725,8 +726,10 @@ fn caramel_lab(args: &Args, preset: Option<&ResolvedPreset>, anchor: f32, log: &
         decoder_threads: 0,
         cancel_file: cancel_file.clone(),
         progress: None,
-        // The lab measures what the model decides, before any test encode corrects it.
+        // The lab measures what the model decides, before any test encode corrects it, and makes
+        // each sample's fast encode itself.
         probe: None,
+        fast: None,
     }) {
         Ok(report) => report,
         Err(error) => {
@@ -798,8 +801,9 @@ fn caramel_train(args: &Args, preset: Option<&ResolvedPreset>, log: &mut ToolLog
         "opening" => samples,
         "scene" => samples.iter().filter_map(LabSample::with_scene_features).collect(),
         "paired" => samples.into_iter().filter(|sample| sample.scene_features.is_some()).collect(),
+        "fast" | "fast-paired" => samples.into_iter().filter(|sample| sample.features.fast_encode.is_some()).collect(),
         other => {
-            eprintln!("pnmpeg caramel train: --train-features takes opening, scene or paired, not `{other}`");
+            eprintln!("pnmpeg caramel train: --train-features takes opening, scene, paired, fast or fast-paired, not `{other}`");
             return 1;
         }
     };
@@ -810,6 +814,9 @@ fn caramel_train(args: &Args, preset: Option<&ResolvedPreset>, log: &mut ToolLog
         pandora_toolchain::lib::mpeg::caramel_lab::encoder_key(&VerifyEncoder { preset: settings.preset, tune: settings.tune, x264_params: settings.x264_params })
     });
     let mut config = caramel_kernel::train::TrainConfig { seed: args.train_seed, ..Default::default() };
+    if args.train_features == "fast" {
+        config.inputs = caramel_kernel::inputs::INPUTS;
+    }
     if let Some(hidden) = args.train_hidden.as_deref() {
         let widths: Vec<usize> = hidden.split(',').filter_map(|width| width.trim().parse().ok()).filter(|width| (1..=512).contains(width)).collect();
         if widths.is_empty() || widths.len() > 4 {
@@ -894,6 +901,7 @@ fn caramel_zones(args: &Args, preset: &ResolvedPreset, anchor: f32, workers: usi
         cancel_file: args.cancelfile.as_deref().map(PathBuf::from),
         progress: None,
         probe: probe_encoder(preset),
+        fast: probe_encoder(preset),
     };
     let started = std::time::Instant::now();
     match run_scene_analysis(&request) {
@@ -1656,6 +1664,7 @@ async fn main() {
             cancel_file: args.cancelfile.as_deref().map(PathBuf::from),
             progress: None,
             probe: if args.caramel_no_probe { None } else { active_preset.as_ref().and_then(probe_encoder) },
+            fast: active_preset.as_ref().and_then(probe_encoder),
         };
         match run_scene_analysis(&request) {
             Ok(mut report) => {

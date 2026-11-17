@@ -301,6 +301,7 @@ pub async fn run_caramel_job(
                 decoder_threads: 0,
                 cancel_file: Some(cancel),
                 progress: Some(&decoded),
+                fast: probe.clone(),
                 probe,
             })
         })

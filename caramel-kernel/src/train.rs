@@ -70,11 +70,14 @@ pub struct TrainConfig {
     pub decay: f64,
     pub batch: usize,
     pub seed: u64,
+    // How many of the inputs the networks read, from the first: `inputs::BASE_INPUTS`, or `INPUTS`
+    // with the scene's fast encode, which every sample trained on must then have.
+    pub inputs: usize,
 }
 
 impl Default for TrainConfig {
     fn default() -> Self {
-        Self { version: String::new(), encoder: String::new(), hidden: vec![32, 32], per_fold: 2, epochs: 400, patience: 40, rate: 2e-3, decay: 1e-4, batch: 32, seed: 1 }
+        Self { version: String::new(), encoder: String::new(), hidden: vec![32, 32], per_fold: 2, epochs: 400, patience: 40, rate: 2e-3, decay: 1e-4, batch: 32, seed: 1, inputs: crate::inputs::BASE_INPUTS }
     }
 }
 
@@ -150,7 +153,7 @@ pub fn typical_curves(samples: &[Sample]) -> Curves {
 
 // A sample as a network is shown it.
 struct Prepared {
-    inputs: [f64; INPUTS],
+    inputs: Vec<f64>,
     points: Vec<Observation>,
     // How many readings it has: each scene weighs the same however many CRFs it was measured at.
     terms: f64,
@@ -189,7 +192,7 @@ fn scene_loss(network: &Network, scene: &Prepared, offsets: &[f64; METRICS], tra
 // epochs, which is about where the others stop.
 fn train_member(scenes: &[Prepared], train: &[usize], stop: &[usize], offsets: &[f64; METRICS], config: &TrainConfig, seed: u64) -> (Network, usize, f64) {
     let mut rng = Rng::new(seed);
-    let mut sizes = vec![INPUTS];
+    let mut sizes = vec![config.inputs.clamp(1, INPUTS)];
     sizes.extend(config.hidden.iter().map(|width| (*width).clamp(1, 512)));
     sizes.push(METRICS * KNOT_COUNT);
     let mut network = Network::new(&sizes, &mut rng);
@@ -241,9 +244,10 @@ pub fn train(samples: &[Sample], config: &TrainConfig, typical: Option<Curves>) 
         return Err(format!("{} scenes with two or more encodes are too few to train on", usable.len()));
     }
     let count = usable.len() as f64;
-    let mut input_mean = [0.0; INPUTS];
-    let mut input_scale = [0.0; INPUTS];
-    for input in 0..INPUTS {
+    let reads = config.inputs.clamp(1, INPUTS);
+    let mut input_mean = vec![0.0; reads];
+    let mut input_scale = vec![0.0; reads];
+    for input in 0..reads {
         let mean = usable.iter().map(|index| samples[*index].inputs[input]).sum::<f64>() / count;
         let deviation = (usable.iter().map(|index| (samples[*index].inputs[input] - mean).powi(2)).sum::<f64>() / count).sqrt();
         input_mean[input] = mean;

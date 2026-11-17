@@ -348,8 +348,10 @@ pub struct Model {
     // When the newest scene it was trained on was measured, in Unix seconds: scenes measured since
     // are ones it has never seen.
     pub trained: u64,
-    pub input_mean: [f64; INPUTS],
-    pub input_scale: [f64; INPUTS],
+    // One per input the networks read: the first `inputs::BASE_INPUTS` of them, or all with the
+    // scene's fast encode (`inputs`).
+    pub input_mean: Vec<f64>,
+    pub input_scale: Vec<f64>,
     pub offsets: [f64; METRICS],
     // What typical content scores at each knot's CRF: the quality a vote is measured against.
     pub typical: Curves,
@@ -359,9 +361,19 @@ pub struct Model {
 }
 
 impl Model {
+    // How many of the inputs the networks read, from the first.
+    pub fn inputs(&self) -> usize {
+        self.input_mean.len()
+    }
+
+    // Whether the model decides from a scene's fast encode, and cannot decide a scene without one.
+    pub fn reads_fast_encode(&self) -> bool {
+        self.inputs() > crate::inputs::BASE_INPUTS
+    }
+
     // The inputs as the networks are given them: centred, scaled, and clipped to `INPUT_LIMIT`.
-    pub fn standardised(&self, inputs: &[f64; INPUTS]) -> [f64; INPUTS] {
-        std::array::from_fn(|index| ((inputs[index] - self.input_mean[index]) * self.input_scale[index]).clamp(-INPUT_LIMIT, INPUT_LIMIT))
+    pub fn standardised(&self, inputs: &[f64; INPUTS]) -> Vec<f64> {
+        (0..self.inputs()).map(|index| ((inputs[index] - self.input_mean[index]) * self.input_scale[index]).clamp(-INPUT_LIMIT, INPUT_LIMIT)).collect()
     }
 
     // Every member's curves for a scene.
@@ -443,8 +455,8 @@ impl Model {
             scenes: 0,
             sources: 0,
             trained: 0,
-            input_mean: [0.0; INPUTS],
-            input_scale: [1.0; INPUTS],
+            input_mean: Vec::new(),
+            input_scale: Vec::new(),
             offsets: [0.0; METRICS],
             typical: [Curve([0.0; KNOT_COUNT]); METRICS],
             error: [0.0; METRICS],
@@ -465,8 +477,8 @@ impl Model {
                 "scenes" => model.scenes = rest.trim().parse().map_err(|_| "`scenes` is not a count")?,
                 "sources" => model.sources = rest.trim().parse().map_err(|_| "`sources` is not a count")?,
                 "trained" => model.trained = rest.trim().parse().map_err(|_| "`trained` is not a time")?,
-                "input-mean" => model.input_mean = numbers(rest, key)?,
-                "input-scale" => model.input_scale = numbers(rest, key)?,
+                "input-mean" => model.input_mean = list(rest, key)?,
+                "input-scale" => model.input_scale = list(rest, key)?,
                 "offsets" => model.offsets = numbers(rest, key)?,
                 "error" => model.error = numbers(rest, key)?,
                 "typical" => {
@@ -494,8 +506,8 @@ impl Model {
                         layers.push(Layer { inputs, outputs, weights, bias });
                     }
                     let network = Network { layers };
-                    if network.inputs() != INPUTS || network.outputs() != METRICS * KNOT_COUNT {
-                        return Err(format!("a member reads {} inputs and gives {} outputs; this build needs {INPUTS} and {}", network.inputs(), network.outputs(), METRICS * KNOT_COUNT));
+                    if network.inputs() > INPUTS || network.outputs() != METRICS * KNOT_COUNT {
+                        return Err(format!("a member reads {} inputs and gives {} outputs; this build reads at most {INPUTS} and needs {}", network.inputs(), network.outputs(), METRICS * KNOT_COUNT));
                     }
                     model.members.push(network);
                 }
@@ -505,6 +517,11 @@ impl Model {
         }
         if model.members.is_empty() {
             return Err("the model has no networks".to_string());
+        }
+        // Every member reads the inputs the model scales, from the first.
+        let reads = model.input_mean.len();
+        if reads == 0 || model.input_scale.len() != reads || model.members.iter().any(|member| member.inputs() != reads) {
+            return Err("the model's members and its input scaling do not read the same inputs".to_string());
         }
         if seen_typical != METRICS || model.version.is_empty() {
             return Err("the model is missing its version or its typical curves".to_string());
@@ -527,10 +544,23 @@ pub(crate) mod tests {
     use super::*;
     use crate::nn::Rng;
 
+    // The same reading every input, the fast encode's too.
+    pub(crate) fn fast_model(drop: f64) -> Model {
+        let mut model = flat_model(drop);
+        for member in &mut model.members {
+            let first = &mut member.layers[0];
+            first.weights = vec![0.0; INPUTS * first.outputs];
+            first.inputs = INPUTS;
+        }
+        model.input_mean = vec![0.0; INPUTS];
+        model.input_scale = vec![1.0; INPUTS];
+        model
+    }
+
     // A model whose networks answer with their biases alone: every scene gets the same curves.
     pub(crate) fn flat_model(drop: f64) -> Model {
         let mut rng = Rng::new(1);
-        let mut network = Network::new(&[INPUTS, 4, METRICS * KNOT_COUNT], &mut rng);
+        let mut network = Network::new(&[crate::inputs::BASE_INPUTS, 4, METRICS * KNOT_COUNT], &mut rng);
         for layer in &mut network.layers {
             layer.weights.fill(0.0);
         }
@@ -540,7 +570,7 @@ pub(crate) mod tests {
             *bias = if index % KNOT_COUNT == LEVEL_KNOT { 0.0 } else { raw };
         }
         let offsets = [40.0, 39.0, 20.0, 95.0, 93.0, 0.0, -3.0];
-        let typical = curves_from(&network.forward(&[0.0; INPUTS]), &offsets);
+        let typical = curves_from(&network.forward(&[0.0; crate::inputs::BASE_INPUTS]), &offsets);
         Model {
             version: "test-1".to_string(),
             encoder: "x264|fast|-|".to_string(),
@@ -549,8 +579,8 @@ pub(crate) mod tests {
             scenes: 10,
             sources: 2,
             trained: 1_700_000_000,
-            input_mean: [0.0; INPUTS],
-            input_scale: [1.0; INPUTS],
+            input_mean: vec![0.0; crate::inputs::BASE_INPUTS],
+            input_scale: vec![1.0; crate::inputs::BASE_INPUTS],
             offsets,
             typical,
             error: [2.0; METRICS],
@@ -694,7 +724,7 @@ pub(crate) mod tests {
     fn a_model_reads_back_from_its_text() {
         let mut rng = Rng::new(2);
         let mut model = flat_model(0.7);
-        model.members[0] = Network::new(&[INPUTS, 6, 5, METRICS * KNOT_COUNT], &mut rng);
+        model.members[0] = Network::new(&[crate::inputs::BASE_INPUTS, 6, 5, METRICS * KNOT_COUNT], &mut rng);
         model.input_mean[3] = 0.25;
         let text = model.to_text();
         let back = Model::from_text(&text).unwrap();
@@ -711,7 +741,14 @@ pub(crate) mod tests {
         assert!(Model::from_text(&text.replace("gain", "later-field 3\ngain")).is_ok());
         assert!(Model::from_text("").is_err());
         assert!(Model::from_text(&text[..text.len() / 2]).is_err());
-        assert!(Model::from_text(&text.replace(&format!("layer {INPUTS} 6"), "layer 3 6")).is_err());
+        assert!(Model::from_text(&text.replace(&format!("layer {} 6", crate::inputs::BASE_INPUTS), "layer 3 6")).is_err());
+        // A model that reads the fast encode as well reads back as one; members that read more
+        // inputs than this build has are refused.
+        let fast = fast_model(0.7);
+        let back = Model::from_text(&fast.to_text()).unwrap();
+        assert!(back.reads_fast_encode() && !model.reads_fast_encode() && back.inputs() == INPUTS);
+        let wider = fast.to_text().replace(&format!("layer {INPUTS} 4"), &format!("layer {} 4", INPUTS + 1));
+        assert!(Model::from_text(&wider).is_err());
         assert!(Model::from_text(&text.replace("gain 0.5", "gain 1.5")).is_err());
         assert!(Model::from_text(&text.replace("gain 0.5", "margin 1.5")).is_err());
         assert!(Model::from_text(&text.replace("typical bits", "typical bytes")).is_err());
