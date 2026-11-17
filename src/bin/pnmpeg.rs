@@ -155,6 +155,11 @@ struct Args {
     #[arg(long)]
     caramel_no_probe: bool,
 
+    /// With --caramel-report: decide with the model in this file instead of the installed one,
+    /// without installing it. For setting a candidate beside the model in use on whole episodes.
+    #[arg(long)]
+    caramel_model_file: Option<String>,
+
     /// Measure scenes of --input for Caramel's dataset: each is encoded at several CRFs with the
     /// selected preset's x264 settings and measured against the source. Samples are appended to
     /// --output, a JSON-lines file; the other `.jsonl` files beside it say what is already known.
@@ -1654,6 +1659,16 @@ async fn main() {
         }
     }
     if args.caramel_report {
+        let model = match args.caramel_model_file.as_deref().map(|path| {
+            std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}")).and_then(|text| caramel_kernel::curve::Model::from_text(&text).map_err(|e| format!("{path}: {e}")))
+        }) {
+            Some(Ok(model)) => Some(std::sync::Arc::new(model)),
+            Some(Err(error)) => {
+                eprintln!("pnmpeg caramel report: {error}");
+                std::process::exit(1);
+            }
+            None => None,
+        };
         let anchor = match args.aot_crf {
             Some(AotCrf::Fixed(crf)) | Some(AotCrf::CaramelAnalysis { anchor: Some(crf) }) => crf,
             _ => x264_config.crf,
@@ -1670,7 +1685,7 @@ async fn main() {
             progress: None,
             probe: if args.caramel_no_probe { None } else { active_preset.as_ref().and_then(probe_encoder) },
             fast: active_preset.as_ref().and_then(probe_encoder),
-            model: None,
+            model,
         };
         match run_scene_analysis(&request) {
             Ok(mut report) => {
