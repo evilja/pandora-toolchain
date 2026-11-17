@@ -7,7 +7,7 @@ use axum::{
     http::{HeaderName, HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -235,6 +235,11 @@ pub async fn serve(tx: Sender<JobClass>, port: u16) -> Result<(), Box<dyn std::e
         .route("/jobs/caramel", post(super::caramel::submit))
         .route("/caramel/reports/:id", get(super::caramel::report))
         .route("/caramel/model", get(super::caramel::model))
+        .route("/caramel/research", get(super::caramel::research_status).post(super::caramel::research_settings))
+        .route("/caramel/research/sources", post(super::caramel::research_add_source))
+        .route("/caramel/research/sources/:id", delete(super::caramel::research_remove_source))
+        .route("/caramel/dataset", get(super::caramel::dataset_list))
+        .route("/caramel/dataset/:name", get(super::caramel::dataset_file))
         .route("/workers", get(super::workers::workers))
         .route("/workers/summary", get(super::workers::summary))
         .route("/events", get(super::workers::events))

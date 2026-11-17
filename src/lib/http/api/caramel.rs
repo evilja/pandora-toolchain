@@ -1,7 +1,7 @@
 // Caramel Analysis over the API: queue an analysis of a source link, read its scene report back,
 // and read what the model and its scene settings are, for clients that calibrate against it.
 
-use super::core::{ApiAuth, AppState, effective_server_id, row_is_visible, submit_with_progress};
+use super::core::{ApiAuth, AppState, effective_server_id, require_privileged, row_is_visible, submit_with_progress};
 use axum::{
     Json,
     extract::{Extension, Path, State},
@@ -12,6 +12,10 @@ use serde::Deserialize;
 use serde_json::json;
 use crate::lib::mpeg::caramel::{CARAMEL_ANALYSIS, VerifySample};
 use crate::lib::p2p::nyaaise::nyaaise;
+use crate::lib::env::core::upsert_env;
+use crate::lib::env::standard::{CARAMEL_RESEARCH, CARAMEL_RESEARCH_CRFS, CARAMEL_RESEARCH_PRESET, CARAMEL_RESEARCH_RETRAIN, CARAMEL_RESEARCH_SCENES, ENV_PATH};
+use crate::lib::mpeg::caramel_train::DATASET_DIRECTORY;
+use crate::pnworker::research;
 use crate::pnworker::caramel::{CaramelJobRequest, SceneOverrides, VerifySettings, read_report};
 use crate::pnworker::core::{Concat, Job, JobType};
 use crate::pnworker::server_effects::{load_server_settings, preset_from_name};
@@ -196,6 +200,172 @@ pub(super) async fn model() -> Response {
     .into_response()
 }
 
+// The research worker as its operator sees it: its status, its settings, and the releases queued
+// for it with their links. Privileged: the queue names what this machine downloads.
+pub(super) async fn research_status(Extension(auth): Extension<ApiAuth>) -> Response {
+    if let Err(response) = require_privileged(&auth) {
+        return response;
+    }
+    let (status, requests) = tokio::task::spawn_blocking(|| (research::status(), research::load_requests())).await.unwrap_or_default();
+    let config = research::research_config(&crate::lib::env::core::get_pandora_env());
+    Json(json!({
+        "status": status,
+        "settings": { "enabled": config.enabled, "scenes": config.scenes, "retrain": config.retrain, "preset": config.preset, "crfs": config.crfs },
+        "requests": requests,
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+pub(super) struct ResearchSettingsReq {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    scenes: Option<u64>,
+    #[serde(default)]
+    retrain: Option<u64>,
+    #[serde(default)]
+    preset: Option<String>,
+    // The CRFs every scene is encoded at; an empty list goes back to searching each scene.
+    #[serde(default)]
+    crfs: Option<Vec<f64>>,
+}
+
+// The `env.pandora` lines a settings change writes, or why it is refused. Nothing is written
+// unless every field is valid. The feed is not here: what a machine downloads by itself is set on
+// the machine.
+fn research_settings_lines(req: &ResearchSettingsReq) -> Result<Vec<(&'static str, String)>, String> {
+    let mut lines = Vec::new();
+    if let Some(enabled) = req.enabled {
+        lines.push((CARAMEL_RESEARCH, if enabled { "on" } else { "off" }.to_string()));
+    }
+    if let Some(scenes) = req.scenes {
+        if !(4..=400).contains(&scenes) {
+            return Err("scenes must be between 4 and 400".to_string());
+        }
+        lines.push((CARAMEL_RESEARCH_SCENES, scenes.to_string()));
+    }
+    if let Some(retrain) = req.retrain {
+        if !(20..=100_000).contains(&retrain) {
+            return Err("retrain must be between 20 and 100000".to_string());
+        }
+        lines.push((CARAMEL_RESEARCH_RETRAIN, retrain.to_string()));
+    }
+    if let Some(preset) = req.preset.as_deref() {
+        lines.push((CARAMEL_RESEARCH_PRESET, canonical_preset(preset.trim()).ok_or("no such preset")?));
+    }
+    if let Some(crfs) = &req.crfs {
+        if crfs.len() > 12 || crfs.iter().any(|crf| !crf.is_finite() || !(0.0..=51.0).contains(crf)) {
+            return Err("crfs must be at most 12 CRFs between 0 and 51".to_string());
+        }
+        let text = crfs.iter().map(|crf| crf.to_string()).collect::<Vec<_>>().join(",");
+        lines.push((CARAMEL_RESEARCH_CRFS, research::parse_crfs(&text).iter().map(|crf| crf.to_string()).collect::<Vec<_>>().join(",")));
+    }
+    Ok(lines)
+}
+
+// Changes the research worker's settings. It reads them every 20 seconds, so they take effect
+// without a restart.
+pub(super) async fn research_settings(Extension(auth): Extension<ApiAuth>, Json(req): Json<ResearchSettingsReq>) -> Response {
+    if let Err(response) = require_privileged(&auth) {
+        return response;
+    }
+    let lines = match research_settings_lines(&req) {
+        Ok(lines) => lines,
+        Err(reason) => return (StatusCode::BAD_REQUEST, reason).into_response(),
+    };
+    for (key, value) in &lines {
+        if let Err(error) = upsert_env(ENV_PATH, key, value) {
+            return (StatusCode::INTERNAL_SERVER_ERROR, error).into_response();
+        }
+    }
+    let config = research::research_config(&crate::lib::env::core::get_pandora_env());
+    Json(json!({ "enabled": config.enabled, "scenes": config.scenes, "retrain": config.retrain, "preset": config.preset, "crfs": config.crfs })).into_response()
+}
+
+#[derive(Deserialize)]
+pub(super) struct ResearchSourceReq {
+    torrent: String,
+    #[serde(default)]
+    file_index: Option<u64>,
+    series: String,
+}
+
+// Queues a release for the research worker: it is downloaded and measured when the machine is
+// idle, as the series named here, and deleted once measured.
+pub(super) async fn research_add_source(Extension(auth): Extension<ApiAuth>, Json(req): Json<ResearchSourceReq>) -> Response {
+    if let Err(response) = require_privileged(&auth) {
+        return response;
+    }
+    match tokio::task::spawn_blocking(move || research::add_request(&req.torrent, req.file_index, &req.series)).await {
+        Ok(Ok(request)) => (StatusCode::ACCEPTED, Json(json!(request))).into_response(),
+        Ok(Err(reason)) => (StatusCode::BAD_REQUEST, reason).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+pub(super) async fn research_remove_source(Extension(auth): Extension<ApiAuth>, Path(id): Path<String>) -> Response {
+    if let Err(response) = require_privileged(&auth) {
+        return response;
+    }
+    if !research::is_request_id(&id) {
+        return (StatusCode::NOT_FOUND, "no such request").into_response();
+    }
+    match tokio::task::spawn_blocking(move || research::remove_request(&id)).await {
+        Ok(Ok(true)) => Json(json!({ "removed": true })).into_response(),
+        Ok(Ok(false)) => (StatusCode::NOT_FOUND, "no such request").into_response(),
+        Ok(Err(reason)) => (StatusCode::CONFLICT, reason).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+// A dataset file's name as the routes accept it: a plain `.jsonl` name in the dataset directory,
+// never a hidden one and never a path.
+fn dataset_name_ok(name: &str) -> bool {
+    name.len() <= 200
+        && name.ends_with(".jsonl")
+        && !name.starts_with('.')
+        && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+// The dataset's files: what the lab has measured on this machine, to copy and merge elsewhere.
+pub(super) async fn dataset_list(Extension(auth): Extension<ApiAuth>) -> Response {
+    if let Err(response) = require_privileged(&auth) {
+        return response;
+    }
+    let files = tokio::task::spawn_blocking(|| {
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(DATASET_DIRECTORY).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let Ok(meta) = entry.metadata() else { continue };
+            if !meta.is_file() || !dataset_name_ok(&name) {
+                continue;
+            }
+            let scenes = std::fs::read(entry.path()).map(|bytes| bytes.iter().filter(|byte| **byte == b'\n').count()).unwrap_or(0);
+            let modified = meta.modified().ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok()).map(|elapsed| elapsed.as_secs()).unwrap_or(0);
+            files.push(json!({ "name": name, "bytes": meta.len(), "scenes": scenes, "modified": modified }));
+        }
+        files.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+        files
+    })
+    .await
+    .unwrap_or_default();
+    Json(json!({ "files": files })).into_response()
+}
+
+pub(super) async fn dataset_file(Extension(auth): Extension<ApiAuth>, Path(name): Path<String>) -> Response {
+    if let Err(response) = require_privileged(&auth) {
+        return response;
+    }
+    if !dataset_name_ok(&name) {
+        return (StatusCode::NOT_FOUND, "no such dataset file").into_response();
+    }
+    match tokio::fs::read(std::path::Path::new(DATASET_DIRECTORY).join(&name)).await {
+        Ok(bytes) => ([(axum::http::header::CONTENT_TYPE, "application/x-ndjson")], bytes).into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, "no such dataset file").into_response(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,6 +386,28 @@ mod tests {
         assert_eq!(spread.sample, VerifySample::Spread);
         assert!(parse_verify(Some(&json!({ "sample": "random" }))).is_err());
         assert!(parse_verify(Some(&json!("yes"))).is_err());
+    }
+
+    #[test]
+    fn dataset_names_are_plain_files() {
+        assert!(dataset_name_ok("akira.jsonl"));
+        assert!(dataset_name_ok("g-some-show-03-1080p-abcd-mkv-1a2b3c4d.jsonl"));
+        assert!(!dataset_name_ok(".caramel-lab-akira.jsonl"));
+        assert!(!dataset_name_ok("../env.jsonl"));
+        assert!(!dataset_name_ok("akira.json"));
+        assert!(!dataset_name_ok("a/b.jsonl"));
+    }
+
+    #[test]
+    fn research_settings_are_checked_before_any_is_written() {
+        let req = |value: serde_json::Value| serde_json::from_value::<ResearchSettingsReq>(value).unwrap();
+        let lines = research_settings_lines(&req(json!({ "enabled": true, "scenes": 32, "crfs": [31, 11, 15] }))).unwrap();
+        assert_eq!(lines, vec![(CARAMEL_RESEARCH, "on".to_string()), (CARAMEL_RESEARCH_SCENES, "32".to_string()), (CARAMEL_RESEARCH_CRFS, "11,15,31".to_string())]);
+        assert_eq!(research_settings_lines(&req(json!({ "crfs": [] }))).unwrap(), vec![(CARAMEL_RESEARCH_CRFS, String::new())]);
+        assert!(research_settings_lines(&req(json!({ "enabled": true, "scenes": 2 }))).is_err());
+        assert!(research_settings_lines(&req(json!({ "crfs": [60] }))).is_err());
+        assert!(research_settings_lines(&req(json!({ "preset": "1440p" }))).is_err());
+        assert!(research_settings_lines(&req(json!({}))).unwrap().is_empty());
     }
 
     #[test]

@@ -76,6 +76,9 @@ pub const CARAMEL_RESEARCH_FEED: &str = "caramel_research_feed";
 pub const CARAMEL_RESEARCH_SCENES: &str = "caramel_research_scenes";
 pub const CARAMEL_RESEARCH_RETRAIN: &str = "caramel_research_retrain";
 pub const CARAMEL_RESEARCH_PRESET: &str = "caramel_research_preset";
+// `caramel_research_crfs`, when set, is the fixed CRFs every scene is encoded at (`11,15,19,23,27,31`)
+// instead of the lab searching each scene's curve.
+pub const CARAMEL_RESEARCH_CRFS: &str = "caramel_research_crfs";
 
 // Encoder presets as editable files. A name with no file here falls back to the built-in table, so
 // an untouched deployment encodes exactly as it did before presets became configurable and an

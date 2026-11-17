@@ -330,6 +330,10 @@ match this build's inputs and metrics is refused and the built-in model stays, a
 | `caramel_research_scenes` | 40 | Scenes one source gives (4–400). |
 | `caramel_research_retrain` | 200 | New scenes between two trainings (at least 20). |
 | `caramel_research_preset` | `standard` | The preset whose encoder settings are measured. |
+| `caramel_research_crfs` | — | Fixed CRFs every scene is encoded at (`11,15,19,23,27,31`). Without it the lab searches each scene's curve. |
+
+All of these but the feed can also be set over the API (`POST /api/v1/caramel/research`, a
+privileged token): what a machine downloads on its own is decided on the machine.
 
 What it does, once the queue has been empty for five minutes and no encode holds
 `DB/work/.foreground-encode`:
@@ -343,12 +347,41 @@ What it does, once the queue has been empty for five minutes and no encode holds
    `DB/caramel/dataset/<slug>.jsonl`. Sources, in order: files under `DB/caramel/sources/` (any
    depth to four; `.mkv`, `.mp4`, `.m2ts`, `.webm` of 37 MB or more), then
    `DB/caramel/sources/fetched/`, then the inputs of past jobs still in `DB/cache/inputs`.
-3. Otherwise, with a feed, read it (at most every 30 minutes), pick one item, download it with
+3. Otherwise move the [request queue](#queued-releases) along: measure a release that has been
+   downloaded, else download the next one.
+4. Otherwise, with a feed, read it (at most every 30 minutes), pick one item, download it with
    `pnp2p` into `DB/caramel/sources/fetched/<key>/`, and measure it next round. An item is taken
    only if it is a single 1080p release of 150 MB to 4 GB with five or more seeders, its link is an
    `https://….torrent` that passes the same fetch-URL checks as a job's, and it was not tried
    before. A download gets 45 minutes. A fetched source is deleted as soon as it has been measured,
    or given up on.
+
+### Queued releases
+
+An operator can name releases for the worker instead of leaving it to a feed, with the series each
+one is: `POST /api/v1/caramel/research/sources` with `{ "torrent", "file_index"?, "series" }` (a
+privileged token). `torrent` is a `.torrent` link over https, a nyaa view page, or a magnet;
+`file_index` picks one file of a batch, and without it the whole torrent is downloaded. The queue is
+`DB/caramel/requests.json`; each release is downloaded into
+`DB/caramel/sources/requested/<id>/` with `pnp2p` and measured as the series it was queued as, which
+matters because a series read from a file name can be wrong, and a wrong one lets a fold test a
+network on a show it trained on. Being asked for by name, a release is not held to the two-sources
+limit. It moves through `queued`, `downloading`, `downloaded`, `measuring`, and ends `measured` or
+`failed`; its directory is deleted once it ends. A download stopped for a job keeps what it has and
+resumes next time; one that fails or runs past three hours is tried again, three times in all. The
+same file of the same torrent is not queued twice unless the first one failed. `DELETE
+/api/v1/caramel/research/sources/:id` takes one off the queue, except while it is downloading or
+being measured.
+
+The worker's `pnp2p` is routed as a job's is: through Pandora's torrent proxy (`PNP2P_PROXY`) while
+the worker's proxy health check passes, directly while it fails. The `.torrent` file itself is
+fetched directly, as a job's `pncurl` fetches it.
+
+**Getting the measurements out.** `GET /api/v1/caramel/dataset` lists the dataset's files (`name`,
+`bytes`, `scenes`, `modified`) and `GET /api/v1/caramel/dataset/<name>` returns one, so a machine
+that measures in its idle time can feed a training run somewhere else. Both are privileged. Set
+`caramel_research_retrain` high on such a machine if it should not train and install models of its
+own.
 
 **Deduplication.** A source is done once (`research.json` remembers it by id, whatever came of it),
 and a series gives at most two sources: counting both what the dataset holds and what the worker
@@ -399,5 +432,6 @@ only writes it.
 | `DB/caramel/models/<version>.model` | `install` | Installed models, the active one and up to eight before it. |
 | `DB/caramel/active` | `install` | The version new encodes decide with. Absent: the built-in model. |
 | `DB/caramel/research.json` | the research worker | Its state and last training report. |
-| `DB/caramel/sources/` | the operator | Videos to measure. `fetched/` below it belongs to the worker. |
+| `DB/caramel/requests.json` | the API and the research worker | Queued releases and how far each has got. |
+| `DB/caramel/sources/` | the operator | Videos to measure. `fetched/` and `requested/` below it belong to the worker. |
 | `DB/caramel/log/` | the research worker | Logs and cancel files of its children. |
