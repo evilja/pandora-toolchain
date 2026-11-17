@@ -77,7 +77,7 @@ const FITTED_ANCHORS: (f64, f64) = (15.0, 23.0);
 const REFERENCE_ANCHOR: f64 = 19.0;
 // The anchors a network's curves are read at. They are drawn from CRF 10 to 34 and a vote looks up
 // to eight either way; an anchor outside this is read as the nearest inside.
-const CURVE_ANCHORS: (f64, f64) = (14.0, 28.0);
+pub const CURVE_ANCHORS: (f64, f64) = (14.0, 28.0);
 
 // The features a predictor reads, in the order of its coefficients. Each is on a log scale — what
 // matters is whether there is twice as much grain, not 0.1 more — and is held inside the range the

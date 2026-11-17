@@ -358,7 +358,8 @@ pub struct Model {
 }
 
 impl Model {
-    pub(crate) fn standardised(&self, inputs: &[f64; INPUTS]) -> [f64; INPUTS] {
+    // The inputs as the networks are given them: centred, scaled, and clipped to `INPUT_LIMIT`.
+    pub fn standardised(&self, inputs: &[f64; INPUTS]) -> [f64; INPUTS] {
         std::array::from_fn(|index| ((inputs[index] - self.input_mean[index]) * self.input_scale[index]).clamp(-INPUT_LIMIT, INPUT_LIMIT))
     }
 

@@ -23,6 +23,7 @@ or a job asks for Caramel Analysis at all.
 | `src/lib/mpeg/caramel_train.rs` | Models on disk (`install`, `activate`, `installed_version`) and `train_dataset`, which trains a candidate and writes the report. |
 | `src/pnworker/research.rs` | The idle-time worker: finds sources, runs the lab and the trainer as low-priority children, stops for the queue. |
 | `pnx264/src/scenes.rs` | `load_model`: a chunk encoder decides with the model its planner named, read from `DB/caramel/models/`. |
+| `examples/caramel_explain.rs`, `scripts/caramel-viz.py` | Watching the model decide: see [Seeing a decision](#seeing-a-decision). |
 
 ## Which model decides
 
@@ -309,6 +310,28 @@ State is `DB/caramel/research.json`: `sources` (id → series, time, `measured` 
 per-metric tables), `activity` and `updated_unix`. Child logs are in `DB/caramel/log/`.
 `GET /api/v1/caramel/model` returns the same as `research`: whether it is on, what it is doing,
 scenes and series in the dataset, and what the last training said.
+
+## Seeing a decision
+
+`scripts/caramel-viz.py` writes an animated page that walks through a stretch of video one scene at
+a time, slowly enough to follow: the scene's frame, its 27 inputs as the networks are given them,
+every layer of one network lighting up in turn (with the strongest weighted connections drawn), the
+networks of the ensemble side by side, the seven curves the outputs become, the vote each curve
+gives where it meets its target, and the arithmetic of `decide` down to the CRF. A timeline below
+fills in as scenes are decided.
+
+```bash
+python3 scripts/caramel-viz.py <video> --start 4000 --frames 1440 --anchor 17
+```
+
+Run it from the checkout whose `DB/` holds the installed model; it decides with the model an encode
+started there would. It builds and runs `examples/caramel_explain.rs`, which runs the scene analysis
+exactly as `pnmpeg --caramel-report` does, then recomputes every scene's decision from the public
+pieces (`inputs`, `Model::standardised`, the layers, `votes_of`, `decide`) and records the
+activations, curves and weights along the way. A scene whose recomputed decision differs from the
+analysis's own is marked on the page. One frame per scene comes from ffmpeg (`DB/bin` first). The
+page is a single HTML file with nothing fetched; `--json` reuses an earlier export, `--no-open`
+only writes it.
 
 ## Files
 
