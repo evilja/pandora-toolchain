@@ -667,8 +667,8 @@ text = "🍮 Caramel Analizi"
 args = 0
 
 [CARAMEL_PROG]
-text = "Caramel Analizi kaynağı sahne sahne okuyor… %{}"
-args = 1
+text = "Caramel Analizi kaynağı sahne sahne okuyor… %{}\nKareler `{} / {}` • `{} FPS`\nBelirlenen sahneler `{}` • ortalama CRF `{}`\nSon kararlar:\n{}"
+args = 7
 
 [CARAMEL_VERIFY_PROG]
 text = "Sahne CRF'leri doğrulanıyor: çapadan en uzak sahneler kendi CRF'leriyle ve CRF {} ile kodlanıyor…"
@@ -691,8 +691,8 @@ text = "Bu makinede sahneleri hızlı bir kodlamadan sonra belirleyen bir Carame
 args = 0
 
 [CARAMEL_ENCODE_PROG]
-text = "Video bu sahne CRF değerleriyle kodlanıyor: %{}"
-args = 1
+text = "Video bu sahne CRF değerleriyle kodlanıyor: %{}\nKareler `{} / {}` • `{} FPS` • `{} kbit/s`\nŞu anki CRF `{}`"
+args = 6
 
 [CARAMEL_UPLOAD_PROG]
 text = "Kodlama Drive'a ve HLS olarak yayımlanıyor…"

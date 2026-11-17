@@ -9,8 +9,8 @@
 // decisions can be watched.
 
 use crate::lib::mpeg::caramel::{
-    CaramelReport, HostedEncode, SceneEncodeRequest, SceneEntry, SceneRequest, VerifyEncoder, VerifyRequest, VerifySample, encode_scene_crfs,
-    probe_source, run_scene_analysis, run_verification,
+    CaramelReport, HostedEncode, LiveScene, LiveScenes, LiveSnapshot, SceneEncodeRequest, SceneEntry, SceneRequest, VerifyEncoder, VerifyRequest,
+    VerifySample, encode_scene_crfs, probe_source, run_scene_analysis, run_verification,
 };
 use crate::lib::mpeg::hls::DEFAULT_NAME_TEMPLATE;
 use crate::lumiere_broker::{DriveCandidate, DriveUploadSpec, GLOBAL_DRIVE_PROFILE, LumiereClient, publish_hls};
@@ -276,11 +276,21 @@ pub async fn run_caramel_job(
     let settings = preset.x264_settings();
     let anchor = request.anchor.or(settings.crf.map(f32::from)).unwrap_or(17.0);
     let input = directory.join("contents").join("torrent").join("input.mkv");
-    let progress = |done: u64, total: u64| {
-        let shown = if total == 0 { 0 } else { (done * 100 / total).min(99) };
-        (job_id, MessagePayload::Progress(CARAMEL_PROG, vec![shown.to_string()]), None)
+    // Only for the progress lines: the analysis probes the source again for itself.
+    let source = probe_source(&input).ok();
+    let source_fps = source.as_ref().map_or(0.0, |probe| probe.context.fps);
+    let total_frames = source
+        .as_ref()
+        .and_then(|probe| probe.duration.map(|duration| (duration * probe.context.fps) as u64))
+        .unwrap_or(0);
+    let live = Arc::new(LiveScenes::default());
+    let started = std::time::Instant::now();
+    let progress = |done: u64| {
+        let snapshot = live.snapshot();
+        let elapsed = started.elapsed().as_secs_f64();
+        (job_id, MessagePayload::Progress(CARAMEL_PROG, analysis_args(done, total_frames, elapsed, source_fps, &snapshot)), None)
     };
-    tx.send(progress(0, 0)).await.ok();
+    tx.send(progress(0)).await.ok();
 
     let encode = caramel_kernel::EncodeContext {
         output_height: preset.scale_height(),
@@ -288,14 +298,9 @@ pub async fn run_caramel_job(
     };
     let scenes = request.scenes.config();
     let probe = crate::lib::mpeg::caramel::probe_encoder(&preset);
-    // Only for the percentage: the analysis probes the source again for itself.
-    let total_frames = probe_source(&input)
-        .ok()
-        .and_then(|probe| probe.duration.map(|duration| (duration * probe.context.fps) as u64))
-        .unwrap_or(0);
     let decoded = Arc::new(AtomicU64::new(0));
     let analysis = {
-        let (input, decoded, cancel, fast) = (input.clone(), decoded.clone(), directory.join("CANCEL"), request.fast);
+        let (input, decoded, cancel, fast, live) = (input.clone(), decoded.clone(), directory.join("CANCEL"), request.fast, live.clone());
         tokio::task::spawn_blocking(move || {
             // The report is of what an encode started now would decide: with the model installed
             // on this machine, which a research worker may have replaced since `pndc` started.
@@ -318,6 +323,7 @@ pub async fn run_caramel_job(
                 fast: probe.clone(),
                 probe,
                 model,
+                live: Some(live.as_ref()),
             })
         })
     };
@@ -326,7 +332,7 @@ pub async fn run_caramel_job(
         tokio::select! {
             result = &mut analysis => break result,
             _ = tokio::time::sleep(PROGRESS_INTERVAL) => {
-                tx.send(progress(decoded.load(Ordering::Relaxed), total_frames)).await.ok();
+                tx.send(progress(decoded.load(Ordering::Relaxed))).await.ok();
             }
         }
     };
@@ -427,6 +433,62 @@ pub async fn run_caramel_job(
         .ok();
 }
 
+fn rate(count: f64, seconds: f64) -> f64 {
+    if seconds > 0.0 { count / seconds } else { 0.0 }
+}
+
+// One decision as a line of the analysis update, numbers only so it reads the same in every locale:
+// where the scene starts, its CRF, the CRF the model chose when a test encode pulled it back, and
+// what its fast encode read.
+fn live_line(scene: &LiveScene, fps: f64) -> String {
+    let mut line = format!("`{}` CRF **{}**", timestamp(scene.start_frame as f64 / fps.max(1.0)), scene.crf);
+    if let Some(proposed) = scene.proposed {
+        line.push_str(&format!(" (← {proposed})"));
+    }
+    if let Some(xpsnr) = scene.fast_xpsnr {
+        line.push_str(&format!(" · fast {xpsnr:.1} dB"));
+    }
+    line
+}
+
+// The analysis update: percent, frames decoded of the source's, decode speed, scenes decided, their
+// frame-weighted CRF so far and the latest decisions — then, never printed, those decisions as JSON
+// for the API's progress row.
+fn analysis_args(done: u64, total: u64, elapsed: f64, fps: f64, snapshot: &LiveSnapshot) -> Vec<String> {
+    let percent = if total == 0 { 0 } else { (done * 100 / total).min(99) };
+    let recent = if snapshot.recent.is_empty() {
+        "—".to_string()
+    } else {
+        snapshot.recent.iter().map(|scene| live_line(scene, fps)).collect::<Vec<_>>().join("\n")
+    };
+    vec![
+        percent.to_string(),
+        done.to_string(),
+        if total == 0 { "?".to_string() } else { total.to_string() },
+        format!("{:.1}", rate(done as f64, elapsed)),
+        snapshot.scenes.to_string(),
+        snapshot.mean_crf.map_or_else(|| "—".to_string(), |mean| format!("{mean:.2}")),
+        recent,
+        serde_json::to_string(snapshot).unwrap_or_default(),
+    ]
+}
+
+// The encode update: percent, frames written of the report's, speed, the bitrate the file has so
+// far (audio included, as an encode's update counts it) and the CRF of the scene being encoded.
+fn encode_args(report: &CaramelReport, frames: u64, bytes: u64, elapsed: f64) -> Vec<String> {
+    let percent = if report.frames == 0 { 0 } else { (frames * 100 / report.frames).min(99) };
+    let seconds = frames as f64 / report.source.fps.max(1.0);
+    let scene = report.scenes.partition_point(|scene| scene.start_frame <= frames).saturating_sub(1);
+    vec![
+        percent.to_string(),
+        frames.to_string(),
+        report.frames.to_string(),
+        format!("{:.1}", rate(frames as f64, elapsed)),
+        format!("{:.0}", rate(bytes as f64 * 8.0 / 1000.0, seconds)),
+        report.scenes.get(scene).map_or_else(|| report.summary.anchor_crf.to_string(), |scene| scene.crf.to_string()),
+    ]
+}
+
 // The encode at the scene CRFs, with its size and bitrate and where it can be watched, as one line
 // of the finished embed: empty when none was asked for.
 fn hosted_line(report: &CaramelReport) -> String {
@@ -482,13 +544,17 @@ async fn host_encode(
         })
     };
     tokio::pin!(encode);
-    tx.send((job_id, MessagePayload::Progress(CARAMEL_ENCODE_PROG, vec!["0".to_string()]), None)).await.ok();
+    let encode_progress = |frames: u64, bytes: u64| {
+        let args = encode_args(report, frames, bytes, started.elapsed().as_secs_f64());
+        (job_id, MessagePayload::Progress(CARAMEL_ENCODE_PROG, args), None)
+    };
+    tx.send(encode_progress(0, 0)).await.ok();
     let encoded = loop {
         tokio::select! {
             result = &mut encode => break result,
             _ = tokio::time::sleep(PROGRESS_INTERVAL) => {
-                let percent = if report.frames == 0 { 0 } else { (written.load(Ordering::Relaxed) * 100 / report.frames).min(99) };
-                tx.send((job_id, MessagePayload::Progress(CARAMEL_ENCODE_PROG, vec![percent.to_string()]), None)).await.ok();
+                let bytes = tokio::fs::metadata(&output).await.map_or(0, |meta| meta.len());
+                tx.send(encode_progress(written.load(Ordering::Relaxed), bytes)).await.ok();
             }
         }
     };
@@ -574,6 +640,24 @@ mod tests {
     fn verification_crfs_are_bounded_and_ordered() {
         let asked = [30.0, 14.0, f32::NAN, 99.0, 16.0, 18.0, 20.0, 22.0, 26.0, 14.0];
         assert_eq!(verify_crfs(&asked, 0.0), vec![14.0, 16.0, 18.0, 20.0, 22.0, 26.0]);
+    }
+
+    // Before any scene is decided the update still has all its slots; a decision a probe pulled back
+    // shows both CRFs.
+    #[test]
+    fn analysis_updates_show_the_decisions_so_far() {
+        let empty = analysis_args(0, 0, 0.0, 24.0, &LiveSnapshot::default());
+        assert_eq!(empty[..7], ["0", "0", "?", "0.0", "0", "—", "—"]);
+        let snapshot = LiveSnapshot {
+            scenes: 2,
+            frames: 480,
+            mean_crf: Some(18.25),
+            recent: vec![LiveScene { start_frame: 1440, crf: 19.0, proposed: Some(21.5), fast_xpsnr: Some(41.26) }],
+        };
+        let args = analysis_args(480, 960, 4.0, 24.0, &snapshot);
+        assert_eq!(args[..6], ["50", "480", "960", "120.0", "2", "18.25"]);
+        assert_eq!(args[6], "`1:00` CRF **19** (← 21.5) · fast 41.3 dB");
+        assert!(args[7].contains("\"mean_crf\":18.25"));
     }
 
     #[test]

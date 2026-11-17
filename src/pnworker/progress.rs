@@ -110,15 +110,28 @@ pub(crate) async fn persist_side_effects(
         });
         db.update_progress(job_id, &v.to_string()).await.ok();
     } else if *id == CARAMEL_PROG {
+        // The decisions so far ride as JSON after the printed arguments (`LiveSnapshot`).
+        let live = args.get(7).and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok());
         let v = serde_json::json!({
             "type": "caramel", "phase": "analysis",
             "percent": args.get(0).and_then(|percent| percent.parse::<u64>().ok()),
+            "frame": args.get(1).and_then(|frame| frame.parse::<u64>().ok()),
+            "total": args.get(2).and_then(|total| total.parse::<u64>().ok()),
+            "fps": args.get(3).and_then(|fps| fps.parse::<f64>().ok()),
+            "scenes": live.as_ref().and_then(|live| live.get("scenes").cloned()),
+            "mean_crf": live.as_ref().and_then(|live| live.get("mean_crf").cloned()),
+            "recent": live.as_ref().and_then(|live| live.get("recent").cloned()),
         });
         db.update_progress(job_id, &v.to_string()).await.ok();
     } else if *id == CARAMEL_ENCODE_PROG {
         let v = serde_json::json!({
             "type": "caramel", "phase": "encode",
             "percent": args.first().and_then(|percent| percent.parse::<u64>().ok()),
+            "frame": args.get(1).and_then(|frame| frame.parse::<u64>().ok()),
+            "total": args.get(2).and_then(|total| total.parse::<u64>().ok()),
+            "fps": args.get(3).and_then(|fps| fps.parse::<f64>().ok()),
+            "kbps": args.get(4).and_then(|kbps| kbps.parse::<f64>().ok()),
+            "crf": args.get(5).and_then(|crf| crf.parse::<f64>().ok()),
         });
         db.update_progress(job_id, &v.to_string()).await.ok();
     } else if *id == CARAMEL_UPLOAD_PROG {

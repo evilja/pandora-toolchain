@@ -667,8 +667,8 @@ text = "🍮 Caramel Analysis"
 args = 0
 
 [CARAMEL_PROG]
-text = "Caramel Analysis is reading the source scene by scene… {}%"
-args = 1
+text = "Caramel Analysis is reading the source scene by scene… {}%\nFrames `{} / {}` • `{} FPS`\nScenes decided `{}` • mean CRF `{}`\nLatest decisions:\n{}"
+args = 7
 
 [CARAMEL_VERIFY_PROG]
 text = "Verifying the scene CRFs: encoding the scenes furthest from the anchor at their own CRF and at CRF {}…"
@@ -691,8 +691,8 @@ text = "No Caramel model on this machine decides scenes after a fast encode yet.
 args = 0
 
 [CARAMEL_ENCODE_PROG]
-text = "Encoding the video at these scene CRFs: {}%"
-args = 1
+text = "Encoding the video at these scene CRFs: {}%\nFrames `{} / {}` • `{} FPS` • `{} kbit/s`\nNow at CRF `{}`"
+args = 6
 
 [CARAMEL_UPLOAD_PROG]
 text = "Publishing the encode to Drive and as HLS…"

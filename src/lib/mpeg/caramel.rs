@@ -115,6 +115,80 @@ pub struct SceneRequest<'a> {
     // The model to decide with instead of the one this process has active, which stays as it is
     // for every other encode: `/caramel-analysis-encode` decides with one that reads fast encodes.
     pub model: Option<std::sync::Arc<caramel_kernel::curve::Model>>,
+    // Where segments report scenes as they decide them, for a caller that shows the analysis as it
+    // goes (`LiveScenes::snapshot`).
+    pub live: Option<&'a LiveScenes>,
+}
+
+// Scenes as the segments decide them, read while the analysis runs. Segments run side by side, so
+// the latest decisions come from several places in the video at once.
+#[derive(Default)]
+pub struct LiveScenes {
+    state: std::sync::Mutex<LiveState>,
+}
+
+#[derive(Default)]
+struct LiveState {
+    // Each segment, by its first frame: its scenes so far (first frame, CRF) and how far it has
+    // decoded, which is where its last scene ends for now.
+    segments: std::collections::BTreeMap<u64, (Vec<(u64, f32)>, u64)>,
+    recent: std::collections::VecDeque<LiveScene>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct LiveScene {
+    pub start_frame: u64,
+    pub crf: f32,
+    // The CRF the model chose before a test encode pulled it back, when one did.
+    pub proposed: Option<f32>,
+    // What the scene's fast encode read, when it had one.
+    pub fast_xpsnr: Option<f64>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct LiveSnapshot {
+    pub scenes: usize,
+    // Frames the decided scenes cover, and their CRF weighted by those frames.
+    pub frames: u64,
+    pub mean_crf: Option<f64>,
+    // The most recent decisions, oldest first.
+    pub recent: Vec<LiveScene>,
+}
+
+// How many of the latest decisions a snapshot carries.
+pub const LIVE_RECENT: usize = 10;
+
+impl LiveScenes {
+    fn record(&self, segment: u64, decided: &[SceneDecision], decoded: u64) {
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = state.segments.entry(segment).or_default();
+        entry.1 = decoded;
+        entry.0.extend(decided.iter().map(|decision| (segment + decision.start_frame, decision.crf)));
+        for decision in decided {
+            let proposed = decision.estimate.probe.as_ref().map(|probe| probe.crf).filter(|crf| *crf > decision.crf);
+            let fast_xpsnr = decision.features.fast_encode.as_ref().map(|fast| fast.xpsnr);
+            state.recent.push_back(LiveScene { start_frame: segment + decision.start_frame, crf: decision.crf, proposed, fast_xpsnr });
+            if state.recent.len() > LIVE_RECENT {
+                state.recent.pop_front();
+            }
+        }
+    }
+
+    pub fn snapshot(&self) -> LiveSnapshot {
+        let state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (mut scenes, mut frames, mut weighted) = (0usize, 0u64, 0.0f64);
+        for (segment, (decided, decoded)) in &state.segments {
+            let end = segment + decoded;
+            for (index, (start, crf)) in decided.iter().enumerate() {
+                let next = decided.get(index + 1).map_or(end, |next| next.0.min(end));
+                let length = next.saturating_sub(*start);
+                scenes += 1;
+                frames += length;
+                weighted += *crf as f64 * length as f64;
+            }
+        }
+        LiveSnapshot { scenes, frames, mean_crf: (frames > 0).then(|| weighted / frames as f64), recent: state.recent.iter().cloned().collect() }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -392,10 +466,15 @@ fn analyse_segment(
         let (fps_num, fps_den) = fps_ratio(fps);
         let mut schedule = SceneSchedule::from_decider(decider, width, height, fps_num, fps_den, encode.anchor_crf, probe, fast);
         let mut decoded = 0u64;
+        let mut reported = 0usize;
         while let Some(frame) = reader.next_frame()? {
             schedule.push(&frame)?;
             while schedule.ready().is_some() {}
             decoded += 1;
+            if let Some(live) = request.live.filter(|_| schedule.decisions().len() > reported) {
+                live.record(start, &schedule.decisions()[reported..], decoded);
+                reported = schedule.decisions().len();
+            }
             if let Some(progress) = request.progress {
                 progress.fetch_add(1, Ordering::Relaxed);
             }
@@ -404,6 +483,9 @@ fn analyse_segment(
             }
         }
         schedule.finish();
+        if let Some(live) = request.live {
+            live.record(start, &schedule.decisions()[reported..], decoded);
+        }
         let mut decisions = schedule.decisions().to_vec();
         for decision in &mut decisions {
             decision.start_frame += start;
@@ -1178,7 +1260,8 @@ mod tests {
     use super::*;
 
     // A short generated clip, analysed and then encoded at its scene CRFs: the output is an MP4
-    // with the video and the AAC audio, at the source's size. Skipped where there is no ffmpeg.
+    // with the video and the AAC audio, at the source's size, and what the analysis showed live
+    // ends as the report says. Skipped where there is no ffmpeg.
     #[test]
     fn a_report_encodes_at_its_scene_crfs() {
         let ffmpeg = resolve_runtime_binary("ffmpeg");
@@ -1195,6 +1278,7 @@ mod tests {
             .status()
             .unwrap();
         assert!(made.success());
+        let live = LiveScenes::default();
         let report = run_scene_analysis(&SceneRequest {
             input: &input,
             range: None,
@@ -1208,8 +1292,14 @@ mod tests {
             probe: None,
             fast: None,
             model: None,
+            live: Some(&live),
         })
         .unwrap();
+        let snapshot = live.snapshot();
+        assert_eq!(snapshot.scenes, report.scenes.len());
+        assert_eq!(snapshot.frames, report.frames);
+        assert!((snapshot.mean_crf.unwrap() - report.summary.mean_crf).abs() < 0.01, "{snapshot:?} {}", report.summary.mean_crf);
+        assert_eq!(snapshot.recent.last().map(|scene| scene.start_frame), report.scenes.last().map(|scene| scene.start_frame));
         let written = AtomicU64::new(0);
         encode_scene_crfs(
             &report,

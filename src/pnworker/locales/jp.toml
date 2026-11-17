@@ -667,8 +667,8 @@ text = "🍮 Caramel 解析"
 args = 0
 
 [CARAMEL_PROG]
-text = "Caramel 解析がソースをシーンごとに読み込んでいます… {}%"
-args = 1
+text = "Caramel 解析がソースをシーンごとに読み込んでいます… {}%\nフレーム `{} / {}` • `{} FPS`\n決定済みシーン `{}` • 平均 CRF `{}`\n直近の決定:\n{}"
+args = 7
 
 [CARAMEL_VERIFY_PROG]
 text = "シーン CRF を検証中: 基準から最も離れたシーンを各自の CRF と CRF {} でエンコードしています…"
@@ -691,8 +691,8 @@ text = "このマシンには、高速エンコードの後でシーンを決め
 args = 0
 
 [CARAMEL_ENCODE_PROG]
-text = "このシーン CRF で動画をエンコード中: {}%"
-args = 1
+text = "このシーン CRF で動画をエンコード中: {}%\nフレーム `{} / {}` • `{} FPS` • `{} kbit/s`\n現在の CRF `{}`"
+args = 6
 
 [CARAMEL_UPLOAD_PROG]
 text = "エンコードを Drive と HLS に公開中…"
