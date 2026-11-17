@@ -119,6 +119,20 @@ pub struct Sample {
     // Frames the scene was measured over: its weight where bytes are added up.
     pub frames: f64,
     pub collected: u64,
+    // How much the scene's loss counts in training: more for a decision verification found
+    // overshot, so the model learns most from the mistakes that cost quality.
+    pub weight: f64,
+    // Whether the scene is a fair sample of what the model meets: false for one picked for looking
+    // doubtful. Only fair scenes set the typical curves and the detail, and only they count in
+    // `simulate` — the bytes, raises and shortfalls a gain and a candidate are judged by — since
+    // scenes chosen for being borderline would make every model look worse than it is.
+    pub fair: bool,
+}
+
+// The fair samples, or all of them when none are.
+fn fair_samples(samples: &[Sample]) -> Vec<&Sample> {
+    let fair: Vec<&Sample> = samples.iter().filter(|sample| sample.fair).collect();
+    if fair.is_empty() { samples.iter().collect() } else { fair }
 }
 
 #[derive(Clone, Debug)]
@@ -198,6 +212,7 @@ fn percentile(values: &mut [f64], share: f64) -> f64 {
 // median of the series, so a source that was measured more than the others counts no more than
 // they do. A median of falling lines falls.
 pub fn typical_curves(samples: &[Sample]) -> Curves {
+    let samples = fair_samples(samples);
     let mut names: Vec<&str> = samples.iter().map(|sample| sample.series.as_str()).collect();
     names.sort();
     names.dedup();
@@ -221,8 +236,10 @@ pub fn typical_curves(samples: &[Sample]) -> Curves {
 struct Prepared {
     inputs: Vec<f64>,
     points: Vec<Observation>,
-    // How many readings it has: each scene weighs the same however many CRFs it was measured at.
+    // How many readings it has: each scene weighs the same however many CRFs it was measured at,
+    // times its own weight.
     terms: f64,
+    weight: f64,
 }
 
 // One scene's loss — the mean over its readings of how far the network's curve is from each, in the
@@ -244,14 +261,14 @@ fn scene_loss(network: &Network, scene: &Prepared, offsets: &[f64; METRICS], tra
             let (cost, pull) = if error.abs() <= HUBER { (0.5 * error * error, error) } else { (HUBER * (error.abs() - 0.5 * HUBER), HUBER * error.signum()) };
             total += cost;
             for knot in 0..KNOT_COUNT {
-                slope[metric * KNOT_COUNT + knot] += pull * slopes[knot] / scene.terms;
+                slope[metric * KNOT_COUNT + knot] += scene.weight * pull * slopes[knot] / scene.terms;
             }
         }
     }
     if let Some(gradients) = gradients {
         network.backward(trace, slope, gradients);
     }
-    total / scene.terms
+    scene.weight * total / scene.terms
 }
 
 // One network: trained on `train`, stopped on `stop`. Without a `stop` set it runs a quarter of the
@@ -348,7 +365,7 @@ pub fn train(samples: &[Sample], config: &TrainConfig, typical: Option<Curves>) 
             let points: Vec<Observation> =
                 sample.observations.iter().map(|point| Observation { crf: point.crf, values: std::array::from_fn(|metric| held(metric, point.values[metric])) }).collect();
             let terms = points.iter().map(|point| point.values.iter().filter(|value| !value.is_nan()).count()).sum::<usize>().max(1) as f64;
-            Prepared { inputs: model.standardised(&sample.inputs), points, terms }
+            Prepared { inputs: model.standardised(&sample.inputs), points, terms, weight: sample.weight.max(0.0) }
         })
         .collect();
     let fold_of = folds(samples);
@@ -423,8 +440,8 @@ pub fn deciding_error(error: &[f64; METRICS]) -> f64 {
 // How easy a detailed scene is: the quality ease, by the scenes' own encodes, that
 // `DETAILED_SHARE` of the measured scenes fall below, over every anchor.
 pub fn detailed_ease(samples: &[Sample], typical: &Curves) -> f64 {
-    let mut eases: Vec<f64> = samples
-        .iter()
+    let mut eases: Vec<f64> = fair_samples(samples)
+        .into_iter()
         .flat_map(|sample| ANCHORS.iter().filter_map(|anchor| measured_votes_all(&measured_votes(&sample.observations, typical, *anchor))).map(|votes| quality_ease(&votes)))
         .collect();
     if eases.is_empty() {
@@ -477,7 +494,9 @@ pub fn simulate(samples: &[Sample], typical: &Curves, detail: f64, decisions: &[
     let mut shortfalls = Vec::new();
     let mut banding = Vec::new();
     let quality = |metric: &usize| DECIDES[*metric] && *metric != BANDING;
-    for (index, anchor, offset) in decisions {
+    // A set with no fair scene is judged on what it has.
+    let any_fair = decisions.iter().any(|(index, _, _)| samples[*index].fair);
+    for (index, anchor, offset) in decisions.iter().filter(|(index, _, _)| samples[*index].fair || !any_fair) {
         let sample = &samples[*index];
         let lines: [Vec<(f64, f64)>; METRICS] = std::array::from_fn(|metric| measured_line(&sample.observations, metric));
         if lines[BITS].len() >= 2 {
@@ -673,7 +692,7 @@ mod tests {
                         }),
                     })
                     .collect();
-                samples.push(Sample { series: format!("series-{source}"), inputs, observations, frames: 48.0, collected: 1000 + source as u64 });
+                samples.push(Sample { series: format!("series-{source}"), inputs, observations, frames: 48.0, collected: 1000 + source as u64, weight: 1.0, fair: true });
             }
         }
         samples
@@ -706,6 +725,8 @@ mod tests {
             observations: vec![observation(10.0, level), observation(34.0, level - 24.0)],
             frames: 48.0,
             collected: 0,
+            weight: 1.0,
+            fair: true,
         };
         // One series measured nine times at -30, two measured once at -10 and -12.
         let mut samples: Vec<Sample> = (0..9).map(|_| scene("much", -30.0)).collect();
@@ -765,7 +786,7 @@ mod tests {
                 _ => (level - crf).min(CEILINGS[metric]),
             }),
         };
-        let scene = |level: f64, bands: f64| Sample { series: "s".to_string(), inputs: [0.0; INPUTS], observations: vec![observation(10.0, level, bands), observation(21.0, level, bands), observation(34.0, level, bands)], frames: 10.0, collected: 0 };
+        let scene = |level: f64, bands: f64| Sample { series: "s".to_string(), inputs: [0.0; INPUTS], observations: vec![observation(10.0, level, bands), observation(21.0, level, bands), observation(34.0, level, bands)], frames: 10.0, collected: 0, weight: 1.0, fair: true };
         // Typical content reads -crf; the first scene reads three better at every CRF and the
         // second six worse. A detailed scene is two CRF harder than typical. Neither bands; the
         // third is the first, banding from CRF 21 on.
@@ -777,6 +798,13 @@ mod tests {
         assert_eq!((fair.raised, fair.lowered, fair.raised_far, fair.raise_mean, fair.shortfall_p95, fair.needed), (1, 1, 1, 5.0, 0.0, 1.0));
         assert!((fair.bytes - (2f64.powf(-25.0 / 6.0) + 2f64.powf(-19.5 / 6.0)) / (2.0 * 2f64.powf(-20.0 / 6.0))).abs() < 1e-9, "{fair:?}");
         assert!(fair.holds());
+        // A scene picked for looking doubtful is left out of the figures, unless nothing else is.
+        let mut doubtful = samples.clone();
+        doubtful[1].fair = false;
+        let judged = simulate(&doubtful, &typical, -2.0, &[(0, 20.0, 5.0), (1, 20.0, -0.5)]);
+        assert_eq!((judged.raised, judged.lowered), (1, 0));
+        let alone = simulate(&doubtful, &typical, -2.0, &[(1, 20.0, -0.5)]);
+        assert_eq!(alone.lowered, 1);
         // Raising it seven loses two of each metric's value: four units on the half-dB metrics and
         // four thirds on VMAF's worst frames, 10/3 in the mean. Lowering the easy one was not needed.
         let far = simulate(&samples, &typical, -2.0, &[(0, 20.0, 7.0), (0, 20.0, -0.5)]);

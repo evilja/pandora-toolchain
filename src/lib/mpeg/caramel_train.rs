@@ -124,6 +124,10 @@ pub fn install(model: &Model) -> Result<PathBuf, String> {
 }
 
 // The lab's samples as the kernel trains on them.
+// How much more a scene counts in training when verification found the encode's decision for it
+// overshot: those are the mistakes that cost quality.
+pub const OVERSHOT_WEIGHT: f64 = 3.0;
+
 pub fn training_samples(samples: &[LabSample]) -> Vec<Sample> {
     samples
         .iter()
@@ -133,6 +137,8 @@ pub fn training_samples(samples: &[LabSample]) -> Vec<Sample> {
             observations: sample.observations(),
             frames: sample.frames as f64,
             collected: sample.collected_unix,
+            weight: if sample.verified.as_ref().and_then(|verified| verified.verdict.as_deref()) == Some("overshot") { OVERSHOT_WEIGHT } else { 1.0 },
+            fair: !sample.chosen_for_doubt(),
         })
         .collect()
 }
@@ -470,6 +476,20 @@ mod tests {
     use super::*;
     use crate::lib::mpeg::caramel_lab::{LAB_RECORD, LabPoint};
     use caramel_kernel::{SourceContext, SpatialFeatures, TemporalSummary};
+
+    // A verified scene trains like any other, three times as hard when its decision overshot; only
+    // a random control of them is a fair sample for the gate.
+    #[test]
+    fn verified_scenes_train_by_their_verdict() {
+        let verified = |picked: &str, verdict: &str| LabSample {
+            picked: picked.to_string(),
+            verified: Some(crate::lib::mpeg::caramel_lab::Verified { model: "m".into(), anchor: 17.0, decided: 21.0, verdict: Some(verdict.to_string()) }),
+            ..sample(0, 0, 0)
+        };
+        let samples = training_samples(&[sample(0, 1, 0), verified("verify-raise", "overshot"), verified("verify-raise", "held"), verified("verify-control", "missed")]);
+        let weights: Vec<(f64, bool)> = samples.iter().map(|sample| (sample.weight, sample.fair)).collect();
+        assert_eq!(weights, vec![(1.0, true), (OVERSHOT_WEIGHT, false), (1.0, false), (1.0, true)]);
+    }
 
     // A sample whose encodes follow its noise: a noisier scene scores lower at every CRF.
     fn sample(series: usize, scene: usize, collected: u64) -> LabSample {

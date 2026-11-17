@@ -434,6 +434,14 @@ in use, 4 when it may not, 1 on an error. `--train-install` installs an accepted
   metrics; a unit is 0.5 dB of XPSNR), and the raises add no more than 2 CAMBI at the 95th
   percentile. A raised scene is allowed to look like a detailed one does at the anchor, a little
   worse at its tail, and not to band visibly.
+- **Verified scenes.** Scenes from [verification](#verifying-an-encodes-decisions) train like any
+  other — every one is a full curve — and one whose decision was found `overshot` counts three
+  times as much in the loss (`OVERSHOT_WEIGHT`): those are the mistakes that cost quality. But they
+  were picked for looking doubtful, so they are not a fair sample of what the model meets: only
+  `verify-control` scenes and ordinary lab scenes set typical content and `detail`, and only they
+  count in the policy figures — bytes, raises, shortfall and banding percentiles — by which a gain
+  is chosen and a candidate is judged. They do count in the vote error. A verified episode is its
+  own series (`verify-…`), so its scenes are held out together.
 - **The gate.** With a model in use, candidate and current are both scored on the scenes measured
   *since the current one was trained* — which it has never seen, and which the candidate answers
   with its held-out networks. The candidate is accepted when there are at least 40 such scenes and
