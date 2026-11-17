@@ -6,7 +6,7 @@
 # arm64) or `-mcpu=native` (macOS on Apple silicon), so the compiler is free to use every
 # instruction the build host has — AVX2/FMA/BMI2 on an i9-9900K, NEON and the Apple extensions on
 # an M-series Mac — in ffmpeg's own C code: swscale, the filters, the AAC encoder, the muxers and
-# the demuxers. libx264, libx265 and libass carry hand-written assembly with runtime CPU dispatch,
+# the demuxers. libx264, libx265, libass and libvmaf carry hand-written assembly with runtime CPU dispatch,
 # so their inner loops were already tuned; what a native build changes for them is the C that
 # surrounds those loops. The result is a binary that must not be copied to another machine, which
 # is why it lives in `DB/bin` and never in the repository.
@@ -19,9 +19,10 @@
 #
 # Prerequisites are checked before anything is downloaded, and the missing ones are named with
 # the package-manager line that installs them. The build needs a C/C++ compiler, make, cmake,
-# pkg-config, curl, tar, xz, git, nasm (x86 only) and the development packages for freetype,
-# fontconfig, harfbuzz and fribidi. Those four are linked from the system because fontconfig's
-# configuration and cache belong to the machine; x264, x265 and libass are built here and linked
+# pkg-config, curl, tar, xz, git, meson, ninja, xxd, nasm (x86 only) and the development packages
+# for freetype, fontconfig, harfbuzz and fribidi. Those four are linked from the system because
+# fontconfig's configuration and cache belong to the machine; x264, x265, libass and libvmaf are
+# built here and linked
 # statically, so the ffmpeg that comes out depends on nothing it did not build itself apart from
 # those and libc.
 #
@@ -34,7 +35,7 @@
 #     PANDORA_FFMPEG_LTO      link-time optimisation for ffmpeg    (default: 0; see below)
 #     PANDORA_FFMPEG_NVENC    build the NVENC/NVDEC hooks on Linux (default: 1; header-only, no driver needed)
 #     PANDORA_FFMPEG_CLEAN    same as --clean                      (default: 0)
-#     FFMPEG_VERSION, X264_REF, X265_VERSION, LIBASS_VERSION, NV_CODEC_HEADERS_VERSION
+#     FFMPEG_VERSION, X264_REF, X265_VERSION, LIBASS_VERSION, LIBVMAF_VERSION, NV_CODEC_HEADERS_VERSION
 #
 # LTO is off by default. Apple's clang 21 produced an ffmpeg that passed every encode and then
 # segfaulted on exit whenever it had opened a demuxer (the `.ass` probe, an MP4 write); the same
@@ -47,7 +48,8 @@
 # together, and bump them here rather than in the environment when the change is meant to last.
 #
 # The finished pair is smoke-tested before it is installed: a libx264 encode through the `ass`
-# filter and a 10-bit libx265 encode, which between them cover what every preset asks of it.
+# filter and a 10-bit libx265 encode, which between them cover what every preset asks of it, and
+# a VMAF + CAMBI measurement with the built-in model, which is what Caramel's lab asks of it.
 # `DB/bin/ffmpeg.build` records what was built, with which flags, on which CPU; `pndc` prints it
 # at startup and uses its presence to tell a native build from a downloaded one.
 
@@ -57,6 +59,7 @@ FFMPEG_VERSION="${FFMPEG_VERSION:-8.1.2}"
 X264_REF="${X264_REF:-stable}"
 X265_VERSION="${X265_VERSION:-4.1}"
 LIBASS_VERSION="${LIBASS_VERSION:-0.17.5}"
+LIBVMAF_VERSION="${LIBVMAF_VERSION:-3.2.1}"
 NV_CODEC_HEADERS_VERSION="${NV_CODEC_HEADERS_VERSION:-n12.2.72.0}"
 
 OUT="${PANDORA_FFMPEG_OUT:-DB/bin}"
@@ -90,7 +93,9 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # ---------------------------------------------------------------------------------------------
 
 missing_tools=()
-for tool in cc c++ make cmake pkg-config curl tar xz git; do
+# meson and ninja build libvmaf; xxd embeds its VMAF models, without which libvmaf builds quietly
+# with none and every measurement that names no model file fails.
+for tool in cc c++ make cmake pkg-config curl tar xz git meson ninja xxd; do
     have "$tool" || missing_tools+=("$tool")
 done
 case "$ARCH" in
@@ -106,10 +111,10 @@ if [ "${#missing_tools[@]}" -gt 0 ] || [ "${#missing_pkgs[@]}" -gt 0 ]; then
     [ "${#missing_tools[@]}" -gt 0 ] && log "missing tools: ${missing_tools[*]}"
     [ "${#missing_pkgs[@]}" -gt 0 ] && log "missing development packages (pkg-config names): ${missing_pkgs[*]}"
     log "install them with one of:"
-    log "  apt:    sudo apt-get install -y build-essential cmake pkg-config curl xz-utils git nasm libfreetype-dev libfontconfig-dev libharfbuzz-dev libfribidi-dev zlib1g-dev"
-    log "  dnf:    sudo dnf install -y gcc gcc-c++ make cmake pkgconf-pkg-config curl xz git nasm freetype-devel fontconfig-devel harfbuzz-devel fribidi-devel zlib-devel"
-    log "  pacman: sudo pacman -S --needed base-devel cmake pkgconf curl xz git nasm freetype2 fontconfig harfbuzz fribidi zlib"
-    log "  brew:   brew install cmake pkg-config xz git nasm freetype fontconfig harfbuzz fribidi"
+    log "  apt:    sudo apt-get install -y build-essential cmake pkg-config curl xz-utils git nasm meson ninja-build xxd libfreetype-dev libfontconfig-dev libharfbuzz-dev libfribidi-dev zlib1g-dev"
+    log "  dnf:    sudo dnf install -y gcc gcc-c++ make cmake pkgconf-pkg-config curl xz git nasm meson ninja-build vim-common freetype-devel fontconfig-devel harfbuzz-devel fribidi-devel zlib-devel"
+    log "  pacman: sudo pacman -S --needed base-devel cmake pkgconf curl xz git nasm meson ninja vim freetype2 fontconfig harfbuzz fribidi zlib"
+    log "  brew:   brew install cmake pkg-config xz git nasm meson ninja freetype fontconfig harfbuzz fribidi"
     die "prerequisites are missing; nothing was downloaded or built"
 fi
 
@@ -175,7 +180,7 @@ fi
 
 log "host: $OS $ARCH, $CPU_MODEL"
 log "tuning: $TUNE, jobs: $JOBS, lto: $LTO"
-log "versions: ffmpeg $FFMPEG_VERSION, x264 $X264_REF, x265 $X265_VERSION, libass $LIBASS_VERSION"
+log "versions: ffmpeg $FFMPEG_VERSION, x264 $X264_REF, x265 $X265_VERSION, libass $LIBASS_VERSION, libvmaf $LIBVMAF_VERSION"
 log "output: $OUT, work tree: $WORK"
 
 export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
@@ -382,6 +387,27 @@ else
 fi
 
 # ---------------------------------------------------------------------------------------------
+# libvmaf, for the `libvmaf` filter: VMAF and CAMBI are two of what Caramel's lab measures every
+# encode by, and production's research worker cannot measure anything without them. Static, with
+# the VMAF models compiled in (the lab names none), and without libvmaf's own tools and tests.
+# ---------------------------------------------------------------------------------------------
+
+if stamped libvmaf "$LIBVMAF_VERSION"; then
+    log "libvmaf $LIBVMAF_VERSION already built"
+else
+    fetch_tar libvmaf 1 "https://github.com/Netflix/vmaf/archive/refs/tags/v${LIBVMAF_VERSION}.tar.gz"
+    log "building libvmaf"
+    (
+        cd "$SRC/libvmaf/libvmaf"
+        rm -rf build
+        meson setup build --prefix="$PREFIX" --libdir=lib --buildtype=release --default-library=static             -Dbuilt_in_models=true -Denable_tests=false -Denable_docs=false -Denable_tools=false             -Dc_args="$TUNE -O3 -fPIC" -Dcpp_args="$TUNE -O3 -fPIC"             >"$WORK/libvmaf-configure.log" 2>&1 || { cat "$WORK/libvmaf-configure.log"; die "libvmaf configure failed"; }
+        ninja -C build -j "$JOBS" >"$WORK/libvmaf-make.log" 2>&1 || { tail -50 "$WORK/libvmaf-make.log"; die "libvmaf build failed"; }
+        ninja -C build install >>"$WORK/libvmaf-make.log" 2>&1
+    )
+    stamp libvmaf "$LIBVMAF_VERSION"
+fi
+
+# ---------------------------------------------------------------------------------------------
 # NVENC/NVDEC headers, Linux only. Header-only: ffmpeg loads libnvidia-encode at runtime, so a
 # machine without an NVIDIA driver builds and runs this exactly as one with it; the encoder just
 # fails to open there, which is how `probe_hardware_encoders` already tells the two apart.
@@ -408,7 +434,7 @@ fetch_tar ffmpeg 1 \
     "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" \
     "https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n${FFMPEG_VERSION}.tar.gz"
 
-for lib in x264 x265 libass; do promote_private "$lib"; done
+for lib in x264 x265 libass libvmaf; do promote_private "$lib"; done
 
 LTO_FLAG=()
 [ "$LTO" = "1" ] && LTO_FLAG=(--enable-lto)
@@ -427,6 +453,7 @@ CONFIGURE=(
     --enable-libx264
     --enable-libx265
     --enable-libass
+    --enable-libvmaf
     --enable-libfreetype
     --enable-libfontconfig
     --enable-libharfbuzz
@@ -488,9 +515,9 @@ ASS
 # system .pc file can quietly link the distribution's shared copy instead, and that is only
 # visible in the loader's output.
 if [ "$OS" = "Darwin" ]; then linked="$(otool -L "$FF")"; else linked="$(ldd "$FF" 2>/dev/null || true)"; fi
-if printf '%s' "$linked" | grep -qE 'lib(x264|x265|ass)[.0-9]*\.(so|dylib)'; then
+if printf '%s' "$linked" | grep -qE 'lib(x264|x265|ass|vmaf)[.0-9]*\.(so|dylib)'; then
     printf '%s\n' "$linked" >&2
-    die "ffmpeg linked a shared x264/x265/libass instead of the ones built here"
+    die "ffmpeg linked a shared x264/x265/libass/libvmaf instead of the ones built here"
 fi
 
 (
@@ -501,6 +528,10 @@ fi
     log "smoke test: libx265 main10"
     "$FF" -v error -f lavfi -i "testsrc2=size=256x144:rate=24:duration=0.5" -vf "format=yuv420p10le" \
         -c:v libx265 -preset ultrafast -profile:v main10 -f null - || die "the libx265 main10 smoke test failed"
+    log "smoke test: libvmaf with CAMBI"
+    "$FF" -v error -f lavfi -i "testsrc2=size=256x144:rate=24:duration=0.5" -f lavfi -i "testsrc2=size=256x144:rate=24:duration=0.5" \
+        -lavfi "[0:v][1:v]libvmaf=log_path=smoke-vmaf.json:log_fmt=json:feature=name=cambi" -f null - \
+        && grep -q '"cambi"' smoke-vmaf.json || die "the libvmaf smoke test failed"
     log "smoke test: ffprobe"
     "$FP" -v error -show_entries format=format_name -of csv=p=0 smoke.ass >/dev/null || die "ffprobe smoke test failed"
 )
@@ -524,6 +555,7 @@ X264_COMMIT="$(git -C "$SRC/x264" rev-parse --short HEAD 2>/dev/null || echo "$X
     echo "x264=$X264_REF@$X264_COMMIT"
     echo "x265=$X265_VERSION"
     echo "libass=$LIBASS_VERSION"
+    echo "libvmaf=$LIBVMAF_VERSION"
     echo "optional=${NV_FLAG[*]:-} ${OPTIONAL_FLAGS[*]:-}"
     echo "configure=${CONFIGURE[*]}"
 } > "$OUT/ffmpeg.build"

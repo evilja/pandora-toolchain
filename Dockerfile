@@ -70,7 +70,7 @@ ARG FFMPEG_NATIVE=0
 RUN if [ "$FFMPEG_NATIVE" = "1" ]; then \
       apt-get update \
    && apt-get install -y --no-install-recommends \
-        ca-certificates build-essential cmake pkg-config curl xz-utils git nasm \
+        ca-certificates build-essential cmake pkg-config curl xz-utils git nasm meson ninja-build xxd \
         libfreetype-dev libfontconfig-dev libharfbuzz-dev libfribidi-dev zlib1g-dev \
    && rm -rf /var/lib/apt/lists/*; \
     fi
@@ -98,7 +98,7 @@ RUN apt-get update \
     fi \
  && if [ "$FFMPEG_TOOLCHAIN" = "1" ]; then \
       apt-get install -y --no-install-recommends \
-        build-essential cmake pkg-config xz-utils git nasm \
+        build-essential cmake pkg-config xz-utils git nasm meson ninja-build xxd \
         libfreetype-dev libfontconfig-dev libharfbuzz-dev libfribidi-dev zlib1g-dev; \
     fi \
  && rm -rf /var/lib/apt/lists/*

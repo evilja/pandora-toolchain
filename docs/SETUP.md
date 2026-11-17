@@ -81,12 +81,15 @@ fallback behavior.
 
 Pandora runs whatever `ffmpeg`/`ffprobe` pair `DB/bin` holds, and by default that is a portable
 download compiled for the x86-64 baseline so it runs on any machine. `scripts/build-ffmpeg.sh`
-compiles one for *this* machine instead: ffmpeg, x264, x265 (8/10/12-bit) and libass from pinned
-sources, with `-march=native` on Linux and `-mcpu=native` on Apple silicon, so the compiler uses
+compiles one for *this* machine instead: ffmpeg, x264, x265 (8/10/12-bit), libass and libvmaf
+from pinned sources, with `-march=native` on Linux and `-mcpu=native` on Apple silicon, so the compiler uses
 every instruction the CPU has — AVX2/FMA/BMI2 on an i9-9900K, NEON and the Apple extensions on an
 M-series Mac — in ffmpeg's own code: swscale, the filters, the AAC encoder, the muxers. x264, x265
 and libass carry hand-written assembly with runtime dispatch already, so what a native build buys
-them is the C around those loops; what it buys ffmpeg is everything.
+them is the C around those loops; what it buys ffmpeg is everything. libvmaf is there for Caramel:
+the lab and the research worker score every encode with VMAF and CAMBI through ffmpeg's `libvmaf`
+filter, so a pair without it fails every lab run (see [CARAMEL.md](CARAMEL.md)). It is built with
+its VMAF models compiled in, which is why the build needs `meson`, `ninja` and `xxd` besides.
 
 Three ways to run it, all the same build:
 
@@ -102,11 +105,11 @@ already there is rebuilt over, and startup waits for the build — which is minu
 machine and longer on a small node. Without it, nothing changes for an existing deployment.
 
 The script checks its prerequisites first and names the package-manager line that installs the
-missing ones (a C/C++ toolchain, make, cmake, pkg-config, curl, xz, git, nasm on x86, and the
+missing ones (a C/C++ toolchain, make, cmake, meson, ninja, xxd, pkg-config, curl, xz, git, nasm on x86, and the
 development packages for freetype, fontconfig, harfbuzz and fribidi — those four are linked from
 the system because fontconfig's configuration belongs to the machine; everything else is built and
-linked statically). It smoke-tests the result — a libx264 encode through the `ass` filter and a
-10-bit libx265 encode — before installing it, so a failed build leaves the previous pair in place.
+linked statically). It smoke-tests the result — a libx264 encode through the `ass` filter, a
+10-bit libx265 encode, and a `libvmaf` comparison that has to report CAMBI — before installing it, so a failed build leaves the previous pair in place.
 It writes `DB/bin/ffmpeg.build` beside the binaries: what was built, with which flags, on which
 CPU, and startup prints that so a node's `/lsnode` line and its log agree about what it runs.
 Component versions are pinned in the script so two machines that run it get the same ffmpeg,

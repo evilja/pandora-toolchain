@@ -127,10 +127,10 @@ pub struct FfmpegBuildProgress {
     pub line: String,
 }
 
-pub const FFMPEG_BUILD_STEPS: u8 = 5;
+pub const FFMPEG_BUILD_STEPS: u8 = 6;
 
-// The step a line of the script's own narrative belongs to: x264, x265, libass, ffmpeg (with the
-// NVENC headers it is configured against), then the smoke test and install. `None` for the
+// The step a line of the script's own narrative belongs to: x264, x265, libass, libvmaf, ffmpeg
+// (with the NVENC headers it is configured against), then the smoke test and install. `None` for the
 // header lines before anything is built and for anything the script did not write itself — a
 // compiler's output in a failure tail names these libraries too and is not a milestone.
 pub fn ffmpeg_build_step(line: &str) -> Option<(u8, &str)> {
@@ -142,8 +142,10 @@ pub fn ffmpeg_build_step(line: &str) -> Option<(u8, &str)> {
         return None;
     }
     let step = if text.starts_with("smoke test") || text.starts_with("installed ") || text.starts_with("record:") {
-        5
+        6
     } else if text.contains("nv-codec-headers") || text.contains(" ffmpeg") {
+        5
+    } else if text.contains("libvmaf") {
         4
     } else if text.contains("libass") {
         3
@@ -664,12 +666,15 @@ mod tests {
             ("[build-ffmpeg] x264 stable already built", 1),
             ("[build-ffmpeg] building x265 (12-bit, 10-bit, then 8-bit with both linked in)", 2),
             ("[build-ffmpeg] downloading libass from https://github.com/libass/libass/releases/x.tar.xz", 3),
-            ("[build-ffmpeg] installing nv-codec-headers", 4),
-            ("[build-ffmpeg] downloading ffmpeg from https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz", 4),
-            ("[build-ffmpeg] configuring ffmpeg: --prefix=/x --enable-libx264 --enable-libx265", 4),
-            ("[build-ffmpeg] building ffmpeg with 16 jobs", 4),
-            ("[build-ffmpeg] smoke test: libx265 main10", 5),
-            ("[build-ffmpeg] installed /app/DB/bin/ffmpeg and /app/DB/bin/ffprobe", 5),
+            ("[build-ffmpeg] downloading libvmaf from https://github.com/Netflix/vmaf/archive/refs/tags/v3.2.1.tar.gz", 4),
+            ("[build-ffmpeg] libvmaf 3.2.1 already built", 4),
+            ("[build-ffmpeg] installing nv-codec-headers", 5),
+            ("[build-ffmpeg] downloading ffmpeg from https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz", 5),
+            ("[build-ffmpeg] configuring ffmpeg: --prefix=/x --enable-libx264 --enable-libx265 --enable-libvmaf", 5),
+            ("[build-ffmpeg] building ffmpeg with 16 jobs", 5),
+            ("[build-ffmpeg] smoke test: libx265 main10", 6),
+            ("[build-ffmpeg] smoke test: libvmaf with CAMBI", 6),
+            ("[build-ffmpeg] installed /app/DB/bin/ffmpeg and /app/DB/bin/ffprobe", 6),
         ] {
             assert_eq!(ffmpeg_build_step(line).map(|(step, _)| step), Some(step), "{}", line);
         }
