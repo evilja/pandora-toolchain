@@ -457,6 +457,7 @@ fn encode_chunk(
             source.fps_num,
             source.fps_den,
             encoder_config.crf,
+            Some(encoder_config),
         )
     });
     let mut decoded = 0u64;

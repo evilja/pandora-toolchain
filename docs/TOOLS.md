@@ -154,7 +154,10 @@ chunk encoder, and `src/lib/mpeg/caramel.rs` runs it over a whole file and verif
   first frame, since nothing before it is visible. The planner writes the decider's settings to
   `parallel-aot/caramel.context` and passes them to every chunk child as the hidden `--aot-caramel`.
   The context names the model (`model=<version>`), so every chunk of an encode decides with the one
-  its planner had, whatever is installed meanwhile. Each finished chunk writes `<chunk>.scenes`
+  its planner had, whatever is installed meanwhile. It also carries `probe=1`: a scene raised by 3
+  CRF or more is test-encoded from its first 24 frames before the raise is used, and pulled back
+  when it falls short ([CARAMEL.md](CARAMEL.md#test-encodes-of-far-raises)); such a scene's frames
+  are held until those 24 have arrived. Each finished chunk writes `<chunk>.scenes`
   (`start|crf` lines) beside it. A chunk is reused only when that sidecar matches the mode: present
   under caramel, absent otherwise.
 - **`--aot-crf <value>`** (hidden). It sets the CRF of AOT chunks: a number (`-12`…`63`),
@@ -165,8 +168,12 @@ chunk encoder, and `src/lib/mpeg/caramel.rs` runs it over a whole file and verif
   stdout for `-o -`. Nothing is encoded. Every frame is decoded, split into contiguous segments of at
   least 2400 frames decoded in parallel; each seeks accurately to its first frame. The report lists
   every scene (start, frames, how it started, the pair read as its cut and how many later measured
-  pairs also read as cuts, CRF, each metric's vote, contributions, measured features), the
-  frame-weighted CRF distribution, and the `zones` string a linear encode would use.
+  pairs also read as cuts, CRF, each metric's vote, contributions, measured features, and for a
+  test-encoded raise its `probe`: the CRF the model chose, the target, what the test encode
+  measured and the CRF it settled on), the frame-weighted CRF distribution, and the `zones` string
+  a linear encode would use. Far raises are test-encoded with the preset's x264 settings when the
+  preset encodes 8-bit with libx264 at the source's size; `--caramel-no-probe` decides without
+  them, to compare.
 - **`--caramel-verify <auto|crf,crf,…>`** (with `--caramel-report`) also encodes up to six 4 s clips
   from the scenes moved furthest from the anchor, taken in turn from below and above it so both
   directions get measured (one side fills the remaining slots when the other runs out). With

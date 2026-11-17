@@ -16,13 +16,16 @@ pub mod frame;
 pub mod inputs;
 pub mod model;
 pub mod nn;
+pub mod probe;
 pub mod scene;
 pub mod spatial;
 pub mod temporal;
 pub mod train;
 pub mod window;
+pub mod xpsnr;
 
 pub use frame::{Frame, Plane};
+pub use probe::{PROBE_FRAMES, PROBE_FROM, Probe};
 pub use model::{Contribution, EncodeContext, MODEL_VERSION, MetricVote, SceneEstimate, SourceContext, estimate_scene, estimate_scene_with, model_version};
 pub use scene::{SceneConfig, SceneDecider, SceneDecision, SceneStart};
 pub use spatial::SpatialFeatures;

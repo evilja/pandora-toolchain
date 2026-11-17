@@ -50,6 +50,15 @@ Decoding, encoding and verification are Pandora's job (`src/lib/mpeg/caramel.rs`
   `analysis_frames` (12). Every frame is compared with the one before it; four of the twelve are
   measured by themselves, which is the expensive step. `decided_frames()` says how many frames an
   encoder may release, so it holds back at most one scene's opening plus two frames.
+- `probe` — `Probe`: a network's raise of 3 CRF or more carries what a test encode of it is held to
+  (the XPSNR a detailed scene scores at the anchor) and the scene's own XPSNR curve, and
+  `SceneDecision::settle_probe` takes what the encoder measured and pulls the raise back along that
+  curve, never below the anchor. The crate does not encode: the encoder does
+  (`pnx264::scenes::probe_xpsnr`). See docs/CARAMEL.md.
+- `xpsnr` — `Xpsnr`, ffmpeg's `xpsnr` filter for 8-bit 4:2:0, frame by frame with its temporal
+  memory, pooled 4:1:1 over the planes as the lab pools them; `pooled` averages frames as the lab
+  averages a clip. It agrees with ffmpeg to the digits ffmpeg prints (`matches_ffmpeg_on_real_frames`,
+  run with `--ignored` against files ffmpeg measured).
 - `model` — `estimate_scene`. Four linear predictors, one per quality metric (XPSNR, the worst
   tenth of frames by XPSNR, SSIM, the worst tenth by VMAF), each estimate the CRF offset at which
   the scene would score what typical content scores at the anchor. They read eight features: noise

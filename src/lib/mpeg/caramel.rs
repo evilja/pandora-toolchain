@@ -13,9 +13,10 @@
 
 use crate::lib::bin::resolve_runtime_binary;
 use caramel_kernel::{
-    Contribution, EncodeContext, Frame, MetricVote, Plane, SceneConfig, SceneDecider, SceneDecision,
+    Contribution, EncodeContext, MetricVote, SceneConfig, SceneDecider, SceneDecision,
     SceneStart, SourceContext, TemporalFeatures, WindowFeatures,
 };
+use pnx264::scenes::SceneSchedule;
 use serde::Serialize;
 use std::fmt;
 use std::io::BufReader;
@@ -103,6 +104,10 @@ pub struct SceneRequest<'a> {
     pub cancel_file: Option<PathBuf>,
     // Frames decoded so far, summed over the segments, for a caller that shows progress.
     pub progress: Option<&'a AtomicU64>,
+    // The x264 settings the encode will use, to test-encode far raises with
+    // (`caramel_kernel::probe`); None decides without probes. Used only when the encode writes
+    // 8-bit frames at the source's own size, the frames this analysis decodes.
+    pub probe: Option<pnx264::Config>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -123,6 +128,8 @@ pub struct SceneEntry {
     // What each quality metric would let the scene's CRF move by, and what of that was applied.
     pub votes: Vec<MetricVote>,
     pub contributions: Vec<Contribution>,
+    // The test encode of a far raise: the CRF the model chose, what it measured and where it settled.
+    pub probe: Option<caramel_kernel::Probe>,
     // What was measured on the scene's opening frames, as the model was given it: with `verify`,
     // a report is a row of calibration data per scene.
     pub features: WindowFeatures,
@@ -348,15 +355,15 @@ fn analyse_segment(
             Err(_) => return Ok(SegmentResult { start, decoded: 0, decisions: Vec::new() }),
         };
         let (width, height) = (reader.width, reader.height);
-        let (chroma_width, chroma_height) = (width.div_ceil(2), height.div_ceil(2));
-        let mut decider = SceneDecider::new(request.scenes, source.clone(), request.encode);
-        let mut decisions = Vec::new();
+        let decider = SceneDecider::new(request.scenes, source.clone(), request.encode);
+        let encode = &request.encode;
+        let probe = request.probe.as_ref().filter(|_| encode.output_bit_depth == 8 && encode.output_height.is_none_or(|output| output as usize == height));
+        let (fps_num, fps_den) = fps_ratio(fps);
+        let mut schedule = SceneSchedule::from_decider(decider, width, height, fps_num, fps_den, encode.anchor_crf, probe);
         let mut decoded = 0u64;
         while let Some(frame) = reader.next_frame()? {
-            let y = Plane::new(frame.y, width, height, frame.stride_y).ok_or("short luma plane")?;
-            let u = Plane::new(frame.u, chroma_width, chroma_height, frame.stride_c);
-            let v = Plane::new(frame.v, chroma_width, chroma_height, frame.stride_c);
-            decisions.extend(decider.push(&Frame { y, u, v }));
+            schedule.push(&frame)?;
+            while schedule.ready().is_some() {}
             decoded += 1;
             if let Some(progress) = request.progress {
                 progress.fetch_add(1, Ordering::Relaxed);
@@ -365,7 +372,8 @@ fn analyse_segment(
                 return Err("cancelled".to_string());
             }
         }
-        decisions.extend(decider.finish());
+        schedule.finish();
+        let mut decisions = schedule.decisions().to_vec();
         for decision in &mut decisions {
             decision.start_frame += start;
         }
@@ -374,6 +382,32 @@ fn analyse_segment(
     child.kill().ok();
     child.wait().ok();
     result
+}
+
+// The settings a far raise is test-encoded with for an encode made with `preset`: the preset's own
+// x264 settings, one thread each since segments already run side by side. None for a preset that
+// does not encode with x264, whose CRF a libx264 test encode could not check.
+pub fn probe_encoder(preset: &crate::lib::mpeg::preset::ResolvedPreset) -> Option<pnx264::Config> {
+    let settings = preset.x264_settings();
+    preset.encodes_with_x264().then(|| pnx264::Config {
+        threads: 1,
+        preset: settings.preset,
+        tune: settings.tune,
+        profile: settings.profile,
+        level: settings.level,
+        x264_params: settings.x264_params,
+        ..Default::default()
+    })
+}
+
+// A frame rate as the ratio x264 and XPSNR take: NTSC rates as their thousand-and-one ratios.
+fn fps_ratio(fps: f64) -> (u32, u32) {
+    let ntsc = fps * 1001.0;
+    if (ntsc - ntsc.round()).abs() < 0.05 && ntsc.round() % 1000.0 == 0.0 {
+        (ntsc.round() as u32, 1001)
+    } else {
+        ((fps * 1000.0).round() as u32, 1000)
+    }
 }
 
 // A segment's decisions as scenes: each runs to the next one's start, the last to the segment's end.
@@ -400,6 +434,7 @@ fn segment_scenes(segment: &SegmentResult, fps: f64) -> Vec<SceneEntry> {
                 frames_analyzed: estimate.frames_analyzed,
                 votes: estimate.votes.clone(),
                 contributions: estimate.contributions.clone(),
+                probe: estimate.probe.clone(),
                 features: decision.features.clone(),
             }
         })
@@ -507,6 +542,7 @@ pub fn scene_crf(source: &SourceContext, encode: &EncodeContext, scenes: SceneCo
         source_codec: source.codec.clone(),
         source_bit_depth: source.bit_depth,
         model: caramel_kernel::curve::active().map(|model| model.version.clone()),
+        probe: true,
     }
 }
 
@@ -1129,6 +1165,7 @@ mod tests {
             frames_analyzed: 12,
             votes: Vec::new(),
             contributions: Vec::new(),
+            probe: None,
             features: WindowFeatures::default(),
         }
     }

@@ -25,7 +25,7 @@ use pandora_toolchain::lib::logging::tool::ToolLog;
 use pandora_toolchain::lib::mpeg::studio::{studio_ffmpeg_params, write_ffconcat, StudioRenderManifest};
 use pandora_toolchain::lib::mpeg::subs::{ExtractOutcome, extract_subtitle, ffprobe_subtitle_streams};
 use pandora_toolchain::lib::mpeg::caramel::{
-    AotCrf, FrameRange, SceneRequest, VerifyEncoder, VerifyRequest, VerifySample, probe_source, run_scene_analysis,
+    AotCrf, FrameRange, SceneRequest, VerifyEncoder, VerifyRequest, VerifySample, probe_encoder, probe_source, run_scene_analysis,
     run_verification, scene_crf, summary_line,
 };
 use pandora_toolchain::lib::mpeg::caramel_lab::{LabGuide, LabRequest, LabSample, read_dataset, run_lab, series_key};
@@ -149,6 +149,11 @@ struct Args {
     /// comma-separated list of fixed CRFs.
     #[arg(long)]
     caramel_verify: Option<String>,
+
+    /// With --caramel-report: decide scenes as the model reads them, without test-encoding the
+    /// scenes it raises far. For comparing what the test encodes change.
+    #[arg(long)]
+    caramel_no_probe: bool,
 
     /// Measure scenes of --input for Caramel's dataset: each is encoded at several CRFs with the
     /// selected preset's x264 settings and measured against the source. Samples are appended to
@@ -707,6 +712,8 @@ fn caramel_lab(args: &Args, preset: Option<&ResolvedPreset>, anchor: f32, log: &
         decoder_threads: 0,
         cancel_file: cancel_file.clone(),
         progress: None,
+        // The lab measures what the model decides, before any test encode corrects it.
+        probe: None,
     }) {
         Ok(report) => report,
         Err(error) => {
@@ -864,6 +871,7 @@ fn caramel_zones(args: &Args, preset: &ResolvedPreset, anchor: f32, workers: usi
         decoder_threads: if workers > 1 { 0 } else { 1 },
         cancel_file: args.cancelfile.as_deref().map(PathBuf::from),
         progress: None,
+        probe: probe_encoder(preset),
     };
     let started = std::time::Instant::now();
     match run_scene_analysis(&request) {
@@ -1609,6 +1617,7 @@ async fn main() {
             decoder_threads: 0,
             cancel_file: args.cancelfile.as_deref().map(PathBuf::from),
             progress: None,
+            probe: if args.caramel_no_probe { None } else { active_preset.as_ref().and_then(probe_encoder) },
         };
         match run_scene_analysis(&request) {
             Ok(mut report) => {

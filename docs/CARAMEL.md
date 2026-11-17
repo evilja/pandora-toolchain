@@ -22,7 +22,9 @@ or a job asks for Caramel Analysis at all.
 | `src/lib/mpeg/caramel_lab.rs` | The lab: picks scenes, encodes and measures them with ffmpeg, appends `LabSample`s to the dataset. |
 | `src/lib/mpeg/caramel_train.rs` | Models on disk (`install`, `activate`, `installed_version`) and `train_dataset`, which trains a candidate and writes the report. |
 | `src/pnworker/research.rs` | The idle-time worker: finds sources, runs the lab and the trainer as low-priority children, stops for the queue. |
-| `pnx264/src/scenes.rs` | `load_model`: a chunk encoder decides with the model its planner named, read from `DB/caramel/models/`. |
+| `caramel-kernel/src/probe.rs` | `Probe`: what a test encode of a far raise is held to, and `settle`, which pulls the raise back from what the encode measured. |
+| `caramel-kernel/src/xpsnr.rs` | XPSNR computed exactly as ffmpeg's `xpsnr` filter computes it, for encoders that measure without ffmpeg. |
+| `pnx264/src/scenes.rs` | `load_model`: a chunk encoder decides with the model its planner named, read from `DB/caramel/models/`. `SceneSchedule` runs the test encodes (`probe_xpsnr`), in chunk encoders and in the whole-file analysis alike. |
 | `examples/caramel_explain.rs`, `scripts/caramel-viz.py` | Watching the model decide: see [Seeing a decision](#seeing-a-decision). |
 
 ## Which model decides
@@ -64,6 +66,61 @@ while an encode is running therefore changes nothing in it — its remaining chu
 re-encoded after a restart, decide as the first ones did. A context without the key (written by an
 older build) means the linear predictors, and so does a version that names no model the chunk can
 find — the active one, the built-in one, or a file under `DB/caramel/models/`.
+
+## Test encodes of far raises
+
+The model's votes are about two CRF wrong on a scene it has not seen, most of that between scenes
+of one series rather than between series, and a better network has not removed it. The misses
+that cost quality are the far raises: a still, grainy shot read as easy and raised by five, which
+then falls a dB or more below the hardest scene kept at the anchor. Full-episode verification
+found a few in every episode; the lab's held-out scenes found them too.
+
+So a scene the model raises by **3 CRF or more** (`PROBE_FROM`) is checked before the raise is
+spent. The encoder encodes the scene's first **24 frames** (`PROBE_FRAMES`, fewer when the scene
+is shorter) at the CRF the model chose, with its own x264 settings, and measures their XPSNR
+against the frames it was given — the first frame, an IDR in a test encode, left out as the lab
+leaves a clip's first frame out. `Probe::settle` then compares that with the **target**: the XPSNR
+a detailed scene scores at the anchor, `typical[xpsnr]` at `anchor − detail`, the same line the
+gate measures a raise's shortfall against. A test encode at or above the target keeps the raise.
+One below it moves the scene's XPSNR curve, as the model drew it, to pass through the measurement,
+and takes the CRF where that curve meets the target, rounded down to the 0.5 step and never below
+the anchor. A test encode never raises a scene further.
+
+- **Where.** Chunk encoders run it inside `SceneSchedule`, on frames they already hold: the scene's
+  frames wait until its first 24 are in (or the next scene has started), so at most about 24 frames
+  plus the decider's two are held, instead of 12 plus two. The whole-file analysis behind `zones`
+  and `--caramel-report` runs the same schedule over its decoded segments, with the preset's x264
+  settings at one thread per segment — but only when the encode writes 8-bit frames at the
+  source's own size, since those are the frames it decodes. Lab measurements never probe: the lab
+  measures what the model decides.
+- **XPSNR without ffmpeg.** Chunk encoders have no ffmpeg graph to measure with, so
+  `caramel_kernel::xpsnr` ports ffmpeg's `vf_xpsnr.c` for 8-bit 4:2:0, quirks included. On real
+  encodes it agrees with ffmpeg to the four decimals ffmpeg prints, at 640×360, 1280×720, 1920×1080
+  and 3840×2160 (the sizes that take the filter's three code paths). The reconstruction comes from
+  x264 itself (`pic_out.img`, with `b_full_recon` so every frame is deblocked), so nothing is
+  decoded.
+- **Why 24 frames.** On 85 lab scenes encoded at CRF 19, 23 and 27, the XPSNR of the first 24
+  frames was within 0.5 dB of the whole 48-frame clip's for 81–86% of scenes (median −0.08 dB). The
+  first 12 frames — what the decider measures — were within 0.5 dB for only 41–49%, read 0.3–0.4 dB
+  low at the median, and missed by up to 6 dB where a scene's opening was unlike the rest of it.
+- **Context.** Chunks fix the choice when they are planned, as they fix the model: the context
+  carries `probe=1`, and a context without the key decides without test encodes.
+- **What it changed.** On the six verification episodes at anchor 17 (9600 frames each, model
+  `caramel-neural-1.784-365446`), whether a probed raise fell short depended on the source far more
+  than on the size of the raise: 75% of *Ping Pong*'s probed raises and 69% of *Haibane Renmei*'s
+  fell short, against 14% of *Kendeshita*'s and 19% of *Tensei Goblin*'s, and raises of 3–4 CRF fell
+  short as often (45%) as raises of 4–5 (47%). On *Ping Pong* 228 of 855 scenes were probed and
+  pulled back 1.6 CRF on average: the mean CRF went from 18.91 to 18.50, the size from 7.9% to
+  12.2% above CRF 19, and the mean XPSNR of the verified clips from 0.04 to 0.29 dB above CRF 19.
+  On *Kendeshita* 198 were probed and pulled back 0.12 on average; the other episodes had few far
+  raises to check. The test encodes cost 13–16% more frames encoded on the two most-raised
+  episodes and 0–6% on the others.
+- **What it does not catch.** The worst raised scenes the verification found on those episodes —
+  *Ping Pong*'s frame 3314 at CRF 19.5, 1.4 dB under the hardest scene kept at 17, and
+  *Kendeshita*'s scenes at 19–19.5 — were raised by 1.5–2.5 CRF, under the threshold. Probing from
+  2 CRF would check them: on *Ping Pong* it probed 367 scenes and pulled raises of 2–3 back 1.7 CRF
+  on average (mean CRF 18.22); on *Kendeshita* it pulled them back 0.35. Both cost about 25% more
+  frames encoded, which is why the threshold stays at 3 for now.
 
 ## The lab: `pnmpeg --caramel-lab`
 

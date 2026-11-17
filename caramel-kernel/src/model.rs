@@ -41,6 +41,7 @@
 // aq-mode 3, aq-strength 0.8). Other resolutions get a small prior (`output-resolution`), not a fit.
 
 use crate::curve;
+use crate::probe::{PROBE_FROM, Probe};
 use crate::window::WindowFeatures;
 use serde::{Deserialize, Serialize};
 
@@ -71,7 +72,7 @@ const NO_MOTION_CONFIDENCE: f64 = 0.5;
 const CUT_INSIDE_CONFIDENCE: f64 = 0.0;
 // Granularity of the reported CRF. Coarse on purpose: a scene's CRF moving by a tenth between two
 // shots of the same content is noise, and every change is a rate-control reconfiguration.
-const CRF_STEP: f64 = 0.5;
+pub(crate) const CRF_STEP: f64 = 0.5;
 // The anchors the fit covers. An anchor outside them is read as the nearest one inside.
 const FITTED_ANCHORS: (f64, f64) = (15.0, 23.0);
 const REFERENCE_ANCHOR: f64 = 19.0;
@@ -205,6 +206,9 @@ pub struct SceneEstimate {
     // held the others back). With a network it is `detail` — how many CRF of ease the scene has
     // over a detailed one — or `banding` when banding's vote held the raise back to that.
     pub contributions: Vec<Contribution>,
+    // For a raise of at least `probe::PROBE_FROM` decided by a network: what a test encode of the
+    // scene is held to (`probe`). None for every other scene.
+    pub probe: Option<crate::probe::Probe>,
 }
 
 fn interpolate(points: &[(f64, f64)], x: f64) -> f64 {
@@ -318,15 +322,19 @@ pub fn estimate_scene(window: &WindowFeatures, source: &SourceContext, encode: &
 // What a network's curves say about a window: the votes of the metrics a scene is decided on, and
 // what they decide (`curve::decide`): the anchor for a detailed scene, a raise for one with quality
 // to spare.
-fn curve_votes(model: &curve::Model, window: &WindowFeatures, source: &SourceContext, anchor: f64) -> (Vec<MetricVote>, Contribution) {
+fn curve_votes(model: &curve::Model, window: &WindowFeatures, source: &SourceContext, anchor: f64) -> (Vec<MetricVote>, Contribution, Probe) {
     let inputs = crate::inputs::inputs(window, source.bit_depth > 8);
-    let all = model.votes(&inputs, anchor.clamp(CURVE_ANCHORS.0, CURVE_ANCHORS.1));
+    let held = anchor.clamp(CURVE_ANCHORS.0, CURVE_ANCHORS.1);
+    let (all, curves) = model.read(&inputs, held);
     let decision = curve::decide(&all, model.detail, model.gain);
     let votes = (0..curve::METRICS)
         .filter(|metric| curve::DECIDES[*metric])
         .map(|metric| MetricVote { metric: curve::METRIC_NAMES[metric], offset: all[metric].offset, spread: all[metric].spread })
         .collect();
-    (votes, Contribution { factor: if decision.banding { "banding" } else { "detail" }, value: decision.ease - model.detail, delta: decision.offset })
+    // A detailed scene at the anchor scores what typical content scores `detail` CRF the other way,
+    // as `train::simulate` holds a raise to it.
+    let probe = Probe { anchor, crf: 0.0, target: model.typical[curve::XPSNR].at(held - model.detail), curve: curves[curve::XPSNR].0, measured: None, settled: None };
+    (votes, Contribution { factor: if decision.banding { "banding" } else { "detail" }, value: decision.ease - model.detail, delta: decision.offset }, probe)
 }
 
 // The same with the model named: a network, or None for the fitted predictors.
@@ -342,17 +350,18 @@ pub fn estimate_scene_with(model: Option<&curve::Model>, window: &WindowFeatures
             frames_analyzed: window.frames,
             votes: Vec::new(),
             contributions: Vec::new(),
+            probe: None,
         };
     }
-    let (votes, decided, (max_lower, max_raise)) = match model {
+    let (votes, decided, (max_lower, max_raise), probe) = match model {
         Some(model) => {
-            let (votes, decided) = curve_votes(model, window, source, anchor);
-            (votes, decided, (curve::MAX_LOWER, curve::MAX_RAISE))
+            let (votes, decided, probe) = curve_votes(model, window, source, anchor);
+            (votes, decided, (curve::MAX_LOWER, curve::MAX_RAISE), Some(probe))
         }
         None => {
             let votes = votes(window, anchor);
             let (agreed, binding) = consensus(&votes);
-            (votes, Contribution { factor: "consensus", value: binding, delta: agreed }, (MAX_LOWER, MAX_RAISE))
+            (votes, Contribution { factor: "consensus", value: binding, delta: agreed }, (MAX_LOWER, MAX_RAISE), None)
         }
     };
     let contributions = vec![decided, resolution_contribution(source, encode)];
@@ -362,8 +371,10 @@ pub fn estimate_scene_with(model: Option<&curve::Model>, window: &WindowFeatures
         * if window.cuts == 0 { 1.0 } else { CUT_INSIDE_CONFIDENCE };
     let scaled = if raw_adjustment > 0.0 { raw_adjustment * confidence } else { raw_adjustment };
     let adjustment = scaled.clamp(-max_lower, max_raise);
+    let crf = round_crf(anchor + adjustment, encode);
+    let probe = probe.filter(|_| adjustment >= PROBE_FROM).map(|probe| Probe { crf, ..probe });
     SceneEstimate {
-        crf: round_crf(anchor + adjustment, encode),
+        crf,
         anchor_crf: encode.anchor_crf,
         adjustment,
         raw_adjustment,
@@ -371,6 +382,7 @@ pub fn estimate_scene_with(model: Option<&curve::Model>, window: &WindowFeatures
         frames_analyzed: window.frames,
         votes,
         contributions,
+        probe,
     }
 }
 
@@ -650,6 +662,8 @@ mod tests {
         assert_eq!((typical.crf, typical.votes.len()), (18.0, 5));
         assert_eq!(typical.votes.iter().map(|vote| vote.metric).collect::<Vec<_>>(), ["xpsnr", "xpsnr-low", "ssim", "vmaf-low", "banding"]);
         assert_eq!((typical.contributions[0].factor, typical.contributions[0].value), ("detail", 2.0));
+        // A raise of one CRF is not test-encoded.
+        assert!(typical.probe.is_none());
         // Every level a unit and a half up: six CRF easier still, and banding's slack ahead of
         // that, so the raise is half of eight — held to the bound by nothing yet.
         for member in &mut model.members {
@@ -660,6 +674,12 @@ mod tests {
         let easy = estimate_scene_with(Some(&model), &window(PAINTED), &source(), &encode);
         assert!((easy.raw_adjustment - 4.0).abs() < 1e-6, "{easy:?}");
         assert_eq!(easy.crf, 21.0);
+        // A raise of four is: at the CRF chosen, held to what a detailed scene scores at the anchor
+        // and read along the scene's own XPSNR curve.
+        let probe = easy.probe.clone().expect("a raise of four is probed");
+        assert_eq!((probe.anchor, probe.crf, probe.measured), (17.0, 21.0, None));
+        assert!((probe.target - model.typical[curve::XPSNR].at(17.0 - model.detail)).abs() < 1e-9);
+        assert!(probe.curve.windows(2).all(|pair| pair[0] >= pair[1]), "{probe:?}");
         // Followed in full it would be eight: the bound is six.
         model.gain = 1.0;
         assert_eq!(estimate_scene_with(Some(&model), &window(PAINTED), &source(), &encode).crf, 23.0);
@@ -673,6 +693,7 @@ mod tests {
         }
         let hard = estimate_scene_with(Some(&model), &window(PAINTED), &source(), &encode);
         assert_eq!(hard.crf, 16.5, "{hard:?}");
+        assert!(hard.probe.is_none());
         // An anchor outside what the curves cover is read as the nearest inside, and stays bounded.
         for anchor in [6.0, 40.0] {
             let estimate = estimate_scene_with(Some(&model), &window(PAINTED), &source(), &EncodeContext::anchored(anchor));

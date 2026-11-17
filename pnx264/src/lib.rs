@@ -26,6 +26,15 @@ struct RawConfig {
     level: *const c_char,
     x264_params: *const c_char,
     plan_only: c_int,
+    full_recon: c_int,
+}
+
+#[repr(C)]
+struct RawPicture {
+    plane: [*const u8; 3],
+    stride: [c_int; 3],
+    planes: c_int,
+    pts: i64,
 }
 
 #[repr(C)]
@@ -50,6 +59,7 @@ unsafe extern "C" {
     ) -> c_int;
     fn pnx264_flush(e: *mut c_void, out: *mut *const u8) -> c_int;
     fn pnx264_set_crf(e: *mut c_void, crf: c_float) -> c_int;
+    fn pnx264_recon(e: *mut c_void, out: *mut RawPicture) -> c_int;
     fn pnx264_plan_push(
         e: *mut c_void,
         y: *const u8, u: *const u8, v: *const u8,
@@ -93,6 +103,9 @@ pub struct Config {
     // A CRF per scene, decided by Caramel Analysis as the frames arrive, with `crf` as the anchor
     // every scene's CRF is an offset from. None encodes everything at `crf`.
     pub caramel: Option<scenes::SceneCrf>,
+    // Reconstruct every frame completely, so `Encoder::recon` is the decoded picture. Costs a little
+    // speed; only a test encode that measures its output needs it.
+    pub full_recon: bool,
 }
 
 impl Default for Config {
@@ -111,12 +124,23 @@ impl Default for Config {
             x264_params: None,
             plan_only: false,
             caramel: None,
+            full_recon: false,
         }
     }
 }
 
+// A decoded picture: tightly packed yuv420p planes.
+pub struct Picture {
+    pub y: Vec<u8>,
+    pub u: Vec<u8>,
+    pub v: Vec<u8>,
+    pub pts: i64,
+}
+
 pub struct Encoder {
     raw: *mut c_void,
+    width: usize,
+    height: usize,
     // Kept alive only so the CStrings outlive the pnx264_open call that borrows them.
     _strings: Vec<CString>,
 }
@@ -153,6 +177,7 @@ impl Encoder {
             level: cstr(&cfg.level, &mut keep),
             x264_params: cstr(&cfg.x264_params, &mut keep),
             plan_only: cfg.plan_only as c_int,
+            full_recon: cfg.full_recon as c_int,
         };
         let mut err: *const c_char = std::ptr::null();
         let raw = unsafe { pnx264_open(&raw_cfg, &mut err) };
@@ -164,7 +189,7 @@ impl Encoder {
             };
             return Err(msg);
         }
-        Ok(Self { raw, _strings: keep })
+        Ok(Self { raw, width: cfg.width as usize, height: cfg.height as usize, _strings: keep })
     }
 
     pub fn headers(&mut self) -> Result<&[u8], String> {
@@ -206,6 +231,33 @@ impl Encoder {
         let mut out: *const u8 = std::ptr::null();
         let n = unsafe { pnx264_flush(self.raw, &mut out) };
         Self::slice(n, out, "x264 flush failed")
+    }
+
+    // The decoded picture of the frame the last `encode` or `flush` returned, as yuv420p planes,
+    // with its pts. None when that call returned no frame. Complete only with `full_recon`.
+    pub fn recon(&mut self) -> Result<Option<Picture>, String> {
+        let mut raw = RawPicture { plane: [std::ptr::null(); 3], stride: [0; 3], planes: 0, pts: 0 };
+        match unsafe { pnx264_recon(self.raw, &mut raw) } {
+            0 => return Ok(None),
+            1 => {}
+            _ => return Err("x264 reconstruction is not 8-bit 4:2:0".to_string()),
+        }
+        let (width, height) = (self.width, self.height);
+        let (chroma_width, chroma_height) = (width.div_ceil(2), height.div_ceil(2));
+        // Safety: x264 owns the planes until the next encode or flush call, which needs `&mut self`
+        // and so cannot happen while these borrows are alive; they are copied out before returning.
+        let rows = |plane: usize, row_bytes: usize, rows: usize| -> Vec<u8> {
+            let stride = raw.stride[plane] as usize;
+            (0..rows).flat_map(|y| unsafe { std::slice::from_raw_parts(raw.plane[plane].add(y * stride), row_bytes) }.iter().copied()).collect()
+        };
+        let y = rows(0, width, height);
+        let (u, v) = if raw.planes == 2 {
+            let packed = rows(1, 2 * chroma_width, chroma_height);
+            (packed.iter().step_by(2).copied().collect(), packed.iter().skip(1).step_by(2).copied().collect())
+        } else {
+            (rows(1, chroma_width, chroma_height), rows(2, chroma_width, chroma_height))
+        };
+        Ok(Some(Picture { y, u, v, pts: raw.pts }))
     }
 
     // Plan-only counterparts. Ok(None) means the frame is still inside the lookahead and no

@@ -278,6 +278,7 @@ pub async fn run_caramel_job(
         ..caramel_kernel::EncodeContext::anchored(anchor)
     };
     let scenes = request.scenes.config();
+    let probe = crate::lib::mpeg::caramel::probe_encoder(&preset);
     // Only for the percentage: the analysis probes the source again for itself.
     let total_frames = probe_source(&input)
         .ok()
@@ -300,6 +301,7 @@ pub async fn run_caramel_job(
                 decoder_threads: 0,
                 cancel_file: Some(cancel),
                 progress: Some(&decoded),
+                probe,
             })
         })
     };

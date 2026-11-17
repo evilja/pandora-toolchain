@@ -25,6 +25,8 @@ struct pnx264_enc {
     x264_picture_t pic_in;
     x264_picture_t pic_out;
     int64_t next_pts;
+    /* Whether the last encode or flush call returned a frame, whose picture is then in pic_out. */
+    int has_out;
 };
 
 /* "x264-params" is not a key libx264 knows — it is an ffmpeg-level convenience that ffmpeg
@@ -117,6 +119,10 @@ pnx264_enc *pnx264_open( const pnx264_config *cfg, const char **err )
     }
 #endif
 
+    /* x264 hands back each coded frame's reconstruction in pic_out, but may skip deblocking a
+     * frame nothing references. A caller that measures the reconstruction needs all of it. */
+    p.b_full_recon = cfg->full_recon;
+
     p.rc.i_rc_method  = X264_RC_CRF;
     p.rc.f_rf_constant = cfg->crf;
 
@@ -206,12 +212,14 @@ int pnx264_encode( pnx264_enc *e,
     e->pic_in.i_pts = pts;
     e->pic_in.i_type = X264_TYPE_AUTO;
 
+    e->has_out = 0;
     int size = x264_encoder_encode( e->h, &nal, &i_nal, &e->pic_in, &e->pic_out );
     /* The frame took ownership of any parameter change attached to it (see pnx264_set_crf);
      * the next frame continues with whatever that change left in force. */
     e->pic_in.param = NULL;
     if( size < 0 )
         return -1;
+    e->has_out = i_nal > 0;
     return collect( nal, i_nal, out );
 }
 
@@ -249,12 +257,34 @@ int pnx264_flush( pnx264_enc *e, const uint8_t **out )
 {
     x264_nal_t *nal;
     int i_nal;
+    e->has_out = 0;
     if( !x264_encoder_delayed_frames( e->h ) )
         return 0;
     int size = x264_encoder_encode( e->h, &nal, &i_nal, NULL, &e->pic_out );
     if( size < 0 )
         return -1;
+    e->has_out = i_nal > 0;
     return collect( nal, i_nal, out );
+}
+
+/* 0 when the last call returned no frame. The planes belong to x264 and are valid only until the
+ * next encode or flush call. */
+int pnx264_recon( pnx264_enc *e, pnx264_picture *out )
+{
+    if( !e->has_out )
+        return 0;
+    const x264_image_t *img = &e->pic_out.img;
+    int csp = img->i_csp & X264_CSP_MASK;
+    if( (img->i_csp & X264_CSP_HIGH_DEPTH) || (csp != X264_CSP_I420 && csp != X264_CSP_NV12) )
+        return -1;
+    out->planes = csp == X264_CSP_NV12 ? 2 : 3;
+    for( int i = 0; i < 3; i++ )
+    {
+        out->plane[i] = i < out->planes ? img->plane[i] : NULL;
+        out->stride[i] = i < out->planes ? img->i_stride[i] : 0;
+    }
+    out->pts = e->pic_out.i_pts;
+    return 1;
 }
 
 static int fill_plan( pnx264_enc *e, pnx264_plan_entry *out )

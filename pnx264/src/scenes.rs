@@ -6,11 +6,13 @@
 // first frame of a scene whose CRF differs from the last. Only a scene's first `analysis_frames`
 // frames are ever held back, and after them the two the decider is still weighing as a cut (owned
 // copies, ~3 MB each at 1080p), so the delay and the memory are bounded by that one number whatever
-// the scene's length.
+// the scene's length. A scene raised far enough to be test-encoded (`caramel_kernel::probe`) is held
+// until its first `PROBE_FRAMES` have arrived, or the next scene has begun: 24 frames at most.
 
-use crate::y4m;
+use crate::{Config, Encoder, y4m};
 use caramel_kernel::curve::{self, Model};
-use caramel_kernel::{EncodeContext, Frame, Plane, SceneConfig, SceneDecider, SourceContext};
+use caramel_kernel::xpsnr::{self, Xpsnr};
+use caramel_kernel::{EncodeContext, Frame, PROBE_FRAMES, Plane, SceneConfig, SceneDecider, SceneDecision, SourceContext};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -57,6 +59,9 @@ pub struct SceneCrf {
     pub source_bit_depth: u8,
     // The version of the network scenes are decided with; None for the fitted predictors.
     pub model: Option<String>,
+    // Whether a far raise is test-encoded before it is used (`caramel_kernel::probe`). Settings
+    // written before probes existed decide without them, as the chunks they decided did.
+    pub probe: bool,
 }
 
 impl Default for SceneCrf {
@@ -69,6 +74,7 @@ impl Default for SceneCrf {
             source_codec: None,
             source_bit_depth: 8,
             model: curve::active().map(|model| model.version.clone()),
+            probe: true,
         }
     }
 }
@@ -101,6 +107,9 @@ impl SceneCrf {
         if let Some(model) = self.model.as_deref().filter(|model| valid_version(model)) {
             pairs.push(format!("model={model}"));
         }
+        if self.probe {
+            pairs.push("probe=1".to_string());
+        }
         pairs.join(":")
     }
 
@@ -108,7 +117,7 @@ impl SceneCrf {
     // half-understood its instructions would decide scenes unlike its siblings.
     pub fn from_arg(text: &str) -> Result<Self, String> {
         // Settings that name no model were written for the fitted predictors.
-        let mut value = Self { model: None, ..Self::default() };
+        let mut value = Self { model: None, probe: false, ..Self::default() };
         for pair in text.trim().split(':').filter(|pair| !pair.is_empty()) {
             let (key, raw) = pair.split_once('=').ok_or_else(|| format!("`{pair}` is not key=value"))?;
             let number = || raw.parse::<u64>().map_err(|_| format!("`{pair}` is not a number"));
@@ -122,6 +131,7 @@ impl SceneCrf {
                 "bitrate" => value.source_bitrate = Some(raw.parse().map_err(|_| format!("`{pair}` is not a number"))?),
                 "codec" => value.source_codec = Some(raw.to_string()),
                 "model" if valid_version(raw) => value.model = Some(raw.to_string()),
+                "probe" => value.probe = number()? != 0,
                 _ => return Err(format!("unknown caramel setting `{key}`")),
             }
         }
@@ -164,31 +174,65 @@ pub struct SceneMark {
     pub crf: f32,
 }
 
+// A scene that has been decided and not yet released, with the first frame after it once the
+// decider has settled past one.
+struct Queued {
+    decision: SceneDecision,
+    boundary: Option<u64>,
+}
+
 pub struct SceneSchedule {
     decider: Option<SceneDecider>,
     pending: VecDeque<OwnedFrame>,
+    // Decided scenes waiting to be released in order: the front one waits while its probe has not
+    // run, and holds back its frames and every frame after them.
+    queued: VecDeque<Queued>,
     upcoming: VecDeque<SceneMark>,
+    // The encoder settings a far raise is test-encoded with; None encodes every scene as decided.
+    probe: Option<Config>,
     current: f32,
     width: usize,
     height: usize,
     pushed: u64,
     marks: Vec<SceneMark>,
+    decisions: Vec<SceneDecision>,
 }
 
 impl SceneSchedule {
-    // `anchor` is the CRF the encoder was opened at.
-    pub fn new(caramel: &SceneCrf, width: usize, height: usize, fps_num: u32, fps_den: u32, anchor: f32) -> Self {
+    // `anchor` is the CRF the encoder was opened at. `encoder` is that encoder's settings, which a
+    // far raise is test-encoded with when `caramel.probe` asks for it (`caramel_kernel::probe`).
+    pub fn new(caramel: &SceneCrf, width: usize, height: usize, fps_num: u32, fps_den: u32, anchor: f32, encoder: Option<&Config>) -> Self {
         let fps = if fps_den == 0 { 0.0 } else { fps_num as f64 / fps_den as f64 };
         let (source, encode) = caramel.contexts(width, height, fps, anchor);
+        let decider = SceneDecider::new(caramel.scenes, source, encode).with_model(caramel.model.as_deref().and_then(load_model));
+        Self::from_decider(decider, width, height, fps_num, fps_den, anchor, encoder.filter(|_| caramel.probe && caramel.output_bit_depth == 8))
+    }
+
+    // The same around a decider the caller set up, test-encoding far raises with `probe` — settings
+    // for 8-bit frames of exactly this size, or None.
+    pub fn from_decider(decider: SceneDecider, width: usize, height: usize, fps_num: u32, fps_den: u32, anchor: f32, probe: Option<&Config>) -> Self {
+        let probe = probe.map(|config| Config {
+            width: width as u32,
+            height: height as u32,
+            fps_num,
+            fps_den,
+            caramel: None,
+            plan_only: false,
+            full_recon: true,
+            ..config.clone()
+        });
         Self {
-            decider: Some(SceneDecider::new(caramel.scenes, source, encode).with_model(caramel.model.as_deref().and_then(load_model))),
+            decider: Some(decider),
             pending: VecDeque::new(),
+            queued: VecDeque::new(),
             upcoming: VecDeque::new(),
+            probe,
             current: anchor,
             width,
             height,
             pushed: 0,
             marks: Vec::new(),
+            decisions: Vec::new(),
         }
     }
 
@@ -197,10 +241,11 @@ impl SceneSchedule {
         let y = Plane::new(frame.y, self.width, self.height, frame.stride_y).ok_or("short luma plane")?;
         let u = Plane::new(frame.u, chroma_width, chroma_height, frame.stride_c);
         let v = Plane::new(frame.v, chroma_width, chroma_height, frame.stride_c);
+        let mut progress = None;
         if let Some(decider) = self.decider.as_mut() {
-            for decision in decider.push(&Frame { y, u, v }) {
-                self.upcoming.push_back(SceneMark { start: decision.start_frame, crf: decision.crf });
-            }
+            let decisions = decider.push(&Frame { y, u, v });
+            self.queued.extend(decisions.into_iter().map(|decision| Queued { decision, boundary: None }));
+            progress = Some((decider.scene_start(), decider.settled()));
         }
         self.pending.push_back(OwnedFrame {
             index: self.pushed,
@@ -211,13 +256,51 @@ impl SceneSchedule {
             stride_c: frame.stride_c,
         });
         self.pushed += 1;
+        if let Some((scene_start, settled)) = progress {
+            // The decider settles one frame per push, so the first time a later scene shows here it
+            // is the first one after every queued scene that has no boundary yet.
+            for queued in self.queued.iter_mut().filter(|queued| queued.boundary.is_none() && queued.decision.start_frame < scene_start) {
+                queued.boundary = Some(scene_start);
+            }
+            self.release(Some(settled));
+        }
         Ok(())
     }
 
     // The stream ended: whatever is still held back is decided now.
     pub fn finish(&mut self) {
         if let Some(last) = self.decider.take().and_then(SceneDecider::finish) {
-            self.upcoming.push_back(SceneMark { start: last.start_frame, crf: last.crf });
+            self.queued.push_back(Queued { decision: last, boundary: None });
+        }
+        self.release(None);
+    }
+
+    // Releases queued scenes in order, test-encoding each one that asks for it once its frames are
+    // all here: its first `PROBE_FRAMES`, or up to the next scene. `settled` is how far the decider
+    // has settled, None once the stream has ended.
+    fn release(&mut self, settled: Option<u64>) {
+        while let Some(front) = self.queued.front() {
+            let start = front.decision.start_frame;
+            let wants_probe = self.probe.is_some() && front.decision.estimate.probe.as_ref().is_some_and(|probe| probe.measured.is_none());
+            if wants_probe {
+                let limit = start + PROBE_FRAMES as u64;
+                let next = self.queued.get(1).map(|queued| queued.decision.start_frame);
+                let end = match ([front.boundary, next].into_iter().flatten().min(), settled) {
+                    (Some(boundary), _) => boundary.min(limit),
+                    (None, Some(settled)) if settled >= limit => limit,
+                    (None, None) => limit.min(self.pushed),
+                    (None, Some(_)) => break,
+                };
+                let frames: Vec<&OwnedFrame> = self.pending.iter().filter(|frame| frame.index >= start && frame.index < end).collect();
+                let config = self.probe.as_ref().expect("checked above");
+                // A probe that cannot run leaves the scene as the model decided it.
+                if let Ok(measured) = probe_xpsnr(config, front.decision.crf, &frames, self.width, self.height) {
+                    self.queued.front_mut().expect("checked above").decision.settle_probe(measured);
+                }
+            }
+            let Queued { decision, .. } = self.queued.pop_front().expect("checked above");
+            self.upcoming.push_back(SceneMark { start: decision.start_frame, crf: decision.crf });
+            self.decisions.push(decision);
         }
     }
 
@@ -227,7 +310,8 @@ impl SceneSchedule {
             Some(decider) => decider.decided_frames(),
             None => self.pushed,
         };
-        if self.pending.front()?.index >= decided {
+        let waiting = self.queued.front().map_or(u64::MAX, |queued| queued.decision.start_frame);
+        if self.pending.front()?.index >= decided.min(waiting) {
             return None;
         }
         let frame = self.pending.pop_front()?;
@@ -247,6 +331,57 @@ impl SceneSchedule {
     pub fn marks(&self) -> &[SceneMark] {
         &self.marks
     }
+
+    // Every scene decided and released so far, with what its probe found.
+    pub fn decisions(&self) -> &[SceneDecision] {
+        &self.decisions
+    }
+}
+
+// The XPSNR of `frames` encoded at `crf` with `config`, measured as the lab measures a clip: the
+// frames' errors pooled, the first frame (an IDR here) left out.
+pub fn probe_xpsnr(config: &Config, crf: f32, frames: &[&OwnedFrame], width: usize, height: usize) -> Result<f64, String> {
+    if frames.len() < 3 {
+        return Err("too few frames to measure".to_string());
+    }
+    // Quiet: a chunk encoder's log is for the encode, and every test encode would otherwise close
+    // with x264's summary of it.
+    let quiet = Some(config.x264_params.as_deref().map_or("log=-1".to_string(), |params| format!("{params}:log=-1")));
+    let mut encoder = Encoder::open(&Config { crf, caramel: None, full_recon: true, x264_params: quiet, ..config.clone() })?;
+    let mut pictures = Vec::with_capacity(frames.len());
+    for (pts, frame) in frames.iter().enumerate() {
+        encoder.encode(&frame.y, &frame.u, &frame.v, frame.stride_y, frame.stride_c, frame.stride_c, pts as i64)?;
+        pictures.extend(encoder.recon()?);
+    }
+    while pictures.len() < frames.len() {
+        let produced = !encoder.flush()?.is_empty();
+        match encoder.recon()? {
+            Some(picture) => pictures.push(picture),
+            None if !produced => break,
+            None => {}
+        }
+    }
+    if pictures.len() != frames.len() {
+        return Err(format!("the test encode returned {} of {} frames", pictures.len(), frames.len()));
+    }
+    pictures.sort_by_key(|picture| picture.pts);
+    let (chroma_width, chroma_height) = (width.div_ceil(2), height.div_ceil(2));
+    let mut meter = Xpsnr::new(width, height, config.fps_num, config.fps_den);
+    let mut values = Vec::with_capacity(frames.len());
+    for (picture, source) in pictures.iter().zip(frames) {
+        let encoded = Frame {
+            y: Plane::new(&picture.y, width, height, width).ok_or("short reconstruction")?,
+            u: Plane::new(&picture.u, chroma_width, chroma_height, chroma_width),
+            v: Plane::new(&picture.v, chroma_width, chroma_height, chroma_width),
+        };
+        let original = Frame {
+            y: Plane::new(&source.y, width, height, source.stride_y).ok_or("short luma plane")?,
+            u: Plane::new(&source.u, chroma_width, chroma_height, source.stride_c),
+            v: Plane::new(&source.v, chroma_width, chroma_height, source.stride_c),
+        };
+        values.push(meter.frame(&encoded, &original).ok_or("frames of another size")?);
+    }
+    xpsnr::pooled(&values[1..]).ok_or_else(|| "nothing measured".to_string())
 }
 
 // A chunk's scenes, beside the chunk: `<chunk>.scenes`, one `start|crf` per line. Written by
@@ -339,11 +474,23 @@ mod tests {
     // switch lands on the first frame of the scene that changed the CRF.
     #[test]
     fn frames_leave_in_order_with_their_scene_crf() {
+        frames_leave_in_order(None);
+        // With far raises test-encoded, frames wait longer and leave the same way.
+        let encoder = Config { width: W as u32, height: H as u32, threads: 1, preset: Some("ultrafast".into()), ..Default::default() };
+        let decisions = frames_leave_in_order(Some(&encoder));
+        for decision in decisions.iter().filter_map(|decision| decision.estimate.probe.as_ref().map(|probe| (decision, probe))) {
+            let (decision, probe) = decision;
+            assert!(probe.measured.is_some(), "{decision:?}");
+            assert!(decision.crf <= probe.crf && decision.crf as f64 >= probe.anchor, "{decision:?}");
+        }
+    }
+
+    fn frames_leave_in_order(encoder: Option<&Config>) -> Vec<SceneDecision> {
         let caramel = SceneCrf {
             scenes: SceneConfig { analysis_frames: 4, min_scene_frames: 4, max_scene_frames: 250 },
             ..Default::default()
         };
-        let mut schedule = SceneSchedule::new(&caramel, W, H, 24, 1, 17.0);
+        let mut schedule = SceneSchedule::new(&caramel, W, H, 24, 1, 17.0, encoder);
         let smooth = yuv(|x, y| (60 + x + y) as u8);
         let checker = yuv(|x, y| if (x / 8 + y / 8) % 2 == 0 { 16 } else { 235 });
         let mut out = Vec::new();
@@ -370,6 +517,27 @@ mod tests {
             });
             assert_eq!(switch, expected, "frame {index}");
         }
+        assert_eq!(schedule.decisions().iter().map(|decision| (decision.start_frame, decision.crf)).collect::<Vec<_>>(), marks.iter().map(|mark| (mark.start, mark.crf)).collect::<Vec<_>>());
+        schedule.decisions().to_vec()
+    }
+
+    // A test encode measures what the encode did: lower at a higher CRF, and on the scale ffmpeg's
+    // `xpsnr` reads (`caramel_kernel::xpsnr`).
+    #[test]
+    fn a_test_encode_reads_lower_at_a_higher_crf() {
+        let (w, h) = (128, 96);
+        let frames: Vec<OwnedFrame> = (0..8u64)
+            .map(|index| {
+                let y = (0..w * h).map(|i| (((i % w) * 3 + (i / w) * 5 + index as usize * 2) % 251) as u8 ^ ((i * 7919) % 13) as u8).collect();
+                OwnedFrame { index, y, u: vec![120; w * h / 4], v: vec![136; w * h / 4], stride_y: w, stride_c: w / 2 }
+            })
+            .collect();
+        let refs: Vec<&OwnedFrame> = frames.iter().collect();
+        let config = Config { width: w as u32, height: h as u32, threads: 1, preset: Some("ultrafast".into()), ..Default::default() };
+        let fine = probe_xpsnr(&config, 16.0, &refs, w, h).unwrap();
+        let coarse = probe_xpsnr(&config, 36.0, &refs, w, h).unwrap();
+        assert!(fine > coarse + 3.0 && coarse > 20.0 && fine < 100.0, "{fine} {coarse}");
+        assert!(probe_xpsnr(&config, 16.0, &refs[..2], w, h).is_err());
     }
 
     #[test]
@@ -382,6 +550,7 @@ mod tests {
             source_codec: Some("hevc".into()),
             source_bit_depth: 10,
             model: Some("caramel-neural-1.900-a1b2c3".into()),
+            probe: true,
         };
         let parsed = SceneCrf::from_arg(&settings.to_arg()).unwrap();
         assert_eq!(parsed.to_arg(), settings.to_arg());
@@ -391,7 +560,9 @@ mod tests {
         // The model is named, and a name that could not be a file's is refused. Settings that name
         // none are the fitted predictors', whatever this process has active.
         assert_eq!(parsed.model.as_deref(), Some("caramel-neural-1.900-a1b2c3"));
-        assert!(settings.to_arg().ends_with(":model=caramel-neural-1.900-a1b2c3"));
+        assert!(settings.to_arg().ends_with(":model=caramel-neural-1.900-a1b2c3:probe=1"));
+        // Settings from before probes decide without them, as the chunks they decided did.
+        assert!(parsed.probe && !SceneCrf::from_arg("depth=8").unwrap().probe);
         assert!(SceneCrf::from_arg("depth=8:model=../../etc/passwd").is_err());
         assert_eq!(SceneCrf::from_arg("depth=8").unwrap().model, None);
         assert!(load_model("no-such-model").is_none() && load_model("../x").is_none());

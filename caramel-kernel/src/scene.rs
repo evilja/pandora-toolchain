@@ -92,6 +92,18 @@ pub struct SceneDecision {
     pub features: WindowFeatures,
 }
 
+impl SceneDecision {
+    // What a test encode of the scene measured, for a decision with a probe: the scene moves to the
+    // CRF the probe settled on. A decision without one keeps its CRF.
+    pub fn settle_probe(&mut self, measured: f64) -> f32 {
+        if let Some(probe) = self.estimate.probe.as_mut() {
+            self.crf = probe.settle(measured);
+            self.estimate.crf = self.crf;
+        }
+        self.crf
+    }
+}
+
 // A frame that has arrived and whose scene is not settled yet.
 struct Arrived {
     pair: Option<TemporalFeatures>,
@@ -157,6 +169,17 @@ impl SceneDecider {
 
     pub fn pushed(&self) -> u64 {
         self.pushed
+    }
+
+    // Frames whose scene is known: every frame before this index belongs to a scene that started at
+    // or before `scene_start`.
+    pub fn settled(&self) -> u64 {
+        self.settled
+    }
+
+    // The first frame of the latest scene to start among the settled frames.
+    pub fn scene_start(&self) -> u64 {
+        self.scene_start
     }
 
     // The next frame, in display order. Returns the decisions it made final — usually none, at most

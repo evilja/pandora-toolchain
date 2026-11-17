@@ -28,7 +28,16 @@ typedef struct {
     const char *level;    /* NULL for none, e.g. "4.1" */
     const char *x264_params; /* NULL, or "key=value:key=value" as -x264-params */
     int plan_only;        /* 1 = lookahead only, no coding; requires the Pandora x264 fork */
+    int full_recon;       /* 1 = reconstruct every frame completely, for pnx264_recon */
 } pnx264_config;
+
+/* The decoded picture of the frame the last pnx264_encode or pnx264_flush call returned. */
+typedef struct {
+    const uint8_t *plane[3];
+    int     stride[3];
+    int     planes;       /* 3 for I420; 2 for NV12, whose plane[1] holds U and V interleaved */
+    int64_t pts;
+} pnx264_picture;
 
 /* One frame's planning result. i_type uses x264's X264_TYPE_* values. */
 typedef struct {
@@ -64,6 +73,8 @@ int pnx264_set_crf(pnx264_enc *e, float crf);
 
 /* Drain one buffered frame. Returns 0 when the encoder is empty. */
 int pnx264_flush(pnx264_enc *e, const uint8_t **out);
+
+int pnx264_recon(pnx264_enc *e, pnx264_picture *out);
 
 /* Plan-only counterparts of encode/flush. Return 1 when *out was filled, 0 when the frame is
  * still inside the lookahead and nothing was decided yet, negative on error. */

@@ -68,6 +68,7 @@ pub const SCALES: [f64; METRICS] = [0.5, 0.5, 0.5, 1.0, 1.5, 1.0, 0.2];
 pub const DECIDES: [bool; METRICS] = [true, true, true, false, true, true, false];
 // Banding only ever holds a raise back. A scene with none to add is not thereby easy, so it has no
 // say in how far a scene is raised past what the others allow, and none in a lowering.
+pub const XPSNR: usize = 0;
 pub const BANDING: usize = 5;
 pub const BITS: usize = 6;
 // How far below what typical content scores a scene may fall before a metric says it has, in the

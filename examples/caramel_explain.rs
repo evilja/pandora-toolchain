@@ -101,6 +101,8 @@ fn main() {
         decoder_threads: 0,
         cancel_file: None,
         progress: None,
+        // What the model decides, before a test encode pulls any raise back.
+        probe: None,
     };
     let report = run_scene_analysis(&request).unwrap_or_else(|error| {
         eprintln!("analysis failed: {error}");
