@@ -11,6 +11,7 @@
 //      what the encode will be, into the scene's CRF as an offset from the encoder configuration's
 //      anchor CRF (`model`).
 
+pub mod cambi;
 pub mod curve;
 pub mod fast;
 pub mod frame;

@@ -183,8 +183,42 @@ impl LabSample {
         self.source.bit_depth > 8
     }
 
+    // A fast encode measured before it read banding is given the banding the lab's own encodes
+    // added at `FAST_CRF` in its place (`banding_stand_in`), so the samples from before still train
+    // the input.
     pub fn inputs(&self) -> [f64; inputs::INPUTS] {
-        inputs::inputs(&self.features, self.deep())
+        match &self.features.fast_encode {
+            Some(fast) if fast.banding.is_none() => {
+                let fast = FastEncode { banding: self.banding_stand_in(), ..*fast };
+                inputs::inputs(&WindowFeatures { fast_encode: Some(fast), ..self.features.clone() }, self.deep())
+            }
+            _ => inputs::inputs(&self.features, self.deep()),
+        }
+    }
+
+    // What the fast encode would have read as its banding, for a sample measured before it read
+    // any: the lab's at `FAST_CRF`, scaled to the fast encode's (`STAND_IN_BANDING`).
+    pub fn banding_stand_in(&self) -> Option<f64> {
+        self.lab_banding(caramel_kernel::FAST_CRF as f64).map(|banding| ((banding + 0.05) * STAND_IN_BANDING - 0.05).max(0.0))
+    }
+
+    // The banding the lab's encodes added at `crf`, as the banding metric reads it (the worst
+    // frames' CAMBI less the source's), drawn straight between the two encodes either side of it.
+    // None without an encode to read.
+    pub fn lab_banding(&self, crf: f64) -> Option<f64> {
+        let mut points: Vec<(f64, f64)> = self.points.iter().filter(|point| point.treatment.is_empty()).map(|point| (point.crf as f64, point.cambi_high)).collect();
+        points.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let (first, last) = (*points.first()?, *points.last()?);
+        let banding = if crf <= first.0 {
+            first.1
+        } else if crf >= last.0 {
+            last.1
+        } else {
+            let after = points.iter().position(|point| point.0 >= crf)?;
+            let ((low_crf, low), (high_crf, high)) = (points[after - 1], points[after]);
+            low + (high - low) * (crf - low_crf) / (high_crf - low_crf).max(1e-9)
+        };
+        Some((banding - self.cambi_source_high).max(0.0))
     }
 
     // The sample as a model deciding from the whole scene would see it, when it was measured so.
@@ -882,6 +916,12 @@ impl Lab<'_> {
     }
 }
 
+// How much of the lab's banding at `FAST_CRF` a fast encode reads, offset as the banding input is:
+// the 64 scenes of two series measured both ways read it in step (log-scale correlation 0.995) but
+// about a quarter lower (0.737 and 0.726 a series): veryfast x264 against the lab's preset, and
+// 8-bit frames against the lab's reference.
+pub const STAND_IN_BANDING: f64 = 0.73;
+
 // What a backfill did to one source's samples in a dataset file.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct BackfillSummary {
@@ -893,7 +933,7 @@ pub struct BackfillSummary {
 }
 
 // Gives the samples of `source_id` in `dataset` the whole-scene features and the fast encode they were measured
-// without, read from `input`, which must be the source they were measured from. Other lines are
+// without — or a fast encode made before it read banding — read from `input`, which must be the source they were measured from. Other lines are
 // left as they are, and the file is replaced only once every sample was tried.
 pub fn backfill_scene_features(dataset: &Path, input: &Path, source_id: &str, workers: usize) -> Result<BackfillSummary, String> {
     let ffmpeg: PathBuf = resolve_runtime_binary("ffmpeg").into();
@@ -905,7 +945,7 @@ pub fn backfill_scene_features(dataset: &Path, input: &Path, source_id: &str, wo
     let todo: Vec<usize> = samples
         .iter()
         .enumerate()
-        .filter_map(|(index, sample)| sample.as_ref().filter(|sample| sample.scene_features.is_none() || sample.features.fast_encode.is_none()).map(|_| index))
+        .filter_map(|(index, sample)| sample.as_ref().filter(|sample| sample.scene_features.is_none() || sample.features.fast_encode.is_none_or(|fast| fast.banding.is_none())).map(|_| index))
         .collect();
     summary.samples = samples.iter().flatten().count();
     summary.already = summary.samples - todo.len();
@@ -1268,5 +1308,20 @@ mod tests {
         // A quarter of the bytes is two fewer bits per pixel, in log2.
         assert!((observed[0].values[6] - observed[1].values[6] - 2.0).abs() < 1e-9);
         assert!(back.deep() && back.inputs()[26] == 1.0);
+        // The deband encode is no point on the line: banding 0.4 at 14 to 6.5 at 28 is 3.45 at 21,
+        // less the source's 0.5.
+        assert!((back.lab_banding(21.0).unwrap() - 2.95).abs() < 1e-9);
+        assert_eq!((back.lab_banding(10.0), back.lab_banding(40.0)), (Some(0.0), Some(6.0)));
+        // Without a fast encode there is no banding input; one from before banding was read is
+        // given the lab's, and one that read its own keeps it.
+        assert_eq!(back.inputs()[30], 0.0);
+        let fast = caramel_kernel::FastEncode { xpsnr: 42.0, xpsnr_low: 40.0, log_bpp: -3.0, frames: 48, banding: None };
+        let old = LabSample { features: WindowFeatures { fast_encode: Some(fast), ..Default::default() }, ..back.clone() };
+        let expected = old.lab_banding(caramel_kernel::FAST_CRF as f64).unwrap();
+        assert!((old.inputs()[30] - ((expected + 0.05) * STAND_IN_BANDING).ln()).abs() < 1e-12);
+        let line = serde_json::to_string(&old).unwrap();
+        assert!(!line.contains("banding"), "a sample from before reads as it did");
+        let measured = LabSample { features: WindowFeatures { fast_encode: Some(caramel_kernel::FastEncode { banding: Some(1.0), ..fast }), ..Default::default() }, ..back };
+        assert!((measured.inputs()[30] - 1.05f64.ln()).abs() < 1e-12);
     }
 }

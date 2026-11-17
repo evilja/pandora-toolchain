@@ -15,8 +15,9 @@ or a job asks for Caramel Analysis at all.
 
 | Where | What |
 |---|---|
-| `caramel-kernel/src/inputs.rs` | The 27 numbers a scene is described by, from the features the decider already measures, and three more from its fast encode. |
-| `caramel-kernel/src/fast.rs` | `FastEncode`: what a scene's fast encode read — its XPSNR, its worst frames and its bits. |
+| `caramel-kernel/src/inputs.rs` | The 27 numbers a scene is described by, from the features the decider already measures, and four more from its fast encode. |
+| `caramel-kernel/src/fast.rs` | `FastEncode`: what a scene's fast encode read — its XPSNR, its worst frames, its bits and the banding it added. |
+| `caramel-kernel/src/cambi.rs` | CAMBI, Netflix's banding detector, ported from libvmaf: the score libvmaf's `cambi` feature gives an 8-bit frame at its defaults, so the fast encode's banding reads on the lab's scale without linking libvmaf. |
 | `caramel-kernel/src/nn.rs` | A small dense network (SiLU), its gradients and Adam. No dependencies. |
 | `caramel-kernel/src/curve.rs` | Quality and size as curves over CRF, the votes read from them, the rule that decides a scene from them (`decide`), and `Model`: an ensemble of networks with its text file format, the built-in model (`builtin.model`) and the installed one. |
 | `caramel-kernel/src/train.rs` | Training by series-wise folds, the held-out error, the detailed scene and the gain, the simulated policy, and the gate a retrained model has to pass. |
@@ -331,9 +332,27 @@ preset was barely better (1.02) for twice the time.
 So a scene's fast encode covers all of it, up to `FAST_FRAMES` (48): an encoder deciding with a
 model that reads it holds every scene until the scene has ended and encodes it before releasing
 any frame, about 3.4 s of one core per 48 frames at 1080p — some 44% on top of the encode itself
-at the Standard preset when every scene gets one, under half that with a base (below). A model reads it as inputs 28–30 (`fast-xpsnr`, `fast-xpsnr-low`,
-`fast-bits`); a model's text says how many inputs its networks read, so models of 27 and 30 inputs
-both load. Models that do not read it are never slowed by it.
+at the Standard preset when every scene gets one, under half that with a base (below). A model reads it as inputs 28–31 (`fast-xpsnr`, `fast-xpsnr-low`,
+`fast-bits`, `fast-banding`); a model's text says how many inputs its networks read, so models of
+27, 30 and 31 inputs all load — a 30-input model is one from before the banding was read. Models
+that do not read it are never slowed by it.
+
+**Banding.** XPSNR barely sees banding — a flat gradient cut into steps loses almost no signal —
+and banding was where most of the fast model's held-out mistakes lay: of the decisions 1.5 CRF or
+more off what the scene's encodes allowed, the banding vote was furthest out in 181 of 266 raises
+that went too far and 452 of 579 that fell short. Banding *source* features (CAMBI of the source,
+gradient and dark-gradient shares) explained almost none of that error; the banding an encode at a
+nearby CRF actually added tracked the allowed banding closely (log-scale correlation −0.85). So the
+fast encode reads its own: CAMBI (`cambi.rs`, a port of libvmaf's, which agrees with libvmaf to the
+fourth decimal) of the encoded and the source frames at a quarter, half and three quarters through
+the scene (`fast::banding_frames`), the most the encode showed less the most the source showed
+(`fast::added_banding`). Three frames of each is about 1 s of one core per scene at 1080p, on top
+of the fast encode's 3.4 s. A probe reads XPSNR alone and pays none of it. On 983 scenes of 31
+series, held out a series at a time over three seeds, networks reading it against the same networks
+without it took the banding vote's error from 3.29 to 1.05 CRF and the overall error from 1.78 to
+1.32; the decisions' shortfall p95 fell from 1.92 to 1.32 and the banding they added (p95) from
+1.45 to 1.07, for 2% more bytes (0.944 against 0.926), the raises it no longer makes being the
+ones that banded. Most of those scenes carry the stand-in below rather than their own reading.
 
 **Only the scenes its base raises.** A model that reads the fast encode carries a *base*: a
 27-input model trained beside it on the same scenes, seed and targets (`curve::Model::base`). The
@@ -363,9 +382,15 @@ every scene fast.
 
 The lab makes each sample's fast encode itself over the clip it measured, through pnx264, so
 lab and encoder read the same numbers; `--caramel-backfill` adds it, with the whole-scene
-features, to samples measured before. The 8-bit frames are what both encode, so a 10-bit source
+features, to samples measured before, and refills a fast encode made before it read banding. A
+sample whose fast encode has no banding is trained on the banding the lab's own encodes added at
+`FAST_CRF` instead (`LabSample::banding_stand_in`: `lab_banding` drawn between the encodes either
+side, scaled by `STAND_IN_BANDING`). On 64 scenes of two series measured both ways the two moved in
+step — log-scale correlation 0.995 — with the fast encode's about a quarter lower, the same in each
+series (0.737, 0.726), hence the scale of 0.73. The 8-bit frames are what both encode, so a 10-bit source
 reads lower than an ffmpeg encode scored against the 10-bit picture; on 8-bit sources the two
-agree to the hundredth of a dB. `--train-features fast` trains networks reading all 30 inputs on
+agree to the hundredth of a dB. `--train-features fast` trains networks reading all 31 inputs (or the first N with
+`--train-inputs N`, to compare against a model from before a later input existed) on
 the samples that have one, with their 27-input base beside them, and judges the two together;
 `--train-features fast-paired` trains the 27-input networks alone on the same samples.
 

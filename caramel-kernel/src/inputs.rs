@@ -5,15 +5,16 @@
 // not 0.1 more — and shares are left as they are. The order is part of every stored model: a new
 // figure goes at the end, and a model that was trained on fewer reads the first ones.
 //
-// The last three are the scene's fast encode (`fast`). A model reading them is trained only on
-// scenes that have one and decides only scenes that have one; one that reads `BASE_INPUTS` never
-// sees them.
+// The last four are the scene's fast encode (`fast`): its XPSNR, its worst frames', its bits and its
+// banding. A model reading them is trained only on scenes that have one and decides only scenes that
+// have one; one that reads `BASE_INPUTS` never sees them. A model trained before the banding was
+// read reads the first three alone.
 
 use crate::spatial::DETAIL_FLOORS;
 use crate::temporal::RESIDUAL_FLOORS;
 use crate::window::WindowFeatures;
 
-pub const INPUTS: usize = 30;
+pub const INPUTS: usize = 31;
 
 // The inputs measured on the source alone, before the fast encode's.
 pub const BASE_INPUTS: usize = 27;
@@ -49,6 +50,7 @@ pub const INPUT_NAMES: [&str; INPUTS] = [
     "fast-xpsnr",
     "fast-xpsnr-low",
     "fast-bits",
+    "fast-banding",
 ];
 
 // Shares of a block's energy sit between 0 and the square of the floor they were clipped at; the
@@ -94,6 +96,9 @@ pub fn inputs(window: &WindowFeatures, deep: bool) -> [f64; INPUTS] {
         out[27] = fast.xpsnr;
         out[28] = fast.xpsnr_low;
         out[29] = fast.log_bpp;
+        // Banding is 0 for most scenes and runs to tens where a gradient breaks up; its logarithm
+        // keeps the first steps apart. A fast encode that did not read it reads as adding none.
+        out[30] = (fast.banding.unwrap_or(0.0).max(0.0) + 0.05).ln();
     }
     for value in &mut out {
         if !value.is_finite() {

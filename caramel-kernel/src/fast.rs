@@ -29,6 +29,25 @@ pub struct FastEncode {
     // log2 of the bits per pixel the encode spent, every frame counted.
     pub log_bpp: f64,
     pub frames: usize,
+    // The banding the encode added (`cambi`): the most any of `banding_frames` showed, less the most
+    // the source showed in the same frames, 0 when it added none. None for a fast encode measured
+    // before it was read, which the trainer fills from the lab's own encodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub banding: Option<f64>,
+}
+
+// Which frames of a fast encode of `frames` frames have their banding measured: three spread over
+// the scene, never the keyframe. CAMBI costs a fifth of a second a 1080p frame, so not every one.
+pub fn banding_frames(frames: usize) -> Vec<usize> {
+    let mut picked: Vec<usize> = [frames / 4, frames / 2, frames * 3 / 4].into_iter().map(|index| index.max(1)).filter(|index| *index < frames).collect();
+    picked.dedup();
+    picked
+}
+
+// The banding an encode added, from each measured frame's CAMBI in the encode and in the source.
+pub fn added_banding(encoded: &[f64], source: &[f64]) -> Option<f64> {
+    let most = |values: &[f64]| values.iter().copied().filter(|value| value.is_finite()).reduce(f64::max);
+    Some((most(encoded)? - most(source).unwrap_or(0.0)).max(0.0))
 }
 
 impl FastEncode {
@@ -47,6 +66,7 @@ impl FastEncode {
             xpsnr_low: sorted.iter().sum::<f64>() / sorted.len() as f64,
             log_bpp: (bytes as f64 * 8.0 / (xpsnr.len() * pixels) as f64).log2(),
             frames: xpsnr.len(),
+            banding: None,
         })
     }
 }
@@ -65,5 +85,16 @@ mod tests {
         assert!((fast.log_bpp - (8000.0f64 / 1100.0).log2()).abs() < 1e-12);
         assert_eq!(fast.frames, 11);
         assert!(FastEncode::from_frames(&[40.0], 10, 10).is_none());
+    }
+
+    #[test]
+    fn banding_is_read_off_a_few_frames_past_the_keyframe() {
+        assert_eq!(banding_frames(48), vec![12, 24, 36]);
+        assert_eq!(banding_frames(3), vec![1, 2]);
+        assert_eq!(banding_frames(2), vec![1]);
+        assert_eq!(added_banding(&[2.0, 5.0], &[1.0, 1.5]), Some(3.5));
+        // Banding the source had already is none the encode added.
+        assert_eq!(added_banding(&[2.0], &[3.0]), Some(0.0));
+        assert_eq!(added_banding(&[], &[1.0]), None);
     }
 }

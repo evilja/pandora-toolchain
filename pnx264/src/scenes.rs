@@ -719,7 +719,7 @@ pub fn probe_xpsnr(config: &Config, crf: f32, frames: &[&OwnedFrame], width: usi
     if frames.len() < 3 {
         return Err("too few frames to measure".to_string());
     }
-    let (values, _) = test_encode(&Config { crf, ..config.clone() }, frames, width, height)?;
+    let (values, _, _) = test_encode(&Config { crf, ..config.clone() }, frames, width, height, false)?;
     xpsnr::pooled(&values[1..]).ok_or_else(|| "nothing measured".to_string())
 }
 
@@ -740,15 +740,16 @@ pub fn fast_config(encoder: &Config, width: usize, height: usize) -> Config {
 }
 
 // A scene's fast encode (`caramel_kernel::fast`): `frames` encoded with `fast_config`'s settings and
-// read as the lab reads a clip. `config` is already a `fast_config`.
+// read as the lab reads a clip, its banding included. `config` is already a `fast_config`.
 pub fn fast_encode(config: &Config, frames: &[&OwnedFrame], width: usize, height: usize) -> Result<FastEncode, String> {
-    let (values, bytes) = test_encode(config, frames, width, height)?;
-    FastEncode::from_frames(&values, bytes, width * height).ok_or_else(|| "the fast encode measured nothing".to_string())
+    let (values, bytes, banding) = test_encode(config, frames, width, height, true)?;
+    let fast = FastEncode::from_frames(&values, bytes, width * height).ok_or_else(|| "the fast encode measured nothing".to_string())?;
+    Ok(FastEncode { banding, ..fast })
 }
 
-// `frames` encoded with `config`, each frame's XPSNR against its source in display order, and the
-// coded bytes of all of them.
-fn test_encode(config: &Config, frames: &[&OwnedFrame], width: usize, height: usize) -> Result<(Vec<f64>, u64), String> {
+// `frames` encoded with `config`, each frame's XPSNR against its source in display order, the coded
+// bytes of all of them, and with `banding` the banding the encode added (`fast::added_banding`).
+fn test_encode(config: &Config, frames: &[&OwnedFrame], width: usize, height: usize, banding: bool) -> Result<(Vec<f64>, u64, Option<f64>), String> {
     if frames.len() < 2 {
         return Err("too few frames to measure".to_string());
     }
@@ -791,7 +792,16 @@ fn test_encode(config: &Config, frames: &[&OwnedFrame], width: usize, height: us
         };
         values.push(meter.frame(&encoded, &original).ok_or("frames of another size")?);
     }
-    Ok((values, bytes))
+    let banding = banding
+        .then(|| {
+            let picked = caramel_kernel::fast::banding_frames(frames.len());
+            let read = |plane: &[u8], stride: usize| Plane::new(plane, width, height, stride).and_then(|plane| caramel_kernel::cambi::cambi(&plane));
+            let encoded: Vec<f64> = picked.iter().filter_map(|index| read(&pictures[*index].y, width)).collect();
+            let source: Vec<f64> = picked.iter().filter_map(|index| read(&frames[*index].y, frames[*index].stride_y)).collect();
+            caramel_kernel::fast::added_banding(&encoded, &source)
+        })
+        .flatten();
+    Ok((values, bytes, banding))
 }
 
 // A chunk's scenes, beside the chunk: `<chunk>.scenes`, one `start|crf` per line. Written by
@@ -1109,6 +1119,26 @@ mod tests {
         let coarse = probe_xpsnr(&config, 36.0, &refs, w, h).unwrap();
         assert!(fine > coarse + 3.0 && coarse > 20.0 && fine < 100.0, "{fine} {coarse}");
         assert!(probe_xpsnr(&config, 16.0, &refs[..2], w, h).is_err());
+    }
+
+    // A dithered dark gradient encoded hard loses its dither and comes out in steps: the banding
+    // the fast encode reports. Encoded finely, it keeps the dither and reports little.
+    #[test]
+    fn a_fast_encode_reads_the_banding_it_added() {
+        let (w, h) = (320, 240);
+        let frames: Vec<OwnedFrame> = (0..6u64)
+            .map(|index| {
+                let y = (0..w * h).map(|i| (24.0 + 24.0 * (i % w) as f64 / w as f64 + ((i * 7919 + index as usize * 31) % 7) as f64 * 0.5 - 1.5) as u8).collect();
+                OwnedFrame { index, y, u: vec![128; w * h / 4], v: vec![128; w * h / 4], stride_y: w, stride_c: w / 2 }
+            })
+            .collect();
+        let refs: Vec<&OwnedFrame> = frames.iter().collect();
+        let config = |crf: f32| Config { crf, ..fast_config(&Config::default(), w, h) };
+        let hard = fast_encode(&config(40.0), &refs, w, h).unwrap().banding.unwrap();
+        let fine = fast_encode(&config(4.0), &refs, w, h).unwrap().banding.unwrap();
+        assert!(hard > 1.0 && hard > 4.0 * fine, "{hard} {fine}");
+        // A probe reads XPSNR alone and pays for no banding.
+        assert!(test_encode(&config(20.0), &refs, w, h, false).unwrap().2.is_none());
     }
 
     #[test]

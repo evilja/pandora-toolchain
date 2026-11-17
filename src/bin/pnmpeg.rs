@@ -270,6 +270,11 @@ struct Args {
     #[arg(long, default_value = "opening")]
     train_features: String,
 
+    /// With --caramel-train --train-features fast: read only the first N inputs, to compare a model
+    /// with one trained before the later inputs existed (30 leaves the fast encode's banding out).
+    #[arg(long)]
+    train_inputs: Option<usize>,
+
     #[arg(long, hide = true)]
     aot_preset: Option<String>,
 
@@ -879,7 +884,11 @@ fn caramel_train(args: &Args, preset: Option<&ResolvedPreset>, log: &mut ToolLog
     });
     let mut config = caramel_kernel::train::TrainConfig { seed: args.train_seed, ..Default::default() };
     if args.train_features == "fast" {
-        config.inputs = caramel_kernel::inputs::INPUTS;
+        config.inputs = args.train_inputs.unwrap_or(caramel_kernel::inputs::INPUTS);
+        if !(caramel_kernel::inputs::BASE_INPUTS + 1..=caramel_kernel::inputs::INPUTS).contains(&config.inputs) {
+            eprintln!("pnmpeg caramel train: --train-inputs takes {} to {}", caramel_kernel::inputs::BASE_INPUTS + 1, caramel_kernel::inputs::INPUTS);
+            return 1;
+        }
     }
     if let Some(hidden) = args.train_hidden.as_deref() {
         let widths: Vec<usize> = hidden.split(',').filter_map(|width| width.trim().parse().ok()).filter(|width| (1..=512).contains(width)).collect();
