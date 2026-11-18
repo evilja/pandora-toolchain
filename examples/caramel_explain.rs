@@ -126,7 +126,7 @@ fn main() {
             let standardised = model.standardised(&raw);
             let members = model.member_curves(&raw);
             let votes = curve::votes_of(&members, &model.typical, held);
-            let decision = curve::decide(&votes, model.detail, model.gain);
+            let decision = curve::decide(&votes, model.detail, model.gain, model.margin);
             let mean = curve::mean_curves(&members);
             let measured = scene.features.measured > 0 && scene.features.frames > 0;
             let reported = scene.contributions.first().map(|contribution| contribution.delta);

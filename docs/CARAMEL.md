@@ -205,7 +205,7 @@ the model, not the episode it verifies — the probe and the source's trust stil
   the typical curves and detail of the model that decided the encode: the shortfall at the decided
   CRF against a detailed scene at the anchor (the mean over the quality metrics, in units — half a
   dB of XPSNR is one), and the CAMBI added over the anchor. **`overshot`** when that shortfall is
-  over 1 unit (`OVERSHOOT`) or the banding over 2 (`BANDING_P95`); **`missed`** when 2 CRF further
+  over 1 unit (`OVERSHOOT`) or the banding over 2 (`BANDED`); **`missed`** when 2 CRF further
   would still have been short of nothing and banded no more than that; **`held`** otherwise.
 - **The sample** is an ordinary lab sample with `picked` = `verify-raise`, `verify-split`,
   `verify-ease`, `verify-fast`, `verify-spread` or `verify-control`, and `verified`: `{ model,
@@ -503,6 +503,9 @@ in use, 4 when it may not, 1 on an error. `--train-install` installs an accepted
   that is less detailed is raised; one is lowered only rarely and by little. A scene's ease is the
   mean of its quality votes (XPSNR, its worst frames, SSIM, VMAF's worst frames), or banding's vote
   where that is lower, since the flat scenes that are easiest to raise are also the first to band.
+  Banding's vote is read `banding-margin` CRF below what it says (0 in a model from before the
+  margin), so a scene that banding holds back stops short of its banding allowance, while a scene
+  its quality holds back is raised as before.
   `detail` is the ease of a detailed scene: the quality ease that a quarter of the measured scenes
   fall below, by their own encodes (about 2.5 CRF harder than typical content). A scene easier than
   that is raised by `gain` times the difference, up to 6 CRF. A scene whose quality ease is more
@@ -514,12 +517,24 @@ in use, 4 when it may not, 1 on an error. `--train-install` installs an accepted
   scene by its own encodes.
   Short windows have their raise scaled down and a window with a cut inside is not raised, as with
   the fitted predictors.
-- **Gain.** The trainer picks the largest gain from 1 down to 0.25 in steps of 0.05 at which, on held-out scenes at
-  anchors 17, 19, 21 and 23, the raised scenes fall below a detailed scene's quality at the anchor
-  by no more than 2.5 units at the 90th percentile and 3.5 at the 95th (the mean over the quality
-  metrics; a unit is 0.5 dB of XPSNR), and the raises add no more than 2 CAMBI at the 95th
-  percentile. A raised scene is allowed to look like a detailed one does at the anchor, a little
-  worse at its tail, and not to band visibly. The steps were quarters until models read their fast
+- **Gain and banding margin.** For each banding margin of 0, 0.5, 1, 1.5, 2, 3 and 4 CRF, the
+  trainer picks the largest gain from 1 down to 0.25 in steps of 0.05 at which, on held-out scenes
+  at anchors 17, 19, 21 and 23, the raised scenes fall below a detailed scene's quality at the
+  anchor by no more than 2.5 units at the 90th percentile and 1.5 at the 95th (the mean over the
+  quality metrics; a unit is 0.5 dB of XPSNR), and the raises add no more than 1.5 CAMBI at the
+  95th percentile; of the pairs that hold, it keeps the one that spends the fewest bytes
+  (`choose_raise`). A model that reads the source alone — a base, which also decides every scene of
+  a scaled or 10-bit encode — may fall 3.5 units short at the 95th percentile instead: held to 1.5
+  it raised so little that it spent 0.959 of the anchor's bytes where it had spent 0.875. A raised
+  scene is allowed to look like a detailed one does at the anchor, a little worse at its tail, and
+  not to band visibly.
+  The limits were 3.5 units and 2 CAMBI while only the gain could meet them. Banding then bound
+  every model's gain and the shortfall never did, and cutting the gain to band less costs bytes on
+  every raise. A margin holds back only the raises banding limits: on 352 scenes no model had
+  seen, the installed model's networks with a margin of 1 CRF added 1.26 CAMBI at the tail where they had added
+  1.48, for 0.890 of the anchor's bytes against 0.885 and the same shortfall, where a gain cut to
+  0.65 reached 1.23 CAMBI only at 0.905. The shortfall's tail is held to 1.5 so that the margin
+  does not buy its bytes back from the quality metrics. The steps were quarters until models read their fast
   encode's banding: the banding limit then bound between them, and three seeds that met it at
   0.9–0.95 were held to 0.75 — on 992 scenes of 31 series, 0.935 of the anchor's bytes where 0.944
   was spent, with the shortfall p95 at 1.55–1.80 against the 30-input model's 2.01 and the banding p95 at
@@ -547,14 +562,15 @@ in use, 4 when it may not, 1 on an error. `--train-install` installs an accepted
   smaller gain. With no model in use, a first model needs 200 scenes from 5 series and held-out
   raises within those limits.
 - **The report.** `version`, `encoder`, `scenes`, `series`, `other_encoders`, `members`, `epochs`,
-  `detail`, `gain`, `error` and per-metric `metrics` (held-out vote error in CRF, and the typical
+  `detail`, `gain`, `banding_margin`, `error` and per-metric `metrics` (held-out vote error in CRF, and the typical
   curve), `policy` (what the candidate would have decided for held-out scenes: `raised_share`,
   `lowered_share`, `raised_far_share` — raised by 4 CRF or more — `raise_mean`, `bytes` against
   the fixed anchor, `shortfall_p90`/`shortfall_p95` in units below a detailed scene, `banding_p95`
   added by the raise, and `needed` — the share of lowerings whose scene really was harder than a
   detailed one), `predictors` (the same for the linear predictors, on the same scenes), `current`,
   `fresh_scenes`, `current_error`, `candidate_error`, `current_shortfall`, `candidate_shortfall`,
-  `current_bytes`, `candidate_bytes` (on the fresh scenes, against the anchor), `accepted`,
+  `current_bytes`, `candidate_bytes` (on the fresh scenes, against the anchor), `current_banding`,
+  `candidate_banding` (CAMBI added at the 95th percentile there), `accepted`,
   `reason`, `installed`. For a model with a base, `policy` is the base and the fast model together,
   and `base_policy`, `ungated_policy` (the fast model on every scene) and `fast_encoded_share` (the
   share of decisions the base raised) are added.
@@ -587,7 +603,7 @@ than it measured itself. Such a machine should keep `caramel_research_retrain` h
 next training, from its own smaller dataset and its own feature set, may replace the model it was
 given whenever the gate accepts it.
 
-A model file is text: a `caramel-model 1` header, then `version`, `encoder`, `detail`, `gain`, `scenes`,
+A model file is text: a `caramel-model 1` header, then `version`, `encoder`, `detail`, `gain`, `banding-margin` (only when it is above 0), `scenes`,
 `sources`, `trained` (the newest `collected_unix` it saw), `input-mean`, `input-scale`, for a
 model that reads other inputs than the first ones `input-select` (which, in order), `offsets`,
 `error`, seven `typical <metric>` lines, and per network `member <layers>` followed by `layer

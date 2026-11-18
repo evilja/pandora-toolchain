@@ -307,10 +307,16 @@ pub struct Decision {
 // has to spare. Banding holds a raise back — a flat scene is the easiest to raise and the first to
 // band — so the raise is read from the lower of the quality metrics' ease and banding's vote. Only
 // a scene far harder than a detailed one is lowered, and by little.
-pub fn decide(votes: &[CurveVote; METRICS], detail: f64, gain: f64) -> Decision {
+//
+// Banding's vote is read `margin` CRF lower. A raise held by banding goes past the CRF banding's
+// vote names by the detailed scene's offset, as one held by quality does; the margin takes some of
+// that back from the scenes banding holds alone, where a smaller gain would take it from every
+// raise. Tighter limits on the banding raises add are cheaper met that way (`train::choose_raise`).
+pub fn decide(votes: &[CurveVote; METRICS], detail: f64, gain: f64, margin: f64) -> Decision {
     let quality = quality_ease(votes);
-    let banded = votes[BANDING].offset < quality;
-    let ease = if banded { votes[BANDING].offset } else { quality };
+    let band = votes[BANDING].offset - margin;
+    let banded = band < quality;
+    let ease = if banded { band } else { quality };
     let offset = if ease > detail {
         gain * (ease - detail)
     } else if quality < detail - LOWER_BELOW {
@@ -342,6 +348,9 @@ pub struct Model {
     // How much of the CRF a scene has to spare over a detailed one it is raised by: set by the
     // trainer from how far raises fell short on sources it had never seen.
     pub gain: f64,
+    // How many CRF below what it says banding's vote is read (`decide`). Set by the trainer with
+    // the gain; 0 in a model from before it, which then decides as it always did.
+    pub margin: f64,
     // What the model was trained on, for whoever reads the file.
     pub scenes: usize,
     pub sources: usize,
@@ -443,6 +452,11 @@ impl Model {
             values.iter().map(|value| format!("{}", *value as f32)).collect::<Vec<_>>().join(" ")
         }
         let mut text = format!("{FORMAT}\nversion {}\nencoder {}\ndetail {}\ngain {}\nscenes {}\nsources {}\ntrained {}\n", self.version, self.encoder, self.detail as f32, self.gain as f32, self.scenes, self.sources, self.trained);
+        // Only when there is one, so a model without it writes the file it did before. A build from
+        // before it skips the line and decides without it.
+        if self.margin > 0.0 {
+            text += &format!("banding-margin {}\n", self.margin as f32);
+        }
         text += &format!("input-mean {}\ninput-scale {}\n", numbers(&self.input_mean), numbers(&self.input_scale));
         // Only when it is not the first inputs, so a model that reads those writes the file a build
         // from before the selection did. Only a base is given one, in the file of a model that reads
@@ -489,6 +503,7 @@ impl Model {
             encoder: String::new(),
             detail: 0.0,
             gain: f64::NAN,
+            margin: 0.0,
             scenes: 0,
             sources: 0,
             trained: 0,
@@ -513,6 +528,7 @@ impl Model {
                 "encoder" => model.encoder = rest.trim().to_string(),
                 "detail" => model.detail = numbers::<1>(rest, key)?[0],
                 "gain" => model.gain = numbers::<1>(rest, key)?[0],
+                "banding-margin" => model.margin = numbers::<1>(rest, key)?[0],
                 "scenes" => model.scenes = rest.trim().parse().map_err(|_| "`scenes` is not a count")?,
                 "sources" => model.sources = rest.trim().parse().map_err(|_| "`sources` is not a count")?,
                 "trained" => model.trained = rest.trim().parse().map_err(|_| "`trained` is not a time")?,
@@ -588,6 +604,9 @@ impl Model {
         if !(0.0..=1.0).contains(&model.gain) || !(-VOTE_LIMIT..=VOTE_LIMIT).contains(&model.detail) {
             return Err("the model has no gain between 0 and 1, or no detailed scene, to decide scenes with".to_string());
         }
+        if !(0.0..=VOTE_LIMIT).contains(&model.margin) {
+            return Err("the model's banding margin is not between 0 and the vote limit".to_string());
+        }
         Ok(model)
     }
 }
@@ -634,6 +653,7 @@ pub(crate) mod tests {
             encoder: "x264|fast|-|".to_string(),
             detail: -2.0,
             gain: 0.5,
+            margin: 0.0,
             scenes: 10,
             sources: 2,
             trained: 1_700_000_000,
@@ -703,20 +723,36 @@ pub(crate) mod tests {
         let votes = |offsets: [f64; METRICS]| -> [CurveVote; METRICS] { std::array::from_fn(|metric| CurveVote { offset: offsets[metric], spread: 9.0 }) };
         // Mean VMAF and bits (-9 here) are not asked, nor is the networks' disagreement. The quality
         // metrics' mean is 4.75, which is 6.75 CRF easier than a detailed scene: half of it.
-        let easy = decide(&votes([5.0, 4.0, 6.0, -9.0, 4.0, 8.0, -9.0]), -2.0, 0.5);
+        let easy = decide(&votes([5.0, 4.0, 6.0, -9.0, 4.0, 8.0, -9.0]), -2.0, 0.5, 0.0);
         assert_eq!((easy.offset, easy.ease, easy.banding), (3.375, 4.75, false));
         // A scene that would band is raised only as far as banding allows.
-        let flat = decide(&votes([5.0, 4.0, 6.0, -9.0, 4.0, 1.0, -9.0]), -2.0, 0.5);
+        let flat = decide(&votes([5.0, 4.0, 6.0, -9.0, 4.0, 1.0, -9.0]), -2.0, 0.5, 0.0);
         assert_eq!((flat.offset, flat.ease, flat.banding), (1.5, 1.0, true));
         // A detailed scene stays at the anchor, and so does one up to 4.5 CRF harder than that.
-        assert_eq!(decide(&votes([-2.0, -2.5, -1.5, 0.0, -2.0, 8.0, 0.0]), -2.0, 0.5).offset, 0.0);
-        assert_eq!(decide(&votes([-4.0, -5.0, -4.0, 0.0, -4.5, 8.0, 0.0]), -2.0, 0.5).offset, 0.0);
-        assert_eq!(decide(&votes([-6.5, -6.0, -6.0, 0.0, -6.5, 8.0, 0.0]), -2.0, 0.5).offset, 0.0);
+        assert_eq!(decide(&votes([-2.0, -2.5, -1.5, 0.0, -2.0, 8.0, 0.0]), -2.0, 0.5, 0.0).offset, 0.0);
+        assert_eq!(decide(&votes([-4.0, -5.0, -4.0, 0.0, -4.5, 8.0, 0.0]), -2.0, 0.5, 0.0).offset, 0.0);
+        assert_eq!(decide(&votes([-6.5, -6.0, -6.0, 0.0, -6.5, 8.0, 0.0]), -2.0, 0.5, 0.0).offset, 0.0);
         // Far harder, it is lowered half a CRF, and never more. Banding has no say in it.
-        assert_eq!(decide(&votes([-7.0, -6.5, -6.5, 0.0, -7.0, 8.0, 0.0]), -2.0, 0.5).offset, -MAX_LOWER);
-        assert_eq!(decide(&votes([-8.0, -8.0, -8.0, 0.0, -8.0, -8.0, 0.0]), -2.0, 0.5).offset, -0.5);
+        assert_eq!(decide(&votes([-7.0, -6.5, -6.5, 0.0, -7.0, 8.0, 0.0]), -2.0, 0.5, 0.0).offset, -MAX_LOWER);
+        assert_eq!(decide(&votes([-8.0, -8.0, -8.0, 0.0, -8.0, -8.0, 0.0]), -2.0, 0.5, 0.0).offset, -0.5);
         assert_eq!(measured_votes_all(&[Some(5.0), Some(4.0), Some(6.0), None, Some(4.0), Some(8.0), None]).map(|votes| quality_ease(&votes)), Some(4.75));
         assert!(measured_votes_all(&[Some(5.0), None, Some(6.0), Some(1.0), Some(4.5), Some(8.0), Some(1.0)]).is_none());
+    }
+
+    #[test]
+    fn a_margin_holds_back_only_the_raises_banding_holds() {
+        let votes = |banding: f64| -> [CurveVote; METRICS] { std::array::from_fn(|metric| CurveVote { offset: if metric == BANDING { banding } else { 4.0 }, spread: 0.0 }) };
+        // Banding far from holding it: the quality metrics decide, margin or none.
+        assert_eq!(decide(&votes(8.0), -2.0, 0.5, 1.0), decide(&votes(8.0), -2.0, 0.5, 0.0));
+        // Banding that holds it is read a CRF lower, and the raise is half a CRF smaller.
+        let bold = decide(&votes(2.0), -2.0, 0.5, 0.0);
+        let careful = decide(&votes(2.0), -2.0, 0.5, 1.0);
+        assert_eq!((bold.offset, bold.ease, bold.banding), (2.0, 2.0, true));
+        assert_eq!((careful.offset, careful.ease, careful.banding), (1.5, 1.0, true));
+        // Within a CRF of the quality metrics, the margin hands the raise to banding.
+        assert!(decide(&votes(4.5), -2.0, 0.5, 1.0).banding && !decide(&votes(4.5), -2.0, 0.5, 0.0).banding);
+        // A lowering is decided by quality alone.
+        assert_eq!(decide(&votes(-8.0), 5.0, 0.5, 1.0).offset, 0.0);
     }
 
     #[test]
@@ -799,6 +835,12 @@ pub(crate) mod tests {
         // one cut short, one built for other inputs, and one with no gain to raise a scene by —
         // which is what a model from before scenes were raised by their ease is.
         assert!(Model::from_text(&text.replace("gain", "later-field 3\ngain")).is_ok());
+        // No margin is written without one, so the file is the one a build before it wrote; with
+        // one it reads back, and one past the vote limit is refused.
+        assert!(!text.contains("banding-margin"));
+        let careful = Model { margin: 1.5, ..model.clone() };
+        assert_eq!(Model::from_text(&careful.to_text()).unwrap().margin, 1.5);
+        assert!(Model::from_text(&Model { margin: 9.0, ..model.clone() }.to_text()).is_err());
         assert!(Model::from_text("").is_err());
         assert!(Model::from_text(&text[..text.len() / 2]).is_err());
         assert!(Model::from_text(&text.replace(&format!("layer {} 6", crate::inputs::BASE_INPUTS), "layer 3 6")).is_err());

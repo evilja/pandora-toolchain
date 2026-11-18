@@ -327,7 +327,7 @@ fn curve_votes(model: &curve::Model, window: &WindowFeatures, source: &SourceCon
     let inputs = crate::inputs::inputs(window, source.bit_depth > 8);
     let held = anchor.clamp(CURVE_ANCHORS.0, CURVE_ANCHORS.1);
     let (all, curves) = model.read(&inputs, held);
-    let decision = curve::decide(&all, model.detail, model.gain);
+    let decision = curve::decide(&all, model.detail, model.gain, model.margin);
     let votes = (0..curve::METRICS)
         .filter(|metric| curve::DECIDES[*metric])
         .map(|metric| MetricVote { metric: curve::METRIC_NAMES[metric], offset: all[metric].offset, spread: all[metric].spread })

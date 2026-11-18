@@ -355,9 +355,11 @@ pub struct TrainReport {
     pub other_encoders: usize,
     pub members: usize,
     pub epochs: Vec<usize>,
-    // The ease of a detailed scene and the share of a scene's ease over it it is raised by.
+    // The ease of a detailed scene, the share of a scene's ease over it it is raised by, and how
+    // many CRF below its vote banding is read (`curve::decide`).
     pub detail: f64,
     pub gain: f64,
+    pub banding_margin: f64,
     pub error: f64,
     pub metrics: Vec<MetricError>,
     // What the candidate would have decided for scenes it had not trained on, and what the fitted
@@ -384,6 +386,8 @@ pub struct TrainReport {
     pub candidate_shortfall: Option<f64>,
     pub current_bytes: Option<f64>,
     pub candidate_bytes: Option<f64>,
+    pub current_banding: Option<f64>,
+    pub candidate_banding: Option<f64>,
     pub accepted: bool,
     pub reason: String,
     pub installed: bool,
@@ -450,13 +454,14 @@ fn verdict(current: Option<&Model>, trained: &Trained, samples: &[Sample], polic
     if trained.held_out.iter().all(Vec::is_empty) {
         return (false, "every scene is from one series: nothing could be held out to judge on".to_string(), None);
     }
+    let holds = policy.holds(train::shortfall_limit(trained.model.reads_fast_encode()));
     match current {
         None => {
             let (scenes, series) = (trained.model.scenes, trained.model.sources);
             if scenes < FIRST_MODEL_SCENES || series < FIRST_MODEL_SERIES {
                 return (false, format!("{scenes} scenes from {series} series; a first model needs {FIRST_MODEL_SCENES} from {FIRST_MODEL_SERIES}"), None);
             }
-            if !policy.holds() {
+            if !holds {
                 return (
                     false,
                     format!(
@@ -470,7 +475,7 @@ fn verdict(current: Option<&Model>, trained: &Trained, samples: &[Sample], polic
         }
         Some(current) => {
             let verdict = train::judge(current, trained, samples);
-            let reason = if verdict.accepted && !policy.holds() {
+            let reason = if verdict.accepted && !holds {
                 format!("better votes than `{}`, but held-out raises go too far: {:.2} units below a detailed scene at the 90th percentile, {:.2} CAMBI added", current.version, policy.shortfall_p90, policy.banding_p95)
             } else if verdict.scenes < train::GATE_SCENES {
                 format!("{} scenes measured since `{}` was trained; {} are needed to replace it", verdict.scenes, current.version, train::GATE_SCENES)
@@ -484,7 +489,7 @@ fn verdict(current: Option<&Model>, trained: &Trained, samples: &[Sample], polic
             } else {
                 format!("no better on {} scenes `{}` has not seen: {:.2} CRF against its {:.2}", verdict.scenes, current.version, verdict.candidate, verdict.current)
             };
-            (verdict.accepted && policy.holds(), reason, Some(verdict))
+            (verdict.accepted && holds, reason, Some(verdict))
         }
     }
 }
@@ -534,10 +539,10 @@ pub fn train_dataset(request: &TrainRequest) -> Result<TrainOutcome, String> {
     // weights themselves, so two trainings never share a file.
     trained.model.version = format!("{MODEL_FAMILY}.{}-{:06x}", trained.model.scenes, hash(&trained.model.to_text()) & 0xff_ffff);
     let model = &trained.model;
-    let alone = train::decisions(&samples, &trained.held_out, &model.typical, model.detail, model.gain);
+    let alone = train::decisions(&samples, &trained.held_out, &model.typical, model.detail, model.gain, model.margin);
     // What the base decided for each scene at each anchor, when there is one.
     let base_offsets: Option<std::collections::HashMap<(usize, u64), f64>> = base.as_ref().map(|base| {
-        train::decisions(&samples, &base.held_out, &base.model.typical, base.model.detail, base.model.gain)
+        train::decisions(&samples, &base.held_out, &base.model.typical, base.model.detail, base.model.gain, base.model.margin)
             .into_iter()
             .map(|(index, anchor, offset)| ((index, anchor.to_bits()), offset))
             .collect()
@@ -577,7 +582,7 @@ pub fn train_dataset(request: &TrainRequest) -> Result<TrainOutcome, String> {
                 spreads: votes.iter().map(|vote| vote.spread).collect(),
                 allowed: curve::measured_votes(&samples[index].observations, &model.typical, anchor).to_vec(),
                 levels: drawn.iter().map(|curve| curve.at(anchor)).collect(),
-                offset: gated(index, anchor, train::applied(&curve::decide(&votes, model.detail, model.gain))),
+                offset: gated(index, anchor, train::applied(&curve::decide(&votes, model.detail, model.gain, model.margin))),
                 base_offset: base_offsets.as_ref().and_then(|offsets| offsets.get(&(index, anchor.to_bits())).copied()),
             });
         }
@@ -592,6 +597,7 @@ pub fn train_dataset(request: &TrainRequest) -> Result<TrainOutcome, String> {
         epochs: trained.epochs.clone(),
         detail: model.detail,
         gain: model.gain,
+        banding_margin: model.margin,
         error: train::deciding_error(&model.error),
         metrics: (0..METRICS).map(|metric| MetricError { metric: METRIC_NAMES[metric], decides: DECIDES[metric], held_out: model.error[metric], typical: model.typical[metric].0.to_vec() }).collect(),
         policy: policy.into(),
@@ -607,6 +613,8 @@ pub fn train_dataset(request: &TrainRequest) -> Result<TrainOutcome, String> {
         candidate_shortfall: judged.map(|verdict| verdict.candidate_shortfall),
         current_bytes: judged.map(|verdict| verdict.current_bytes),
         candidate_bytes: judged.map(|verdict| verdict.candidate_bytes),
+        current_banding: judged.map(|verdict| verdict.current_banding),
+        candidate_banding: judged.map(|verdict| verdict.candidate_banding),
         accepted,
         reason,
         installed: false,
