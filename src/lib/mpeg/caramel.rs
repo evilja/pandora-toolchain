@@ -472,7 +472,10 @@ fn analyse_segment(
         let probe = request.probe.as_ref().filter(|_| measurable);
         let fast = request.fast.as_ref().filter(|_| measurable);
         let (fps_num, fps_den) = fps_ratio(fps);
-        let mut schedule = SceneSchedule::from_decider(decider, width, height, fps_num, fps_den, encode.anchor_crf, probe, fast).with_trust(trust.clone())
+        // The frames are 8-bit here whatever is encoded; a deeper encode reads the banding a source is
+        // ready to show as none, as its chunks do.
+        let eight_bit = encode.output_bit_depth == 8;
+        let mut schedule = SceneSchedule::from_decider(decider, width, height, fps_num, fps_den, encode.anchor_crf, probe, fast, eight_bit).with_trust(trust.clone())
             .with_report(request.scene_report.as_ref().map(|report| report.offset(start)));
         let mut decoded = 0u64;
         let mut reported = 0usize;

@@ -352,6 +352,9 @@ pub struct Model {
     // scene's fast encode (`inputs`).
     pub input_mean: Vec<f64>,
     pub input_scale: Vec<f64>,
+    // Which inputs those are, in order, for a model that does not read the first ones
+    // (`inputs::base_reading_exposed`); empty for one that does.
+    pub select: Vec<usize>,
     pub offsets: [f64; METRICS],
     // What typical content scores at each knot's CRF: the quality a vote is measured against.
     pub typical: Curves,
@@ -371,14 +374,30 @@ impl Model {
         self.input_mean.len()
     }
 
+    // Which inputs the networks read, in the order they read them.
+    pub fn reads(&self) -> Vec<usize> {
+        if self.select.is_empty() { crate::inputs::first(self.inputs()) } else { self.select.clone() }
+    }
+
     // Whether the model decides from a scene's fast encode, and cannot decide a scene without one.
     pub fn reads_fast_encode(&self) -> bool {
-        self.inputs() > crate::inputs::BASE_INPUTS
+        self.reads().iter().any(|input| crate::inputs::FAST_INPUTS.contains(input))
+    }
+
+    // Whether the model, or its base, decides from the banding a scene's source is ready to show,
+    // which whoever holds the scene's frames then reads before deciding it
+    // (`WindowFeatures::exposed_banding`).
+    pub fn reads_exposed_banding(&self) -> bool {
+        self.reads().contains(&crate::inputs::EXPOSED_BANDING) || self.base.as_ref().is_some_and(|base| base.reads_exposed_banding())
     }
 
     // The inputs as the networks are given them: centred, scaled, and clipped to `INPUT_LIMIT`.
     pub fn standardised(&self, inputs: &[f64; INPUTS]) -> Vec<f64> {
-        (0..self.inputs()).map(|index| ((inputs[index] - self.input_mean[index]) * self.input_scale[index]).clamp(-INPUT_LIMIT, INPUT_LIMIT)).collect()
+        self.reads()
+            .into_iter()
+            .enumerate()
+            .map(|(read, input)| ((inputs[input] - self.input_mean[read]) * self.input_scale[read]).clamp(-INPUT_LIMIT, INPUT_LIMIT))
+            .collect()
     }
 
     // Every member's curves for a scene.
@@ -425,6 +444,12 @@ impl Model {
         }
         let mut text = format!("{FORMAT}\nversion {}\nencoder {}\ndetail {}\ngain {}\nscenes {}\nsources {}\ntrained {}\n", self.version, self.encoder, self.detail as f32, self.gain as f32, self.scenes, self.sources, self.trained);
         text += &format!("input-mean {}\ninput-scale {}\n", numbers(&self.input_mean), numbers(&self.input_scale));
+        // Only when it is not the first inputs, so a model that reads those writes the file a build
+        // from before the selection did. Only a base is given one, in the file of a model that reads
+        // all 32 inputs, which a build from before the selection — 31 at most — refuses whole.
+        if !self.select.is_empty() {
+            text += &format!("input-select {}\n", self.select.iter().map(|input| input.to_string()).collect::<Vec<_>>().join(" "));
+        }
         text += &format!("offsets {}\nerror {}\n", numbers(&self.offsets), numbers(&self.error));
         for (metric, curve) in self.typical.iter().enumerate() {
             text += &format!("typical {} {}\n", METRIC_NAMES[metric], numbers(&curve.0));
@@ -469,6 +494,7 @@ impl Model {
             trained: 0,
             input_mean: Vec::new(),
             input_scale: Vec::new(),
+            select: Vec::new(),
             offsets: [0.0; METRICS],
             typical: [Curve([0.0; KNOT_COUNT]); METRICS],
             error: [0.0; METRICS],
@@ -492,6 +518,12 @@ impl Model {
                 "trained" => model.trained = rest.trim().parse().map_err(|_| "`trained` is not a time")?,
                 "input-mean" => model.input_mean = list(rest, key)?,
                 "input-scale" => model.input_scale = list(rest, key)?,
+                "input-select" => {
+                    model.select = rest
+                        .split_whitespace()
+                        .map(|token| token.parse::<usize>().ok().filter(|input| *input < INPUTS).ok_or_else(|| format!("`input-select` holds `{token}`, not an input this build reads")))
+                        .collect::<Result<_, _>>()?
+                }
                 "offsets" => model.offsets = numbers(rest, key)?,
                 "error" => model.error = numbers(rest, key)?,
                 "typical" => {
@@ -542,6 +574,12 @@ impl Model {
         let reads = model.input_mean.len();
         if reads == 0 || model.input_scale.len() != reads || model.members.iter().any(|member| member.inputs() != reads) {
             return Err("the model's members and its input scaling do not read the same inputs".to_string());
+        }
+        let mut selected = model.select.clone();
+        selected.sort_unstable();
+        selected.dedup();
+        if !model.select.is_empty() && (model.select.len() != reads || selected.len() != reads) {
+            return Err("the model's inputs are not as many as it scales, or name one twice".to_string());
         }
         if seen_typical != METRICS || model.version.is_empty() {
             return Err("the model is missing its version or its typical curves".to_string());
@@ -601,6 +639,7 @@ pub(crate) mod tests {
             trained: 1_700_000_000,
             input_mean: vec![0.0; crate::inputs::BASE_INPUTS],
             input_scale: vec![1.0; crate::inputs::BASE_INPUTS],
+            select: Vec::new(),
             offsets,
             typical,
             error: [2.0; METRICS],
@@ -792,5 +831,43 @@ pub(crate) mod tests {
         let mut nested = fast_model(0.7);
         nested.base = Some(Box::new(fast_model(0.5)));
         assert!(Model::from_text(&nested.to_text()).is_err());
+    }
+
+    // A base that reads the banding the source is ready to show names the inputs it reads, and its
+    // networks' last input is that one. Only it carries the line; a selection that names an input
+    // twice, one past this build's, or not one per scaled input is refused.
+    #[test]
+    fn a_base_reads_the_inputs_it_names() {
+        let mut base = flat_model(0.5);
+        let read = crate::inputs::base_reading_exposed();
+        for member in &mut base.members {
+            let first = &mut member.layers[0];
+            first.weights = first.weights.chunks(first.inputs).flat_map(|row| row.iter().copied().chain([0.0])).collect();
+            first.inputs = read.len();
+        }
+        base.input_mean = vec![0.0; read.len()];
+        base.input_scale = vec![1.0; read.len()];
+        base.select = read.clone();
+        let mut fast = fast_model(0.7);
+        fast.base = Some(Box::new(base));
+        let text = fast.to_text();
+        assert_eq!(text.matches("input-select").count(), 1);
+        let back = Model::from_text(&text).unwrap();
+        assert_eq!(back.to_text(), text);
+        let base = back.base.as_deref().expect("its base");
+        assert!(back.reads_exposed_banding() && base.reads_exposed_banding() && !base.reads_fast_encode());
+        assert!(fast_model(0.7).reads_exposed_banding());
+        assert!(!flat_model(0.7).reads_exposed_banding());
+        let mut inputs = [0.0; INPUTS];
+        inputs[crate::inputs::EXPOSED_BANDING] = 2.0;
+        inputs[crate::inputs::FAST_INPUTS.start] = 3.0;
+        let standardised = base.standardised(&inputs);
+        assert_eq!((standardised.len(), standardised[crate::inputs::BASE_INPUTS]), (read.len(), 2.0));
+        let line = |select: &str| text.replace(&format!("input-select {}", read.iter().map(|input| input.to_string()).collect::<Vec<_>>().join(" ")), &format!("input-select {select}"));
+        let twice = format!("{} 0", (0..crate::inputs::BASE_INPUTS).map(|input| input.to_string()).collect::<Vec<_>>().join(" "));
+        let past = format!("{} {INPUTS}", (0..crate::inputs::BASE_INPUTS).map(|input| input.to_string()).collect::<Vec<_>>().join(" "));
+        for broken in [line(&twice), line(&past), line("0 1 2")] {
+            assert!(Model::from_text(&broken).is_err());
+        }
     }
 }

@@ -271,7 +271,8 @@ struct Args {
     train_features: String,
 
     /// With --caramel-train --train-features fast: read only the first N inputs, to compare a model
-    /// with one trained before the later inputs existed (30 leaves the fast encode's banding out).
+    /// with one trained before the later inputs existed (31 leaves the banding the source is ready
+    /// to show out, of the model and its base; 30 the fast encode's banding too).
     #[arg(long)]
     train_inputs: Option<usize>,
 
@@ -884,8 +885,9 @@ fn caramel_train(args: &Args, preset: Option<&ResolvedPreset>, log: &mut ToolLog
     });
     let mut config = caramel_kernel::train::TrainConfig { seed: args.train_seed, ..Default::default() };
     if args.train_features == "fast" {
-        config.inputs = args.train_inputs.unwrap_or(caramel_kernel::inputs::INPUTS);
-        if !(caramel_kernel::inputs::BASE_INPUTS + 1..=caramel_kernel::inputs::INPUTS).contains(&config.inputs) {
+        let count = args.train_inputs.unwrap_or(caramel_kernel::inputs::INPUTS);
+        config.inputs = caramel_kernel::inputs::first(count);
+        if !(caramel_kernel::inputs::BASE_INPUTS + 1..=caramel_kernel::inputs::INPUTS).contains(&count) {
             eprintln!("pnmpeg caramel train: --train-inputs takes {} to {}", caramel_kernel::inputs::BASE_INPUTS + 1, caramel_kernel::inputs::INPUTS);
             return 1;
         }

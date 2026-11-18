@@ -34,12 +34,6 @@ pub struct FastEncode {
     // before it was read, which the trainer fills from the lab's own encodes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub banding: Option<f64>,
-    // The banding the source is ready to show in the same frames, read without encoding: the most
-    // `cambi::smoothed` of them showed, less the most the source showed. On 64 scenes of two series
-    // it moved with `banding` at a log-scale correlation of 0.99, on the same scale. None for a fast
-    // encode measured before it was read.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub exposed_banding: Option<f64>,
 }
 
 // Which frames of a fast encode of `frames` frames have their banding measured: three spread over
@@ -51,6 +45,11 @@ pub fn banding_frames(frames: usize) -> Vec<usize> {
 }
 
 // The banding an encode added, from each measured frame's CAMBI in the encode and in the source.
+//
+// Given the CAMBI of `cambi::smoothed` frames in place of an encode's, it is the banding the source
+// is ready to show (`WindowFeatures::exposed_banding`), read without encoding: on 64 scenes of two
+// series it moved with the fast encode's at a log-scale correlation of 0.99, on the same scale, so a
+// scene can be judged on it before its fast encode is made, or when it gets none.
 pub fn added_banding(encoded: &[f64], source: &[f64]) -> Option<f64> {
     let most = |values: &[f64]| values.iter().copied().filter(|value| value.is_finite()).reduce(f64::max);
     Some((most(encoded)? - most(source).unwrap_or(0.0)).max(0.0))
@@ -73,7 +72,6 @@ impl FastEncode {
             log_bpp: (bytes as f64 * 8.0 / (xpsnr.len() * pixels) as f64).log2(),
             frames: xpsnr.len(),
             banding: None,
-            exposed_banding: None,
         })
     }
 }

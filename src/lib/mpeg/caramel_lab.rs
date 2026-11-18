@@ -185,15 +185,17 @@ impl LabSample {
 
     // A fast encode measured before it read banding is given the banding the lab's own encodes
     // added at `FAST_CRF` in its place (`banding_stand_in`), so the samples from before still train
-    // the input.
+    // the input. A scene measured before the banding its source is ready to show was read is given
+    // its fast encode's banding, which that moves with on the same scale, or the same stand-in.
     pub fn inputs(&self) -> [f64; inputs::INPUTS] {
-        match &self.features.fast_encode {
-            Some(fast) if fast.banding.is_none() => {
-                let fast = FastEncode { banding: self.banding_stand_in(), ..*fast };
-                inputs::inputs(&WindowFeatures { fast_encode: Some(fast), ..self.features.clone() }, self.deep())
-            }
-            _ => inputs::inputs(&self.features, self.deep()),
+        let mut features = self.features.clone();
+        if let Some(fast) = features.fast_encode.as_mut().filter(|fast| fast.banding.is_none()) {
+            fast.banding = self.banding_stand_in();
         }
+        if features.exposed_banding.is_none() {
+            features.exposed_banding = features.fast_encode.and_then(|fast| fast.banding).or_else(|| self.banding_stand_in());
+        }
+        inputs::inputs(&features, self.deep())
     }
 
     // What the fast encode would have read as its banding, for a sample measured before it read
@@ -304,6 +306,7 @@ pub fn measure_scene(ffmpeg: &Path, input: &Path, fps: f64, start: u64, frames: 
         let fast = pnx264::scenes::fast_encode(&config, &refs, width, height)?;
         let mut whole = window.finish();
         whole.fast_encode = Some(fast);
+        whole.exposed_banding = pnx264::scenes::exposed_banding(&refs, width, height);
         Ok((whole, fast))
     })();
     let _ = child.kill();
@@ -861,6 +864,7 @@ impl Lab<'_> {
             let reference = self.extract(&directory, scene.start_frame, frames)?;
             let encoder = key_encoder(&self.encoder).ok_or("the lab measures x264 encodes only")?;
             let (whole, fast) = measure_scene(&self.ffmpeg, &self.input, self.fps, scene.start_frame, frames, &encoder)?;
+            sample.features.exposed_banding = whole.exposed_banding;
             sample.scene_features = Some(whole);
             sample.features.fast_encode = Some(fast);
             let bands: [Option<(f64, f64)>; METRICS] = std::array::from_fn(|metric| request.guide.and_then(|guide| guide.band(metric)));
@@ -934,9 +938,10 @@ pub struct BackfillSummary {
     pub failed: usize,
 }
 
-// Gives the samples of `source_id` in `dataset` the whole-scene features and the fast encode they were measured
-// without — or a fast encode made before it read banding — read from `input`, which must be the source they were measured from. Other lines are
-// left as they are, and the file is replaced only once every sample was tried.
+// Gives the samples of `source_id` in `dataset` the whole-scene features, the fast encode and the
+// banding the source is ready to show that they were measured without — or a fast encode made before
+// it read banding — read from `input`, which must be the source they were measured from. Other lines
+// are left as they are, and the file is replaced only once every sample was tried.
 pub fn backfill_scene_features(dataset: &Path, input: &Path, source_id: &str, workers: usize) -> Result<BackfillSummary, String> {
     let ffmpeg: PathBuf = resolve_runtime_binary("ffmpeg").into();
     let text = std::fs::read_to_string(dataset).map_err(|e| format!("{}: {e}", dataset.display()))?;
@@ -947,7 +952,7 @@ pub fn backfill_scene_features(dataset: &Path, input: &Path, source_id: &str, wo
     let todo: Vec<usize> = samples
         .iter()
         .enumerate()
-        .filter_map(|(index, sample)| sample.as_ref().filter(|sample| sample.scene_features.is_none() || sample.features.fast_encode.is_none_or(|fast| fast.banding.is_none() || fast.exposed_banding.is_none())).map(|_| index))
+        .filter_map(|(index, sample)| sample.as_ref().filter(|sample| sample.scene_features.is_none() || sample.features.exposed_banding.is_none() || sample.features.fast_encode.is_none_or(|fast| fast.banding.is_none())).map(|_| index))
         .collect();
     summary.samples = samples.iter().flatten().count();
     summary.already = summary.samples - todo.len();
@@ -970,6 +975,7 @@ pub fn backfill_scene_features(dataset: &Path, input: &Path, source_id: &str, wo
         match measured {
             Ok((whole, fast)) => {
                 let sample = samples[index].as_mut().unwrap();
+                sample.features.exposed_banding = whole.exposed_banding;
                 sample.scene_features = Some(whole);
                 sample.features.fast_encode = Some(fast);
                 summary.filled += 1;
@@ -1317,13 +1323,17 @@ mod tests {
         // Without a fast encode there is no banding input; one from before banding was read is
         // given the lab's, and one that read its own keeps it.
         assert_eq!(back.inputs()[30], 0.0);
-        let fast = caramel_kernel::FastEncode { xpsnr: 42.0, xpsnr_low: 40.0, log_bpp: -3.0, frames: 48, banding: None, exposed_banding: None };
+        let fast = caramel_kernel::FastEncode { xpsnr: 42.0, xpsnr_low: 40.0, log_bpp: -3.0, frames: 48, banding: None };
         let old = LabSample { features: WindowFeatures { fast_encode: Some(fast), ..Default::default() }, ..back.clone() };
         let expected = old.lab_banding(caramel_kernel::FAST_CRF as f64).unwrap();
         assert!((old.inputs()[30] - ((expected + 0.05) * STAND_IN_BANDING).ln()).abs() < 1e-12);
         let line = serde_json::to_string(&old).unwrap();
         assert!(!line.contains("banding"), "a sample from before reads as it did");
-        let measured = LabSample { features: WindowFeatures { fast_encode: Some(caramel_kernel::FastEncode { banding: Some(1.0), ..fast }), ..Default::default() }, ..back };
+        let measured = LabSample { features: WindowFeatures { fast_encode: Some(caramel_kernel::FastEncode { banding: Some(1.0), ..fast }), ..Default::default() }, ..back.clone() };
         assert!((measured.inputs()[30] - 1.05f64.ln()).abs() < 1e-12);
+        // The banding the source is ready to show stands in from the fast encode's, or the lab's.
+        assert_eq!((measured.inputs()[31], old.inputs()[31]), (measured.inputs()[30], old.inputs()[30]));
+        let read = LabSample { features: WindowFeatures { exposed_banding: Some(3.0), ..measured.features.clone() }, ..back };
+        assert!((read.inputs()[31] - 3.05f64.ln()).abs() < 1e-12 && read.inputs()[30] == measured.inputs()[30]);
     }
 }

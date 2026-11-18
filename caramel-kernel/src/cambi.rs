@@ -60,7 +60,7 @@ pub fn cambi(luma: &Plane) -> Option<f64> {
 // (fewer at the edges), rounded back to 8 bits. A gradient a source holds smooth only by its dither
 // comes out of this in steps, as it does out of an encoder that spends nothing on the dither, so
 // `cambi` of it less `cambi` of the source says what banding the source is ready to show before
-// anything is encoded (`fast::exposed_banding`).
+// anything is encoded (`fast::added_banding`).
 pub fn smoothed(luma: &Plane) -> Vec<u8> {
     const RADIUS: usize = 2;
     let (w, h) = (luma.width, luma.height);

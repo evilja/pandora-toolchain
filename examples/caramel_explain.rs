@@ -57,7 +57,8 @@ fn model_json(model: &Model) -> Value {
         "gain": model.gain,
         "scenes": model.scenes,
         "sources": model.sources,
-        "inputs": INPUT_NAMES,
+        // The inputs the networks read, in their order: a base may name some past the first.
+        "inputs": model.reads().iter().map(|input| INPUT_NAMES[*input]).collect::<Vec<_>>(),
         "metrics": METRIC_NAMES,
         "decides": curve::DECIDES,
         "scales": curve::SCALES,
@@ -143,7 +144,7 @@ fn main() {
                 "measured": scene.features.measured,
                 "cuts_inside": scene.features.cuts,
                 "contributions": scene.contributions,
-                "inputs": rounded(&raw),
+                "inputs": rounded(&model.reads().iter().map(|input| raw[*input]).collect::<Vec<_>>()),
                 "standardised": rounded(&standardised),
                 "activations": model.members.iter().map(|member| activations(member, &standardised).iter().map(|layer| rounded(layer)).collect::<Vec<_>>()).collect::<Vec<_>>(),
                 "member_curves": members.iter().map(|curves| curves.iter().map(|curve| rounded(&curve.0)).collect::<Vec<_>>()).collect::<Vec<_>>(),

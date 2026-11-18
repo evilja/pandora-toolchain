@@ -152,14 +152,15 @@ pub struct TrainConfig {
     pub decay: f64,
     pub batch: usize,
     pub seed: u64,
-    // How many of the inputs the networks read, from the first: `inputs::BASE_INPUTS`, or `INPUTS`
-    // with the scene's fast encode, which every sample trained on must then have.
-    pub inputs: usize,
+    // Which inputs the networks read, in order: the first `inputs::BASE_INPUTS`, or the first
+    // `INPUTS` with the scene's fast encode, which every sample trained on must then have — or any
+    // other choice, such as `inputs::base_reading_exposed`.
+    pub inputs: Vec<usize>,
 }
 
 impl Default for TrainConfig {
     fn default() -> Self {
-        Self { version: String::new(), encoder: String::new(), hidden: vec![32, 32], per_fold: 2, epochs: 400, patience: 40, rate: 2e-3, decay: 1e-4, batch: 32, seed: 1, inputs: crate::inputs::BASE_INPUTS }
+        Self { version: String::new(), encoder: String::new(), hidden: vec![32, 32], per_fold: 2, epochs: 400, patience: 40, rate: 2e-3, decay: 1e-4, batch: 32, seed: 1, inputs: crate::inputs::first(crate::inputs::BASE_INPUTS) }
     }
 }
 
@@ -277,7 +278,7 @@ fn scene_loss(network: &Network, scene: &Prepared, offsets: &[f64; METRICS], tra
 // epochs, which is about where the others stop.
 fn train_member(scenes: &[Prepared], train: &[usize], stop: &[usize], offsets: &[f64; METRICS], config: &TrainConfig, seed: u64) -> (Network, usize, f64) {
     let mut rng = Rng::new(seed);
-    let mut sizes = vec![config.inputs.clamp(1, INPUTS)];
+    let mut sizes = vec![config.inputs.len().clamp(1, INPUTS)];
     sizes.extend(config.hidden.iter().map(|width| (*width).clamp(1, 512)));
     sizes.push(METRICS * KNOT_COUNT);
     let mut network = Network::new(&sizes, &mut rng);
@@ -329,15 +330,25 @@ pub fn train(samples: &[Sample], config: &TrainConfig, typical: Option<Curves>) 
         return Err(format!("{} scenes with two or more encodes are too few to train on", usable.len()));
     }
     let count = usable.len() as f64;
-    let reads = config.inputs.clamp(1, INPUTS);
-    let mut input_mean = vec![0.0; reads];
-    let mut input_scale = vec![0.0; reads];
-    for input in 0..reads {
-        let mean = usable.iter().map(|index| samples[*index].inputs[input]).sum::<f64>() / count;
-        let deviation = (usable.iter().map(|index| (samples[*index].inputs[input] - mean).powi(2)).sum::<f64>() / count).sqrt();
-        input_mean[input] = mean;
+    let mut reads: Vec<usize> = config.inputs.iter().copied().filter(|input| *input < INPUTS).collect();
+    let mut seen = reads.clone();
+    seen.sort_unstable();
+    seen.dedup();
+    if reads.is_empty() || seen.len() != reads.len() {
+        return Err("the networks have to read at least one input, and none twice".to_string());
+    }
+    let mut input_mean = vec![0.0; reads.len()];
+    let mut input_scale = vec![0.0; reads.len()];
+    for (read, input) in reads.iter().enumerate() {
+        let mean = usable.iter().map(|index| samples[*index].inputs[*input]).sum::<f64>() / count;
+        let deviation = (usable.iter().map(|index| (samples[*index].inputs[*input] - mean).powi(2)).sum::<f64>() / count).sqrt();
+        input_mean[read] = mean;
         // An input that never varied taught nothing, and is not listened to.
-        input_scale[input] = if deviation > 1e-9 { 1.0 / deviation } else { 0.0 };
+        input_scale[read] = if deviation > 1e-9 { 1.0 / deviation } else { 0.0 };
+    }
+    // The first inputs are written as a count alone (`Model::select`).
+    if reads == crate::inputs::first(reads.len()) {
+        reads.clear();
     }
     let held = |metric: usize, value: f64| if value.is_nan() { f64::NAN } else { value.min(CEILINGS[metric]) };
     let offsets: [f64; METRICS] = std::array::from_fn(|metric| {
@@ -354,6 +365,7 @@ pub fn train(samples: &[Sample], config: &TrainConfig, typical: Option<Curves>) 
         trained: samples.iter().map(|sample| sample.collected).max().unwrap_or(0),
         input_mean,
         input_scale,
+        select: reads,
         offsets,
         typical: typical.unwrap_or_else(|| typical_curves(samples)),
         error: [0.0; METRICS],
@@ -765,6 +777,23 @@ mod tests {
         assert!((curves[BITS].at(18.0) - (-2.0 + 0.2 * (2.0 + 2.0))).abs() < 0.15, "{curves:?}");
         // Training is reproducible.
         assert_eq!(train(&samples, &quick(), None).unwrap().model.to_text(), model.to_text());
+    }
+
+    // Networks may read inputs other than the first ones: they read what they were given, the
+    // model names them, and a model that reads the first ones names none.
+    #[test]
+    fn a_model_reads_the_inputs_it_was_trained_on() {
+        let mut samples = synthetic(3, 8);
+        for sample in &mut samples {
+            sample.inputs[crate::inputs::EXPOSED_BANDING] = sample.inputs[3];
+            sample.inputs[3] = 0.0;
+        }
+        let reading = train(&samples, &TrainConfig { inputs: vec![0, 1, 2, crate::inputs::EXPOSED_BANDING], ..quick() }, None).unwrap().model;
+        let blind = train(&samples, &TrainConfig { inputs: vec![0, 1, 2, 4], ..quick() }, None).unwrap().model;
+        assert_eq!(reading.select, vec![0, 1, 2, crate::inputs::EXPOSED_BANDING]);
+        assert!(deciding_error(&reading.error) < 0.5 && deciding_error(&blind.error) > 2.0 * deciding_error(&reading.error), "{:?} {:?}", reading.error, blind.error);
+        assert!(train(&samples, &quick(), None).unwrap().model.select.is_empty());
+        assert!(train(&samples, &TrainConfig { inputs: vec![0, 0], ..quick() }, None).is_err());
     }
 
     #[test]

@@ -147,6 +147,20 @@ impl SceneJudge {
         self.model.as_ref().is_some_and(|model| model.reads_fast_encode())
     }
 
+    // Whether a decision means anything before its source's banding is read
+    // (`WindowFeatures::exposed_banding`), which only whoever holds the scene's frames can read.
+    pub fn reads_exposed_banding(&self) -> bool {
+        self.model.as_ref().is_some_and(|model| model.reads_exposed_banding())
+    }
+
+    // The scene decided again with the banding its source is ready to show, before any fast encode:
+    // what decides whether it gets one.
+    pub fn reconsider(&self, decision: &mut SceneDecision, exposed_banding: Option<f64>) {
+        decision.features.exposed_banding = exposed_banding;
+        decision.estimate = estimate_scene_with(self.model.as_deref(), &decision.features, &self.source, &self.encode);
+        decision.crf = decision.estimate.crf;
+    }
+
     // Whether a scene decided without its fast encode should get one. With a base model, only a scene
     // the base raised: the lab found the fast encode pays off there — it holds back the raises that
     // would fall short and lets the safe ones go further — while a scene the base keeps at the anchor

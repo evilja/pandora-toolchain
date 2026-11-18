@@ -472,9 +472,16 @@ pub fn train_dataset(request: &TrainRequest) -> Result<TrainOutcome, String> {
     }
     // A model that reads the fast encode is trained with its base beside it: the same scenes, seed
     // and targets, reading the source alone. The base decides first and picks the scenes that get
-    // a fast encode (`curve::Model::base`).
-    let base = if config.inputs > caramel_kernel::inputs::BASE_INPUTS {
-        let mut base = train::train(&samples, &TrainConfig { inputs: caramel_kernel::inputs::BASE_INPUTS, ..config.clone() }, typical)?;
+    // a fast encode (`curve::Model::base`); beside a model that reads the banding the source is
+    // ready to show, it reads that too (`inputs::base_reading_exposed`).
+    let reads_fast = config.inputs.iter().any(|input| caramel_kernel::inputs::FAST_INPUTS.contains(input));
+    let base = if reads_fast {
+        let inputs = if config.inputs.contains(&caramel_kernel::inputs::EXPOSED_BANDING) {
+            caramel_kernel::inputs::base_reading_exposed()
+        } else {
+            caramel_kernel::inputs::first(caramel_kernel::inputs::BASE_INPUTS)
+        };
+        let mut base = train::train(&samples, &TrainConfig { inputs, ..config.clone() }, typical)?;
         if let Some(current) = request.current.as_deref() {
             train::settle_gain(current, &mut base, &samples);
         }

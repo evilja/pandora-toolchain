@@ -5,19 +5,42 @@
 // not 0.1 more — and shares are left as they are. The order is part of every stored model: a new
 // figure goes at the end, and a model that was trained on fewer reads the first ones.
 //
-// The last four are the scene's fast encode (`fast`): its XPSNR, its worst frames', its bits and its
-// banding. A model reading them is trained only on scenes that have one and decides only scenes that
-// have one; one that reads `BASE_INPUTS` never sees them. A model trained before the banding was
-// read reads the first three alone.
+// Four are the scene's fast encode (`fast`, `FAST_INPUTS`): its XPSNR, its worst frames', its bits
+// and its banding. A model reading them is trained only on scenes that have one and decides only
+// scenes that have one; one that reads `BASE_INPUTS` never sees them. A model trained before the
+// banding was read reads the first three alone.
+//
+// The last is measured on the source again, after them because it came later: the banding the
+// source is ready to show (`EXPOSED_BANDING`). A model that reads it without the fast encode's —
+// the base that decides which scenes get one — names the inputs it reads (`curve::Model::select`).
 
 use crate::spatial::DETAIL_FLOORS;
 use crate::temporal::RESIDUAL_FLOORS;
 use crate::window::WindowFeatures;
 
-pub const INPUTS: usize = 31;
+pub const INPUTS: usize = 32;
 
 // The inputs measured on the source alone, before the fast encode's.
 pub const BASE_INPUTS: usize = 27;
+
+pub const FAST_INPUTS: std::ops::Range<usize> = 27..31;
+
+pub const EXPOSED_BANDING: usize = 31;
+
+// The first `count` inputs, which is what a model that names none reads.
+pub fn first(count: usize) -> Vec<usize> {
+    (0..count.min(INPUTS)).collect()
+}
+
+// What a base reads beside a model that reads every input: the source's, `EXPOSED_BANDING` with them.
+// Given it, the base held back the raises that band: on 2080 scenes of 64 series its own raises'
+// banding fell from 1.52 to 1.34 at the 95th percentile, and the model it gates for could be given
+// a larger gain, for 0.906 of the anchor's bytes against 0.919 (eight seeds each).
+pub fn base_reading_exposed() -> Vec<usize> {
+    let mut read = first(BASE_INPUTS);
+    read.push(EXPOSED_BANDING);
+    read
+}
 
 pub const INPUT_NAMES: [&str; INPUTS] = [
     "noise",
@@ -51,6 +74,7 @@ pub const INPUT_NAMES: [&str; INPUTS] = [
     "fast-xpsnr-low",
     "fast-bits",
     "fast-banding",
+    "exposed-banding",
 ];
 
 // Shares of a block's energy sit between 0 and the square of the floor they were clipped at; the
@@ -100,6 +124,8 @@ pub fn inputs(window: &WindowFeatures, deep: bool) -> [f64; INPUTS] {
         // keeps the first steps apart. A fast encode that did not read it reads as adding none.
         out[30] = (fast.banding.unwrap_or(0.0).max(0.0) + 0.05).ln();
     }
+    // Read alike, and missing alike: a scene whose frames could not be read for it shows none.
+    out[EXPOSED_BANDING] = (window.exposed_banding.unwrap_or(0.0).max(0.0) + 0.05).ln();
     for value in &mut out {
         if !value.is_finite() {
             *value = 0.0;

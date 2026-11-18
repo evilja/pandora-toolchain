@@ -37,6 +37,12 @@ pub struct WindowFeatures {
     // cannot make it; whoever encodes adds it once the scene's frames are all there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fast_encode: Option<crate::fast::FastEncode>,
+    // The banding the scene's source is ready to show (`fast::added_banding`), read from the
+    // frames its fast encode would cover. Like the fast encode, the window analysis cannot read it:
+    // whoever holds the scene's frames adds it. None when they were not 8-bit, or for a scene
+    // measured before it was read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposed_banding: Option<f64>,
 }
 
 // What is measured on one frame by itself.
@@ -113,6 +119,7 @@ impl WindowAnalyzer {
                 .then(|| self.chroma.iter().sum::<f64>() / self.chroma.len() as f64),
             temporal,
             fast_encode: None,
+            exposed_banding: None,
         }
     }
 }

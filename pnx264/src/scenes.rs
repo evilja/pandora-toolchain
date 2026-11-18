@@ -215,6 +215,8 @@ pub struct SceneMark {
 struct Queued {
     decision: SceneDecision,
     boundary: Option<u64>,
+    // The banding its source is ready to show has been read, or there was no need to.
+    exposed_done: bool,
     // Its fast encode has been tried, whatever came of it.
     fast_done: bool,
     // The source's trust has been applied to it (`SceneDecision::temper`).
@@ -458,6 +460,9 @@ pub struct SceneSchedule {
     // The settings every scene's fast encode is made with, and what decides it again with that,
     // when the model reads one.
     fast: Option<(Config, SceneJudge)>,
+    // What decides a scene again once the banding its source is ready to show is read, when the
+    // model reads that and the frames are 8-bit.
+    exposed: Option<SceneJudge>,
     // What the source's test encodes found so far, and where this schedule's go.
     trust: TrustShare,
     // Told of each scene once it is settled and its end known.
@@ -482,12 +487,14 @@ impl SceneSchedule {
         let measurable = caramel.output_bit_depth == 8;
         // The lab reads a scene's fast encode at the source's size; a scaled encode decides without.
         let fast = encoder.filter(|_| measurable && caramel.output_height.is_none_or(|output| output as usize == height));
-        Self::from_decider(decider, width, height, fps_num, fps_den, anchor, encoder.filter(|_| caramel.probe && measurable), fast)
+        Self::from_decider(decider, width, height, fps_num, fps_den, anchor, encoder.filter(|_| caramel.probe && measurable), fast, measurable)
     }
 
     // The same around a decider the caller set up, test-encoding far raises with `probe` and making
     // each scene's fast encode with `fast`, when its model reads one — settings for 8-bit frames of
-    // exactly this size, or None.
+    // exactly this size, or None. `eight_bit` says the frames are, so the banding a scene's source
+    // is ready to show can be read from them, when the model reads that: at any size, as it is read
+    // from the source.
     #[allow(clippy::too_many_arguments)]
     pub fn from_decider(
         decider: SceneDecider,
@@ -498,8 +505,10 @@ impl SceneSchedule {
         anchor: f32,
         probe: Option<&Config>,
         fast: Option<&Config>,
+        eight_bit: bool,
     ) -> Self {
         let judge = decider.judge();
+        let exposed = Some(judge.clone()).filter(|judge| eight_bit && judge.reads_exposed_banding());
         let fast = fast
             .filter(|_| judge.reads_fast_encode())
             .map(|config| (fast_config(&Config { fps_num, fps_den, ..config.clone() }, width, height), judge));
@@ -520,6 +529,7 @@ impl SceneSchedule {
             upcoming: VecDeque::new(),
             probe,
             fast,
+            exposed,
             trust: TrustShare::default(),
             report: None,
             reported: 0,
@@ -573,7 +583,7 @@ impl SceneSchedule {
         let mut progress = None;
         if let Some(decider) = self.decider.as_mut() {
             let decisions = decider.push(&Frame { y, u, v });
-            self.queued.extend(decisions.into_iter().map(|decision| Queued { decision, boundary: None, fast_done: false, tempered: false }));
+            self.queued.extend(decisions.into_iter().map(|decision| Queued { decision, boundary: None, exposed_done: false, fast_done: false, tempered: false }));
             progress = Some((decider.scene_start(), decider.settled()));
         }
         self.pending.push_back(OwnedFrame {
@@ -599,7 +609,7 @@ impl SceneSchedule {
     // The stream ended: whatever is still held back is decided now.
     pub fn finish(&mut self) {
         if let Some(last) = self.decider.take().and_then(SceneDecider::finish) {
-            self.queued.push_back(Queued { decision: last, boundary: None, fast_done: false, tempered: false });
+            self.queued.push_back(Queued { decision: last, boundary: None, exposed_done: false, fast_done: false, tempered: false });
         }
         self.release(None);
         self.send_reports(true);
@@ -620,13 +630,25 @@ impl SceneSchedule {
         }
     }
 
-    // Releases queued scenes in order. A scene is first encoded fast and decided again, when the
-    // model reads that and wants it for this scene, once all of it is here; then its raise is
-    // tempered by what the source's test encodes found so far; then it is test-encoded, when it was
-    // raised far enough for this source, once its first `PROBE_FRAMES` are.
+    // Releases queued scenes in order. A scene is first decided again with the banding its source is
+    // ready to show, when the model reads that, once all its frames a fast encode would read are
+    // here; then encoded fast and decided again, when the model reads that and wants it for this
+    // scene; then its raise is tempered by what the source's test encodes found so far; then it is
+    // test-encoded, when it was raised far enough for this source, once its first `PROBE_FRAMES` are.
     fn release(&mut self, settled: Option<u64>) {
         while let Some(front) = self.queued.front() {
             let start = front.decision.start_frame;
+            if !front.exposed_done && self.exposed.is_some() {
+                let Some(end) = self.span_end(FAST_FRAMES, settled) else {
+                    break;
+                };
+                let frames: Vec<&OwnedFrame> = self.pending.iter().filter(|frame| frame.index >= start && frame.index < end).collect();
+                let exposed = exposed_banding(&frames, self.width, self.height);
+                let front = self.queued.front_mut().expect("checked above");
+                front.exposed_done = true;
+                self.exposed.as_ref().expect("checked above").reconsider(&mut front.decision, exposed);
+            }
+            let front = self.queued.front().expect("checked above");
             // A scene its base model keeps at the anchor keeps its decision without one.
             if !front.fast_done && self.fast.as_ref().is_some_and(|(_, judge)| !judge.wants_fast_encode(&front.decision)) {
                 self.queued.front_mut().expect("checked above").fast_done = true;
@@ -744,14 +766,30 @@ pub fn fast_config(encoder: &Config, width: usize, height: usize) -> Config {
 pub fn fast_encode(config: &Config, frames: &[&OwnedFrame], width: usize, height: usize) -> Result<FastEncode, String> {
     let (values, bytes, banding) = test_encode(config, frames, width, height, true)?;
     let fast = FastEncode::from_frames(&values, bytes, width * height).ok_or_else(|| "the fast encode measured nothing".to_string())?;
-    let (banding, exposed_banding) = banding.unzip();
-    Ok(FastEncode { banding: banding.flatten(), exposed_banding: exposed_banding.flatten(), ..fast })
+    Ok(FastEncode { banding, ..fast })
+}
+
+// The banding a scene's source is ready to show (`WindowFeatures::exposed_banding`), read from the
+// frames its fast encode covers without encoding them: `fast::added_banding` of `cambi::smoothed`
+// frames against the source's, over the frames a fast encode reads its banding on. None for fewer
+// than two frames, planes that do not hold `width` by `height`, or frames too small for CAMBI.
+pub fn exposed_banding(frames: &[&OwnedFrame], width: usize, height: usize) -> Option<f64> {
+    if frames.len() < 2 {
+        return None;
+    }
+    let mut smoothed = Vec::new();
+    let mut source = Vec::new();
+    for index in caramel_kernel::fast::banding_frames(frames.len()) {
+        let plane = Plane::new(&frames[index].y, width, height, frames[index].stride_y)?;
+        source.push(caramel_kernel::cambi::cambi(&plane)?);
+        smoothed.push(caramel_kernel::cambi::cambi(&Plane::new(&caramel_kernel::cambi::smoothed(&plane), width, height, width)?)?);
+    }
+    caramel_kernel::fast::added_banding(&smoothed, &source)
 }
 
 // `frames` encoded with `config`, each frame's XPSNR against its source in display order, the coded
-// bytes of all of them, and with `banding` the banding the encode added and the banding the source
-// is ready to show (`fast::added_banding` of the encode's frames and of `cambi::smoothed` ones).
-fn test_encode(config: &Config, frames: &[&OwnedFrame], width: usize, height: usize, banding: bool) -> Result<(Vec<f64>, u64, Option<(Option<f64>, Option<f64>)>), String> {
+// bytes of all of them, and with `banding` the banding the encode added (`fast::added_banding`).
+fn test_encode(config: &Config, frames: &[&OwnedFrame], width: usize, height: usize, banding: bool) -> Result<(Vec<f64>, u64, Option<f64>), String> {
     if frames.len() < 2 {
         return Err("too few frames to measure".to_string());
     }
@@ -794,18 +832,15 @@ fn test_encode(config: &Config, frames: &[&OwnedFrame], width: usize, height: us
         };
         values.push(meter.frame(&encoded, &original).ok_or("frames of another size")?);
     }
-    let banding = banding.then(|| {
-        let picked = caramel_kernel::fast::banding_frames(frames.len());
-        let read = |plane: &[u8], stride: usize| Plane::new(plane, width, height, stride).and_then(|plane| caramel_kernel::cambi::cambi(&plane));
-        let encoded: Vec<f64> = picked.iter().filter_map(|index| read(&pictures[*index].y, width)).collect();
-        let source: Vec<f64> = picked.iter().filter_map(|index| read(&frames[*index].y, frames[*index].stride_y)).collect();
-        let smoothed: Vec<f64> = picked
-            .iter()
-            .filter_map(|index| Plane::new(&frames[*index].y, width, height, frames[*index].stride_y))
-            .filter_map(|plane| read(&caramel_kernel::cambi::smoothed(&plane), width))
-            .collect();
-        (caramel_kernel::fast::added_banding(&encoded, &source), caramel_kernel::fast::added_banding(&smoothed, &source))
-    });
+    let banding = banding
+        .then(|| {
+            let picked = caramel_kernel::fast::banding_frames(frames.len());
+            let read = |plane: &[u8], stride: usize| Plane::new(plane, width, height, stride).and_then(|plane| caramel_kernel::cambi::cambi(&plane));
+            let encoded: Vec<f64> = picked.iter().filter_map(|index| read(&pictures[*index].y, width)).collect();
+            let source: Vec<f64> = picked.iter().filter_map(|index| read(&frames[*index].y, frames[*index].stride_y)).collect();
+            caramel_kernel::fast::added_banding(&encoded, &source)
+        })
+        .flatten();
     Ok((values, bytes, banding))
 }
 
@@ -1038,7 +1073,7 @@ mod tests {
         let source = SourceContext { width: W as u32, height: H as u32, fps: 24.0, video_bitrate: None, codec: None, bit_depth: 8 };
         let encoder = Config { width: W as u32, height: H as u32, threads: 1, ..Default::default() };
         let decider = SceneDecider::new(config, source, EncodeContext::anchored(17.0)).with_model(Some(reading_fast_encode()));
-        let mut schedule = SceneSchedule::from_decider(decider, W, H, 24, 1, 17.0, None, Some(&encoder));
+        let mut schedule = SceneSchedule::from_decider(decider, W, H, 24, 1, 17.0, None, Some(&encoder), true);
         let smooth = yuv(|x, y| (60 + x + y) as u8);
         let checker = yuv(|x, y| if (x / 8 + y / 8) % 2 == 0 { 16 } else { 235 });
         let mut out = Vec::new();
@@ -1084,7 +1119,7 @@ mod tests {
         let checker = yuv(|x, y| if (x / 8 + y / 8) % 2 == 0 { 16 } else { 235 });
         let run = |model: Arc<Model>, fast: Option<&Config>| {
             let decider = SceneDecider::new(config, source.clone(), EncodeContext::anchored(17.0)).with_model(Some(model));
-            let mut schedule = SceneSchedule::from_decider(decider, W, H, 24, 1, 17.0, None, fast);
+            let mut schedule = SceneSchedule::from_decider(decider, W, H, 24, 1, 17.0, None, fast, true);
             for index in 0..20 {
                 push(&mut schedule, if index < 10 { &smooth } else { &checker });
                 while schedule.ready().is_some() {}
@@ -1095,6 +1130,8 @@ mod tests {
         };
         let by_base = run(builtin.clone(), None);
         let decided = run(Arc::new(gated), Some(&encoder));
+        // The built-in model does not read the banding the source is ready to show, so nothing reads it.
+        assert!(by_base.iter().all(|decision| decision.features.exposed_banding.is_none()));
         assert_eq!(by_base.len(), decided.len());
         for (base, decision) in by_base.iter().zip(&decided) {
             assert_eq!(base.start_frame, decision.start_frame);
@@ -1142,11 +1179,37 @@ mod tests {
         let (hard, fine) = (fast_encode(&config(40.0), &refs, w, h).unwrap(), fast_encode(&config(4.0), &refs, w, h).unwrap());
         let (hard_banding, fine_banding) = (hard.banding.unwrap(), fine.banding.unwrap());
         assert!(hard_banding > 1.0 && hard_banding > 4.0 * fine_banding, "{hard_banding} {fine_banding}");
-        // Without encoding, the source reads as ready to band, whatever the CRF.
-        let exposed = hard.exposed_banding.unwrap();
-        assert!(exposed > 1.0 && exposed == fine.exposed_banding.unwrap(), "{exposed}");
+        // Without encoding, the source reads as ready to band.
+        assert!(exposed_banding(&refs, w, h).unwrap() > 1.0);
         // A probe reads XPSNR alone and pays for no banding.
         assert!(test_encode(&config(20.0), &refs, w, h, false).unwrap().2.is_none());
+    }
+
+    // A model that reads the banding a source is ready to show has it read for every scene before
+    // the scene is decided for good — with no fast encode to make, as for a scaled encode — and
+    // frames that are not 8-bit are not read.
+    #[test]
+    fn the_banding_a_source_is_ready_to_show_is_read_before_a_scene_is_decided() {
+        let (w, h) = (320, 240);
+        let config = SceneConfig { analysis_frames: 4, min_scene_frames: 4, max_scene_frames: 250 };
+        let source = SourceContext { width: w as u32, height: h as u32, fps: 24.0, video_bitrate: None, codec: None, bit_depth: 8 };
+        let run = |eight_bit: bool| {
+            let decider = SceneDecider::new(config, source.clone(), EncodeContext::anchored(17.0)).with_model(Some(reading_fast_encode()));
+            let mut schedule = SceneSchedule::from_decider(decider, w, h, 24, 1, 17.0, None, None, eight_bit);
+            for index in 0..8usize {
+                let y: Vec<u8> = (0..w * h).map(|i| (24.0 + 24.0 * (i % w) as f64 / w as f64 + ((i * 7919 + index * 31) % 7) as f64 * 0.5 - 1.5) as u8).collect();
+                let chroma = vec![128; w * h / 4];
+                schedule.push(&y4m::Frame { y: &y, u: &chroma, v: &chroma, stride_y: w, stride_c: w / 2 }).unwrap();
+                while schedule.ready().is_some() {}
+            }
+            schedule.finish();
+            while schedule.ready().is_some() {}
+            schedule.decisions().to_vec()
+        };
+        let read = run(true);
+        assert_eq!(read.len(), 1);
+        assert!(read[0].features.exposed_banding.is_some_and(|banding| banding > 1.0) && read[0].features.fast_encode.is_none(), "{:?}", read[0].features.exposed_banding);
+        assert!(run(false)[0].features.exposed_banding.is_none());
     }
 
     #[test]
