@@ -330,6 +330,50 @@ fn dataset_name_ok(name: &str) -> bool {
         && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
+// A model trained elsewhere, installed here: the other half of copying the dataset out. The body is
+// a model file as `pnmpeg --caramel-train -o` writes it. It is read whole before anything is
+// written, so a truncated or foreign file changes nothing; one of another family is refused because
+// its outputs mean something else to this build. Privileged: it changes every encode that follows.
+pub(super) async fn install_model(Extension(auth): Extension<ApiAuth>, body: String) -> Response {
+    if let Err(response) = require_privileged(&auth) {
+        return response;
+    }
+    let result = tokio::task::spawn_blocking(move || {
+        let model = caramel_kernel::curve::Model::from_text(&body).map_err(|error| (StatusCode::BAD_REQUEST, format!("not a model file: {error}")))?;
+        if !model.version.starts_with(&format!("{}.", crate::lib::mpeg::caramel_train::MODEL_FAMILY)) {
+            return Err((StatusCode::BAD_REQUEST, format!("`{}` is not a {} model", model.version, crate::lib::mpeg::caramel_train::MODEL_FAMILY)));
+        }
+        crate::lib::mpeg::caramel_train::install(&model).map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error))?;
+        Ok(model.version.clone())
+    })
+    .await
+    .unwrap_or_else(|_| Err((StatusCode::INTERNAL_SERVER_ERROR, "install failed".to_string())));
+    match result {
+        Ok(version) => Json(json!({ "model": version, "installed": crate::lib::mpeg::caramel_train::installed_models() })).into_response(),
+        Err((status, message)) => (status, message).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub(super) struct ActiveModelReq {
+    version: Option<String>,
+}
+
+// Points new encodes at an installed model, or with `null` at the built-in one: an install undone
+// without having to keep the old file anywhere but here.
+pub(super) async fn activate_model(Extension(auth): Extension<ApiAuth>, Json(req): Json<ActiveModelReq>) -> Response {
+    if let Err(response) = require_privileged(&auth) {
+        return response;
+    }
+    let result = tokio::task::spawn_blocking(move || crate::lib::mpeg::caramel_train::point_at(req.version.as_deref()))
+        .await
+        .unwrap_or_else(|_| Err("activation failed".to_string()));
+    match result {
+        Ok(version) => Json(json!({ "model": version, "installed": crate::lib::mpeg::caramel_train::installed_models() })).into_response(),
+        Err(message) => (StatusCode::NOT_FOUND, message).into_response(),
+    }
+}
+
 // The dataset's files: what the lab has measured on this machine, to copy and merge elsewhere.
 pub(super) async fn dataset_list(Extension(auth): Extension<ApiAuth>) -> Response {
     if let Err(response) = require_privileged(&auth) {

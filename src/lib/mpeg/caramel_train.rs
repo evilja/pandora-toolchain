@@ -221,6 +221,45 @@ pub fn install(model: &Model) -> Result<PathBuf, String> {
     Ok(file)
 }
 
+// Points new encodes at a model already installed here (`Some`), or back at the built-in one
+// (`None`), without writing a model file: how an operator goes back after an install. A version
+// whose file is missing or does not read is refused, since the pointer would otherwise name a model
+// no process can load and every encode would fall back silently.
+pub fn point_at(version: Option<&str>) -> Result<String, String> {
+    match version {
+        Some(version) => {
+            let model = pnx264::scenes::trained_model(version).ok_or_else(|| format!("`{version}` is not a model installed here"))?;
+            write_atomically(Path::new(ACTIVE_FILE), &format!("{}\n", model.version))?;
+            Ok(model.version.clone())
+        }
+        None => {
+            match std::fs::remove_file(ACTIVE_FILE) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(format!("{ACTIVE_FILE}: {error}")),
+            }
+            Ok(installed_version())
+        }
+    }
+}
+
+// The models installed here, newest first, so an operator can see what `point_at` can go back to.
+pub fn installed_models() -> Vec<String> {
+    let mut files: Vec<(std::time::SystemTime, String)> = std::fs::read_dir(pnx264::scenes::MODEL_DIRECTORY)
+        .map(|entries| entries.flatten().collect::<Vec<_>>())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let version = path.file_stem()?.to_str()?.to_string();
+            (path.extension()? == "model" && pnx264::scenes::valid_version(&version)).then_some(())?;
+            Some((entry.metadata().ok()?.modified().ok()?, version))
+        })
+        .collect();
+    files.sort_by(|a, b| b.0.cmp(&a.0));
+    files.into_iter().map(|(_, version)| version).collect()
+}
+
 // The lab's samples as the kernel trains on them.
 // How much more a scene counts in training when verification found the encode's decision for it
 // overshot: those are the mistakes that cost quality.

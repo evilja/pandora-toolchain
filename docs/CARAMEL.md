@@ -579,6 +579,14 @@ The newest eight other models are kept. To go back, put an older version's name 
 a running `pndc` reports the new version at once (`installed_version`), its next `pnmpeg` children
 decide with it, and so does its next Caramel Analysis job.
 
+A model trained somewhere else is installed the same way over the API: `PUT /api/v1/caramel/model`
+with the model file as the body, and `POST /api/v1/caramel/model/active` with `{ "version" }` (or
+`null` for the built-in model) to go back ([API.md](API.md)). This is the other half of copying the
+dataset out: a machine that measures in its idle time can decide with a model trained on far more
+than it measured itself. Such a machine should keep `caramel_research_retrain` high, or its own
+next training, from its own smaller dataset and its own feature set, may replace the model it was
+given whenever the gate accepts it.
+
 A model file is text: a `caramel-model 1` header, then `version`, `encoder`, `detail`, `gain`, `scenes`,
 `sources`, `trained` (the newest `collected_unix` it saw), `input-mean`, `input-scale`, for a
 model that reads other inputs than the first ones `input-select` (which, in order), `offsets`,
