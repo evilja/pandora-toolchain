@@ -171,9 +171,9 @@ chunk encoder, and `src/lib/mpeg/caramel.rs` runs it over a whole file and verif
   pairs also read as cuts, CRF, each metric's vote, contributions, measured features, and for a
   test-encoded raise its `probe`: the CRF the model chose, the target, what the test encode
   measured and the CRF it settled on), the frame-weighted CRF distribution, and the `zones` string
-  a linear encode would use. Far raises are test-encoded with the preset's x264 settings when the
-  preset encodes 8-bit with libx264 at the source's size; `--caramel-no-probe` decides without
-  them, to compare. `--caramel-model-file <path>` decides with the model in that file instead of
+  a linear encode would use. `--caramel-probe` test-encodes far raises with the preset's x264
+  settings, as encodes did before the trainer's limits replaced the probes, when the preset encodes
+  8-bit with libx264 at the source's size. `--caramel-model-file <path>` decides with the model in that file instead of
   the installed one, without installing it, so a candidate can be set beside the model in use on
   whole episodes; one that reads fast encodes makes a scene's first when its base raised the scene,
 or every scene's when it has no base ([CARAMEL.md](CARAMEL.md#fast-encodes)).

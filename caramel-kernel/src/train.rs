@@ -44,15 +44,30 @@ pub const DEFAULT_GAIN: f64 = 0.5;
 // They were 3.5 units and 2 CAMBI while only the gain could meet them: banding bound every model's
 // gain, the shortfall never did, and the trainer took bytes wherever the shortfall allowed. Read
 // with a margin of its own (`choose_raise`), banding's tail is held to 1.5 for about the bytes 2
-// cost by the gain alone. A model that reads its fast encode is held to 1.5 units at the tail
-// (`SHORTFALL_P95`) — about where such models held it while banding bound them — so that the
-// margin does not buy its bytes back from the quality metrics. One that reads the source alone,
-// which decides every scene of a scaled encode, keeps 3.5 (`SOURCE_SHORTFALL_P95`): held to 1.5 it
-// raised so little that it spent 0.959 of the anchor's bytes, where it had spent 0.875.
+// cost by the gain alone. A model that reads its fast encode was held to 1.5 units at the tail —
+// about where such models held it while banding bound them — so that the margin does not buy its
+// bytes back from the quality metrics. One that reads the source alone, which decides every scene
+// of a scaled encode, keeps 3.5 units and 1.5 CAMBI (`SOURCE_LIMITS`): held to 1.5 units it raised
+// so little that it spent 0.959 of the anchor's bytes, where it had spent 0.875.
+//
+// A model that reads its fast encode is now held to 1.1 units and 1.2 CAMBI (`FAST_LIMITS`): what its raises reached while every raise of 3 CRF or more was also
+// test-encoded and pulled back (`probe`). Its gain now holds that tail alone. Replayed over 16256
+// held-out decisions, the probes reached 1.11 units and 1.23 CAMBI at 0.914 of the anchor's bytes
+// and test-encoded 13% of the frames again; gain 0.75 with a banding margin of 1.5, which these
+// limits choose there, reached 1.09 and 1.17 at the same 0.914 with none. The model that reads the
+// source alone was never probed — a scaled or 10-bit encode cannot be — and keeps its limits.
 pub const SHORTFALL_P90: f64 = 2.5;
-pub const SHORTFALL_P95: f64 = 1.5;
-pub const SOURCE_SHORTFALL_P95: f64 = 3.5;
-pub const BANDING_P95: f64 = 1.5;
+
+// What a model's raises have to hold at the tail: the 95th percentile of the shortfall, in units,
+// and of the CAMBI they add.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Limits {
+    pub shortfall_p95: f64,
+    pub banding_p95: f64,
+}
+
+pub const FAST_LIMITS: Limits = Limits { shortfall_p95: 1.1, banding_p95: 1.2 };
+pub const SOURCE_LIMITS: Limits = Limits { shortfall_p95: 3.5, banding_p95: 1.5 };
 // The banding margins a trainer may choose between, in CRF of banding's vote (`curve::decide`).
 const MARGINS: [f64; 7] = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0];
 // The step of a decided CRF: the one `model` applies.
@@ -69,7 +84,7 @@ pub const CRF_STEP: f64 = 0.5;
 // at the CRFs needed.
 pub const OVERSHOOT: f64 = 1.0;
 // One scene's banding past which it overshot: the tail a model's raises are held to, before that
-// was met with a margin (`BANDING_P95`). The verdicts the gain controller counts keep it.
+// was met with a margin (`Limits::banding_p95`). The verdicts the gain controller counts keep it.
 pub const BANDED: f64 = 2.0;
 pub const VERIFY_STEP: f64 = 2.0;
 
@@ -434,7 +449,7 @@ pub fn train(samples: &[Sample], config: &TrainConfig, typical: Option<Curves>) 
         .collect();
     if split {
         model.error = vote_error(samples, &held_out, &model.typical).0;
-        let limit = shortfall_limit(config.inputs.iter().any(|input| crate::inputs::FAST_INPUTS.contains(input)));
+        let limit = limits(config.inputs.iter().any(|input| crate::inputs::FAST_INPUTS.contains(input)));
         (model.gain, model.margin) = choose_raise(samples, &held_out, &model.typical, model.detail, limit);
     }
     Ok(Trained { model, held_out, epochs, losses })
@@ -509,16 +524,16 @@ pub struct Policy {
 }
 
 impl Policy {
-    // Whether raises this good may be made on sources the model has never seen, by a model whose
-    // raises may fall `shortfall_p95` units short at the tail (`shortfall_limit`).
-    pub fn holds(&self, shortfall_p95: f64) -> bool {
-        self.raised == 0 || (self.shortfall_p90 <= SHORTFALL_P90 && self.shortfall_p95 <= shortfall_p95 && self.banding_p95 <= BANDING_P95)
+    // Whether raises this good may be made on sources the model has never seen, by a model held
+    // to `limits` (`limits`).
+    pub fn holds(&self, limits: Limits) -> bool {
+        self.raised == 0 || (self.shortfall_p90 <= SHORTFALL_P90 && self.shortfall_p95 <= limits.shortfall_p95 && self.banding_p95 <= limits.banding_p95)
     }
 }
 
-// The tail a model's raises may fall short to: less for one that reads its fast encode.
-pub fn shortfall_limit(reads_fast_encode: bool) -> f64 {
-    if reads_fast_encode { SHORTFALL_P95 } else { SOURCE_SHORTFALL_P95 }
+// The tail a model's raises are held to: tighter for one that reads its fast encode.
+pub fn limits(reads_fast_encode: bool) -> Limits {
+    if reads_fast_encode { FAST_LIMITS } else { SOURCE_LIMITS }
 }
 
 // `decisions` are (sample, anchor, offset from the anchor). `detail` is the ease of the detailed
@@ -587,7 +602,7 @@ pub fn decisions(samples: &[Sample], curves: &[Vec<Curves>], typical: &Curves, d
 
 // The largest gain whose raises, on scenes the networks had not trained on, stay within what a
 // raised scene may lose. The smallest when none does: the trainer's verdict then says so.
-pub fn choose_gain(samples: &[Sample], curves: &[Vec<Curves>], typical: &Curves, detail: f64, margin: f64, limit: f64) -> f64 {
+pub fn choose_gain(samples: &[Sample], curves: &[Vec<Curves>], typical: &Curves, detail: f64, margin: f64, limit: Limits) -> f64 {
     for gain in GAINS {
         if simulate(samples, typical, detail, &decisions(samples, curves, typical, detail, gain, margin)).holds(limit) {
             return gain;
@@ -600,7 +615,7 @@ pub fn choose_gain(samples: &[Sample], curves: &[Vec<Curves>], typical: &Curves,
 // that spends the fewest bytes, the smaller margin when two spend as many. Where banding is what
 // holds the gain down, a margin takes the raises back from the scenes banding holds and leaves the
 // rest their gain. The smallest gain and no margin when nothing holds.
-pub fn choose_raise(samples: &[Sample], curves: &[Vec<Curves>], typical: &Curves, detail: f64, limit: f64) -> (f64, f64) {
+pub fn choose_raise(samples: &[Sample], curves: &[Vec<Curves>], typical: &Curves, detail: f64, limit: Limits) -> (f64, f64) {
     let mut best: Option<(f64, f64, f64)> = None;
     for margin in MARGINS {
         let gain = choose_gain(samples, curves, typical, detail, margin, limit);
@@ -872,7 +887,7 @@ mod tests {
         let fair = simulate(&samples, &typical, -2.0, &[(0, 20.0, 5.0), (1, 20.0, -0.5)]);
         assert_eq!((fair.raised, fair.lowered, fair.raised_far, fair.raise_mean, fair.shortfall_p95, fair.needed), (1, 1, 1, 5.0, 0.0, 1.0));
         assert!((fair.bytes - (2f64.powf(-25.0 / 6.0) + 2f64.powf(-19.5 / 6.0)) / (2.0 * 2f64.powf(-20.0 / 6.0))).abs() < 1e-9, "{fair:?}");
-        assert!(fair.holds(SHORTFALL_P95));
+        assert!(fair.holds(FAST_LIMITS));
         // A scene picked for looking doubtful is left out of the figures, unless nothing else is.
         let mut doubtful = samples.clone();
         doubtful[1].fair = false;
@@ -885,11 +900,11 @@ mod tests {
         let far = simulate(&samples, &typical, -2.0, &[(0, 20.0, 7.0), (0, 20.0, -0.5)]);
         assert!((far.shortfall_p95 - 10.0 / 3.0).abs() < 1e-9 && far.banding_p95 == 0.0, "{far:?}");
         assert_eq!(far.needed, 0.0);
-        assert!(!far.holds(SOURCE_SHORTFALL_P95));
+        assert!(!far.holds(SOURCE_LIMITS));
         // The same raise of the banding one adds four CAMBI: too many, whatever its quality held.
         let banded = simulate(&samples, &typical, -2.0, &[(2, 20.0, 5.0)]);
         assert!(banded.shortfall_p95 == 0.0 && (banded.banding_p95 - 4.0).abs() < 1e-9, "{banded:?}");
-        assert!(!banded.holds(SOURCE_SHORTFALL_P95));
+        assert!(!banded.holds(SOURCE_LIMITS));
     }
 
     #[test]
@@ -922,7 +937,7 @@ mod tests {
         // Votes this accurate may be followed in full, and banding that holds nothing back is given
         // no margin.
         assert_eq!((trained.model.gain, trained.model.margin), (GAINS[0], 0.0));
-        assert_eq!(choose_raise(&samples, &trained.held_out, typical, detail, SOURCE_SHORTFALL_P95), (GAINS[0], 0.0));
+        assert_eq!(choose_raise(&samples, &trained.held_out, typical, detail, SOURCE_LIMITS), (GAINS[0], 0.0));
         // Curves that claim every scene is twelve units better than it is raise scenes too far to be
         // followed in full, and are given less of what they claim.
         let flattering: Vec<Vec<Curves>> = trained
@@ -939,8 +954,8 @@ mod tests {
                     .collect()
             })
             .collect();
-        assert!(choose_gain(&samples, &flattering, typical, detail, 0.0, SOURCE_SHORTFALL_P95) < GAINS[0]);
-        assert!(!simulate(&samples, typical, detail, &decisions(&samples, &flattering, typical, detail, GAINS[0], 0.0)).holds(SOURCE_SHORTFALL_P95));
+        assert!(choose_gain(&samples, &flattering, typical, detail, 0.0, SOURCE_LIMITS) < GAINS[0]);
+        assert!(!simulate(&samples, typical, detail, &decisions(&samples, &flattering, typical, detail, GAINS[0], 0.0)).holds(SOURCE_LIMITS));
     }
 
     #[test]
@@ -949,7 +964,7 @@ mod tests {
         let trained = train(&samples, &quick(), None).unwrap();
         let (typical, detail) = (&trained.model.typical, trained.model.detail);
         let policy = |gain: f64, margin: f64| simulate(&samples, typical, detail, &decisions(&samples, &trained.held_out, typical, detail, gain, margin));
-        let limit = SOURCE_SHORTFALL_P95;
+        let limit = SOURCE_LIMITS;
         let (gain, margin) = choose_raise(&samples, &trained.held_out, typical, detail, limit);
         assert_eq!((trained.model.gain, trained.model.margin), (gain, margin));
         let alone = choose_gain(&samples, &trained.held_out, typical, detail, 0.0, limit);

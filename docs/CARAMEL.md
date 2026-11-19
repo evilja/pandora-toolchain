@@ -79,8 +79,30 @@ that cost quality are the far raises: a still, grainy shot read as easy and rais
 then falls a dB or more below the hardest scene kept at the anchor. Full-episode verification
 found a few in every episode; the lab's held-out scenes found them too.
 
-So a scene the model raises by **3 CRF or more** (`PROBE_FROM`) is checked before the raise is
-spent. The encoder encodes the scene's first **24 frames** (`PROBE_FRAMES`, fewer when the scene
+**Encodes no longer probe.** The trainer now holds a fast-reading model's raises to the tail the
+probes used to reach (see [Training](#training-pnmpeg---caramel-train), `FAST_LIMITS`), and the gain that meets it does
+the probes' work for nothing. Replayed over 16256 held-out decisions of the installed model's
+networks, joined with each scene's lab encodes (a probe read as the lab's XPSNR at the decided
+CRF, ±0.35 dB for reading 24 of the 48 frames, settled along the measured line):
+
+| Policy | bytes vs anchor | shortfall p95 / p99 (units) | banding p95 (CAMBI) | frames test-encoded again |
+|---|---|---|---|---|
+| gain 0.85, margin 1, probes from 3 (2 on distrusted sources) | 0.914 | 1.11 / 2.40 | 1.23 | 13% |
+| the same, probes from 4 | 0.911 | 1.23 / 2.43 | 1.25 | 11% |
+| the same, no probes | 0.905 | 1.34 / 2.50 | 1.41 | 0 |
+| gain 0.75, margin 1.5, no probes | 0.914 | 1.09 / 2.27 | 1.17 | 0 |
+
+A probe pulls back about one raise in four of those it checks, by reading 24 frames at the
+preset's own settings; a lower gain takes the same bytes off every raise and lands the tail lower.
+Exact probe readings change the first row by less than 0.01 in every column, so it is not the
+probe's noise. On the worst sources the lower gain also does as well: the 5% of sources with the
+most short raises had 33% of them more than one unit short under probes and 28% under gain 0.75.
+The machinery below stays for comparing (`pnmpeg --caramel-report --caramel-probe`), and a chunk
+context written while probes were on (`probe=1`) still probes, so its chunks decide as their
+siblings did.
+
+When asked for, a scene the model raises by **3 CRF or more** (`PROBE_FROM`) is checked before the
+raise is spent. The encoder encodes the scene's first **24 frames** (`PROBE_FRAMES`, fewer when the scene
 is shorter) at the CRF the model chose, with its own x264 settings, and measures their XPSNR
 against the frames it was given — the first frame, an IDR in a test encode, left out as the lab
 leaves a clip's first frame out. `Probe::settle` then compares that with the **target**: the XPSNR
@@ -107,8 +129,9 @@ the anchor. A test encode never raises a scene further.
   frames was within 0.5 dB of the whole 48-frame clip's for 81–86% of scenes (median −0.08 dB). The
   first 12 frames — what the decider measures — were within 0.5 dB for only 41–49%, read 0.3–0.4 dB
   low at the median, and missed by up to 6 dB where a scene's opening was unlike the rest of it.
-- **Context.** Chunks fix the choice when they are planned, as they fix the model: the context
-  carries `probe=1`, and a context without the key decides without test encodes.
+- **Context.** Chunks fix the choice when they are planned, as they fix the model: a context that
+  carries `probe=1` probes, and one without the key — every one written now — decides without
+  test encodes.
 - **What it changed.** On the six verification episodes at anchor 17 (9600 frames each, model
   `caramel-neural-1.784-365446`), whether a probed raise fell short depended on the source far more
   than on the size of the raise: 75% of *Ping Pong*'s probed raises and 69% of *Haibane Renmei*'s
@@ -144,8 +167,8 @@ is *distrusted*:
   ones the source's trust does not call for, so a report never shows a probe that did not run.
 
 A source whose latest probes hold is trusted again as the old ones leave the window. A source that
-is never distrusted encodes exactly as before. Without probes (`probe` off, 10-bit or resized
-output) there is no record and nothing changes.
+is never distrusted encodes exactly as before. Without probes (`probe` off, as it now is by
+default, or 10-bit or resized output) there is no record and nothing changes.
 
 The record is shared by everything encoding one source (`pnx264::scenes::TrustShare`). The
 segments of a whole-file analysis share it in memory. The chunks of a parallel encode share one
@@ -178,11 +201,10 @@ here: its decisions stay on the node.
 
 ## Verifying an encode's decisions
 
-A probe checks the opening frames of a far raise while the encode runs; nothing checks the rest,
-and nothing tells the model. Verification does, after the episode is out and while the machine is
+Nothing checks a raise while the encode runs, and nothing tells the model. Verification does, after the episode is out and while the machine is
 idle: `pnmpeg --caramel-lab --lab-verify <decisions>` on the encode's input re-measures its raised
 scenes, and the kept scenes that look like savings the model missed, as full lab samples. It fixes
-the model, not the episode it verifies — the probe and the source's trust still guard the encode.
+the model, not the episode it verifies.
 
 - **Which scenes** (`caramel_lab::verify_picks`, at most `--lab-scenes`). The decider caps a scene
   at 48 frames, so one long shot is several scenes; a scene that ran to the cap and the one split
@@ -522,12 +544,17 @@ in use, 4 when it may not, 1 on an error. `--train-install` installs an accepted
 - **Gain and banding margin.** For each banding margin of 0, 0.5, 1, 1.5, 2, 3 and 4 CRF, the
   trainer picks the largest gain from 1 down to 0.25 in steps of 0.05 at which, on held-out scenes
   at anchors 17, 19, 21 and 23, the raised scenes fall below a detailed scene's quality at the
-  anchor by no more than 2.5 units at the 90th percentile and 1.5 at the 95th (the mean over the
-  quality metrics; a unit is 0.5 dB of XPSNR), and the raises add no more than 1.5 CAMBI at the
-  95th percentile; of the pairs that hold, it keeps the one that spends the fewest bytes
-  (`choose_raise`). A model that reads the source alone — a base, which also decides every scene of
-  a scaled or 10-bit encode — may fall 3.5 units short at the 95th percentile instead: held to 1.5
-  it raised so little that it spent 0.959 of the anchor's bytes where it had spent 0.875. A raised
+  anchor by no more than 2.5 units at the 90th percentile and 1.1 at the 95th (the mean over the
+  quality metrics; a unit is 0.5 dB of XPSNR), and the raises add no more than 1.2 CAMBI at the
+  95th percentile (`FAST_LIMITS`); of the pairs that hold, it keeps the one that spends the
+  fewest bytes (`choose_raise`). A model that reads the source alone — a base, which also decides
+  every scene of a scaled or 10-bit encode — may fall 3.5 units short at the 95th percentile and
+  add 1.5 CAMBI instead (`SOURCE_LIMITS`): held to 1.5 units it raised so little that it spent
+  0.959 of the anchor's bytes where it had spent 0.875.
+  The fast-reading model's limits were 1.5 units and 1.5 CAMBI while far raises were also
+  test-encoded and pulled back. Encodes stopped probing, and the limits moved to what the probes had
+  reached ([Test encodes of far raises](#test-encodes-of-far-raises)): on the installed model's
+  held-out decisions they choose gain 0.75 and margin 1.5, for the probes' bytes and a lower tail. A raised
   scene is allowed to look like a detailed one does at the anchor, a little worse at its tail, and
   not to band visibly.
   The limits were 3.5 units and 2 CAMBI while only the gain could meet them. Banding then bound

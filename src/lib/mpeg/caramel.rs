@@ -105,8 +105,8 @@ pub struct SceneRequest<'a> {
     // Frames decoded so far, summed over the segments, for a caller that shows progress.
     pub progress: Option<&'a AtomicU64>,
     // The x264 settings the encode will use, to test-encode far raises with
-    // (`caramel_kernel::probe`); None decides without probes. Used only when the encode writes
-    // 8-bit frames at the source's own size, the frames this analysis decodes.
+    // (`caramel_kernel::probe`); None decides without probes, as encodes do. Used only when the
+    // encode writes 8-bit frames at the source's own size, the frames this analysis decodes.
     pub probe: Option<pnx264::Config>,
     // The same settings, for every scene's fast encode when the model reads one
     // (`caramel_kernel::fast`); None decides scenes without, as the built-in model does. Used under
@@ -509,9 +509,10 @@ fn analyse_segment(
     result
 }
 
-// The settings a far raise is test-encoded with for an encode made with `preset`: the preset's own
-// x264 settings, one thread each since segments already run side by side. None for a preset that
-// does not encode with x264, whose CRF a libx264 test encode could not check.
+// The settings a scene is test-encoded with for an encode made with `preset` — its fast encode, and
+// a far raise's probe when one is asked for: the preset's own x264 settings, one thread each since
+// segments already run side by side. None for a preset that does not encode with x264, whose CRF
+// a libx264 test encode could not check.
 pub fn probe_encoder(preset: &crate::lib::mpeg::preset::ResolvedPreset) -> Option<pnx264::Config> {
     let settings = preset.x264_settings();
     preset.encodes_with_x264().then(|| pnx264::Config {
@@ -753,7 +754,7 @@ pub fn scene_crf(source: &SourceContext, encode: &EncodeContext, scenes: SceneCo
         source_bit_depth: source.bit_depth,
         model: caramel_kernel::curve::active().map(|model| model.version.clone()),
         gain: pnx264::scenes::active_gain(),
-        probe: true,
+        probe: false,
     }
 }
 

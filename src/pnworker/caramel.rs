@@ -297,7 +297,7 @@ pub async fn run_caramel_job(
         ..caramel_kernel::EncodeContext::anchored(anchor)
     };
     let scenes = request.scenes.config();
-    let probe = crate::lib::mpeg::caramel::probe_encoder(&preset);
+    let encoder = crate::lib::mpeg::caramel::probe_encoder(&preset);
     let decoded = Arc::new(AtomicU64::new(0));
     let analysis = {
         let (input, decoded, cancel, fast, live) = (input.clone(), decoded.clone(), directory.join("CANCEL"), request.fast, live.clone());
@@ -320,8 +320,8 @@ pub async fn run_caramel_job(
                 decoder_threads: 0,
                 cancel_file: Some(cancel),
                 progress: Some(&decoded),
-                fast: probe.clone(),
-                probe,
+                fast: encoder,
+                probe: None,
                 model,
                 live: Some(live.as_ref()),
                 scene_report: None,

@@ -454,7 +454,7 @@ fn verdict(current: Option<&Model>, trained: &Trained, samples: &[Sample], polic
     if trained.held_out.iter().all(Vec::is_empty) {
         return (false, "every scene is from one series: nothing could be held out to judge on".to_string(), None);
     }
-    let holds = policy.holds(train::shortfall_limit(trained.model.reads_fast_encode()));
+    let holds = policy.holds(train::limits(trained.model.reads_fast_encode()));
     match current {
         None => {
             let (scenes, series) = (trained.model.scenes, trained.model.sources);

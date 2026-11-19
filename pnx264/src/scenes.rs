@@ -73,8 +73,10 @@ pub struct SceneCrf {
     // The gain it decides with, when the machine's gain controller has turned it down from the
     // trained one: fixed for the whole encode, so every chunk raises alike. None is the model's own.
     pub gain: Option<f64>,
-    // Whether a far raise is test-encoded before it is used (`caramel_kernel::probe`). Settings
-    // written before probes existed decide without them, as the chunks they decided did.
+    // Whether a far raise is test-encoded before it is used (`caramel_kernel::probe`). Off unless
+    // asked for: a gain held to the tail the probes used to hold spends the same bytes without
+    // them. A context that carries `probe=1`, written while they were on, still probes, so its
+    // chunks decide as their siblings did.
     pub probe: bool,
 }
 
@@ -89,7 +91,7 @@ impl Default for SceneCrf {
             source_bit_depth: 8,
             model: curve::active().map(|model| model.version.clone()),
             gain: active_gain(),
-            probe: true,
+            probe: false,
         }
     }
 }
@@ -1048,8 +1050,10 @@ mod tests {
     }
 
     fn frames_leave_in_order(encoder: Option<&Config>) -> Vec<SceneDecision> {
+        // Probes are asked for, as a context written while they were on asks.
         let caramel = SceneCrf {
             scenes: SceneConfig { analysis_frames: 4, min_scene_frames: 4, max_scene_frames: 250 },
+            probe: true,
             ..Default::default()
         };
         let mut schedule = SceneSchedule::new(&caramel, W, H, 24, 1, 17.0, encoder);

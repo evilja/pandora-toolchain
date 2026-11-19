@@ -150,10 +150,10 @@ struct Args {
     #[arg(long)]
     caramel_verify: Option<String>,
 
-    /// With --caramel-report: decide scenes as the model reads them, without test-encoding the
-    /// scenes it raises far. For comparing what the test encodes change.
+    /// With --caramel-report: test-encode the scenes the model raises far and settle them on what
+    /// that measured, as encodes did before the gain held the tail without them. For comparing.
     #[arg(long)]
-    caramel_no_probe: bool,
+    caramel_probe: bool,
 
     /// With --caramel-report, or an encode: decide with the model in this file instead of the
     /// installed one, without installing it. For setting a candidate beside the model in use on
@@ -981,7 +981,7 @@ fn caramel_zones(args: &Args, preset: &ResolvedPreset, anchor: f32, workers: usi
         decoder_threads: if workers > 1 { 0 } else { 1 },
         cancel_file: args.cancelfile.as_deref().map(PathBuf::from),
         progress: None,
-        probe: probe_encoder(preset),
+        probe: None,
         fast: probe_encoder(preset),
         model: None,
         live: None,
@@ -1850,7 +1850,7 @@ async fn main() {
             decoder_threads: 0,
             cancel_file: args.cancelfile.as_deref().map(PathBuf::from),
             progress: None,
-            probe: if args.caramel_no_probe { None } else { active_preset.as_ref().and_then(probe_encoder) },
+            probe: if args.caramel_probe { active_preset.as_ref().and_then(probe_encoder) } else { None },
             fast: active_preset.as_ref().and_then(probe_encoder),
             model,
             live: None,
