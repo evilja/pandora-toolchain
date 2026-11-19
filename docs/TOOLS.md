@@ -147,7 +147,8 @@ chunk encoder, and `src/lib/mpeg/caramel.rs` runs it over a whole file and verif
   could not know the scene CRFs. When the job runs linearly anyway (idle-gated, or a fallback), the
   whole file is analysed first and the scenes go to x264 as `zones=<start>,<end>,crf=<crf>/…` in
   `-x264-params`, replacing any `zones` the preset had. Runs at the anchor are left out. Other
-  encoders ignore the mode with a warning.
+  encoders ignore the mode with a warning. The built-in `standard` preset (and its alias `x264`) is
+  one, anchored at CRF 17; `crf_mode = "fixed"` in a `standard.toml` restores a fixed CRF 17.
 - **Chunks.** With caramel, each chunk encoder runs a `SceneSchedule`: frames go through the decider
   and are held back only until their scene is decided, and the CRF is switched per picture through
   `x264_picture_t.param`, exactly as x264's own zones are applied. A chunk starts a scene at its

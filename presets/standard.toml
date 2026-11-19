@@ -1,5 +1,7 @@
-# The default encode: x264 at CRF 17 with mild AQ tuning.
+# The default encode: x264 with mild AQ tuning and a CRF per scene from Caramel Analysis,
+# anchored at CRF 17. `crf_mode = "fixed"` (or removing the line) encodes every frame at CRF 17.
 hardware = "cpu"
+crf_mode = "caramel-analysis"
 
 [video]
 codec = "libx264"

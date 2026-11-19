@@ -5363,13 +5363,17 @@ mod tests {
             download_aot_for(&preset).map(|aot| (aot.preset, aot.chunked))
         };
         for (preset, name) in [
-            (Preset::Standard(Concat::NONE), "standard"),
             (Preset::PseudoLossless(Concat::NONE), "pseudolossless"),
             (Preset::Dummy(Concat::NONE), "dummy"),
         ] {
             assert_eq!(linear(preset), Some((name.to_string(), false)), "{name}");
         }
-        // VerySlow plans chunk boundaries instead of keeping one encoder alive.
+        // VerySlow plans chunk boundaries instead of keeping one encoder alive, and so does Standard,
+        // whose chunk encoders decide a CRF per scene as the download arrives.
+        assert_eq!(
+            linear(Preset::Standard(Concat::NONE)),
+            Some(("standard".to_string(), true))
+        );
         assert_eq!(
             linear(Preset::VerySlow(Concat::NONE)),
             Some(("veryslow".to_string(), true))
