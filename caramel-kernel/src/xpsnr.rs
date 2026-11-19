@@ -33,6 +33,8 @@ pub struct Xpsnr {
     before_previous: Vec<u8>,
     sse_luma: Vec<f64>,
     weights: Vec<f64>,
+    // A block row's vertical [1 2 1] sums, kept between blocks so none allocates.
+    vertical: Vec<u16>,
 }
 
 impl Xpsnr {
@@ -49,6 +51,7 @@ impl Xpsnr {
             before_previous: vec![0; width * height],
             sse_luma: vec![0.0; blocks],
             weights: vec![0.0; blocks],
+            vertical: Vec::new(),
         }
     }
 
@@ -160,20 +163,31 @@ impl Xpsnr {
                 }
             }
         } else {
-            // Columns `left - 1 ..= right` of the rows above, at and below each filtered one.
+            // The filter's kernel, 12 at the centre, -2 beside it and -1 at the corners, is 16 times
+            // the centre less the separable [1 2 1] x [1 2 1] blur; the same integers, in fewer
+            // operations and in 16 bits (|f| <= 16 * 255). Columns `left - 1 ..= right` of the rows
+            // above, at and below each filtered one are read.
             let (left, right) = (offset_x + x_act as usize, offset_x + w_act as usize);
+            let n = right - left;
+            let mut vertical = std::mem::take(&mut self.vertical);
+            vertical.clear();
+            vertical.resize(n + 2, 0);
             for y in y_act..h_act {
                 let row = (offset_y as isize + y) as usize;
                 let line = |r: usize| &main.data[r * main.stride + left - 1..r * main.stride + right + 1];
                 let (above, current, below) = (line(row - 1), line(row), line(row + 1));
+                for (((sum, a), c), b) in vertical.iter_mut().zip(above).zip(current).zip(below) {
+                    *sum = *a as u16 + 2 * *c as u16 + *b as u16;
+                }
+                let (before, at, after) = (&vertical[..n], &vertical[1..n + 1], &vertical[2..n + 2]);
                 let mut row_sum: u32 = 0;
-                for x in 1..=right - left {
-                    let f = 12 * current[x] as i32 - 2 * (current[x - 1] as i32 + current[x + 1] as i32 + above[x] as i32 + below[x] as i32)
-                        - (above[x - 1] as i32 + above[x + 1] as i32 + below[x - 1] as i32 + below[x + 1] as i32);
-                    row_sum += f.unsigned_abs();
+                for (((before, at), after), centre) in before.iter().zip(at).zip(after).zip(&current[1..n + 1]) {
+                    let f = 16 * *centre as i16 - (*before + 2 * *at + *after) as i16;
+                    row_sum += f.unsigned_abs() as u32;
                 }
                 spatial += row_sum as u64;
             }
+            self.vertical = vertical;
         }
         let mut activity = spatial as f64 / ((w_act - x_act) as f64 * (h_act - y_act) as f64);
         let mut temporal: u64 = 0;
@@ -212,13 +226,13 @@ impl Xpsnr {
                 if second_order {
                     let before = &mut self.before_previous[memory..memory + block_width];
                     for ((now, one), two) in current.iter().zip(previous.iter_mut()).zip(before.iter_mut()) {
-                        row_sum += (*now as i32 - 2 * *one as i32 + *two as i32).unsigned_abs();
+                        row_sum += (*now as i16 - 2 * *one as i16 + *two as i16).unsigned_abs() as u32;
                         *two = *one;
                         *one = *now;
                     }
                 } else {
                     for (now, one) in current.iter().zip(previous.iter_mut()) {
-                        row_sum += (*now as i32 - *one as i32).unsigned_abs();
+                        row_sum += (*now as i16 - *one as i16).unsigned_abs() as u32;
                         *one = *now;
                     }
                 }
@@ -262,11 +276,12 @@ impl Xpsnr {
 fn block_sse(main: &Plane, reference: &Plane, x: usize, y: usize, width: usize, height: usize) -> u64 {
     let mut sse = 0u64;
     for row in y..y + height {
-        // A row's sum fits in 32 bits for any row narrower than 66,000 pixels.
+        // A row's sum fits in 32 bits for any row narrower than 66,000 pixels, and each square in
+        // 16, which lets it be a single widening multiply.
         let mut row_sse = 0u32;
         for (a, b) in main.row(row)[x..x + width].iter().zip(&reference.row(row)[x..x + width]) {
-            let d = (*a as i32 - *b as i32).unsigned_abs();
-            row_sse += d * d;
+            let d = a.abs_diff(*b) as u16;
+            row_sse += (d * d) as u32;
         }
         sse += row_sse as u64;
     }

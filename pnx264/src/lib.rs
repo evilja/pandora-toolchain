@@ -246,14 +246,24 @@ impl Encoder {
         let (chroma_width, chroma_height) = (width.div_ceil(2), height.div_ceil(2));
         // Safety: x264 owns the planes until the next encode or flush call, which needs `&mut self`
         // and so cannot happen while these borrows are alive; they are copied out before returning.
+        // A row at a time, so each is one memcpy rather than a byte-by-byte iterator.
         let rows = |plane: usize, row_bytes: usize, rows: usize| -> Vec<u8> {
             let stride = raw.stride[plane] as usize;
-            (0..rows).flat_map(|y| unsafe { std::slice::from_raw_parts(raw.plane[plane].add(y * stride), row_bytes) }.iter().copied()).collect()
+            let mut out = Vec::with_capacity(row_bytes * rows);
+            for y in 0..rows {
+                out.extend_from_slice(unsafe { std::slice::from_raw_parts(raw.plane[plane].add(y * stride), row_bytes) });
+            }
+            out
         };
         let y = rows(0, width, height);
         let (u, v) = if raw.planes == 2 {
             let packed = rows(1, 2 * chroma_width, chroma_height);
-            (packed.iter().step_by(2).copied().collect(), packed.iter().skip(1).step_by(2).copied().collect())
+            let (mut u, mut v) = (Vec::with_capacity(packed.len() / 2), Vec::with_capacity(packed.len() / 2));
+            for pair in packed.chunks_exact(2) {
+                u.push(pair[0]);
+                v.push(pair[1]);
+            }
+            (u, v)
         } else {
             (rows(1, chroma_width, chroma_height), rows(2, chroma_width, chroma_height))
         };
