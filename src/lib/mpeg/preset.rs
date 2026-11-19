@@ -649,16 +649,6 @@ pub fn builtin(name: &str) -> Option<(&'static [FfmpegParams], PresetHardware)> 
     })
 }
 
-// The default encode decides a CRF per scene anchored at its own CRF 17, which makes it chunk: the
-// chunk encoders are the path that applies scene CRFs while the source downloads. The scaled
-// presets stay fixed, so a 720p release beside a source-resolution one keeps its old CRF.
-fn builtin_crf_mode(canonical: &str) -> CrfMode {
-    match canonical {
-        "standard" | "x264" => CrfMode::CaramelAnalysis,
-        _ => CrfMode::Fixed,
-    }
-}
-
 // Every name the built-in table answers to under its canonical spelling, which is what a node
 // advertises and what `PRESETS_DIR` is scanned against.
 pub const BUILTIN_PRESET_NAMES: [&str; 8] = [
@@ -795,7 +785,7 @@ pub fn resolve(name: &str) -> Option<ResolvedPreset> {
         aot: (canonical == "av1").then_some(true),
         chunked: None,
         idle: None,
-        crf_mode: builtin_crf_mode(&canonical),
+        crf_mode: CrfMode::Fixed,
         from_file: false,
     })
 }
@@ -960,7 +950,6 @@ mod tests {
             // file, which is exactly the kind of change nobody goes looking for.
             let from_file = resolved_from_file(name, &file);
             let from_builtin = resolve(name).unwrap();
-            assert_eq!(from_file.crf_mode, from_builtin.crf_mode, "{name} decides its CRF differently");
             assert_eq!(
                 (from_file.wants_linear_aot(), from_file.wants_chunked_encode()),
                 (from_builtin.wants_linear_aot(), from_builtin.wants_chunked_encode()),
@@ -1034,11 +1023,9 @@ mod tests {
         assert!(linear.caramel_analysis() && !linear.wants_chunked_encode() && !linear.wants_linear_aot());
         let hevc = declare("crf_mode = \"caramel-analysis\"\n[video]\ncodec = \"libx265\"\n");
         assert!(!hevc.caramel_analysis());
-        // The default encode is the one built-in that decides per scene, under either name.
         for name in BUILTIN_PRESET_NAMES {
-            assert_eq!(resolve(name).expect(name).caramel_analysis(), name == "standard", "{name}");
+            assert!(!resolve(name).expect(name).caramel_analysis(), "{name}");
         }
-        assert!(resolve("x264").unwrap().caramel_analysis());
     }
 
     #[test]
@@ -1059,8 +1046,7 @@ mod tests {
     // stop, which is one linear encoder and not a fan-out of chunk workers.
     #[test]
     fn a_chunking_preset_is_never_gated_behind_an_earlier_job() {
-        assert!(!gateable_encode_for("standard"));
-        assert!(gateable_encode_for("pseudolossless"));
+        assert!(gateable_encode_for("standard"));
         assert!(gateable_encode_for("gpu"));
         assert!(gateable_encode_for("dummy"));
         assert!(!gateable_encode_for("veryslow"));
@@ -1284,17 +1270,11 @@ mod tests {
     // neither shows up as a failure.
     #[test]
     fn aot_eligibility_matches_what_each_preset_can_actually_do() {
-        for name in ["pseudolossless", "dummy"] {
+        for name in ["standard", "pseudolossless", "dummy"] {
             let preset = resolve(name).unwrap();
             assert!(preset.wants_linear_aot(), "{name} should encode ahead");
             assert!(!preset.wants_chunked_encode(), "{name} should stay linear");
         }
-
-        // Caramel Analysis: scene CRFs are decided inside the chunk encoders, and a linear encode
-        // started before the scenes are known could not apply them.
-        let standard = resolve("standard").unwrap();
-        assert!(!standard.wants_linear_aot());
-        assert!(standard.wants_chunked_encode());
 
         // Slow enough that chunking wins back more than the coordination costs.
         let veryslow = resolve("veryslow").unwrap();

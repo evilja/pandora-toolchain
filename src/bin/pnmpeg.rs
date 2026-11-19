@@ -3207,22 +3207,17 @@ mod tests {
     #[test]
     fn the_presets_that_encode_ahead_do_so_under_either_spelling() {
         for argv in [
+            vec!["--x264"],
+            vec!["--preset", "standard"],
             vec!["--pseudolossless"],
             vec!["--preset", "av1"],
+            vec![],
         ] {
             let preset = active_preset(&parsed(&argv));
             assert!(adopts_linear_prefix(preset.as_ref()), "{argv:?} lost its AOT handoff");
             assert!(!encodes_in_chunks(preset.as_ref()), "{argv:?} should stay linear");
         }
-        // Standard, under every spelling and as the default, decides a CRF per scene, which only
-        // the chunk encoders can apply while the source downloads.
-        for argv in [
-            vec!["--veryslow"],
-            vec!["--preset", "veryslow"],
-            vec!["--x264"],
-            vec!["--preset", "standard"],
-            vec![],
-        ] {
+        for argv in [vec!["--veryslow"], vec!["--preset", "veryslow"]] {
             let preset = active_preset(&parsed(&argv));
             assert!(encodes_in_chunks(preset.as_ref()), "{argv:?} lost parallel chunking");
             assert!(!adopts_linear_prefix(preset.as_ref()), "{argv:?} chunks instead of adopting");
