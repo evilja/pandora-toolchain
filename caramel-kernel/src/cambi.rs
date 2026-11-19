@@ -49,7 +49,7 @@ pub fn cambi(luma: &Plane) -> Option<f64> {
         }
         image = mode_filter(&image, w, h);
         let mut values = c_values(&image, &mask, w, h, window, &tvi);
-        *score = top_mean(&mut values, TOP_SHARE);
+        *score = top_mean(&mut values, w * h, TOP_SHARE);
     }
     let pixels_in_window = ((window / 2) * 2 + 1).pow(2) as f64;
     let score = scores.iter().zip(SCALE_WEIGHTS).map(|(score, weight)| score * weight).sum::<f64>() / pixels_in_window;
@@ -82,21 +82,32 @@ pub fn smoothed(luma: &Plane) -> Vec<u8> {
             rows[y * w + x] = (sum << 8) / (right - left + 1) as u32;
         }
     }
+    // The vertical pass keeps each column's running sum and walks the rows in memory order.
+    let mut sums = vec![0u32; w];
+    for y in 0..(RADIUS + 1).min(h) {
+        for (sum, value) in sums.iter_mut().zip(&rows[y * w..(y + 1) * w]) {
+            *sum += *value;
+        }
+    }
     let mut out = vec![0u8; w * h];
-    for x in 0..w {
-        let mut sum: u32 = (0..(RADIUS + 1).min(h)).map(|y| rows[y * w + x]).sum();
-        for y in 0..h {
-            let (top, bottom) = (y.saturating_sub(RADIUS), (y + RADIUS).min(h - 1));
-            if y > 0 {
-                if y + RADIUS < h {
-                    sum += rows[(y + RADIUS) * w + x];
-                }
-                if y > RADIUS {
-                    sum -= rows[(y - RADIUS - 1) * w + x];
+    for y in 0..h {
+        let (top, bottom) = (y.saturating_sub(RADIUS), (y + RADIUS).min(h - 1));
+        if y > 0 {
+            if y + RADIUS < h {
+                for (sum, value) in sums.iter_mut().zip(&rows[(y + RADIUS) * w..(y + RADIUS + 1) * w]) {
+                    *sum += *value;
                 }
             }
-            let count = (bottom - top + 1) as u32;
-            out[y * w + x] = ((sum + count * 128) / (count * 256)).min(255) as u8;
+            if y > RADIUS {
+                for (sum, value) in sums.iter_mut().zip(&rows[(y - RADIUS - 1) * w..(y - RADIUS) * w]) {
+                    *sum -= *value;
+                }
+            }
+        }
+        let count = (bottom - top + 1) as u32;
+        let (add, divisor) = (count * 128, count * 256);
+        for (out, sum) in out[y * w..(y + 1) * w].iter_mut().zip(&sums) {
+            *out = ((*sum + add) / divisor).min(255) as u8;
         }
     }
     out
@@ -144,19 +155,27 @@ fn tvi_for_diffs() -> [i32; DIFFS] {
 
 // The plane at 10 bits, then the 2x2 average libvmaf applies to an 8-bit encode so its dither
 // does not read as bands.
+//
+// Each 10-bit sample is the 8-bit one shifted left by 2, so the mean of four is exactly their 8-bit
+// sum and the mean of two is their 8-bit sum shifted left by 1; that is what is computed, a row at a
+// time.
 fn to_10_bit(luma: &Plane) -> Vec<u16> {
     let (w, h) = (luma.width, luma.height);
-    let raw: Vec<u16> = (0..h).flat_map(|y| luma.row(y).iter().map(|value| (*value as u16) << 2)).collect();
-    let mut out = raw.clone();
+    let mut out = vec![0u16; w * h];
     for y in 0..h {
-        for x in 0..w {
-            let at = |yy: usize, xx: usize| raw[yy * w + xx] as u32;
-            out[y * w + x] = match (y + 1 < h, x + 1 < w) {
-                (true, true) => ((at(y, x) + at(y, x + 1) + at(y + 1, x) + at(y + 1, x + 1)) >> 2) as u16,
-                (true, false) => ((at(y, x) + at(y + 1, x)) >> 1) as u16,
-                (false, true) => ((at(y, x) + at(y, x + 1)) >> 1) as u16,
-                (false, false) => raw[y * w + x],
-            };
+        let row = luma.row(y);
+        let out_row = &mut out[y * w..(y + 1) * w];
+        if y + 1 < h {
+            let below = luma.row(y + 1);
+            for x in 0..w - 1 {
+                out_row[x] = row[x] as u16 + row[x + 1] as u16 + below[x] as u16 + below[x + 1] as u16;
+            }
+            out_row[w - 1] = (row[w - 1] as u16 + below[w - 1] as u16) << 1;
+        } else {
+            for x in 0..w - 1 {
+                out_row[x] = (row[x] as u16 + row[x + 1] as u16) << 1;
+            }
+            out_row[w - 1] = (row[w - 1] as u16) << 2;
         }
     }
     out
@@ -171,29 +190,33 @@ fn ceil_log2(value: u32) -> i32 {
 fn spatial_mask(image: &[u16], w: usize, h: usize) -> Vec<u16> {
     let threshold = (MASK_FILTER * MASK_FILTER) as i32 + 3 * (ceil_log2(((w >> 6) * (h >> 6)) as u32) - 11) - 1;
     let threshold = (threshold >> 1) as u32;
-    let flat = |y: usize, x: usize| -> u32 {
-        let value = image[y * w + x];
-        let right = x + 1 == w || image[y * w + x + 1] == value;
-        let below = y + 1 == h || image[(y + 1) * w + x] == value;
-        (right && below) as u32
-    };
-    // A summed-area table with a zero row and column in front.
-    let mut sums = vec![0u32; (w + 1) * (h + 1)];
+    // A summed-area table with a zero row and column in front. A pixel is flat when it equals its
+    // right and lower neighbours; the last column and row compare only with what they have.
+    let stride = w + 1;
+    let mut sums = vec![0u32; stride * (h + 1)];
     for y in 0..h {
-        let mut row = 0;
+        let row = &image[y * w..(y + 1) * w];
+        let below = if y + 1 < h { Some(&image[(y + 1) * w..(y + 2) * w]) } else { None };
+        let (above_sums, current_sums) = sums[y * stride..(y + 2) * stride].split_at_mut(stride);
+        let mut running = 0u32;
         for x in 0..w {
-            row += flat(y, x);
-            sums[(y + 1) * (w + 1) + x + 1] = sums[y * (w + 1) + x + 1] + row;
+            let value = row[x];
+            let right = x + 1 == w || row[x + 1] == value;
+            let down = below.is_none_or(|below| below[x] == value);
+            running += (right && down) as u32;
+            current_sums[x + 1] = above_sums[x + 1] + running;
         }
     }
     let pad = MASK_FILTER / 2;
     let mut mask = vec![0u16; w * h];
     for y in 0..h {
         let (top, bottom) = (y.saturating_sub(pad), (y + pad + 1).min(h));
+        let (top_row, bottom_row) = (&sums[top * stride..(top + 1) * stride], &sums[bottom * stride..(bottom + 1) * stride]);
+        let mask_row = &mut mask[y * w..(y + 1) * w];
         for x in 0..w {
             let (left, right) = (x.saturating_sub(pad), (x + pad + 1).min(w));
-            let count = sums[bottom * (w + 1) + right] + sums[top * (w + 1) + left] - sums[top * (w + 1) + right] - sums[bottom * (w + 1) + left];
-            mask[y * w + x] = (count > threshold) as u16;
+            let count = bottom_row[right] + top_row[left] - top_row[right] - bottom_row[left];
+            mask_row[x] = (count > threshold) as u16;
         }
     }
     mask
@@ -201,32 +224,35 @@ fn spatial_mask(image: &[u16], w: usize, h: usize) -> Vec<u16> {
 
 // Every other pixel of every other row.
 fn decimate(plane: &[u16], w: usize, next_w: usize, next_h: usize) -> Vec<u16> {
-    (0..next_h).flat_map(|y| (0..next_w).map(move |x| plane[(2 * y) * w + 2 * x])).collect()
+    let mut out = Vec::with_capacity(next_w * next_h);
+    for y in 0..next_h {
+        out.extend(plane[2 * y * w..(2 * y + 1) * w].iter().step_by(2).take(next_w));
+    }
+    out
 }
 
+// Written as selects rather than branches, so a row of them vectorises.
 fn mode3(a: u16, b: u16, c: u16) -> u16 {
-    if a == b || a == c {
-        a
-    } else if b == c {
-        b
-    } else {
-        a.min(b).min(c)
-    }
+    let otherwise = if b == c { b } else { a.min(b).min(c) };
+    if a == b || a == c { a } else { otherwise }
 }
 
 // A 3x3 mode filter, by rows then by columns, as libvmaf runs it: the outer columns are not
 // filtered across, and the first and last rows are left as they were.
 fn mode_filter(image: &[u16], w: usize, h: usize) -> Vec<u16> {
-    let horizontal: Vec<u16> = (0..h)
-        .flat_map(|y| {
-            let row = &image[y * w..(y + 1) * w];
-            (0..w).map(move |x| if x == 0 || x + 1 == w { row[x] } else { mode3(row[x - 1], row[x], row[x + 1]) })
-        })
-        .collect();
+    let mut horizontal = image.to_vec();
+    for y in 0..h {
+        let row = &image[y * w..(y + 1) * w];
+        let out = &mut horizontal[y * w..(y + 1) * w];
+        for x in 1..w.saturating_sub(1) {
+            out[x] = mode3(row[x - 1], row[x], row[x + 1]);
+        }
+    }
     let mut out = image.to_vec();
     for y in 1..h.saturating_sub(1) {
-        for x in 0..w {
-            out[y * w + x] = mode3(horizontal[(y - 1) * w + x], horizontal[y * w + x], horizontal[(y + 1) * w + x]);
+        let (above, current, below) = (&horizontal[(y - 1) * w..y * w], &horizontal[y * w..(y + 1) * w], &horizontal[(y + 1) * w..(y + 2) * w]);
+        for (x, out) in out[y * w..(y + 1) * w].iter_mut().enumerate() {
+            *out = mode3(above[x], current[x], below[x]);
         }
     }
     out
@@ -234,13 +260,14 @@ fn mode_filter(image: &[u16], w: usize, h: usize) -> Vec<u16> {
 
 // Each flat pixel's banding: how many of its window's flat pixels share its level, against how many
 // sit one to four codes away on the side with more, weighted by that contrast. A pixel with no
-// visible step around it is 0.
+// visible step around it is 0, and only the values above 0 are returned: `top_mean` counts the
+// rest from the plane's size.
 fn c_values(image: &[u16], mask: &[u16], w: usize, h: usize, window: usize, tvi: &[i32; DIFFS]) -> Vec<f32> {
     let pad = window / 2;
     // Only levels a visible step can involve are counted; the rest could not change any value.
     let band = (tvi[DIFFS - 1] + 1) as usize;
     let mut histograms = vec![0u16; band * w];
-    let mut values = vec![0f32; w * h];
+    let mut values = Vec::new();
     let add = |histograms: &mut [u16], y: usize, sign: bool| {
         for x in 0..w {
             if mask[y * w + x] == 0 {
@@ -290,22 +317,26 @@ fn c_values(image: &[u16], mask: &[u16], w: usize, h: usize, window: usize, tvi:
                 let value = (DIFF_WEIGHTS[d] * same * other) as f32 * (1.0 / (other + same) as f32);
                 best = best.max(value);
             }
-            values[y * w + x] = best;
+            if best > 0.0 {
+                values.push(best);
+            }
         }
     }
     values
 }
 
-// The mean of the largest `share` of the values.
-fn top_mean(values: &mut [f32], share: f64) -> f64 {
-    let count = ((share * values.len() as f64) as usize).clamp(1, values.len().max(1));
-    if values.is_empty() {
+// The mean of the largest `share` of `total` values, of which `positive` are the ones above 0 and the
+// rest are 0. When the share reaches past every positive value, the zeros it takes add nothing, so
+// only a share smaller than the positives needs choosing among them.
+fn top_mean(positive: &mut [f32], total: usize, share: f64) -> f64 {
+    if total == 0 {
         return 0.0;
     }
-    if count < values.len() {
-        values.select_nth_unstable_by(count - 1, |a, b| b.total_cmp(a));
+    let count = ((share * total as f64) as usize).clamp(1, total);
+    if count < positive.len() {
+        positive.select_nth_unstable_by(count - 1, |a, b| b.total_cmp(a));
     }
-    values[..count].iter().map(|value| *value as f64).sum::<f64>() / count as f64
+    positive[..count.min(positive.len())].iter().map(|value| *value as f64).sum::<f64>() / count as f64
 }
 
 #[cfg(test)]

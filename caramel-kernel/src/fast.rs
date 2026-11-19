@@ -37,7 +37,7 @@ pub struct FastEncode {
 }
 
 // Which frames of a fast encode of `frames` frames have their banding measured: three spread over
-// the scene, never the keyframe. CAMBI costs a fifth of a second a 1080p frame, so not every one.
+// the scene, never the keyframe. CAMBI is the costliest read of a frame, so not every one.
 pub fn banding_frames(frames: usize) -> Vec<usize> {
     let mut picked: Vec<usize> = [frames / 4, frames / 2, frames * 3 / 4].into_iter().map(|index| index.max(1)).filter(|index| *index < frames).collect();
     picked.dedup();

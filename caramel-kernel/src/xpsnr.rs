@@ -14,7 +14,7 @@
 // order. The temporal memory starts at zero, so the first frame of a run reads a large activity
 // and is left out of the lab's scene values — leave it out here too.
 
-use crate::frame::Frame;
+use crate::frame::{Frame, Plane};
 
 const GAMMA: u64 = 2;
 const DEPTH: u32 = 8;
@@ -29,8 +29,8 @@ pub struct Xpsnr {
     // activity is a first-order difference, from 32 on a second-order one.
     frame_rate: u32,
     block: usize,
-    previous: Vec<i16>,
-    before_previous: Vec<i16>,
+    previous: Vec<u8>,
+    before_previous: Vec<u8>,
     sse_luma: Vec<f64>,
     weights: Vec<f64>,
 }
@@ -54,15 +54,15 @@ impl Xpsnr {
 
     // The frame's XPSNR in dB, its three planes' errors pooled 4:1:1 as the lab pools them. None
     // when the frames are not both 8-bit 4:2:0 of this size.
-    pub fn frame(&mut self, main: &Frame, reference: &Frame) -> Option<f64> {
+    pub fn frame<'a>(&mut self, main: &Frame<'a>, reference: &Frame<'a>) -> Option<f64> {
         let (w, h) = (self.width, self.height);
-        let planes = |frame: &Frame<'_>| -> Option<[Vec<i16>; 3]> {
-            let (u, v) = (frame.u.as_ref()?, frame.v.as_ref()?);
+        // The planes are read where they lie, through their strides; nothing is copied.
+        let planes = |frame: &Frame<'a>| -> Option<[Plane<'a>; 3]> {
+            let (u, v) = (frame.u?, frame.v?);
             if frame.y.width != w || frame.y.height != h || u.width != w.div_ceil(2) || u.height != h.div_ceil(2) || v.width != u.width || v.height != u.height {
                 return None;
             }
-            let copy = |plane: &crate::frame::Plane<'_>| (0..plane.height).flat_map(|y| plane.row(y).iter().map(|value| *value as i16)).collect::<Vec<i16>>();
-            Some([copy(&frame.y), copy(u), copy(v)])
+            Some([frame.y, u, v])
         };
         let (main, reference) = (planes(main)?, planes(reference)?);
         let widths = [w, w.div_ceil(2), w.div_ceil(2)];
@@ -77,14 +77,14 @@ impl Xpsnr {
         Some(-10.0 * pooled.log10())
     }
 
-    fn weighted_errors(&mut self, main: &[Vec<i16>; 3], reference: &[Vec<i16>; 3], widths: &[usize; 3], heights: &[usize; 3]) -> [u64; 3] {
+    fn weighted_errors(&mut self, main: &[Plane; 3], reference: &[Plane; 3], widths: &[usize; 3], heights: &[usize; 3]) -> [u64; 3] {
         let (w, h, b) = (self.width, self.height, self.block);
         let ratio = (w * h) as f64 / (3840.0 * 2160.0);
         let average_activity = (16.0 * (1u64 << (2 * DEPTH - 9)) as f64 / ratio.max(0.00001).sqrt()).sqrt();
         let mut wsse = [0u64; 3];
         if b < 4 {
             for plane in 0..3 {
-                wsse[plane] = block_sse(&main[plane], &reference[plane], widths[plane], 0, 0, widths[plane], heights[plane]);
+                wsse[plane] = block_sse(&main[plane], &reference[plane], 0, 0, widths[plane], heights[plane]);
             }
             return wsse;
         }
@@ -114,7 +114,7 @@ impl Xpsnr {
                 let block_height = if y + by > plane_height { plane_height - y } else { by };
                 for x in (0..plane_width).step_by(bx.max(1)) {
                     let block_width = if x + bx > plane_width { plane_width - x } else { bx };
-                    chroma += block_sse(&main[plane], &reference[plane], plane_width, x, y, block_width, block_height) as f64 * self.weights[index];
+                    chroma += block_sse(&main[plane], &reference[plane], x, y, block_width, block_height) as f64 * self.weights[index];
                     index += 1;
                 }
             }
@@ -123,22 +123,25 @@ impl Xpsnr {
         wsse
     }
 
-    // A luma block's squared error and its squared activity, updating the temporal memory.
-    fn error_and_activity(&mut self, main: &[i16], reference: &[i16], offset_x: usize, offset_y: usize, block_width: usize, block_height: usize) -> (f64, f64) {
+    // A luma block's squared error and its squared activity, updating the temporal memory. The
+    // high-pass reads past the block's edges into its neighbours, as the filter's does; only the
+    // picture's own edges are left out. Every sum is an integer, so the row-by-row loops below add
+    // up exactly what the filter's pixel-by-pixel ones do.
+    fn error_and_activity(&mut self, main: &Plane, reference: &Plane, offset_x: usize, offset_y: usize, block_width: usize, block_height: usize) -> (f64, f64) {
         let (w, h) = (self.width, self.height);
-        let o = w as isize;
-        let base = (offset_y * w + offset_x) as isize;
-        let at = |dx: isize, dy: isize| main[(base + dy * o + dx) as usize] as i32;
         let downsampled = w * h > 2048 * 1152;
         let edge = if downsampled { 2 } else { 1 };
         let x_act = if offset_x > 0 { 0 } else { edge };
         let y_act = if offset_y > 0 { 0 } else { edge };
         let w_act = if offset_x + block_width < w { block_width as isize } else { block_width as isize - edge };
         let h_act = if offset_y + block_height < h { block_height as isize } else { block_height as isize - edge };
-        let sse = block_sse(main, reference, w, offset_x, offset_y, block_width, block_height) as f64;
+        let sse = block_sse(main, reference, offset_x, offset_y, block_width, block_height) as f64;
         if w_act <= x_act || h_act <= y_act {
             return (sse, 1.0);
         }
+        // The pixel `dx`, `dy` from the block's corner, read through the plane's stride.
+        let (stride, data) = (main.stride as isize, main.data);
+        let at = |dx: isize, dy: isize| data[((offset_y as isize + dy) * stride + offset_x as isize + dx) as usize] as i32;
         let mut spatial: u64 = 0;
         if downsampled {
             if w_act > 12 {
@@ -157,54 +160,69 @@ impl Xpsnr {
                 }
             }
         } else {
+            // Columns `left - 1 ..= right` of the rows above, at and below each filtered one.
+            let (left, right) = (offset_x + x_act as usize, offset_x + w_act as usize);
             for y in y_act..h_act {
-                for x in x_act..w_act {
-                    let f = 12 * at(x, y) - 2 * (at(x - 1, y) + at(x + 1, y) + at(x, y - 1) + at(x, y + 1)) - (at(x - 1, y - 1) + at(x + 1, y - 1) + at(x - 1, y + 1) + at(x + 1, y + 1));
-                    spatial += f.unsigned_abs() as u64;
+                let row = (offset_y as isize + y) as usize;
+                let line = |r: usize| &main.data[r * main.stride + left - 1..r * main.stride + right + 1];
+                let (above, current, below) = (line(row - 1), line(row), line(row + 1));
+                let mut row_sum: u32 = 0;
+                for x in 1..=right - left {
+                    let f = 12 * current[x] as i32 - 2 * (current[x - 1] as i32 + current[x + 1] as i32 + above[x] as i32 + below[x] as i32)
+                        - (above[x - 1] as i32 + above[x + 1] as i32 + below[x - 1] as i32 + below[x + 1] as i32);
+                    row_sum += f.unsigned_abs();
                 }
+                spatial += row_sum as u64;
             }
         }
         let mut activity = spatial as f64 / ((w_act - x_act) as f64 * (h_act - y_act) as f64);
         let mut temporal: u64 = 0;
-        let index = |x: usize, y: usize| (offset_y + y) * w + offset_x + x;
-        let current = |x: usize, y: usize| main[index(x, y)] as i32;
+        let second_order = self.frame_rate >= 32;
         if downsampled {
+            let index = |x: usize, y: usize| (offset_y + y) * w + offset_x + x;
+            let pixel = |x: usize, y: usize| main.data[(offset_y + y) * main.stride + offset_x + x];
             for y in (0..block_height).step_by(2) {
                 for x in (0..block_width).step_by(2) {
-                    let cells = [index(x, y), index(x + 1, y), index(x, y + 1), index(x + 1, y + 1)];
-                    let now: i32 = cells.iter().map(|cell| main[*cell] as i32).sum();
-                    let one: i32 = cells.iter().map(|cell| self.previous[*cell] as i32).sum();
-                    let t = if self.frame_rate < 32 {
+                    let cells = [(x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1)];
+                    let now: i32 = cells.iter().map(|(x, y)| pixel(*x, *y) as i32).sum();
+                    let one: i32 = cells.iter().map(|(x, y)| self.previous[index(*x, *y)] as i32).sum();
+                    let t = if !second_order {
                         now - one
                     } else {
-                        let two: i32 = cells.iter().map(|cell| self.before_previous[*cell] as i32).sum();
+                        let two: i32 = cells.iter().map(|(x, y)| self.before_previous[index(*x, *y)] as i32).sum();
                         now - 2 * one + two
                     };
                     temporal += t.unsigned_abs() as u64;
-                    for cell in cells {
-                        if self.frame_rate >= 32 {
+                    for (x, y) in cells {
+                        let cell = index(x, y);
+                        if second_order {
                             self.before_previous[cell] = self.previous[cell];
                         }
-                        self.previous[cell] = main[cell];
+                        self.previous[cell] = pixel(x, y);
                     }
                 }
             }
             temporal *= GAMMA;
         } else {
             for y in 0..block_height {
-                for x in 0..block_width {
-                    let cell = index(x, y);
-                    let t = if self.frame_rate < 32 {
-                        current(x, y) - self.previous[cell] as i32
-                    } else {
-                        current(x, y) - 2 * self.previous[cell] as i32 + self.before_previous[cell] as i32
-                    };
-                    temporal += GAMMA * t.unsigned_abs() as u64;
-                    if self.frame_rate >= 32 {
-                        self.before_previous[cell] = self.previous[cell];
+                let memory = (offset_y + y) * w + offset_x;
+                let current = &main.row(offset_y + y)[offset_x..offset_x + block_width];
+                let previous = &mut self.previous[memory..memory + block_width];
+                let mut row_sum: u32 = 0;
+                if second_order {
+                    let before = &mut self.before_previous[memory..memory + block_width];
+                    for ((now, one), two) in current.iter().zip(previous.iter_mut()).zip(before.iter_mut()) {
+                        row_sum += (*now as i32 - 2 * *one as i32 + *two as i32).unsigned_abs();
+                        *two = *one;
+                        *one = *now;
                     }
-                    self.previous[cell] = main[cell];
+                } else {
+                    for (now, one) in current.iter().zip(previous.iter_mut()) {
+                        row_sum += (*now as i32 - *one as i32).unsigned_abs();
+                        *one = *now;
+                    }
                 }
+                temporal += GAMMA * row_sum as u64;
             }
         }
         activity += temporal as f64 / (block_width as f64 * block_height as f64);
@@ -241,14 +259,16 @@ impl Xpsnr {
     }
 }
 
-fn block_sse(main: &[i16], reference: &[i16], stride: usize, x: usize, y: usize, width: usize, height: usize) -> u64 {
+fn block_sse(main: &Plane, reference: &Plane, x: usize, y: usize, width: usize, height: usize) -> u64 {
     let mut sse = 0u64;
     for row in y..y + height {
-        let start = row * stride + x;
-        for (a, b) in main[start..start + width].iter().zip(&reference[start..start + width]) {
-            let d = (*a as i64 - *b as i64).unsigned_abs();
-            sse += d * d;
+        // A row's sum fits in 32 bits for any row narrower than 66,000 pixels.
+        let mut row_sse = 0u32;
+        for (a, b) in main.row(row)[x..x + width].iter().zip(&reference.row(row)[x..x + width]) {
+            let d = (*a as i32 - *b as i32).unsigned_abs();
+            row_sse += d * d;
         }
+        sse += row_sse as u64;
     }
     sse
 }
