@@ -2459,7 +2459,7 @@ async fn main() {
         // what it decided, and on what reading, is what makes the next one answerable without
         // reconstructing the host's memory after the fact.
         log.line(&format!(
-            "parallel VerySlow requested with {} workers, {} after memory headroom — {}",
+            "parallel chunked encode requested with {} workers, {} after memory headroom — {}",
             workers,
             pnx264::parallel::memory_worker_limit(workers),
             memory_line()
@@ -2503,7 +2503,7 @@ async fn main() {
         match result {
             Ok(summary) => {
                 log.line(&format!(
-                    "parallel VerySlow done: {} frames (total from {}), {} chunks, {} workers, {} AOT chunks reused, natural={}, {:.2}s",
+                    "parallel chunked encode done: {} frames (total from {}), {} chunks, {} workers, {} AOT chunks reused, natural={}, {:.2}s",
                     summary.frames,
                     summary.frame_total.label(),
                     summary.chunks,
@@ -2542,10 +2542,10 @@ async fn main() {
                 return;
             }
             Err(e) if e == "parallel input has fewer than four chunks per worker" => {
-                log.line(&format!("parallel VerySlow skipped: {e}; using linear ffmpeg"));
+                log.line(&format!("parallel chunked encode skipped: {e}; using linear ffmpeg"));
             }
             Err(e) if e == "cancelled" || args.cancelfile.as_deref().is_some_and(|path| Path::new(path).exists()) => {
-                log.line("parallel VerySlow cancelled");
+                log.line("parallel chunked encode cancelled");
                 println!("{}", pn_emit!(
                     protocol = proto,
                     negkey = &neg,
@@ -2555,7 +2555,7 @@ async fn main() {
                 return;
             }
             Err(e) => {
-                log.line(&format!("parallel VerySlow failed: {e} — {}", memory_line()));
+                log.line(&format!("parallel chunked encode failed: {e} — {}", memory_line()));
                 eprintln!("pnmpeg parallel encode failed: {e}");
                 println!("{}", pn_emit!(
                     protocol = proto,
