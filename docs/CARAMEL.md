@@ -347,8 +347,9 @@ nearby CRF actually added tracked the allowed banding closely (log-scale correla
 fast encode reads its own: CAMBI (`cambi.rs`, a port of libvmaf's, which agrees with libvmaf to the
 fourth decimal) of the encoded and the source frames at a quarter, half and three quarters through
 the scene (`fast::banding_frames`), the most the encode showed less the most the source showed
-(`fast::added_banding`). Three frames of each is about 1 s of one core per scene at 1080p, on top
-of the fast encode's 3.4 s. A probe reads XPSNR alone and pays none of it. On 983 scenes of 31
+(`fast::added_banding`). Three frames of each is about 0.1 s of one core per scene at 1080p, on
+top of the fast encode's 3.4 s, and the source's three are read once a scene
+(`scenes::source_banding`) and shared with the exposed banding below. A probe reads XPSNR alone and pays none of it. On 983 scenes of 31
 series, held out a series at a time over three seeds, networks reading it against the same networks
 without it took the banding vote's error from 3.29 to 1.05 CRF and the overall error from 1.78 to
 1.32; the decisions' shortfall p95 fell from 1.92 to 1.32 and the banding they added (p95) from
@@ -363,7 +364,8 @@ series it moved with the banding a veryfast encode at CRF 20 added at a log-scal
 0.97 (radii 1, 3 and 5 did worse), and on the 64 lab scenes of two series measured both ways at
 0.99 with the fast encode's own reading and 0.985 with the lab's banding at CRF 21, against 0.994
 for the fast encode's — on the same scale (fast ≈ 1.02 × exposed in logs). It costs three more
-CAMBI reads, about 0.3 s a scene, and needs only the source, so it can stand in for the encode's
+CAMBI reads (of the smoothed frames; the source's are the fast encode's own), about 0.07 s a scene
+at 1080p, and needs only the source, so it can stand in for the encode's
 banding where no encode is made. The lab records it with every sample, `--caramel-backfill`
 refills it, and a model reads it as input 32 (`exposed-banding`) — after the fast encode's, so the
 older models' inputs stay where they were.

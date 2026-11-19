@@ -303,10 +303,11 @@ pub fn measure_scene(ffmpeg: &Path, input: &Path, fps: f64, start: u64, frames: 
         let (fps_num, fps_den) = super::caramel::fps_ratio(fps);
         let config = pnx264::scenes::fast_config(&pnx264::Config { fps_num, fps_den, ..encoder.clone() }, width, height);
         let refs: Vec<&pnx264::scenes::OwnedFrame> = owned.iter().collect();
-        let fast = pnx264::scenes::fast_encode(&config, &refs, width, height)?;
+        let source = pnx264::scenes::source_banding(&refs, width, height);
+        let fast = pnx264::scenes::fast_encode_from(&config, &refs, width, height, &source)?;
         let mut whole = window.finish();
         whole.fast_encode = Some(fast);
-        whole.exposed_banding = pnx264::scenes::exposed_banding(&refs, width, height);
+        whole.exposed_banding = pnx264::scenes::exposed_banding_from(&refs, width, height, &source);
         Ok((whole, fast))
     })();
     let _ = child.kill();

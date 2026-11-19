@@ -217,6 +217,10 @@ struct Queued {
     boundary: Option<u64>,
     // The banding its source is ready to show has been read, or there was no need to.
     exposed_done: bool,
+    // The source's CAMBI on the frames a fast encode reads banding on (`source_banding`), with the
+    // end of the span it was read over: read for the exposed banding, reused by the fast encode of
+    // the same span.
+    source_banding: Option<(u64, Vec<Option<f64>>)>,
     // Its fast encode has been tried, whatever came of it.
     fast_done: bool,
     // The source's trust has been applied to it (`SceneDecision::temper`).
@@ -583,7 +587,7 @@ impl SceneSchedule {
         let mut progress = None;
         if let Some(decider) = self.decider.as_mut() {
             let decisions = decider.push(&Frame { y, u, v });
-            self.queued.extend(decisions.into_iter().map(|decision| Queued { decision, boundary: None, exposed_done: false, fast_done: false, tempered: false }));
+            self.queued.extend(decisions.into_iter().map(|decision| Queued { decision, boundary: None, exposed_done: false, source_banding: None, fast_done: false, tempered: false }));
             progress = Some((decider.scene_start(), decider.settled()));
         }
         self.pending.push_back(OwnedFrame {
@@ -609,7 +613,7 @@ impl SceneSchedule {
     // The stream ended: whatever is still held back is decided now.
     pub fn finish(&mut self) {
         if let Some(last) = self.decider.take().and_then(SceneDecider::finish) {
-            self.queued.push_back(Queued { decision: last, boundary: None, exposed_done: false, fast_done: false, tempered: false });
+            self.queued.push_back(Queued { decision: last, boundary: None, exposed_done: false, source_banding: None, fast_done: false, tempered: false });
         }
         self.release(None);
         self.send_reports(true);
@@ -643,9 +647,11 @@ impl SceneSchedule {
                     break;
                 };
                 let frames: Vec<&OwnedFrame> = self.pending.iter().filter(|frame| frame.index >= start && frame.index < end).collect();
-                let exposed = exposed_banding(&frames, self.width, self.height);
+                let source = source_banding(&frames, self.width, self.height);
+                let exposed = exposed_banding_from(&frames, self.width, self.height, &source);
                 let front = self.queued.front_mut().expect("checked above");
                 front.exposed_done = true;
+                front.source_banding = Some((end, source));
                 self.exposed.as_ref().expect("checked above").reconsider(&mut front.decision, exposed);
             }
             let front = self.queued.front().expect("checked above");
@@ -661,8 +667,12 @@ impl SceneSchedule {
                 };
                 let frames: Vec<&OwnedFrame> = self.pending.iter().filter(|frame| frame.index >= start && frame.index < end).collect();
                 let (config, judge) = self.fast.as_ref().expect("checked above");
+                let source = match &front.source_banding {
+                    Some((read_to, source)) if *read_to == end => source.clone(),
+                    _ => source_banding(&frames, self.width, self.height),
+                };
                 // A scene whose fast encode cannot be made is decided as if the model had none.
-                let measured = fast_encode(config, &frames, self.width, self.height);
+                let measured = fast_encode_from(config, &frames, self.width, self.height, &source);
                 let front = self.queued.front_mut().expect("checked above");
                 front.fast_done = true;
                 if let Ok(fast) = measured {
@@ -741,7 +751,7 @@ pub fn probe_xpsnr(config: &Config, crf: f32, frames: &[&OwnedFrame], width: usi
     if frames.len() < 3 {
         return Err("too few frames to measure".to_string());
     }
-    let (values, _, _) = test_encode(&Config { crf, ..config.clone() }, frames, width, height, false)?;
+    let (values, _, _) = test_encode(&Config { crf, ..config.clone() }, frames, width, height, None)?;
     xpsnr::pooled(&values[1..]).ok_or_else(|| "nothing measured".to_string())
 }
 
@@ -764,7 +774,12 @@ pub fn fast_config(encoder: &Config, width: usize, height: usize) -> Config {
 // A scene's fast encode (`caramel_kernel::fast`): `frames` encoded with `fast_config`'s settings and
 // read as the lab reads a clip, its banding included. `config` is already a `fast_config`.
 pub fn fast_encode(config: &Config, frames: &[&OwnedFrame], width: usize, height: usize) -> Result<FastEncode, String> {
-    let (values, bytes, banding) = test_encode(config, frames, width, height, true)?;
+    fast_encode_from(config, frames, width, height, &source_banding(frames, width, height))
+}
+
+// `fast_encode` with the source's banding already read (`source_banding` of the same frames).
+pub fn fast_encode_from(config: &Config, frames: &[&OwnedFrame], width: usize, height: usize, source: &[Option<f64>]) -> Result<FastEncode, String> {
+    let (values, bytes, banding) = test_encode(config, frames, width, height, Some(source))?;
     let fast = FastEncode::from_frames(&values, bytes, width * height).ok_or_else(|| "the fast encode measured nothing".to_string())?;
     Ok(FastEncode { banding, ..fast })
 }
@@ -774,22 +789,42 @@ pub fn fast_encode(config: &Config, frames: &[&OwnedFrame], width: usize, height
 // frames against the source's, over the frames a fast encode reads its banding on. None for fewer
 // than two frames, planes that do not hold `width` by `height`, or frames too small for CAMBI.
 pub fn exposed_banding(frames: &[&OwnedFrame], width: usize, height: usize) -> Option<f64> {
+    exposed_banding_from(frames, width, height, &source_banding(frames, width, height))
+}
+
+// `exposed_banding` with the source's banding already read (`source_banding` of the same frames).
+pub fn exposed_banding_from(frames: &[&OwnedFrame], width: usize, height: usize, source: &[Option<f64>]) -> Option<f64> {
     if frames.len() < 2 {
         return None;
     }
+    let picked = caramel_kernel::fast::banding_frames(frames.len());
+    if picked.len() != source.len() {
+        return None;
+    }
     let mut smoothed = Vec::new();
-    let mut source = Vec::new();
-    for index in caramel_kernel::fast::banding_frames(frames.len()) {
+    let mut read = Vec::new();
+    for (index, value) in picked.into_iter().zip(source) {
+        read.push((*value)?);
         let plane = Plane::new(&frames[index].y, width, height, frames[index].stride_y)?;
-        source.push(caramel_kernel::cambi::cambi(&plane)?);
         smoothed.push(caramel_kernel::cambi::cambi(&Plane::new(&caramel_kernel::cambi::smoothed(&plane), width, height, width)?)?);
     }
-    caramel_kernel::fast::added_banding(&smoothed, &source)
+    caramel_kernel::fast::added_banding(&smoothed, &read)
+}
+
+// The source's CAMBI on each frame a fast encode reads its banding on (`fast::banding_frames`), in
+// that order, None where CAMBI cannot read it. CAMBI is the costly part of reading banding, so a
+// scene's is read once and shared by its exposed banding and its fast encode.
+pub fn source_banding(frames: &[&OwnedFrame], width: usize, height: usize) -> Vec<Option<f64>> {
+    caramel_kernel::fast::banding_frames(frames.len())
+        .into_iter()
+        .map(|index| Plane::new(&frames[index].y, width, height, frames[index].stride_y).and_then(|plane| caramel_kernel::cambi::cambi(&plane)))
+        .collect()
 }
 
 // `frames` encoded with `config`, each frame's XPSNR against its source in display order, the coded
-// bytes of all of them, and with `banding` the banding the encode added (`fast::added_banding`).
-fn test_encode(config: &Config, frames: &[&OwnedFrame], width: usize, height: usize, banding: bool) -> Result<(Vec<f64>, u64, Option<f64>), String> {
+// bytes of all of them, and given the source's banding (`source_banding`) the banding the encode
+// added (`fast::added_banding`).
+fn test_encode(config: &Config, frames: &[&OwnedFrame], width: usize, height: usize, source_banding: Option<&[Option<f64>]>) -> Result<(Vec<f64>, u64, Option<f64>), String> {
     if frames.len() < 2 {
         return Err("too few frames to measure".to_string());
     }
@@ -832,15 +867,13 @@ fn test_encode(config: &Config, frames: &[&OwnedFrame], width: usize, height: us
         };
         values.push(meter.frame(&encoded, &original).ok_or("frames of another size")?);
     }
-    let banding = banding
-        .then(|| {
-            let picked = caramel_kernel::fast::banding_frames(frames.len());
-            let read = |plane: &[u8], stride: usize| Plane::new(plane, width, height, stride).and_then(|plane| caramel_kernel::cambi::cambi(&plane));
-            let encoded: Vec<f64> = picked.iter().filter_map(|index| read(&pictures[*index].y, width)).collect();
-            let source: Vec<f64> = picked.iter().filter_map(|index| read(&frames[*index].y, frames[*index].stride_y)).collect();
-            caramel_kernel::fast::added_banding(&encoded, &source)
-        })
-        .flatten();
+    let banding = source_banding.and_then(|source| {
+        let picked = caramel_kernel::fast::banding_frames(frames.len());
+        let read = |plane: &[u8], stride: usize| Plane::new(plane, width, height, stride).and_then(|plane| caramel_kernel::cambi::cambi(&plane));
+        let encoded: Vec<f64> = picked.iter().filter_map(|index| read(&pictures[*index].y, width)).collect();
+        let source: Vec<f64> = source.iter().flatten().copied().collect();
+        caramel_kernel::fast::added_banding(&encoded, &source)
+    });
     Ok((values, bytes, banding))
 }
 
@@ -1182,7 +1215,7 @@ mod tests {
         // Without encoding, the source reads as ready to band.
         assert!(exposed_banding(&refs, w, h).unwrap() > 1.0);
         // A probe reads XPSNR alone and pays for no banding.
-        assert!(test_encode(&config(20.0), &refs, w, h, false).unwrap().2.is_none());
+        assert!(test_encode(&config(20.0), &refs, w, h, None).unwrap().2.is_none());
     }
 
     // A model that reads the banding a source is ready to show has it read for every scene before
