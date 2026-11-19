@@ -231,6 +231,14 @@ and only a name that still will not resolve ten seconds later is an error, repor
 directory's actual contents. The same filesystem behaviour is why a job's log files could not be
 stat'd while their writer was alive.
 
+A chunked encode meets the same window from the other side: the download worker stops only the
+AOT planner, and its `--aot-chunk` children keep reading the source until they see
+`.foreground-encode` at their next frame. `pnmpeg` therefore waits for the input's name to resolve
+(`wait_for_chunked_input`, at most `CHUNKED_INPUT_GRACE`, 120 s) before its first probe, and logs
+what the directory held while it waited. Without that, the first chunked Standard encode in
+production failed 2 s in: neither the frame total nor Caramel's source context could be probed,
+and the audio probe quietly answered `unknown`.
+
 A missing state file is not by itself a failure. `LinearAotState::publish` replaces the file by
 renaming a temporary over it, roughly once a second, and `DB` is a bind mount in production where
 that rename is **not** atomic — the path goes briefly absent. The handoff polls it four times a

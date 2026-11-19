@@ -577,6 +577,12 @@ fn encodes_in_chunks(preset: Option<&ResolvedPreset>) -> bool {
     preset.is_some_and(ResolvedPreset::wants_chunked_encode)
 }
 
+// Whether this invocation takes the chunked path: a chunking preset, and none of the flags that
+// force one ffmpeg process instead.
+fn chunked_run(preset: Option<&ResolvedPreset>, args: &Args) -> bool {
+    encodes_in_chunks(preset) && !args.concat && !args.legacyconcat && !args.linear && !args.debug
+}
+
 // Whether this run is a background encode: one that only runs while no ordinary encode does, and
 // stops for as long as one is.
 //
@@ -1081,6 +1087,47 @@ const AUDIO_RETRY_ATTEMPTS: u32 = 20;
 // speculative encoder rewrites it roughly once a second, so anything shorter-lived than this is the
 // publisher's rename window rather than a file that has actually gone away.
 const MISSING_STATE_GRACE: Duration = Duration::from_secs(15);
+
+// How long a chunked encode waits for its input's name before probing it anyway. The download
+// worker renames the finished file to `input.mkv` while speculative chunk encoders may still be
+// reading it, and on the production bind mount a file held open like that cannot be stat'd by its
+// new name until they let go. They stop at their next frame once the foreground marker exists, so
+// this is normally a second or two; the bound only keeps a name that never comes back from hanging
+// the job.
+const CHUNKED_INPUT_GRACE: Duration = Duration::from_secs(120);
+
+// Waits for the input's name to resolve before a chunked encode probes it. Probing first is what
+// failed the first chunked Standard encode in production: the frame total and Caramel's source
+// context could not be read, and the audio probe quietly answered "unknown", which would have
+// re-encoded an AAC track that should have been copied.
+fn wait_for_chunked_input(args: &Args, log: &mut ToolLog) {
+    let input = Path::new(&args.input);
+    if input.exists() {
+        return;
+    }
+    let directory = || input.parent().map(directory_names).unwrap_or_else(|| "unreadable".to_string());
+    log.line(&format!(
+        "chunked encode: {} does not resolve yet (its directory holds {}); waiting for speculative chunk encoders to release it",
+        args.input,
+        directory(),
+    ));
+    let started = std::time::Instant::now();
+    while started.elapsed() < CHUNKED_INPUT_GRACE {
+        if args.cancelfile.as_deref().is_some_and(|path| Path::new(path).exists()) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+        if input.exists() {
+            log.line(&format!("chunked encode: input resolved after {:.1}s", started.elapsed().as_secs_f64()));
+            return;
+        }
+    }
+    log.line(&format!(
+        "chunked encode: input still does not resolve after {:.0}s; its directory holds {}",
+        started.elapsed().as_secs_f64(),
+        directory(),
+    ));
+}
 
 // What a directory still holds, for a log line written at the moment something has gone missing
 // from it. Names only, capped: the point is to tell an emptied directory from a wiped one.
@@ -2296,6 +2343,9 @@ async fn main() {
     };
 
     log.line(&format!("{} ffmpeg parameter(s) from the selected preset", params.len()));
+    if chunked_run(active_preset.as_ref(), &args) {
+        wait_for_chunked_input(&args, &mut log);
+    }
     let audio_index = if !args.concat || args.legacyconcat {
         let lang = args.lang.clone();
         let input = args.input.clone();
@@ -2393,7 +2443,7 @@ async fn main() {
 
     // The corrected episode-scale benchmark showed a latency win only for VerySlow. Every other
     // CPU preset stays on the established linear ffmpeg path below.
-    if encodes_in_chunks(active_preset.as_ref()) && !args.concat && !args.legacyconcat && !args.linear && !args.debug {
+    if chunked_run(active_preset.as_ref(), &args) {
         // Without `--ass` nothing is burned in: the chain loses its subtitle step.
         let base_filter = match args.ass {
             Some(_) => chunk_base_filter(active_preset.as_ref()),
@@ -3157,17 +3207,22 @@ mod tests {
     #[test]
     fn the_presets_that_encode_ahead_do_so_under_either_spelling() {
         for argv in [
-            vec!["--x264"],
-            vec!["--preset", "standard"],
             vec!["--pseudolossless"],
             vec!["--preset", "av1"],
-            vec![],
         ] {
             let preset = active_preset(&parsed(&argv));
             assert!(adopts_linear_prefix(preset.as_ref()), "{argv:?} lost its AOT handoff");
             assert!(!encodes_in_chunks(preset.as_ref()), "{argv:?} should stay linear");
         }
-        for argv in [vec!["--veryslow"], vec!["--preset", "veryslow"]] {
+        // Standard, under every spelling and as the default, decides a CRF per scene, which only
+        // the chunk encoders can apply while the source downloads.
+        for argv in [
+            vec!["--veryslow"],
+            vec!["--preset", "veryslow"],
+            vec!["--x264"],
+            vec!["--preset", "standard"],
+            vec![],
+        ] {
             let preset = active_preset(&parsed(&argv));
             assert!(encodes_in_chunks(preset.as_ref()), "{argv:?} lost parallel chunking");
             assert!(!adopts_linear_prefix(preset.as_ref()), "{argv:?} chunks instead of adopting");
