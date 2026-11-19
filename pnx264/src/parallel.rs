@@ -804,35 +804,31 @@ where
         return Err("audio encode failed".to_string());
     }
 
+    // The padding is one more keyframe after the last chunk, cut off again below: see `stitch`.
     let elementary = scratch.join("video.264");
     let mut combined = BufWriter::new(File::create(&elementary).map_err(|e| e.to_string())?);
+    let mut pictures = 0u64;
+    let mut padding = None;
     for index in 0..ranges.len() {
-        let mut chunk = File::open(scratch.join(format!("chunk-{index:06}.264")))
-            .map_err(|e| e.to_string())?;
-        std::io::copy(&mut chunk, &mut combined).map_err(|e| e.to_string())?;
+        let chunk = std::fs::read(scratch.join(format!("chunk-{index:06}.264"))).map_err(|e| e.to_string())?;
+        let scan = scan_annexb(&chunk);
+        pictures += scan.pictures;
+        if padding.is_none() {
+            padding = scan.first_picture_end.map(|end| chunk[..end].to_vec());
+        }
+        combined.write_all(&chunk).map_err(|e| e.to_string())?;
     }
+    let padding = padding.ok_or("the encoded chunks hold no picture")?;
+    combined.write_all(&padding).map_err(|e| e.to_string())?;
     combined.flush().map_err(|e| e.to_string())?;
-    let frame_rate = format!("{}/{}", source.fps_num, source.fps_den);
-    let timescale = source.fps_num.to_string();
+    drop(combined);
     let video_mp4 = scratch.join("video.mp4");
-    // Raw H.264 has no container timestamps. Its parser begins DTS two B-frame delays below zero;
-    // normalise the video alone first, otherwise `avoid_negative_ts` also shifts audio by that
-    // delay and creates a visible 80ms sync error at 24fps. A numerator timescale represents both
-    // integer rates and 24000/1001 exactly.
     let video_status = Command::new(&config.ffmpeg)
-        .args(["-v", "error", "-r", &frame_rate, "-i"])
-        .arg(&elementary)
-        .args([
-            "-map", "0:v:0", "-c", "copy",
-            "-avoid_negative_ts", "make_zero",
-            "-video_track_timescale", &timescale,
-            "-y",
-        ])
-        .arg(&video_mp4)
+        .args(stitch_args(&elementary, &video_mp4, source.fps_num, source.fps_den, pictures))
         .status()
         .map_err(|e| format!("spawn video timestamp mux: {e}"))?;
     if !video_status.success() {
-        return Err("video timestamp mux failed".to_string());
+        return Err("video timestamp mux failed (it needs ffmpeg's dts2pts and setts bitstream filters)".to_string());
     }
     let status = Command::new(&config.ffmpeg)
         .args(["-v", "error", "-i"])
@@ -888,9 +884,114 @@ where
     })
 }
 
+// What the stitch needs to know about an Annex-B stream: how many pictures it holds, and where its
+// first picture's access unit ends (headers, SEI and the keyframe's slices).
+#[derive(Debug, PartialEq)]
+struct AnnexbScan {
+    pictures: u64,
+    first_picture_end: Option<usize>,
+}
+
+// A picture starts at a slice NAL (type 1 or 5) whose first_mb_in_slice is 0. That field opens the
+// slice header as ue(v), and 0 is the single bit 1, so the payload's first byte has its top bit set.
+// A NAL's start code is taken with its leading zero_byte when there is one.
+fn scan_annexb(stream: &[u8]) -> AnnexbScan {
+    let mut pictures = 0u64;
+    let mut first_picture_end = None;
+    let mut in_first_picture = false;
+    let mut position = 0;
+    while let Some(found) = stream[position..].windows(3).position(|window| window == [0, 0, 1]) {
+        let code = position + found;
+        let header = code + 3;
+        position = header;
+        let Some(&byte) = stream.get(header) else {
+            break;
+        };
+        let nal_type = byte & 0x1f;
+        let picture_start = (nal_type == 1 || nal_type == 5)
+            && stream.get(header + 1).is_some_and(|payload| payload & 0x80 != 0);
+        let continues_picture = (nal_type == 1 || nal_type == 5) && !picture_start;
+        if in_first_picture && !continues_picture {
+            let start = if code > 0 && stream[code - 1] == 0 { code - 1 } else { code };
+            first_picture_end = Some(start);
+            in_first_picture = false;
+        }
+        if picture_start {
+            if pictures == 0 {
+                in_first_picture = true;
+            }
+            pictures += 1;
+        }
+    }
+    if in_first_picture {
+        first_picture_end = Some(stream.len());
+    }
+    AnnexbScan { pictures, first_picture_end }
+}
+
+// Raw H.264 carries no timestamps. Read with `-r`, every packet gets a DTS and the MP4 muxer copies
+// it into PTS, so the file claims B-frames are shown in coding order. Decoders that reorder by the
+// bitstream's picture order (Chromium) play it anyway; players that present by container time
+// (Firefox) show every mini-GOP out of order. `dts2pts` rebuilds each PTS from the picture order
+// count, and `setts` moves the first shown frame to zero, which leaves DTS starting two B-frame
+// delays below zero: the edit list ffmpeg's own libx264 output carries, and audio stays in sync.
+// `dts2pts` only settles a picture's PTS once a later IDR or more frames arrive, so it mislabels the
+// stream's last picture; the stream is padded with one more keyframe, which `-frames:v` then drops.
+// A numerator timescale represents both integer rates and 24000/1001 exactly.
+fn stitch_args(elementary: &Path, output: &Path, fps_num: u32, fps_den: u32, pictures: u64) -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> = ["-v", "error", "-r"].iter().map(Into::into).collect();
+    args.push(format!("{fps_num}/{fps_den}").into());
+    args.push("-i".into());
+    args.push(elementary.into());
+    for arg in [
+        "-map", "0:v:0", "-c", "copy",
+        "-frames:v", &pictures.to_string(),
+        "-bsf:v", "dts2pts,setts=pts=PTS-STARTPTS:dts=DTS-STARTPTS",
+        "-video_track_timescale", &fps_num.to_string(),
+        "-y",
+    ] {
+        args.push(arg.into());
+    }
+    args.push(output.into());
+    args
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // SPS, PPS, SEI, a two-slice IDR, then a one-slice P picture: the first access unit ends where
+    // the P picture's 4-byte start code begins.
+    #[test]
+    fn an_annexb_scan_counts_pictures_and_finds_the_first_access_unit() {
+        let mut stream = Vec::new();
+        stream.extend_from_slice(&[0, 0, 0, 1, 0x67, 0x64, 0x00]);
+        stream.extend_from_slice(&[0, 0, 0, 1, 0x68, 0xee]);
+        stream.extend_from_slice(&[0, 0, 1, 0x06, 0x05, 0x01]);
+        stream.extend_from_slice(&[0, 0, 1, 0x65, 0x88, 0x84]);
+        stream.extend_from_slice(&[0, 0, 1, 0x65, 0x40, 0x84]);
+        let first_end = stream.len();
+        stream.extend_from_slice(&[0, 0, 0, 1, 0x41, 0x9a, 0x02]);
+        let scan = scan_annexb(&stream);
+        assert_eq!(scan, AnnexbScan { pictures: 2, first_picture_end: Some(first_end) });
+        assert_eq!(scan_annexb(&stream[..first_end]).first_picture_end, Some(first_end));
+        assert_eq!(scan_annexb(&[0, 0, 1, 0x67, 0x64]), AnnexbScan { pictures: 0, first_picture_end: None });
+    }
+
+    #[test]
+    fn the_stitch_rebuilds_presentation_times_and_drops_the_padding() {
+        let args: Vec<String> = stitch_args(Path::new("v.264"), Path::new("v.mp4"), 24000, 1001, 4374)
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let after = |flag: &str| args[args.iter().position(|arg| arg == flag).unwrap() + 1].clone();
+        assert_eq!(after("-r"), "24000/1001");
+        assert_eq!(after("-frames:v"), "4374");
+        assert!(after("-bsf:v").starts_with("dts2pts,"));
+        assert_eq!(after("-video_track_timescale"), "24000");
+        assert!(!args.iter().any(|arg| arg == "-avoid_negative_ts"));
+        assert_eq!(args.last().unwrap(), "v.mp4");
+    }
 
     fn source() -> Source {
         Source { width: 1920, height: 1080, fps_num: 24, fps_den: 1, frames: 1500 }
