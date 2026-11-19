@@ -308,7 +308,9 @@ opening (with `fast_encode`, the scene's fast encode; see below), `scene_feature
 features over every frame the lab encoded; see below),
 `cut_pairs_within`, `reference_bit_depth`, `cambi_source`, `cambi_source_high`, `points`
 (`crf`, `bytes`, `xpsnr`, `xpsnr_low`, `ssim_db`, `vmaf`, `vmaf_low`, `cambi`, `cambi_high`, and
-`treatment` on a treated encode only),
+`treatment` on a treated encode only), `fast_ladder` (the scene's fast encode at each of
+`FAST_LAB_CRFS`, as `crf` beside the fast encode's own fields; see
+[Fast encodes](#fast-encodes)), 
 `picked` (`spread` or `novel`), the guiding `model` and its `surprise`, `collected_unix`,
 `elapsed_ms`. Files are append-only and a line that does not parse is skipped. The dataset holds
 numbers, never video.
@@ -455,6 +457,14 @@ agree to the hundredth of a dB. `--train-features fast` trains networks reading 
 exposed banding out of the model and its base) on the samples that have one, with their base
 beside them, and judges the two together;
 `--train-features fast-paired` trains the 27-input networks alone on the same samples.
+
+**At more than one CRF.** Every sample also keeps its fast encode at CRF 17, 20, 23, 26 and 29
+(`fast_ladder`, `FAST_LAB_CRFS`), and `--caramel-backfill` adds them to samples measured before.
+Nothing trains on them yet. They are for a model that reads a fast encode made at the CRF its base
+proposes rather than at 20, since banding is where its decisions go wrong and a raise to 26 is
+judged on banding read six CRF away. Whether that reads it better is what these samples are to
+show. Four more veryfast encodes of at most 48 frames, about
+14 s of one core a sample at 1080p, next to the lab's encodes at the preset's own settings.
 
 ### Why deband points
 

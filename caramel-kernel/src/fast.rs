@@ -19,6 +19,21 @@ pub const FAST_PRESET: &str = "veryfast";
 pub const FAST_CRF: f32 = 20.0;
 // The most frames of a scene the fast encode covers: a scene's longest stretch before it is split.
 pub const FAST_FRAMES: usize = 48;
+// The CRFs the lab also reads a scene's fast encode at, `FAST_CRF` among them: every CRF a base's
+// raise from anchors 17 to 23 can propose lies between two of them. A raise to 26 is judged on
+// banding an encode at `FAST_CRF` read six CRF away; one at the CRF the base proposes would read it
+// where the decision is made. A model can only learn to read that once samples carry fast encodes
+// at more than one CRF.
+pub const FAST_LAB_CRFS: [f32; 5] = [17.0, 20.0, 23.0, 26.0, 29.0];
+
+// A fast encode and the CRF it was made at, as a lab sample keeps its fast encodes at
+// `FAST_LAB_CRFS`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct FastPoint {
+    pub crf: f32,
+    #[serde(flatten)]
+    pub encode: FastEncode,
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct FastEncode {

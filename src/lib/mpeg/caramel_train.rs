@@ -707,6 +707,7 @@ mod tests {
             cambi_source: 0.05,
             cambi_source_high: 0.1,
             points,
+            fast_ladder: Vec::new(),
             picked: "spread".to_string(),
             verified: None,
             model: String::new(),

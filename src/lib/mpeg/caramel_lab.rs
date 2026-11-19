@@ -40,7 +40,7 @@ use super::caramel::{
 };
 use crate::lib::bin::resolve_runtime_binary;
 use caramel_kernel::curve::{self, METRICS, Observation};
-use caramel_kernel::{FastEncode, SourceContext, WindowFeatures, inputs};
+use caramel_kernel::{FastEncode, FastPoint, SourceContext, WindowFeatures, inputs};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::io::Write;
@@ -129,6 +129,10 @@ pub struct LabSample {
     pub cambi_source: f64,
     pub cambi_source_high: f64,
     pub points: Vec<LabPoint>,
+    // The scene's fast encode at each of `FAST_LAB_CRFS`, the one in `features` among them. Empty
+    // for a sample measured before the lab read more than one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fast_ladder: Vec<FastPoint>,
     // Why the scene was taken: `spread` or `novel`.
     pub picked: String,
     // For a scene verified after an encode: what that encode decided and what came of it.
@@ -254,10 +258,11 @@ pub fn key_encoder(key: &str) -> Option<pnx264::Config> {
     })
 }
 
-// What the lab reads off a scene's clip besides its encodes: its whole-scene features, and its fast
-// encode (`caramel_kernel::fast`) made with `encoder`'s settings. `frames` frames of `input` from
-// `start`, decoded at 8 bits as the scene analysis decodes them and cut out as the lab's clip is.
-pub fn measure_scene(ffmpeg: &Path, input: &Path, fps: f64, start: u64, frames: u64, encoder: &pnx264::Config) -> Result<(WindowFeatures, FastEncode), String> {
+// What the lab reads off a scene's clip besides its encodes: its whole-scene features, its fast
+// encode (`caramel_kernel::fast`) made with `encoder`'s settings, and the same at every one of
+// `FAST_LAB_CRFS`. `frames` frames of `input` from `start`, decoded at 8 bits as the scene analysis
+// decodes them and cut out as the lab's clip is.
+pub fn measure_scene(ffmpeg: &Path, input: &Path, fps: f64, start: u64, frames: u64, encoder: &pnx264::Config) -> Result<(WindowFeatures, FastEncode, Vec<FastPoint>), String> {
     let mut command = Command::new(ffmpeg);
     command.args(["-v", "error", "-nostdin"]);
     if let Some(seek) = seek_seconds(start, fps) {
@@ -305,10 +310,15 @@ pub fn measure_scene(ffmpeg: &Path, input: &Path, fps: f64, start: u64, frames: 
         let refs: Vec<&pnx264::scenes::OwnedFrame> = owned.iter().collect();
         let source = pnx264::scenes::source_banding(&refs, width, height);
         let fast = pnx264::scenes::fast_encode_from(&config, &refs, width, height, &source)?;
+        let mut ladder = Vec::with_capacity(caramel_kernel::FAST_LAB_CRFS.len());
+        for crf in caramel_kernel::FAST_LAB_CRFS {
+            let encode = if crf == config.crf { fast } else { pnx264::scenes::fast_encode_from(&pnx264::Config { crf, ..config.clone() }, &refs, width, height, &source)? };
+            ladder.push(FastPoint { crf, encode });
+        }
         let mut whole = window.finish();
         whole.fast_encode = Some(fast);
         whole.exposed_banding = pnx264::scenes::exposed_banding_from(&refs, width, height, &source);
-        Ok((whole, fast))
+        Ok((whole, fast, ladder))
     })();
     let _ = child.kill();
     let _ = child.wait();
@@ -854,6 +864,7 @@ impl Lab<'_> {
             cambi_source: 0.0,
             cambi_source_high: 0.0,
             points: Vec::new(),
+            fast_ladder: Vec::new(),
             picked: picked.to_string(),
             verified: None,
             model: request.guide.map(|guide| guide.version()).unwrap_or_default(),
@@ -864,10 +875,11 @@ impl Lab<'_> {
         let result = (|| {
             let reference = self.extract(&directory, scene.start_frame, frames)?;
             let encoder = key_encoder(&self.encoder).ok_or("the lab measures x264 encodes only")?;
-            let (whole, fast) = measure_scene(&self.ffmpeg, &self.input, self.fps, scene.start_frame, frames, &encoder)?;
+            let (whole, fast, ladder) = measure_scene(&self.ffmpeg, &self.input, self.fps, scene.start_frame, frames, &encoder)?;
             sample.features.exposed_banding = whole.exposed_banding;
             sample.scene_features = Some(whole);
             sample.features.fast_encode = Some(fast);
+            sample.fast_ladder = ladder;
             let bands: [Option<(f64, f64)>; METRICS] = std::array::from_fn(|metric| request.guide.and_then(|guide| guide.band(metric)));
             let max_points = request.max_points.max(START_CRFS.len());
             let ladder = verify.map_or_else(|| request.ladder.clone(), |pick| self.verify_ladder(pick));
@@ -939,9 +951,9 @@ pub struct BackfillSummary {
     pub failed: usize,
 }
 
-// Gives the samples of `source_id` in `dataset` the whole-scene features, the fast encode and the
-// banding the source is ready to show that they were measured without — or a fast encode made before
-// it read banding — read from `input`, which must be the source they were measured from. Other lines
+// Gives the samples of `source_id` in `dataset` the whole-scene features, the fast encode, the fast
+// encodes at `FAST_LAB_CRFS` and the banding the source is ready to show that they were measured
+// without — or a fast encode made before it read banding — read from `input`, which must be the source they were measured from. Other lines
 // are left as they are, and the file is replaced only once every sample was tried.
 pub fn backfill_scene_features(dataset: &Path, input: &Path, source_id: &str, workers: usize) -> Result<BackfillSummary, String> {
     let ffmpeg: PathBuf = resolve_runtime_binary("ffmpeg").into();
@@ -953,12 +965,12 @@ pub fn backfill_scene_features(dataset: &Path, input: &Path, source_id: &str, wo
     let todo: Vec<usize> = samples
         .iter()
         .enumerate()
-        .filter_map(|(index, sample)| sample.as_ref().filter(|sample| sample.scene_features.is_none() || sample.features.exposed_banding.is_none() || sample.features.fast_encode.is_none_or(|fast| fast.banding.is_none())).map(|_| index))
+        .filter_map(|(index, sample)| sample.as_ref().filter(|sample| sample.scene_features.is_none() || sample.features.exposed_banding.is_none() || sample.features.fast_encode.is_none_or(|fast| fast.banding.is_none()) || sample.fast_ladder.is_empty()).map(|_| index))
         .collect();
     summary.samples = samples.iter().flatten().count();
     summary.already = summary.samples - todo.len();
     let next = AtomicUsize::new(0);
-    let results: Mutex<Vec<(usize, Result<(WindowFeatures, FastEncode), String>)>> = Mutex::new(Vec::new());
+    let results: Mutex<Vec<(usize, Result<(WindowFeatures, FastEncode, Vec<FastPoint>), String>)>> = Mutex::new(Vec::new());
     std::thread::scope(|scope| {
         for _ in 0..workers.clamp(1, todo.len().max(1)) {
             scope.spawn(|| {
@@ -974,11 +986,12 @@ pub fn backfill_scene_features(dataset: &Path, input: &Path, source_id: &str, wo
     });
     for (index, measured) in results.into_inner().unwrap_or_else(|poisoned| poisoned.into_inner()) {
         match measured {
-            Ok((whole, fast)) => {
+            Ok((whole, fast, ladder)) => {
                 let sample = samples[index].as_mut().unwrap();
                 sample.features.exposed_banding = whole.exposed_banding;
                 sample.scene_features = Some(whole);
                 sample.features.fast_encode = Some(fast);
+                sample.fast_ladder = ladder;
                 summary.filled += 1;
             }
             Err(_) => summary.failed += 1,
@@ -1298,6 +1311,7 @@ mod tests {
                 LabPoint { crf: 28.0, bytes: 100_000, cambi_high: 6.5, ..Default::default() },
                 LabPoint { crf: 17.0, bytes: 200_000, cambi_high: 0.1, treatment: DEBAND.name.into(), ..Default::default() },
             ],
+            fast_ladder: vec![FastPoint { crf: 23.0, encode: FastEncode { xpsnr: 41.5, xpsnr_low: 39.0, log_bpp: -4.5, frames: 48, banding: Some(0.75) } }],
             picked: "spread".into(),
             verified: None,
             model: String::new(),
@@ -1308,6 +1322,12 @@ mod tests {
         let line = serde_json::to_string(&sample).unwrap();
         let back: LabSample = serde_json::from_str(&line).unwrap();
         assert_eq!(back.points, sample.points);
+        // A fast encode on the ladder is written flat beside its CRF, and a line written before the
+        // ladder reads as one without it.
+        assert_eq!(back.fast_ladder, sample.fast_ladder);
+        assert!(line.contains(r#""fast_ladder":[{"crf":23.0,"xpsnr":41.5,"#), "{line}");
+        let before: LabSample = serde_json::from_str(&line.replace(r#""fast_ladder":"#, r#""unread_ladder":"#)).unwrap();
+        assert!(before.fast_ladder.is_empty());
         let observed = back.observations();
         // A treated encode is not a point on the scene's curves, and a plain one names no treatment.
         assert_eq!(observed.len(), 2);
@@ -1325,7 +1345,7 @@ mod tests {
         // given the lab's, and one that read its own keeps it.
         assert_eq!(back.inputs()[30], 0.0);
         let fast = caramel_kernel::FastEncode { xpsnr: 42.0, xpsnr_low: 40.0, log_bpp: -3.0, frames: 48, banding: None };
-        let old = LabSample { features: WindowFeatures { fast_encode: Some(fast), ..Default::default() }, ..back.clone() };
+        let old = LabSample { features: WindowFeatures { fast_encode: Some(fast), ..Default::default() }, fast_ladder: Vec::new(), ..back.clone() };
         let expected = old.lab_banding(caramel_kernel::FAST_CRF as f64).unwrap();
         assert!((old.inputs()[30] - ((expected + 0.05) * STAND_IN_BANDING).ln()).abs() < 1e-12);
         let line = serde_json::to_string(&old).unwrap();
